@@ -478,36 +478,53 @@ window.$docsify = {
 
       // --- Docsify 生命周期钩子 ---
       hook.doneEach(function () {
+        // 当前路由对应的“论文 ID”（简单用文件名去掉 .md）
+        const paperId = getPaperId();
+        const routePath = vm.route && vm.route.path ? vm.route.path : '';
+        const lowerId = (paperId || '').toLowerCase();
+
+        // 首页（如 README.md 或根路径）不展示公共研讨区，只做数学渲染和 Zotero 元数据更新
+        const isHomePage =
+          !paperId ||
+          lowerId === 'readme' ||
+          routePath === '/' ||
+          routePath === '';
+
         // A. 对正文区域进行一次全局公式渲染（支持 $...$ / $$...$$）
         const mainContent = document.querySelector('.markdown-section');
         if (mainContent) {
           renderMathInEl(mainContent);
 
-          // B. 将 Chat UI 追加到文章底部
-          const div = document.createElement('div');
-          div.innerHTML = renderChatUI();
-          mainContent.appendChild(div);
+          if (!isHomePage) {
+            // B. 非首页时才将 Chat UI 追加到文章底部
+            const div = document.createElement('div');
+            div.innerHTML = renderChatUI();
+            mainContent.appendChild(div);
+          }
         }
 
-        // C. 绑定事件
-        const sendBtnEl = document.getElementById('send-btn');
-        if (sendBtnEl) {
-          sendBtnEl.addEventListener('click', sendMessage);
-        }
+        if (!isHomePage) {
+          // C. 绑定事件（仅在存在评论区时绑定）
+          const sendBtnEl = document.getElementById('send-btn');
+          if (sendBtnEl) {
+            sendBtnEl.addEventListener('click', sendMessage);
+          }
 
-        const inputEl = document.getElementById('user-input');
-        if (inputEl) {
-          inputEl.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-              e.preventDefault();
-              sendMessage();
-            }
-          });
-        }
+          const inputEl = document.getElementById('user-input');
+          if (inputEl) {
+            inputEl.addEventListener('keydown', (e) => {
+              if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+                e.preventDefault();
+                sendMessage();
+              }
+            });
+          }
 
-        // D. 初始加载数据（仅在页面加载时请求一次）
-        const paperId = getPaperId();
-        loadHistory(paperId);
+          // D. 初始加载数据（仅在页面加载时请求一次）
+          if (paperId) {
+            loadHistory(paperId);
+          }
+        }
 
         // ----------------------------------------------------
         // E. Zotero 元数据注入逻辑 (带延时和唤醒)
@@ -590,4 +607,3 @@ window.$docsify = {
     },
   ],
 };
-
