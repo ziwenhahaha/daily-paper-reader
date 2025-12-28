@@ -204,12 +204,8 @@ window.$docsify = {
                 lines.push(`${icon} ${speaker}: ${contentText}`);
               });
               if (lines.length) {
-                let joined = lines.join('\n\n');
-                const maxChatLen = 2000;
-                if (joined.length > maxChatLen) {
-                  joined = joined.slice(0, maxChatLen) + '\n...[对话已截断]';
-                }
-                chatSection = joined;
+                // 不再截断，对话区所有内容全部写入摘要
+                chatSection = lines.join('\n\n');
               }
             }
 
