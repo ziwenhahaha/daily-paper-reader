@@ -760,6 +760,48 @@ window.$docsify = {
           updateZoteroMetaFromPage(paperId, vm.route.file);
         }, 1); // 延迟执行，等待 DOM 渲染完毕
       });
-    },
+      // ----------------------------------------------------
+      // H. 响应式侧边栏：窗口宽度小于指定阈值时自动收起
+      // ----------------------------------------------------
+      const SIDEBAR_AUTO_COLLAPSE_WIDTH = 1024; // 窗口宽度小于1024px时自动收起侧边栏
+      let isManualToggle = false; // 标记是否为用户手动切换
+
+      const handleSidebarAutoCollapse = () => {
+        if (isManualToggle) return; // 如果用户手动切换过，不自动调整
+        
+        const windowWidth = window.innerWidth;
+        const body = document.body;
+        
+        if (windowWidth < SIDEBAR_AUTO_COLLAPSE_WIDTH) {
+          // 窗口较小，自动收起侧边栏
+          if (!body.classList.contains('close')) {
+            body.classList.add('close');
+          }
+        } else {
+          // 窗口较大，自动展开侧边栏
+          if (body.classList.contains('close')) {
+            body.classList.remove('close');
+          }
+        }
+      };
+
+      // 监听窗口大小变化
+      window.addEventListener('resize', handleSidebarAutoCollapse);
+
+      // 初始化时检查一次
+      handleSidebarAutoCollapse();
+
+      // 监听侧边栏切换按钮的点击（用户手动切换时标记，避免自动调整干扰）
+      document.addEventListener('click', (e) => {
+        const toggleBtn = e.target.closest('.sidebar-toggle');
+        if (toggleBtn) {
+          isManualToggle = true;
+          // 3秒后重置标记，允许自动调整恢复
+          setTimeout(() => {
+            isManualToggle = false;
+            handleSidebarAutoCollapse();
+          }, 3000);
+        }
+      });    },
   ],
 };
