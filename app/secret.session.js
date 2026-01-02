@@ -294,7 +294,10 @@
         throw e;
       }
 
-      const contentJson = JSON.stringify(payload, null, 2);
+      const contentJson =
+        typeof payload === 'string'
+          ? payload
+          : JSON.stringify(payload, null, 2);
       const contentB64 = btoa(unescape(encodeURIComponent(contentJson)));
       const body = {
         message: existingSha
@@ -891,18 +894,15 @@
             URL.revokeObjectURL(url);
           }, 0);
 
-          // 3) 将 secret.private 提交到 GitHub 仓库根目录
+          // 3) 将 secret.private 提交到 GitHub 仓库根目录（最好由向导自动推送一份）
           const commitOk = await saveSecretPrivateToGithubRepo(
             githubToken,
             payload,
           );
-          if (!commitOk) {
-            if (errorEl) {
-              errorEl.textContent =
-                '❌ 已生成本地 secret.private，但同步到 GitHub 仓库失败，请检查浏览器控制台日志。';
-              errorEl.style.color = '#c00';
-            }
-            return;
+          if (!commitOk && errorEl) {
+            errorEl.textContent =
+              '⚠️ 已生成本地 secret.private，但自动推送到 GitHub 仓库失败，请稍后手动提交或检查 Token/网络。';
+            errorEl.style.color = '#c00';
           }
 
           hide();
