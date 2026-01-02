@@ -336,14 +336,20 @@
 
   async function deriveAesGcmKey(password, saltBytes, usages) {
     const enc = new TextEncoder();
-    const baseKey = await crypto.subtle.importKey(
+    const cryptoObj = (typeof window !== 'undefined' && (window.crypto || window.msCrypto)) || null;
+    if (!cryptoObj || !cryptoObj.subtle) {
+      throw new Error(
+        '当前环境不支持 Web Crypto AES-GCM。请通过 https 或 http://localhost 使用现代浏览器（Chrome/Edge/Firefox）打开本页面后重试。',
+      );
+    }
+    const baseKey = await cryptoObj.subtle.importKey(
       'raw',
       enc.encode(password),
       'PBKDF2',
       false,
       ['deriveKey'],
     );
-    return crypto.subtle.deriveKey(
+    return cryptoObj.subtle.deriveKey(
       {
         name: 'PBKDF2',
         salt: saltBytes,
