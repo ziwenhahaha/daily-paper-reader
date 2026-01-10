@@ -92,7 +92,8 @@ def build_context_lists(
             keyword = (item.get("keyword") or "").strip()
             tag_label = (item.get("tag") or item.get("alias") or "").strip()
             if keyword:
-                keywords.append({"tag": tag_label or keyword, "keyword": keyword})
+                base = tag_label or keyword
+                keywords.append({"tag": f"keyword:{base}", "keyword": keyword})
 
     cfg_llm = subs.get("llm_queries") or []
     if isinstance(cfg_llm, list):
@@ -103,7 +104,8 @@ def build_context_lists(
             tag_label = (item.get("tag") or item.get("alias") or "").strip()
             query_text = rewrite or (item.get("query") or "").strip()
             if query_text:
-                queries.append({"tag": tag_label or query_text, "query": query_text})
+                base = tag_label or query_text
+                queries.append({"tag": f"query:{base}", "query": query_text})
 
     if not keywords:
         for q in fallback_queries:
@@ -112,7 +114,7 @@ def build_context_lists(
             text = (q.get("query_text") or "").strip()
             if text:
                 tag_label = (q.get("tag") or text).strip()
-                keywords.append({"tag": tag_label, "keyword": text})
+                keywords.append({"tag": f"keyword:{tag_label}", "keyword": text})
 
     if not queries:
         for q in fallback_queries:
@@ -121,7 +123,7 @@ def build_context_lists(
             text = (q.get("query_text") or "").strip()
             if text:
                 tag_label = (q.get("tag") or text).strip()
-                queries.append({"tag": tag_label, "query": text})
+                queries.append({"tag": f"query:{tag_label}", "query": text})
 
     return unique_tagged(keywords), unique_tagged(queries)
 
@@ -224,6 +226,7 @@ def call_filter(
         "Evidence does NOT need to be a direct quote. "
         "Then give a score (0-10). "
         "Tags must be selected from the provided tags (use tag values only). "
+        "Tag values already include prefixes like \"keyword:\" or \"query:\", keep them as-is. "
         "If unrelated, use evidence=\"not relevant\", score 0, and tags=[]."
     )
 

@@ -17,19 +17,25 @@ CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 
 MODES = {
     "standard": {
-        "quick_target": 12,
+        "quick_base": 10,
         "quick_strategy": "uniform",
         "deep_unlimited": False,
+        "deep_base": 5,
+        "deep_strategy": "round_robin",
     },
-    "pro": {
-        "quick_target": 30,
+    "extend": {
+        "quick_base": 15,
         "quick_strategy": "uniform",
-        "deep_unlimited": True,
+        "deep_unlimited": False,
+        "deep_base": 10,
+        "deep_strategy": "round_robin",
     },
     "spark": {
-        "quick_target": 12,
+        "quick_base": 10,
         "quick_strategy": "low_bias",
         "deep_unlimited": False,
+        "deep_base": 5,
+        "deep_strategy": "round_robin",
     },
 }
 
@@ -216,14 +222,18 @@ def round_robin_select(candidates: List[Dict[str, Any]], cap: int) -> List[Dict[
 
 
 def split_layers(candidates: List[Dict[str, Any]]) -> List[Tuple[str, List[Dict[str, Any]]]]:
-    layers: List[Tuple[str, Tuple[float, float]]] = [
-        ("7", (7.0, 8.0)),
-        ("6", (6.0, 7.0)),
-    ]
     results: List[Tuple[str, List[Dict[str, Any]]]] = []
-    for name, (low, high) in layers:
-        bucket = [p for p in candidates if low <= float(p.get("llm_score", 0)) < high]
-        results.append((name, sort_by_score(bucket)))
+
+    high_bucket = [p for p in candidates if float(p.get("llm_score", 0)) >= 8.0]
+    if high_bucket:
+        results.append(("8plus", sort_by_score(high_bucket)))
+
+    mid_bucket = [p for p in candidates if 7.0 <= float(p.get("llm_score", 0)) < 8.0]
+    results.append(("7", sort_by_score(mid_bucket)))
+
+    low_bucket = [p for p in candidates if 6.0 <= float(p.get("llm_score", 0)) < 7.0]
+    results.append(("6", sort_by_score(low_bucket)))
+
     return results
 
 
@@ -266,23 +276,24 @@ def allocate_low_bias(
 ) -> Dict[str, List[Dict[str, Any]]]:
     if target <= 0:
         return {name: [] for name, _ in layers}
-    quotas: Dict[str, int] = {}
-    for name, _items in layers:
-        if name == "6":
-            quotas[name] = int(round(target * low_ratio))
-        elif name == "7":
-            quotas[name] = max(target - int(round(target * low_ratio)), 0)
-        else:
-            quotas[name] = 0
 
-    total_quota = sum(quotas.values())
-    if total_quota != target:
-        # 确保总量匹配目标，优先补给低分层
-        diff = target - total_quota
-        if diff > 0:
-            quotas["6"] = quotas.get("6", 0) + diff
-        elif diff < 0:
-            quotas["7"] = max(quotas.get("7", 0) + diff, 0)
+    tier_names = [name for name, _ in layers]
+    quotas: Dict[str, int] = {name: 0 for name in tier_names}
+
+    if "6" in tier_names:
+        low_quota = int(round(target * low_ratio))
+        quotas["6"] = low_quota
+        remaining = max(target - low_quota, 0)
+        others = [n for n in tier_names if n != "6"]
+    else:
+        remaining = target
+        others = tier_names[:]
+
+    if others:
+        base = remaining // len(others)
+        rem = remaining % len(others)
+        for idx, name in enumerate(others):
+            quotas[name] += base + (1 if idx < rem else 0)
 
     selected: Dict[str, List[Dict[str, Any]]] = {name: [] for name, _ in layers}
     remaining = target
@@ -358,40 +369,53 @@ def process_mode(
     if cfg.get("deep_unlimited"):
         deep_selected = deep_candidates
     else:
-        cap = 6 + tag_count
+        deep_base = int(cfg.get("deep_base") or 0)
+        cap = deep_base + tag_count
         if len(deep_candidates) <= cap:
             deep_selected = deep_candidates
         else:
-            deep_selected = round_robin_select(deep_candidates, cap)
+            strategy = str(cfg.get("deep_strategy") or "round_robin")
+            if strategy == "score":
+                deep_selected = deep_candidates[:cap]
+            else:
+                deep_selected = round_robin_select(deep_candidates, cap)
 
     selected_ids = {p.get("id") for p in deep_selected}
+    deep_overflow = [p for p in deep_candidates if p.get("id") not in selected_ids]
 
     quick_candidates = [
         p
         for p in scored_papers
         if p.get("id") not in selected_ids and 6.0 <= float(p.get("llm_score", 0)) < 8.0
     ]
-    quick_target = int(cfg.get("quick_target", 0))
+    if deep_overflow:
+        quick_map = {p.get("id"): p for p in quick_candidates}
+        for item in deep_overflow:
+            pid = item.get("id")
+            if pid not in quick_map:
+                quick_candidates.append(item)
+    quick_base = int(cfg.get("quick_base") or 0)
+    quick_target = quick_base + tag_count
     quick_strategy = str(cfg.get("quick_strategy") or "uniform")
     quick_selected = select_quick_skim(quick_candidates, quick_target, quick_strategy)
 
     stats = {
         "mode": mode,
         "tag_count": tag_count,
-        "deep_candidates": len(deep_candidates),
-        "deep_cap": cap,
-        "deep_selected": len(deep_selected),
-        "quick_candidates": len(quick_candidates),
-        "quick_target": quick_target,
-        "quick_selected": len(quick_selected),
+        "deep_dive_selected": len(deep_selected),
+        "deep_dive_cap": cap,
+        "deep_dive_divecandidates": len(deep_candidates),
+        "quick_skim_selected": len(quick_selected),
+        "quick_skim_target": quick_target,
+        "quick_skim_candidates": len(quick_candidates),
     }
 
     return {
         "mode": mode,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "stats": stats,
         "deep_dive": deep_selected,
         "quick_skim": quick_selected,
-        "stats": stats,
     }
 
 
@@ -414,8 +438,8 @@ def main() -> None:
     parser.add_argument(
         "--modes",
         type=str,
-        default="standard,pro,spark",
-        help="comma separated modes (standard,pro,spark).",
+        default="standard,extend,spark",
+        help="comma separated modes (standard,extend,spark).",
     )
 
     args = parser.parse_args()
@@ -431,7 +455,7 @@ def main() -> None:
     modes = [m.strip() for m in str(args.modes or "").split(",") if m.strip()]
     modes = [m for m in modes if m in MODES]
     if not modes:
-        raise ValueError("modes must include at least one of: standard, pro, spark")
+        raise ValueError("modes must include at least one of: standard, extend, spark")
 
     data = load_json(input_path)
     papers = data.get("papers") or []
@@ -455,11 +479,12 @@ def main() -> None:
         cfg = MODES.get(mode) or {}
         result = process_mode(scored_papers, tag_count, mode, cfg)
         output_path = os.path.join(output_dir, f"arxiv_papers_{TODAY_STR}.{mode}.json")
-        save_json(result, output_path)
         stats = result.get("stats") or {}
+        log(f"[STATS] {json.dumps(stats, ensure_ascii=False)}")
+        save_json(result, output_path)
         log(
             f"[INFO] mode={mode} deep={stats.get('deep_selected')} quick={stats.get('quick_selected')} "
-            f"cap={stats.get('deep_cap')} target={stats.get('quick_target')}"
+            f"cap={stats.get('deep_cap')} target={stats.get('quick_skim_target')}"
         )
 
     group_end()
