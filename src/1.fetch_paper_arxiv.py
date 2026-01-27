@@ -1,6 +1,7 @@
 import arxiv
 import json
 import os
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -120,94 +121,119 @@ def save_seen_state(seen_ids: set[str], latest_published_at: datetime | None) ->
 
 def log(message: str) -> None:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] {message}", flush=True)
+    try:
+        print(f"[{ts}] {message}", flush=True)
+    except BrokenPipeError:
+        # 允许用户用 `| head` 等方式截断输出而不让脚本崩溃
+        try:
+            sys.stdout.close()
+        except Exception:
+            pass
 
 
 def group_start(title: str) -> None:
-    print(f"::group::{title}", flush=True)
+    try:
+        print(f"::group::{title}", flush=True)
+    except BrokenPipeError:
+        try:
+            sys.stdout.close()
+        except Exception:
+            pass
 
 
 def group_end() -> None:
-    print("::endgroup::", flush=True)
+    try:
+        print("::endgroup::", flush=True)
+    except BrokenPipeError:
+        try:
+            sys.stdout.close()
+        except Exception:
+            pass
 
 
-def fetch_all_domains_metadata_robust(
-    days: int | None = None,
-    output_file: str | None = None,
-    ignore_seen: bool = False,
-) -> None:
-    # 1. 计算时间窗口（优先使用上次抓取时间）
-    end_date = datetime.now(timezone.utc)
-    if ignore_seen:
-        log("🧹 [Global Ingest] ignore_seen=true：将忽略 arxiv_seen（不跳过已见论文，不使用 latest_published_at）。")
-        seen_ids, latest_published_at = set(), None
-    else:
-        seen_ids, latest_published_at = load_seen_state()
-    if days is None:
-        days = resolve_days_window(1)
-    if latest_published_at:
-        start_date = latest_published_at
-        source_desc = "latest_published_at"
-    else:
-        last_crawl_at = load_last_crawl_at()
-        if last_crawl_at:
-            start_date = last_crawl_at
-            source_desc = "last_crawl_at"
-        else:
-            start_date = end_date - timedelta(days=days)
-            source_desc = f"days_window={days}"
-
-    # 兜底：无论来源如何，都不早于 (now - days_window)
-    start_date = max(start_date, end_date - timedelta(days=days))
-
+def iter_time_windows(
+    start_date: datetime,
+    end_date: datetime,
+    chunk_days: int,
+) -> list[tuple[datetime, datetime]]:
+    """
+    将 [start_date, end_date] 按 chunk_days 天切分成多个“分钟级闭区间”窗口。
+    目的是避免单次 arXiv API 查询结果过大导致深分页/500。
+    """
+    chunk_days = max(int(chunk_days or 1), 1)
+    if start_date.tzinfo is None:
+        start_date = start_date.replace(tzinfo=timezone.utc)
+    if end_date.tzinfo is None:
+        end_date = end_date.replace(tzinfo=timezone.utc)
+    start_date = start_date.astimezone(timezone.utc)
+    end_date = end_date.astimezone(timezone.utc)
     if start_date >= end_date:
-        start_date = end_date - timedelta(minutes=1)
+        return [(start_date, end_date)]
 
-    start_str = start_date.strftime("%Y%m%d%H%M")
-    end_str = end_date.strftime("%Y%m%d%H%M")
-    
-    group_start("Step 1 - fetch arXiv")
-    log(f"🌍 [Global Ingest] Window: {start_str} TO {end_str} ({source_desc})")
-    
-    # 结果集使用字典去重 (因为有些论文跨领域，比如同时在 cs 和 stat)
-    unique_papers = {}
+    windows: list[tuple[datetime, datetime]] = []
+    cursor = start_date
+    delta = timedelta(days=chunk_days)
+    minute = timedelta(minutes=1)
+
+    while cursor < end_date:
+        # 以“分钟”为最小粒度，避免相邻窗口边界重复（submittedDate 查询是闭区间）
+        raw_end = min(end_date, cursor + delta)
+        if raw_end < end_date:
+            window_end = raw_end - minute
+        else:
+            window_end = raw_end
+
+        if window_end < cursor:
+            window_end = cursor
+
+        windows.append((cursor, window_end))
+
+        next_cursor = window_end + minute
+        if next_cursor <= cursor:
+            next_cursor = cursor + minute
+        cursor = next_cursor
+
+    return windows
+
+
+def fetch_category_in_windows(
+    client: arxiv.Client,
+    category: str,
+    windows: list[tuple[datetime, datetime]],
+    seen_ids: set[str],
+    unique_papers: dict,
+    split_on_error_depth: int = 1,
+) -> datetime | None:
+    """
+    按时间窗口抓取单个大类。
+    - 失败粒度降为“单窗口失败”，不会丢掉整个分类；
+    - 若窗口仍然过大导致 500，可继续在上层按更小窗口重试（可选）。
+    """
     max_published_new: datetime | None = None
-    
-    client = arxiv.Client(
-        page_size=200,    # 降级：从 1000 降到 200，避免单次响应过大导致 500
-        delay_seconds=3.0,
-        num_retries=5
-    )
 
-    # 2. 遍历分类进行抓取
-    for category in CATEGORIES_TO_FETCH:
-        group_start(f"Fetch category: {category}")
-        log(f"🚀 Fetching category: {category} ...")
-        
-        # 构造查询：cat:cs* AND submittedDate[...]
-        # 使用通配符 category* 以覆盖子领域 (如 cs.AI, cs.LG)
+    for idx, (win_start, win_end) in enumerate(windows, start=1):
+        start_str = win_start.strftime("%Y%m%d%H%M")
+        end_str = win_end.strftime("%Y%m%d%H%M")
+        group_start(f"Fetch category: {category} (window {idx}/{len(windows)} {start_str}..{end_str})")
+        log(f"🚀 Fetching category: {category} | window {idx}/{len(windows)} ...")
+
         query = f"cat:{category}* AND submittedDate:[{start_str} TO {end_str}]"
-        
         search = arxiv.Search(
             query=query,
             max_results=None,
             sort_by=arxiv.SortCriterion.SubmittedDate,
-            sort_order=arxiv.SortOrder.Descending
+            sort_order=arxiv.SortOrder.Descending,
         )
-        
+
         count = 0
         try:
             for r in client.results(search):
                 pid = r.get_short_id()
-
                 if pid in seen_ids:
                     continue
-                
-                # 如果这篇论文已经存在（被其他分类抓过了），跳过
                 if pid in unique_papers:
                     continue
-                    
-                # 使用 PDF 链接而不是摘要页链接，方便后续直接下载或传给下游处理
+
                 pdf_link = getattr(r, "pdf_url", None) or r.entry_id
                 paper_dict = {
                     "id": pid,
@@ -231,18 +257,123 @@ def fetch_all_domains_metadata_robust(
                     published_dt = published_dt.astimezone(timezone.utc)
                     if max_published_new is None or published_dt > max_published_new:
                         max_published_new = published_dt
-                
-                if count % 100 == 0:
-                    log(f"   Category {category}: {count} papers fetched...")
-            
-            log(f"   ✅ Finished {category}: Got {count} new papers.")
-            
+
+                if count % 200 == 0:
+                    log(f"   Category {category} (win {idx}/{len(windows)}): {count} papers fetched...")
+
+            log(f"   ✅ Finished {category} (win {idx}/{len(windows)}): Got {count} new papers.")
         except Exception as e:
-            # 单个分类失败不影响大局，打印错误继续下一个
-            log(f"   ❌ Error fetching category {category}: {e}")
-            time.sleep(5) # 出错后多歇一会
+            # 单个窗口失败不影响其他窗口/分类
+            log(f"   ❌ Error fetching category {category} (win {idx}/{len(windows)}): {e}")
+            # 回退：如果窗口仍然很大，尝试把该窗口再二分（仅一层，避免过度递归）
+            if split_on_error_depth > 0 and (win_end - win_start) >= timedelta(days=2):
+                mid = win_start + (win_end - win_start) / 2
+                mid = mid.replace(second=0, microsecond=0)
+                minute = timedelta(minutes=1)
+                left = (win_start, max(minute + win_start, mid - minute))
+                right = (mid, win_end)
+                log(
+                    f"   🔁 Retry by splitting window: "
+                    f"{left[0].strftime('%Y%m%d%H%M')}..{left[1].strftime('%Y%m%d%H%M')} | "
+                    f"{right[0].strftime('%Y%m%d%H%M')}..{right[1].strftime('%Y%m%d%H%M')}",
+                )
+                cat_max_left = fetch_category_in_windows(
+                    client=client,
+                    category=category,
+                    windows=[left],
+                    seen_ids=seen_ids,
+                    unique_papers=unique_papers,
+                    split_on_error_depth=split_on_error_depth - 1,
+                )
+                cat_max_right = fetch_category_in_windows(
+                    client=client,
+                    category=category,
+                    windows=[right],
+                    seen_ids=seen_ids,
+                    unique_papers=unique_papers,
+                    split_on_error_depth=split_on_error_depth - 1,
+                )
+                for candidate in (cat_max_left, cat_max_right):
+                    if candidate and (max_published_new is None or candidate > max_published_new):
+                        max_published_new = candidate
+            time.sleep(5)
         finally:
             group_end()
+
+    return max_published_new
+
+
+def fetch_all_domains_metadata_robust(
+    days: int | None = None,
+    output_file: str | None = None,
+    ignore_seen: bool = False,
+    chunk_days: int = 7,
+) -> None:
+    # 1. 计算时间窗口（优先使用上次抓取时间）
+    end_date = datetime.now(timezone.utc)
+    if days is None:
+        days = resolve_days_window(1)
+
+    # ignore_seen 语义：完全按 days_window 回溯，不使用 last_crawl_at / latest_published_at 作为起点
+    if ignore_seen:
+        log(
+            "🧹 [Global Ingest] ignore_seen=true：将忽略 arxiv_seen（不跳过已见论文，不使用 latest_published_at），"
+            "并忽略 crawl_state（不使用 last_crawl_at），改为严格按 days_window 回溯。",
+        )
+        seen_ids, latest_published_at = set(), None
+        start_date = end_date - timedelta(days=days)
+        source_desc = f"days_window={days} (ignore_seen)"
+    else:
+        seen_ids, latest_published_at = load_seen_state()
+        if latest_published_at:
+            start_date = latest_published_at
+            source_desc = "latest_published_at"
+        else:
+            last_crawl_at = load_last_crawl_at()
+        if last_crawl_at:
+            start_date = last_crawl_at
+            source_desc = "last_crawl_at"
+        else:
+            start_date = end_date - timedelta(days=days)
+            source_desc = f"days_window={days}"
+
+    # 兜底：无论来源如何，都不早于 (now - days_window)
+    start_date = max(start_date, end_date - timedelta(days=days))
+
+    if start_date >= end_date:
+        start_date = end_date - timedelta(minutes=1)
+
+    # 按周拆分窗口，避免单次查询过大（尤其 cs* 这种大类）
+    windows = iter_time_windows(start_date, end_date, chunk_days=chunk_days)
+    start_str = start_date.strftime("%Y%m%d%H%M")
+    end_str = end_date.strftime("%Y%m%d%H%M")
+    
+    group_start("Step 1 - fetch arXiv")
+    log(f"🌍 [Global Ingest] Window: {start_str} TO {end_str} ({source_desc})")
+    if len(windows) > 1:
+        log(f"🗓️  [Global Ingest] 将按 {chunk_days} 天/片拆分窗口：{len(windows)} 段")
+    
+    # 结果集使用字典去重 (因为有些论文跨领域，比如同时在 cs 和 stat)
+    unique_papers = {}
+    max_published_new: datetime | None = None
+    
+    client = arxiv.Client(
+        page_size=200,    # 降级：从 1000 降到 200，避免单次响应过大导致 500
+        delay_seconds=3.0,
+        num_retries=5
+    )
+
+    # 2. 遍历分类进行抓取
+    for category in CATEGORIES_TO_FETCH:
+        cat_max = fetch_category_in_windows(
+            client=client,
+            category=category,
+            windows=windows,
+            seen_ids=seen_ids,
+            unique_papers=unique_papers,
+        )
+        if cat_max and (max_published_new is None or cat_max > max_published_new):
+            max_published_new = cat_max
 
     # 3. 保存汇总结果
     total_count = len(unique_papers)
@@ -292,7 +423,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ignore-seen",
         action="store_true",
-        help="本次运行忽略 archive/arxiv_seen.json：不跳过已见论文，也不使用其中的 latest_published_at 作为窗口起点。",
+        help="本次运行忽略 archive/arxiv_seen.json 与 archive/crawl_state.json：严格按 days_window 回溯窗口，不跳过已见论文。",
+    )
+    parser.add_argument(
+        "--chunk-days",
+        type=int,
+        default=7,
+        help="将时间窗口拆分为若干段（默认 7=按周），以减少单次查询规模并降低 HTTP 500 概率。",
     )
     args = parser.parse_args()
 
@@ -301,4 +438,5 @@ if __name__ == "__main__":
         days=args.days,
         output_file=args.output,
         ignore_seen=bool(args.ignore_seen),
+        chunk_days=int(args.chunk_days or 7),
     )

@@ -103,7 +103,7 @@ def main() -> None:
         [
             python,
             os.path.join(SRC_DIR, "5.select_papers.py"),
-            *(["--all-quick"] if args.fetch_days is not None else []),
+            *(["--modes", "skims"] if args.fetch_days is not None else []),
         ],
     )
     run_step(
@@ -111,6 +111,7 @@ def main() -> None:
         [
             python,
             os.path.join(SRC_DIR, "6.generate_docs.py"),
+            *(["--mode", "skims"] if args.fetch_days is not None else []),
             *(
                 ["--sidebar-date-label", sidebar_date_label]
                 if sidebar_date_label

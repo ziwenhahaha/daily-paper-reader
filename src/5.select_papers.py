@@ -40,6 +40,10 @@ MODES = {
         "deep_base": 5,
         "deep_strategy": "round_robin",
     },
+    # 回溯窗口（days）专用：>=8 分全量输出，全部进入速览区
+    "skims": {
+        "all_quick_min_score": 8.0,
+    },
 }
 
 CARRYOVER_DAYS = 5
@@ -599,6 +603,13 @@ def process_mode(
     cfg: Dict[str, Any],
     carryover_ratio: float,
 ) -> Dict[str, Any]:
+    if cfg.get("all_quick_min_score") is not None:
+        return process_mode_all_quick_min_score(
+            candidates=candidates,
+            mode=mode,
+            min_score=float(cfg.get("all_quick_min_score") or 0),
+        )
+
     deep_candidates = [p for p in candidates if float(p.get("llm_score", 0)) >= 8.0]
     deep_candidates = sort_by_score(deep_candidates)
 
@@ -661,6 +672,39 @@ def process_mode(
         "quick_skim": sanitize_items(quick_selected),
     }
 
+
+def process_mode_all_quick_min_score(
+    candidates: List[Dict[str, Any]],
+    mode: str,
+    min_score: float,
+) -> Dict[str, Any]:
+    """
+    回溯窗口（days）场景：不再做“精读/速览配额分配”，而是将达到阈值的论文全部输出到速览区。
+    """
+    threshold = float(min_score)
+    picked = [p for p in candidates if float(p.get("llm_score", 0)) >= threshold]
+    picked = sort_by_score(picked)
+
+    stats = {
+        "mode": mode,
+        "forced_all_quick": True,
+        "min_score": threshold,
+        "deep_divecandidates": len(picked),
+        "deep_cap": None,
+        "deep_selected": 0,
+        "quick_candidates": len(picked),
+        "quick_skim_target": None,
+        "quick_selected": len(picked),
+    }
+
+    return {
+        "mode": mode,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "stats": stats,
+        "deep_dive": [],
+        "quick_skim": sanitize_items(picked),
+    }
+
 def force_all_into_quick(result: Dict[str, Any]) -> Dict[str, Any]:
     """
     将精读区合并进速览区，确保所有论文都归入 quick_skim。
@@ -711,12 +755,28 @@ def main() -> None:
         "--modes",
         type=str,
         default=None,
-        help="comma separated modes (standard,extend,spark). default: config arxiv_paper_setting.mode",
+        help="comma separated modes (standard,extend,spark,skims). default: config arxiv_paper_setting.mode",
+    )
+    parser.add_argument(
+        "--carryover-only",
+        action="store_true",
+        help="只使用 archive/carryover.json 作为候选集（忽略输入文件与 seen_ids 过滤）。",
+    )
+    parser.add_argument(
+        "--preserve-carryover",
+        action="store_true",
+        help="运行完成后不覆盖写入 archive/carryover.json（默认会按本次推荐结果更新）。",
     )
     parser.add_argument(
         "--all-quick",
         action="store_true",
         help="Force all selected papers into quick_skim (deep_dive will be empty).",
+    )
+    parser.add_argument(
+        "--all-quick-min-score",
+        type=float,
+        default=None,
+        help="When set, output ALL candidates with llm_score >= min_score into quick_skim (no caps).",
     )
 
     args = parser.parse_args()
@@ -738,19 +798,30 @@ def main() -> None:
     modes = [m.strip() for m in str(mode_text or "").split(",") if m.strip()]
     modes = [m for m in modes if m in MODES]
     if not modes:
-        raise ValueError("modes must include at least one of: standard, extend, spark")
+        raise ValueError("modes must include at least one of: standard, extend, spark, skims")
+
+    # skims 模式用于“回溯窗口/批量重跑”：默认不做历史 seen_ids 过滤，
+    # 否则会因为之前推荐过而导致输出数量偏少。
+    ignore_seen_ids = False
+    if modes and all((MODES.get(m) or {}).get("all_quick_min_score") is not None for m in modes):
+        ignore_seen_ids = True
 
     log_substep("5.1", "加载输入数据", "START")
     try:
-        # 检查输入文件是否存在，如果不存在则只使用 carryover
-        if not os.path.exists(input_path):
-            log(f"[INFO] 输入文件不存在：{input_path}（今天没有新论文，将只使用 carryover）")
+        if args.carryover_only:
+            log("[INFO] carryover-only=true：将忽略输入文件，仅使用 carryover 作为候选集。")
             papers = []
             llm_ranked = []
         else:
-            data = load_json(input_path)
-            papers = data.get("papers") or []
-            llm_ranked = data.get("llm_ranked") or []
+            # 检查输入文件是否存在，如果不存在则只使用 carryover
+            if not os.path.exists(input_path):
+                log(f"[INFO] 输入文件不存在：{input_path}（今天没有新论文，将只使用 carryover）")
+                papers = []
+                llm_ranked = []
+            else:
+                data = load_json(input_path)
+                papers = data.get("papers") or []
+                llm_ranked = data.get("llm_ranked") or []
     finally:
         log_substep("5.1", "加载输入数据", "END")
 
@@ -771,7 +842,12 @@ def main() -> None:
 
     archive_root = os.path.join(ROOT_DIR, "archive")
     today_date = parse_date_str(TODAY_STR)
-    seen_ids = collect_seen_ids(archive_root, TODAY_STR)
+    if args.carryover_only or ignore_seen_ids:
+        seen_ids = set()
+        if ignore_seen_ids:
+            log("[INFO] skims/backfill 模式：已关闭历史 seen_ids 过滤（输出数量更完整）。")
+    else:
+        seen_ids = collect_seen_ids(archive_root, TODAY_STR)
     log_substep("5.3", "加载 carryover 并构建候选集", "START")
     try:
         carryover_items, _delta = load_recent_carryover(
@@ -779,7 +855,18 @@ def main() -> None:
             today_date,
             carryover_days,
         )
-        candidates = build_candidates(scored_papers, carryover_items, seen_ids)
+        if args.carryover_only:
+            candidates = []
+            for item in carryover_items:
+                pid = str(item.get("id") or item.get("paper_id") or "").strip()
+                if not pid:
+                    continue
+                copied = dict(item)
+                copied["id"] = pid
+                copied["_source"] = "carryover"
+                candidates.append(copied)
+        else:
+            candidates = build_candidates(scored_papers, carryover_items, seen_ids)
     finally:
         log_substep("5.3", "加载 carryover 并构建候选集", "END")
 
@@ -821,15 +908,22 @@ def main() -> None:
     log_substep("5.4", "按模式生成推荐结果", "START")
     for mode in modes:
         cfg = MODES.get(mode) or {}
-        result = process_mode(
-            candidates,
-            tag_count,
-            mode,
-            cfg,
-            carryover_ratio=CARRYOVER_RATIO,
-        )
-        if args.all_quick:
-            result = force_all_into_quick(result)
+        if args.all_quick_min_score is not None:
+            result = process_mode_all_quick_min_score(
+                candidates=candidates,
+                mode=mode,
+                min_score=float(args.all_quick_min_score),
+            )
+        else:
+            result = process_mode(
+                candidates,
+                tag_count,
+                mode,
+                cfg,
+                carryover_ratio=CARRYOVER_RATIO,
+            )
+            if args.all_quick:
+                result = force_all_into_quick(result)
         output_path = os.path.join(output_dir, f"arxiv_papers_{TODAY_STR}.{mode}.json")
         stats = result.get("stats") or {}
         log(f"[STATS] {json.dumps(stats, ensure_ascii=False)}")
@@ -847,14 +941,17 @@ def main() -> None:
     log_substep("5.4", "按模式生成推荐结果", "END")
 
     log_substep("5.5", "写入 carryover 状态", "START")
-    carryover_out = build_carryover_out(candidates, recommended_ids, carryover_days)
-    carryover_payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "updated_date": TODAY_STR,
-        "carryover_days": carryover_days,
-        "items": carryover_out,
-    }
-    save_json(carryover_payload, CARRYOVER_PATH)
+    if args.preserve_carryover:
+        log("[INFO] preserve-carryover=true：跳过写入 carryover.json")
+    else:
+        carryover_out = build_carryover_out(candidates, recommended_ids, carryover_days)
+        carryover_payload = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_date": TODAY_STR,
+            "carryover_days": carryover_days,
+            "items": carryover_out,
+        }
+        save_json(carryover_payload, CARRYOVER_PATH)
     log_substep("5.5", "写入 carryover 状态", "END")
 
     group_end()

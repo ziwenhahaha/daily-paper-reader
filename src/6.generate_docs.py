@@ -232,8 +232,9 @@ def strip_auto_sections(md_text: str) -> str:
 
 def normalize_meta_tldr_line(md_text: str) -> Tuple[str, bool]:
     """
-    兼容历史版本：TLDR 行曾被写成 '**TLDR**: xxx \\'。
-    这里把 TLDR 行末尾的反斜杠去掉。
+    兼容历史版本：元信息区 TLDR 行曾被写成 '**TLDR**: xxx \\'。
+    这里把“元信息区”的 TLDR 行末尾反斜杠去掉。
+    注意：`## 速览` 区块中会使用 `\\` 表达强制换行，不能误伤。
     """
     if not md_text:
         return md_text, False
@@ -241,7 +242,8 @@ def normalize_meta_tldr_line(md_text: str) -> Tuple[str, bool]:
     lines = md_text.splitlines()
     out: List[str] = []
     for line in lines:
-        if line.startswith("**TLDR**"):
+        # 只处理元信息区 TLDR（使用英文冒号 `:` 的格式）
+        if line.startswith("**TLDR**:"):
             new_line = line.rstrip()
             if new_line.endswith("\\"):
                 new_line = new_line[:-1].rstrip()
@@ -250,6 +252,69 @@ def normalize_meta_tldr_line(md_text: str) -> Tuple[str, bool]:
             out.append(new_line)
         else:
             out.append(line)
+    return "\n".join(out), changed
+
+
+def normalize_glance_block_format(md_text: str) -> Tuple[str, bool]:
+    """
+    规范 `## 速览` 区块的换行符号：
+    - TLDR/Motivation/Method/Result 行末尾应带 ` \\`（强制换行）
+    - Conclusion 行末尾不应带 `\\`
+    """
+    if not md_text:
+        return md_text, False
+
+    lines = md_text.splitlines()
+    out: List[str] = []
+    changed = False
+    in_glance = False
+
+    def ensure_line_break(s: str) -> str:
+        ss = s.rstrip()
+        if ss.endswith("\\"):
+            return ss
+        return ss + " \\"
+
+    def remove_line_break(s: str) -> str:
+        ss = s.rstrip()
+        if ss.endswith("\\"):
+            return ss[:-1].rstrip()
+        return ss
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "## 速览":
+            in_glance = True
+            out.append(line)
+            continue
+
+        if in_glance:
+            # 速览块结束条件：分隔线或下一个二级标题
+            if stripped == "---" or stripped.startswith("## "):
+                in_glance = False
+                out.append(line)
+                continue
+
+            if stripped.startswith("**TLDR**：") or stripped.startswith("**TLDR**:"):
+                new_line = ensure_line_break(line)
+            elif stripped.startswith("**Motivation**：") or stripped.startswith("**Motivation**:"):
+                new_line = ensure_line_break(line)
+            elif stripped.startswith("**Method**：") or stripped.startswith("**Method**:"):
+                new_line = ensure_line_break(line)
+            elif stripped.startswith("**Result**：") or stripped.startswith("**Result**:"):
+                new_line = ensure_line_break(line)
+            elif stripped.startswith("**Conclusion**：") or stripped.startswith("**Conclusion**:"):
+                new_line = remove_line_break(line)
+            else:
+                new_line = line
+
+            if new_line != line:
+                changed = True
+            out.append(new_line)
+            continue
+
+        out.append(line)
+
     return "\n".join(out), changed
 
 
@@ -287,6 +352,30 @@ def upsert_auto_block(md_path: str, heading: str, content: str) -> None:
 
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(new_txt)
+
+
+def upsert_glance_block_in_text(md_text: str, glance: str) -> str:
+    """
+    在 Markdown 文本中插入/替换 `## 速览` 区块：
+    - 若已存在 `## 速览`，则替换其内容直到下一个分隔线 `---` 或下一个二级标题 `## `
+    - 否则在 `## Abstract` 之前插入；若找不到则追加到末尾
+    """
+    if not glance:
+        return md_text
+
+    txt = md_text or ""
+    key = "## 速览"
+    if key in txt:
+        # 替换现有速览块
+        pattern = re.compile(r"(^## 速览\\s*\\n)(.*?)(?=\\n---\\n|\\n##\\s|\\Z)", re.S | re.M)
+        return pattern.sub(rf"\\1{glance}\n", txt, count=1)
+
+    abstract_idx = txt.find("## Abstract")
+    if abstract_idx != -1:
+        before = txt[:abstract_idx].rstrip()
+        after = txt[abstract_idx:]
+        return f"{before}\n\n## 速览\n{glance}\n\n---\n\n{after}"
+    return (txt.rstrip() + f"\n\n## 速览\n{glance}\n").rstrip() + "\n"
 
 
 def generate_deep_summary(md_file_path: str, txt_file_path: str, max_retries: int = 3) -> str | None:
@@ -433,13 +522,83 @@ def generate_glance_overview(title: str, abstract: str, max_retries: int = 3) ->
                 ]
             )
         except Exception as e:
+            # 额度不足等“硬失败”不必重试，直接降级
+            msg = str(e)
+            if (
+                "insufficient_user_quota" in msg
+                or "额度不足" in msg
+                or "insufficient quota" in msg
+                or ("403" in msg and "Forbidden" in msg)
+            ):
+                log(f"[WARN] 速览生成失败（额度不足，停止重试）：{e}")
+                break
             log(f"[WARN] 速览生成失败（第 {attempt} 次）：{e}")
             time.sleep(2 * attempt)
     return None
 
 
+def build_glance_fallback(paper: Dict[str, Any]) -> str:
+    """
+    当 LLM 额度不足/不可用时的降级速览：
+    - TLDR 优先用 llm_tldr_cn/llm_tldr；否则用摘要首句；
+    - 其余字段用“基于摘要的启发式”生成，保证 5 段齐全。
+    """
+    abstract = str(paper.get("abstract") or "").strip()
+    tldr = (
+        str(paper.get("llm_tldr_cn") or paper.get("llm_tldr") or paper.get("llm_tldr_en") or "").strip()
+    )
+    evidence = (
+        str(paper.get("llm_evidence_cn") or paper.get("llm_evidence") or paper.get("llm_evidence_en") or "").strip()
+    )
+
+    def first_sentence(text: str) -> str:
+        s = (text or "").strip()
+        if not s:
+            return ""
+        parts = re.split(r"(?<=[。！？.!?])\\s+", s)
+        return (parts[0] if parts else s).strip()
+
+    if not tldr:
+        tldr = first_sentence(abstract)
+    if not tldr and evidence:
+        tldr = evidence
+    tldr = ensure_single_sentence_end(tldr or "基于摘要生成的速览信息。")
+
+    motivation = ensure_single_sentence_end(
+        first_sentence(evidence) or "本文关注一个具有代表性的研究问题，并尝试提升现有方法的效果或可解释性。"
+    )
+
+    method_hint = ""
+    if abstract:
+        m = re.search(r"(we (?:propose|present|introduce|develop)[^\\.]{0,200})\\.", abstract, re.I)
+        if m:
+            method_hint = m.group(1).strip()
+    method = ensure_single_sentence_end(method_hint or "方法与实现细节请参考摘要与正文。")
+
+    result_hint = ""
+    if abstract:
+        m = re.search(r"(experiments? (?:show|demonstrate)[^\\.]{0,200})\\.", abstract, re.I)
+        if m:
+            result_hint = m.group(1).strip()
+    result = ensure_single_sentence_end(result_hint or "结果与对比结论请参考摘要与正文。")
+
+    conclusion = ensure_single_sentence_end("总体而言，该工作在所述任务上展示了有效性，并提供了可复用的思路或工具。")
+
+    return "\n".join(
+        [
+            f"**TLDR**：{tldr} \\",
+            f"**Motivation**：{motivation} \\",
+            f"**Method**：{method} \\",
+            f"**Result**：{result} \\",
+            f"**Conclusion**：{conclusion}",
+        ]
+    )
+
+
 def build_tags_html(section: str, llm_tags: List[str]) -> str:
     tags_html: List[str] = []
+    # keyword:SR 与 query:SR 这种“同名不同来源”的标签需要同时展示，
+    # 因此去重 key 必须包含 kind，而不是只看 label。
     seen = set()
     for tag in llm_tags:
         raw = str(tag).strip()
@@ -449,9 +608,10 @@ def build_tags_html(section: str, llm_tags: List[str]) -> str:
         label = (label or "").strip()
         if not label:
             continue
-        if label in seen:
+        dedup_key = f"{kind}:{label}"
+        if dedup_key in seen:
             continue
-        seen.add(label)
+        seen.add(dedup_key)
 
         # 使用“面板”里的配色语义：
         # - keyword: 绿色
@@ -481,6 +641,25 @@ def normalize_meta_tags_line(content: str) -> Tuple[str, bool]:
     )
     fixed = pattern.sub("", content)
     return fixed, fixed != content
+
+
+def replace_meta_line(md_text: str, label: str, value: str, add_slash: bool = True) -> Tuple[str, bool]:
+    """
+    替换形如 `**Label**: xxx \\` 的元数据行。
+    - 仅替换第一处匹配
+    - 若不存在则不插入（避免意外改写用户自定义元信息结构）
+    """
+    txt = md_text or ""
+    v = (value or "").strip()
+    if not v:
+        return txt, False
+    line = f"**{label}**: {v}"
+    if add_slash:
+        line += " " + "\\"
+    pattern = re.compile(f"^\\*\\*{re.escape(label)}\\*\\*:\\s*.*$", re.M)
+    # 使用函数替换，避免 replacement string 中的反斜杠被当作转义序列解析
+    new_txt, n = pattern.subn(lambda _m: line, txt, count=1)
+    return new_txt, n > 0 and new_txt != txt
 
 
 def format_date_str(date_str: str) -> str:
@@ -588,6 +767,8 @@ def extract_sidebar_tags(paper: Dict[str, Any], max_tags: int = 6) -> List[Tuple
     if isinstance(paper.get("llm_tags"), list):
         raw.extend([str(t) for t in (paper.get("llm_tags") or [])])
 
+    # keyword:SR 与 query:SR 这种“同名不同来源”的标签需要同时展示，
+    # 因此去重 key 必须包含 kind，而不是只看 label。
     seen_labels = set()
     kw: List[Tuple[str, str]] = []
     q: List[Tuple[str, str]] = []
@@ -599,9 +780,10 @@ def extract_sidebar_tags(paper: Dict[str, Any], max_tags: int = 6) -> List[Tuple
         label = (label or "").strip()
         if not label:
             continue
-        if label in seen_labels:
+        dedup_key = f"{kind}:{label}"
+        if dedup_key in seen_labels:
             continue
-        seen_labels.add(label)
+        seen_labels.add(dedup_key)
         if kind == "keyword":
             kw.append((kind, label))
         elif kind == "query":
@@ -706,13 +888,15 @@ def build_markdown_content(
         lines.append("")
         lines.append("---")
         lines.append("")
-    
-    lines.append("## Abstract")
-    lines.append(abstract_en)
+
     if zh_abstract:
         lines.append("")
         lines.append("## 摘要")
         lines.append(zh_abstract)
+        
+    lines.append("## Abstract")
+    lines.append(abstract_en)
+
 
     return "\n".join(lines)
 
@@ -722,16 +906,15 @@ def process_paper(
     section: str,
     date_str: str,
     docs_dir: str,
+    glance_only: bool = False,
+    force_glance: bool = False,
 ) -> Tuple[str, str]:
     title = (paper.get("title") or "").strip()
     arxiv_id = str(paper.get("id") or paper.get("paper_id") or "").strip()
     md_path, txt_path, paper_id = prepare_paper_paths(docs_dir, date_str, title, arxiv_id)
     abstract_en = (paper.get("abstract") or "").strip()
 
-    # 为所有论文生成速览内容
-    glance = generate_glance_overview(title, abstract_en)
-    if glance:
-        paper["_glance_overview"] = glance
+    glance = ""
 
     if os.path.exists(md_path):
         # 修复模式：若自动总结/速览存在“被截断”的迹象，则仅重生成该段落，不改动前面正文
@@ -740,6 +923,13 @@ def process_paper(
                 existing = f.read()
         except Exception:
             existing = ""
+
+        # 已存在速览则默认不重复生成（避免重复 LLM 调用），除非 force_glance=true
+        has_glance = "## 速览" in existing
+        if force_glance or not has_glance:
+            glance = generate_glance_overview(title, abstract_en) or build_glance_fallback(paper)
+            if glance:
+                paper["_glance_overview"] = glance
 
         # 修复历史格式：TLDR 行末尾不应带反斜杠
         fixed, changed = normalize_meta_tldr_line(existing)
@@ -759,17 +949,33 @@ def process_paper(
             if os.getenv("DPR_DEBUG_STEP6") == "1":
                 log(f"[DEBUG][STEP6] removed section tag from Tags: {os.path.basename(md_path)}")
 
-        # 检查是否需要更新速览内容到现有文件
-        if glance and "## 速览" not in existing:
-            # 在 Abstract 前插入速览
-            abstract_idx = existing.find("## Abstract")
-            if abstract_idx != -1:
-                before = existing[:abstract_idx].rstrip()
-                after = existing[abstract_idx:]
-                updated = f"{before}\n\n## 速览\n{glance}\n\n---\n\n{after}"
+        # 同步 Tags 行（例如 keyword:SR 与 query:SR 同名时也要都展示）
+        tags_html = build_tags_html(section, paper.get("llm_tags") or [])
+        if tags_html:
+            updated, changed = replace_meta_line(existing, "Tags", tags_html, add_slash=True)
+            if changed:
+                with open(md_path, "w", encoding="utf-8") as f:
+                    f.write(updated + ("\n" if not updated.endswith("\n") else ""))
+                existing = updated
+
+        # 规范速览块格式：TLDR/Motivation/Method/Result 末尾应带 `\\`
+        updated, changed = normalize_glance_block_format(existing)
+        if changed:
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(updated + ("\n" if not updated.endswith("\n") else ""))
+            existing = updated
+
+        # 插入/替换速览内容
+        if glance and (force_glance or "## 速览" not in existing):
+            updated = upsert_glance_block_in_text(existing, glance)
+            if updated != existing:
                 with open(md_path, "w", encoding="utf-8") as f:
                     f.write(updated)
                 existing = updated
+
+        if glance_only:
+            # 只生成速览：不拉取 PDF、不做精读总结
+            return paper_id, title
 
         if section == "deep":
             # 精读区：检查是否已有详细总结
@@ -788,12 +994,27 @@ def process_paper(
             # 速读区：不生成详细总结，只保留速览和摘要
             return paper_id, title
 
+    # 新文件：如果只需要速览，则不拉取 PDF/Jina 文本，直接用元数据生成页面
+    if glance_only:
+        glance = generate_glance_overview(title, abstract_en) or build_glance_fallback(paper)
+        if glance:
+            paper["_glance_overview"] = glance
+        tags_html = build_tags_html(section, paper.get("llm_tags") or [])
+        content = build_markdown_content(paper, section, "", "", tags_html)
+        os.makedirs(os.path.dirname(md_path), exist_ok=True)
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return paper_id, title
+
     # 新文件：生成完整内容
     pdf_url = str(paper.get("link") or paper.get("pdf_url") or "").strip()
     ensure_text_content(pdf_url, txt_path)
 
     zh_title, zh_abstract = translate_title_and_abstract_to_zh(title, abstract_en)
     tags_html = build_tags_html(section, paper.get("llm_tags") or [])
+    glance = generate_glance_overview(title, abstract_en) or build_glance_fallback(paper)
+    if glance:
+        paper["_glance_overview"] = glance
     content = build_markdown_content(paper, section, zh_title, zh_abstract, tags_html)
 
     os.makedirs(os.path.dirname(md_path), exist_ok=True)
@@ -911,6 +1132,16 @@ def main() -> None:
         help="侧边栏日期标题展示文本（例如：2026-01-01 ~ 2026-01-27）。不填则使用单日日期。",
     )
     parser.add_argument(
+        "--glance-only",
+        action="store_true",
+        help="只生成/补齐 `## 速览`（基于 title+abstract），不下载 PDF/Jina 文本，不生成精读总结。",
+    )
+    parser.add_argument(
+        "--force-glance",
+        action="store_true",
+        help="强制重生成 `## 速览` 并覆盖写入（即使文件里已存在该块）。",
+    )
+    parser.add_argument(
         "--sidebar-only",
         action="store_true",
         help="只更新 docs/_sidebar.md（不生成/不重写论文 Markdown，避免触发 LLM 调用）。",
@@ -950,6 +1181,19 @@ def main() -> None:
     if not deep_list and not quick_list:
         log("[INFO] 推荐列表为空，将跳过生成 docs 与更新侧边栏。")
         return
+
+    def _paper_score(p: dict) -> float:
+        try:
+            return float(p.get("llm_score", 0) or 0)
+        except Exception:
+            return 0.0
+
+    def _paper_id(p: dict) -> str:
+        return str(p.get("id") or p.get("paper_id") or "").strip()
+
+    # 侧边栏展示按分数降序（同分按 id 稳定排序），避免“高分被埋在下面”
+    deep_list = sorted(deep_list, key=lambda p: (-_paper_score(p), _paper_id(p)))
+    quick_list = sorted(quick_list, key=lambda p: (-_paper_score(p), _paper_id(p)))
 
     if args.fix_tags_only:
         changed_files = 0
@@ -999,13 +1243,27 @@ def main() -> None:
     else:
         log_substep("6.2", "生成精读区文章", "START")
         for paper in deep_list:
-            pid, title = process_paper(paper, "deep", date_str, docs_dir)
+            pid, title = process_paper(
+                paper,
+                "deep",
+                date_str,
+                docs_dir,
+                glance_only=args.glance_only,
+                force_glance=args.force_glance,
+            )
             deep_entries.append((pid, title, extract_sidebar_tags(paper)))
         log_substep("6.2", "生成精读区文章", "END")
 
         log_substep("6.3", "生成速读区文章", "START")
         for paper in quick_list:
-            pid, title = process_paper(paper, "quick", date_str, docs_dir)
+            pid, title = process_paper(
+                paper,
+                "quick",
+                date_str,
+                docs_dir,
+                glance_only=args.glance_only,
+                force_glance=args.force_glance,
+            )
             quick_entries.append((pid, title, extract_sidebar_tags(paper)))
         log_substep("6.3", "生成速读区文章", "END")
 
