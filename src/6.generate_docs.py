@@ -463,7 +463,9 @@ def generate_glance_overview(title: str, abstract: str, max_retries: int = 3) ->
     user_prompt = (
         "请基于上面的 JSON 中的 title 和 abstract，输出一个中文速览摘要，严格返回 JSON（不要输出任何其它文字）：\n"
         "{\"tldr\":\"...\",\"motivation\":\"...\",\"method\":\"...\",\"result\":\"...\",\"conclusion\":\"...\"}\n"
-        "要求：每个字段尽量一句话概括，简洁明了。"
+        "要求：\n"
+        "- tldr：100字左右的完整概述，涵盖研究背景、方法和主要贡献\n"
+        "- motivation/method/result/conclusion：每个字段一句话概括，简洁明了"
     )
 
     schema = {
@@ -826,14 +828,6 @@ def build_markdown_content(
     zh_abstract: str,
     tags_html: str,
 ) -> str:
-    def meta_line(label: str, value: str, add_slash: bool = True) -> str:
-        v = (value or "").strip()
-        if not v:
-            return ""
-        if add_slash:
-            return f"**{label}**: {v} \\"
-        return f"**{label}**: {v}"
-
     title = (paper.get("title") or "").strip()
     authors = paper.get("authors") or []
     published = str(paper.get("published") or "").strip()
@@ -857,46 +851,112 @@ def build_markdown_content(
     if not abstract_en:
         abstract_en = "arXiv did not provide an abstract for this paper."
 
-    lines = [
-        f"# {title}",
-    ]
+    # 解析速览内容
+    glance = paper.get("_glance_overview", "").strip()
+    glance_tldr = ""
+    glance_motivation = ""
+    glance_method = ""
+    glance_result = ""
+    glance_conclusion = ""
+
+    if glance:
+        for line in glance.split("\n"):
+            line = line.strip().rstrip("\\").strip()
+            if line.startswith("**TLDR**：") or line.startswith("**TLDR**:"):
+                glance_tldr = line.split("：", 1)[-1].split(":", 1)[-1].strip()
+            elif line.startswith("**Motivation**：") or line.startswith("**Motivation**:"):
+                glance_motivation = line.split("：", 1)[-1].split(":", 1)[-1].strip()
+            elif line.startswith("**Method**：") or line.startswith("**Method**:"):
+                glance_method = line.split("：", 1)[-1].split(":", 1)[-1].strip()
+            elif line.startswith("**Result**：") or line.startswith("**Result**:"):
+                glance_result = line.split("：", 1)[-1].split(":", 1)[-1].strip()
+            elif line.startswith("**Conclusion**：") or line.startswith("**Conclusion**:"):
+                glance_conclusion = line.split("：", 1)[-1].split(":", 1)[-1].strip()
+
+    # 构建新布局 HTML
+    lines = []
+
+    # 标题区域（双列）
+    lines.append('<div class="paper-title-row">')
     if zh_title:
-        lines.append(f"# {zh_title}")
-    lines.append("")
-    lines.append(meta_line("Authors", ", ".join(authors) if authors else "Unknown"))
-    lines.append(meta_line("Date", published or "Unknown"))
+        lines.append(f'<h1 class="paper-title-zh">{zh_title}</h1>')
+    lines.append(f'<h1 class="paper-title-en">{title}</h1>')
+    lines.append('</div>')
+    lines.append('')
+
+    # 中间区域（左侧基本信息 + 右侧 Evidence/TLDR）
+    lines.append('<div class="paper-meta-row">')
+
+    # 左侧：基本信息
+    lines.append('<div class="paper-meta-left">')
+    lines.append(f'<p><strong>Authors</strong>: {", ".join(authors) if authors else "Unknown"}</p>')
+    lines.append(f'<p><strong>Date</strong>: {published or "Unknown"}</p>')
     if pdf_url:
-        lines.append(meta_line("PDF", pdf_url))
+        lines.append(f'<p><strong>PDF</strong>: <a href="{pdf_url}" target="_blank">{pdf_url}</a></p>')
     if tags_html:
-        lines.append(meta_line("Tags", tags_html))
+        lines.append(f'<p><strong>Tags</strong>: {tags_html}</p>')
     if score is not None:
-        lines.append(meta_line("Score", str(score)))
+        lines.append(f'<p><strong>Score</strong>: {score}</p>')
+    lines.append('</div>')
+
+    # 右侧：Evidence 和 TLDR（优先使用速览生成的 TLDR）
+    lines.append('<div class="paper-meta-right">')
     if evidence:
-        lines.append(meta_line("Evidence", evidence))
-    if tldr:
-        # TLDR 行不需要尾部反斜杠
-        lines.append(meta_line("TLDR", tldr, add_slash=False))
-    lines.append("")
+        lines.append(f'<p><strong>Evidence</strong>: {evidence}</p>')
+    # 优先使用速览生成的 TLDR（100字左右），否则使用原来的 TLDR
+    display_tldr = glance_tldr if glance_tldr else tldr
+    if display_tldr:
+        lines.append(f'<p><strong>TLDR</strong>: {display_tldr}</p>')
+    lines.append('</div>')
+
+    lines.append('</div>')
+    lines.append('')
+
+    # 速览区域（四列）
+    if glance_tldr or glance_motivation or glance_method or glance_result or glance_conclusion:
+        lines.append('<div class="paper-glance-section">')
+        lines.append('<h2 class="paper-glance-title">速览</h2>')
+        lines.append('<div class="paper-glance-row">')
+
+        # Motivation
+        lines.append('<div class="paper-glance-col">')
+        lines.append('<div class="paper-glance-label">Motivation</div>')
+        lines.append(f'<div class="paper-glance-content">{glance_motivation or "-"}</div>')
+        lines.append('</div>')
+
+        # Method
+        lines.append('<div class="paper-glance-col">')
+        lines.append('<div class="paper-glance-label">Method</div>')
+        lines.append(f'<div class="paper-glance-content">{glance_method or "-"}</div>')
+        lines.append('</div>')
+
+        # Result
+        lines.append('<div class="paper-glance-col">')
+        lines.append('<div class="paper-glance-label">Result</div>')
+        lines.append(f'<div class="paper-glance-content">{glance_result or "-"}</div>')
+        lines.append('</div>')
+
+        # Conclusion
+        lines.append('<div class="paper-glance-col">')
+        lines.append('<div class="paper-glance-label">Conclusion</div>')
+        lines.append(f'<div class="paper-glance-content">{glance_conclusion or "-"}</div>')
+        lines.append('</div>')
+
+        lines.append('</div>')
+
+        lines.append('</div>')
+        lines.append('')
+
     lines.append("---")
     lines.append("")
-    
-    # 插入速览内容（如果存在）
-    glance = paper.get("_glance_overview", "").strip()
-    if glance:
-        lines.append("## 速览")
-        lines.append(glance)
-        lines.append("")
-        lines.append("---")
-        lines.append("")
 
     if zh_abstract:
         lines.append("")
         lines.append("## 摘要")
         lines.append(zh_abstract)
-        
+
     lines.append("## Abstract")
     lines.append(abstract_en)
-
 
     return "\n".join(lines)
 

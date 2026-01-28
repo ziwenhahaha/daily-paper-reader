@@ -576,6 +576,10 @@ window.PrivateDiscussionChat = (function () {
 
     historyDiv.scrollTop = historyDiv.scrollHeight;
 
+    // 同时更新问题导航
+    ensureQuestionNavContainer();
+    renderQuestionNav(paperId);
+
     // 聊天历史渲染完成后，通知 Zotero 元数据刷新一次（包含最新对话）
     try {
       if (window.DPRZoteroMeta && window.DPRZoteroMeta.updateFromPage) {
@@ -772,6 +776,19 @@ window.PrivateDiscussionChat = (function () {
       time: nowStr,
     });
     await saveChatHistory(paperId, history);
+
+    // 更新问题导航（新增了用户提问）
+    renderQuestionNav(paperId);
+
+    // 给刚添加的用户消息设置 ID（用于问题导航定位）
+    const userMessages = historyDiv.querySelectorAll('.msg-content-user');
+    if (userMessages.length > 0) {
+      const lastUserItem = userMessages[userMessages.length - 1].closest('.msg-item');
+      if (lastUserItem && !lastUserItem.id) {
+        const userQuestionCount = history.filter(m => m.role === 'user').length;
+        lastUserItem.id = `user-question-${userQuestionCount - 1}`;
+      }
+    }
 
     // 用户发起提问后，立即刷新一次 Zotero 摘要（包含最新提问）
     try {
