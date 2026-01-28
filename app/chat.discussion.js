@@ -499,8 +499,17 @@ window.PrivateDiscussionChat = (function () {
 
       const isThinking = msg.role === 'thinking';
       const isAi = msg.role === 'ai' || isThinking;
+      const isUser = msg.role === 'user';
 
       if (!isThinking) {
+        // 用户消息：时间右对齐；AI 回答：不显示时间（只在思考过程显示）
+        if (isUser && msg.time) {
+          const timeSpan = document.createElement('span');
+          timeSpan.className = 'msg-time msg-time-user';
+          timeSpan.textContent = msg.time;
+          item.appendChild(timeSpan);
+        }
+
         const contentDiv = document.createElement('div');
         contentDiv.className =
           'msg-content ' + (isAi ? 'msg-content-ai' : 'msg-content-user');
@@ -517,6 +526,14 @@ window.PrivateDiscussionChat = (function () {
         item.appendChild(contentDiv);
         historyDiv.appendChild(item);
         return;
+      }
+
+      // 思考过程：时间显示在上方，左对齐
+      if (msg.time) {
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'msg-time msg-time-ai';
+        timeSpan.textContent = msg.time;
+        item.appendChild(timeSpan);
       }
 
       const thinkingContainer = document.createElement('div');
@@ -553,17 +570,6 @@ window.PrivateDiscussionChat = (function () {
         toggleBtn.textContent = collapsed ? '展开' : '折叠';
       });
 
-      const header = document.createElement('div');
-      const roleSpan = document.createElement('span');
-      roleSpan.className = 'msg-role ai';
-      roleSpan.textContent = '🧠 AI 思考过程';
-      const timeSpan = document.createElement('span');
-      timeSpan.className = 'msg-time';
-      timeSpan.textContent = msg.time || '';
-      header.appendChild(roleSpan);
-      header.appendChild(timeSpan);
-
-      item.appendChild(header);
       item.appendChild(thinkingContainer);
       historyDiv.appendChild(item);
     });
@@ -661,21 +667,15 @@ window.PrivateDiscussionChat = (function () {
       const userItem = document.createElement('div');
       userItem.className = 'msg-item';
 
-      const header = document.createElement('div');
-      const role = document.createElement('span');
-      role.className = 'msg-role user';
-      role.textContent = '👤 你';
       const time = document.createElement('span');
-      time.className = 'msg-time';
+      time.className = 'msg-time msg-time-user';
       time.textContent = nowStr;
-      header.appendChild(role);
-      header.appendChild(time);
 
       const content = document.createElement('div');
       content.className = 'msg-content msg-content-user';
       content.textContent = question;
 
-      userItem.appendChild(header);
+      userItem.appendChild(time);
       userItem.appendChild(content);
       historyDiv.appendChild(userItem);
     } catch {
@@ -693,9 +693,13 @@ window.PrivateDiscussionChat = (function () {
     const aiItem = document.createElement('div');
     aiItem.className = 'msg-item';
     aiItem.innerHTML = `
-        <div>
-          <span class="msg-role ai">🤖 私人助手</span>
-          <span class="msg-time">${nowStr}</span>
+        <span class="msg-time msg-time-ai">${nowStr}</span>
+        <div class="ai-response-header">
+          <span class="ai-thinking-indicator">
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+          </span>
         </div>
         <div class="thinking-container" style="margin-top:8px; border-left:3px solid #ddd; padding-left:8px; font-size:0.85rem; color:#666; display:none;">
           <div style="display:flex; align-items:center; justify-content:space-between;">
@@ -707,6 +711,41 @@ window.PrivateDiscussionChat = (function () {
         <div class="msg-content msg-content-ai"></div>
     `;
     historyDiv.appendChild(aiItem);
+
+    const thinkingIndicator = aiItem.querySelector('.ai-thinking-indicator');
+
+    // 判断用户是否在页面底部（允许 50px 误差）
+    let userAtBottom = true;
+    const checkIfAtBottom = () => {
+      const threshold = 50;
+      const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+      const windowHeight = window.innerHeight;
+      const docHeight = document.documentElement.scrollHeight;
+      return docHeight - scrollTop - windowHeight <= threshold;
+    };
+    userAtBottom = checkIfAtBottom();
+
+    // 监听用户滚动，更新 userAtBottom 状态
+    const onUserScroll = () => {
+      userAtBottom = checkIfAtBottom();
+    };
+    window.addEventListener('scroll', onUserScroll);
+
+    // 自动滚动到底部（仅当用户本来就在底部时）
+    const scrollToBottomIfNeeded = () => {
+      if (userAtBottom) {
+        window.scrollTo({
+          top: document.documentElement.scrollHeight,
+          behavior: 'smooth'
+        });
+      }
+    };
+
+    // 发送消息后立即滚动到底部
+    window.scrollTo({
+      top: document.documentElement.scrollHeight,
+      behavior: 'smooth'
+    });
 
     const thinkingContainer = aiItem.querySelector('.thinking-container');
     const thinkingContent = aiItem.querySelector('.thinking-content');
@@ -878,6 +917,7 @@ window.PrivateDiscussionChat = (function () {
         if (answerBuffer) {
           applyAnswerView();
         }
+        scrollToBottomIfNeeded();
       });
     };
 
@@ -1016,6 +1056,11 @@ window.PrivateDiscussionChat = (function () {
         }
       }
 
+      // 回复完成，移除思考动画
+      if (thinkingIndicator) {
+        thinkingIndicator.remove();
+      }
+
       const nowStrAnswer = new Date().toLocaleString();
       const updated = await loadChatHistory(paperId);
       if (thinkingBuffer.trim()) {
@@ -1055,6 +1100,11 @@ window.PrivateDiscussionChat = (function () {
         statusEl.style.color = '#c00';
       }
     } finally {
+      // 确保思考动画被移除
+      if (thinkingIndicator && thinkingIndicator.parentNode) {
+        thinkingIndicator.remove();
+      }
+      window.removeEventListener('scroll', onUserScroll);
       input.disabled = false;
       btn.disabled = false;
       btn.innerText = '发送';
