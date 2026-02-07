@@ -13,7 +13,7 @@ from subscription_plan import count_subscription_tags
 SCRIPT_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 ARCHIVE_ROOT = os.path.join(ROOT_DIR, "archive")
-TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
+TODAY_STR = str(os.getenv("DPR_RUN_DATE") or "").strip() or datetime.now(timezone.utc).strftime("%Y%m%d")
 ARCHIVE_DIR = os.path.join(ARCHIVE_ROOT, TODAY_STR)
 RANKED_DIR = os.path.join(ARCHIVE_DIR, "rank")
 RECOMMEND_DIR = os.path.join(ARCHIVE_DIR, "recommend")
@@ -90,7 +90,11 @@ def save_json(data: Dict[str, Any], path: str) -> None:
 
 
 def parse_date_str(date_str: str) -> date:
-    return datetime.strptime(date_str, "%Y%m%d").date()
+    s = str(date_str or "").strip()
+    if re.fullmatch(r"\d{8}-\d{8}", s):
+        # 区间 token 用结束日期参与“今日/最近N天”逻辑
+        s = s.split("-", 1)[1]
+    return datetime.strptime(s, "%Y%m%d").date()
 
 
 def list_date_dirs(archive_root: str) -> List[str]:
@@ -98,7 +102,7 @@ def list_date_dirs(archive_root: str) -> List[str]:
         return []
     result: List[str] = []
     for name in os.listdir(archive_root):
-        if re.match(r"^\d{8}$", name):
+        if re.match(r"^\d{8}$", name) or re.match(r"^\d{8}-\d{8}$", name):
             result.append(name)
     return sorted(result)
 
@@ -112,7 +116,10 @@ def collect_seen_ids(archive_root: str, today_str: str) -> set:
         if not os.path.isdir(rec_dir):
             continue
         for name in os.listdir(rec_dir):
-            if not name.startswith(f"arxiv_papers_{day}.") or not name.endswith(".json"):
+            if not name.endswith(".json"):
+                continue
+            # 兼容单日与区间 token 的文件名前缀
+            if not name.startswith(f"arxiv_papers_{day}."):
                 continue
             rec_path = os.path.join(rec_dir, name)
             try:

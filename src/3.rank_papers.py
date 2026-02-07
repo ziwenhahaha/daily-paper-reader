@@ -12,7 +12,7 @@ from llm import BltClient
 
 SCRIPT_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
-TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
+TODAY_STR = str(os.getenv("DPR_RUN_DATE") or "").strip() or datetime.now(timezone.utc).strftime("%Y%m%d")
 ARCHIVE_DIR = os.path.join(ROOT_DIR, "archive", TODAY_STR)
 FILTERED_DIR = os.path.join(ARCHIVE_DIR, "filtered")
 RANKED_DIR = os.path.join(ARCHIVE_DIR, "rank")

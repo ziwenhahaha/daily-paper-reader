@@ -30,7 +30,7 @@ from subscription_plan import build_pipeline_inputs
 SCRIPT_DIR = os.path.dirname(__file__)
 CONFIG_FILE = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "config.yaml"))
 ROOT_DIR = os.path.dirname(CONFIG_FILE)
-TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
+TODAY_STR = str(os.getenv("DPR_RUN_DATE") or "").strip() or datetime.now(timezone.utc).strftime("%Y%m%d")
 ARCHIVE_DIR = os.path.join(ROOT_DIR, "archive", TODAY_STR)
 RAW_DIR = os.path.join(ARCHIVE_DIR, "raw")
 FILTERED_DIR = os.path.join(ARCHIVE_DIR, "filtered")

@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 import requests
+import torch
 from sentence_transformers import SentenceTransformer
 
 try:
@@ -93,30 +95,49 @@ def attach_embeddings(
     rows: List[Dict[str, Any]],
     *,
     model_name: str,
-    device: str,
+    devices: List[str],
     batch_size: int,
     max_length: int,
 ) -> int:
     if not rows:
         return 0
 
-    log(f"[Embedding] 加载模型：{model_name}（device={device}）")
-    model = SentenceTransformer(model_name, device=device)
-    if max_length > 0 and hasattr(model, "max_seq_length"):
-        try:
-            model.max_seq_length = max_length
-        except Exception:
-            pass
-
     texts = [build_embedding_text(r) for r in rows]
     log(f"[Embedding] 开始编码：{len(texts)} 条")
-    emb = model.encode(
-        texts,
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-        batch_size=max(int(batch_size or 8), 1),
-        show_progress_bar=False,
-    )
+    use_devices = devices or ["cpu"]
+    if len(use_devices) == 1:
+        log(f"[Embedding] 加载模型：{model_name}（device={use_devices[0]}）")
+        model = SentenceTransformer(model_name, device=use_devices[0])
+        if max_length > 0 and hasattr(model, "max_seq_length"):
+            try:
+                model.max_seq_length = max_length
+            except Exception:
+                pass
+        emb = model.encode(
+            texts,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            batch_size=max(int(batch_size or 8), 1),
+            show_progress_bar=False,
+        )
+    else:
+        log(f"[Embedding] 加载模型：{model_name}（multi-device={use_devices}）")
+        model = SentenceTransformer(model_name)
+        if max_length > 0 and hasattr(model, "max_seq_length"):
+            try:
+                model.max_seq_length = max_length
+            except Exception:
+                pass
+        pool = model.start_multi_process_pool(target_devices=use_devices)
+        try:
+            emb = model.encode_multi_process(
+                texts,
+                pool=pool,
+                batch_size=max(int(batch_size or 8), 1),
+                normalize_embeddings=True,
+            )
+        finally:
+            model.stop_multi_process_pool(pool)
 
     if len(emb.shape) != 2 or emb.shape[0] != len(rows):
         raise RuntimeError("embedding 输出维度异常")
@@ -133,17 +154,41 @@ def attach_embeddings(
     return dim
 
 
+def resolve_embed_devices(embed_devices: str, embed_device: str) -> List[str]:
+    raw = _norm(embed_devices)
+    if raw:
+        items = [_norm(x) for x in raw.split(",") if _norm(x)]
+        if items:
+            return items
+
+    single = _norm(embed_device)
+    if single:
+        return [single]
+
+    if torch.cuda.is_available():
+        count = int(torch.cuda.device_count() or 0)
+        if count >= 2:
+            return ["cuda:0", "cuda:1"]
+        if count == 1:
+            return ["cuda:0"]
+    return ["cpu"]
+
+
 def load_raw(path: str) -> List[Dict[str, Any]]:
     if not os.path.exists(path):
-        return []
+        raise FileNotFoundError(f"原始文件不存在：{path}")
+    if os.path.getsize(path) <= 0:
+        raise RuntimeError(f"原始文件为空（0 字节）：{path}")
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f) or []
-        if isinstance(data, list):
-            return [x for x in data if isinstance(x, dict)]
-    except Exception:
-        return []
-    return []
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"原始文件 JSON 解析失败：{path} ({e})") from e
+    except Exception as e:
+        raise RuntimeError(f"读取原始文件失败：{path} ({e})") from e
+    if not isinstance(data, list):
+        raise RuntimeError(f"原始文件格式错误（期望 list）：{path}")
+    return [x for x in data if isinstance(x, dict)]
 
 
 def normalize_paper(x: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -171,6 +216,9 @@ def upsert_papers(
     table: str,
     rows: List[Dict[str, Any]],
     batch_size: int = 500,
+    timeout: int = 30,
+    retries: int = 3,
+    retry_wait: float = 2.0,
 ) -> None:
     rest = _base_rest(url)
     endpoint = f"{rest}/{table}?on_conflict=id"
@@ -179,27 +227,62 @@ def upsert_papers(
         return
     for i in range(0, total, batch_size):
         chunk = rows[i : i + batch_size]
-        resp = requests.post(
-            endpoint,
-            headers=_headers(service_key, "resolution=merge-duplicates"),
-            data=json.dumps(chunk, ensure_ascii=False),
-            timeout=30,
-        )
-        if resp.status_code >= 300:
-            raise RuntimeError(f"upsert papers 失败：HTTP {resp.status_code} {resp.text[:200]}")
-        log(f"[Supabase] upsert papers: {min(i + batch_size, total)}/{total}")
+        last_error: Exception | None = None
+        max_attempts = max(int(retries or 0), 0) + 1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = requests.post(
+                    endpoint,
+                    headers=_headers(service_key, "resolution=merge-duplicates"),
+                    data=json.dumps(chunk, ensure_ascii=False),
+                    timeout=max(int(timeout or 30), 1),
+                )
+                if resp.status_code >= 300:
+                    raise RuntimeError(f"HTTP {resp.status_code} {resp.text[:200]}")
+                log(
+                    f"[Supabase] upsert papers: {min(i + batch_size, total)}/{total}"
+                    f" (batch={len(chunk)}, attempt={attempt}/{max_attempts})"
+                )
+                last_error = None
+                break
+            except Exception as e:
+                last_error = e
+                if attempt >= max_attempts:
+                    break
+                wait_s = max(float(retry_wait or 0.0), 0.0) * attempt
+                log(
+                    f"[WARN] upsert 批次失败，准备重试 "
+                    f"(attempt={attempt}/{max_attempts}, wait={wait_s:.1f}s): {e}"
+                )
+                if wait_s > 0:
+                    time.sleep(wait_s)
+        if last_error is not None:
+            raise RuntimeError(
+                f"upsert papers 失败：offset={i}, batch={len(chunk)}, error={last_error}"
+            )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync raw arXiv papers to Supabase public tables.")
     parser.add_argument("--date", type=str, default=TODAY_STR, help="YYYYMMDD")
+    parser.add_argument(
+        "--raw-input",
+        type=str,
+        default="",
+        help="可选：直接指定原始 JSON 文件路径；指定后优先于 --date。",
+    )
     parser.add_argument("--url", type=str, default=os.getenv("SUPABASE_URL", ""))
     parser.add_argument("--service-key", type=str, default=os.getenv("SUPABASE_SERVICE_KEY", ""))
     parser.add_argument("--papers-table", type=str, default=os.getenv("SUPABASE_PAPERS_TABLE", "arxiv_papers"))
     parser.add_argument("--embed-model", type=str, default="")
     parser.add_argument("--embed-device", type=str, default="cpu")
+    parser.add_argument("--embed-devices", type=str, default="")
     parser.add_argument("--embed-batch-size", type=int, default=8)
     parser.add_argument("--embed-max-length", type=int, default=0)
+    parser.add_argument("--upsert-batch-size", type=int, default=200)
+    parser.add_argument("--upsert-timeout", type=int, default=120)
+    parser.add_argument("--upsert-retries", type=int, default=5)
+    parser.add_argument("--upsert-retry-wait", type=float, default=2.0)
     parser.add_argument("--with-embeddings", dest="with_embeddings", action="store_true", default=True)
     parser.add_argument("--no-embeddings", dest="with_embeddings", action="store_false")
     parser.add_argument("--mode", type=str, default="standard")
@@ -211,17 +294,24 @@ def main() -> None:
         log("[INFO] SUPABASE_URL / SUPABASE_SERVICE_KEY 未配置，跳过同步。")
         return
 
-    raw_path = os.path.join(ROOT_DIR, "archive", args.date, "raw", f"arxiv_papers_{args.date}.json")
+    raw_path = _norm(args.raw_input)
+    if raw_path and not os.path.isabs(raw_path):
+        raw_path = os.path.abspath(os.path.join(ROOT_DIR, raw_path))
+    if not raw_path:
+        raw_path = os.path.join(ROOT_DIR, "archive", args.date, "raw", f"arxiv_papers_{args.date}.json")
     rows_raw = load_raw(raw_path)
     rows = [r for r in (normalize_paper(x) for x in rows_raw) if r]
+    if not rows:
+        raise RuntimeError(f"原始文件无有效论文记录：{raw_path}")
 
     try:
         if args.with_embeddings:
             model_name = resolve_embed_model(args.embed_model)
+            embed_devices = resolve_embed_devices(args.embed_devices, args.embed_device)
             attach_embeddings(
                 rows,
                 model_name=model_name,
-                device=_norm(args.embed_device) or "cpu",
+                devices=embed_devices,
                 batch_size=int(args.embed_batch_size or 8),
                 max_length=int(args.embed_max_length or 0),
             )
@@ -233,6 +323,10 @@ def main() -> None:
             service_key=key,
             table=args.papers_table,
             rows=rows,
+            batch_size=max(int(args.upsert_batch_size or 1), 1),
+            timeout=max(int(args.upsert_timeout or 1), 1),
+            retries=max(int(args.upsert_retries or 0), 0),
+            retry_wait=max(float(args.upsert_retry_wait or 0.0), 0.0),
         )
         log(f"[OK] Supabase 同步完成：{len(rows)} 篇")
     except Exception as e:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import timedelta, timezone, datetime
 from typing import Any, Dict, List, Tuple
+from urllib.parse import quote
 import requests
 
 
@@ -91,21 +92,23 @@ def fetch_recent_papers(
     safe_days = max(int(days_window or 1), 1)
     end_dt = datetime.now(timezone.utc)
     start_dt = end_dt - timedelta(days=safe_days)
-    start_iso = start_dt.isoformat()
+    # 避免 +00:00 在 URL 中被当成空格，统一转 Z 并编码
+    start_iso = start_dt.isoformat().replace("+00:00", "Z")
+    start_iso_q = quote(start_iso, safe="")
 
     rest = _base_rest_url(url, schema)
     endpoint = (
         f"{rest}/{papers_table}"
         f"?select=id,title,abstract,authors,primary_category,categories,published,link,source,"
         f"embedding,embedding_model,embedding_dim,embedding_updated_at"
-        f"&published=gte.{start_iso}"
+        f"&published=gte.{start_iso_q}"
         f"&order=published.desc"
         f"&limit={int(max_rows)}"
     )
     try:
         resp = requests.get(endpoint, headers=_build_headers(api_key), timeout=timeout)
         if resp.status_code >= 300:
-            return ([], f"papers 查询失败：HTTP {resp.status_code}")
+            return ([], f"papers 查询失败：HTTP {resp.status_code} {resp.text[:200]}")
         rows = resp.json() or []
         if not isinstance(rows, list):
             return ([], "papers 查询结果格式异常")
