@@ -27,25 +27,27 @@ window.SubscriptionsSmartQuery = (function () {
     '{',
     '  "keywords": [',
     '    {',
-    '      "expr": "关键词短语（单条用于召回，多个关键词之间默认 OR）",',
-    '      "logic_cn": "一句中文解释该关键词为何有助于召回",',
-    '      "must_have": ["可选：该关键词关注的核心概念"],',
-    '      "optional": ["可选：该关键词相关扩展概念"],',
-    '      "exclude": ["可选：尽量避开的概念"],',
-    '      "rewrite_for_embedding": "与该关键词语义一致的自然语言短语"',
+      '      "expr": "关键词短语（单条用于召回，多个关键词之间默认 OR）",',
+    '      "logic_cn": "仅做中文直译（尽量短，不超过20字）",',
+      '      "must_have": ["可选：该关键词关注的核心概念"],',
+      '      "optional": ["可选：该关键词相关扩展概念"],',
+      '      "exclude": ["可选：尽量避开的概念"],',
+      '      "rewrite_for_embedding": "与该关键词语义一致的自然语言短语"',
     '    }',
     '  ],',
     '  "queries": [',
     '    {',
     '      "text": "润色后的语义 Query（供 embedding+ranker+LLM 链路）",',
-    '      "logic_cn": "一句中文解释该 Query 的检索意图和侧重点"',
+    '      "logic_cn": "一句中文说明该改写与原始 query 的差异"',
     '    }',
     '  ]',
     '}',
     '要求：',
     '1) keywords 请给出 5~12 条短语，便于用户多选；',
-    '2) queries 请给出 3~6 条不同侧重点的润色 Query，供用户多选；',
-    '3) 只输出 JSON，不要输出其它文本。',
+    '2) 避免输出大量“X + 核心术语”冗余形式（如 "deep symbolic regression"）。若核心术语已出现（如 "symbolic regression"），优先输出可独立召回的前缀概念（如 "machine learning"）；',
+    '3) queries 最多 3 条，且必须基于原始 query 做同义改写，不要引入新领域/新主题；',
+    '4) 如果原始 query 偏学术方向，保持该方向，不做发散；',
+    '5) 只输出 JSON，不要输出其它文本。',
   ].join('\n');
 
   const normalizeText = (v) => String(v || '').trim();
@@ -160,8 +162,39 @@ window.SubscriptionsSmartQuery = (function () {
     const data = payload && typeof payload === 'object' ? payload : {};
     const rawKeywords = Array.isArray(data.keywords) ? data.keywords : [];
     const rawQueries = Array.isArray(data.queries) ? data.queries : [];
+    const shortZh = (text, maxLen = 20) => {
+      const t = normalizeText(text || '');
+      if (!t) return '';
+      if (t.length <= maxLen) return t;
+      return `${t.slice(0, maxLen)}...`;
+    };
+    const normalizePhrase = (text) =>
+      normalizeText(text)
+        .toLowerCase()
+        .replace(/["'`]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const genericModifierSet = new Set([
+      'deep',
+      'neural',
+      'novel',
+      'new',
+      'advanced',
+      'robust',
+      'efficient',
+      'interpretable',
+      'hybrid',
+      'scalable',
+      'generalized',
+      'improved',
+    ]);
+    const trimLeadingConnector = (s) =>
+      s
+        .replace(/^(for|of|in|on|with|using|based on)\s+/i, '')
+        .replace(/\s+/g, ' ')
+        .trim();
 
-    const keywords = rawKeywords
+    let keywords = rawKeywords
       .map((item, idx) => {
         if (!item || typeof item !== 'object') return null;
         const expr = normalizeText(item.expr || item.keyword || '');
@@ -169,7 +202,7 @@ window.SubscriptionsSmartQuery = (function () {
         return {
           id: `gen-kw-${Date.now()}-${idx + 1}`,
           expr,
-          logic_cn: normalizeText(item.logic_cn || ''),
+          logic_cn: shortZh(item.logic_cn || ''),
           must_have: uniqList(item.must_have),
           optional: uniqList(item.optional),
           exclude: uniqList(item.exclude),
@@ -182,21 +215,81 @@ window.SubscriptionsSmartQuery = (function () {
       })
       .filter(Boolean);
 
+    // 关键词召回去冗余：
+    // 若已有核心术语（如 symbolic regression），则将 "X symbolic regression" 归一为 "X"；
+    // 若 X 只是泛形容词，则直接丢弃该冗余词条。
+    const plainList = keywords.map((k) => normalizePhrase(k.expr || ''));
+    const plainSet = new Set(plainList);
+    const anchorCandidates = new Set();
+    plainList.forEach((p) => {
+      if (!p) return;
+      const words = p.split(' ');
+      if (words.length >= 2) {
+        const suffix2 = words.slice(-2).join(' ');
+        if (plainSet.has(suffix2)) anchorCandidates.add(suffix2);
+      }
+      if (words.length >= 3) {
+        const suffix3 = words.slice(-3).join(' ');
+        if (plainSet.has(suffix3)) anchorCandidates.add(suffix3);
+      }
+    });
+    const anchors = Array.from(anchorCandidates).sort((a, b) => b.length - a.length);
+
+    keywords = keywords
+      .map((k) => {
+        const expr = normalizeText(k.expr || '');
+        if (!expr) return null;
+        const plain = normalizePhrase(expr);
+        for (const anchor of anchors) {
+          if (plain === anchor) continue;
+          const suffixNeedle = ` ${anchor}`;
+          if (!plain.endsWith(suffixNeedle)) continue;
+          const idx = plain.lastIndexOf(suffixNeedle);
+          const prefixPlain = trimLeadingConnector(plain.slice(0, idx));
+          if (!prefixPlain) return null;
+          const parts = prefixPlain.split(' ').filter(Boolean);
+          if (parts.length === 1 && genericModifierSet.has(parts[0])) {
+            return null;
+          }
+          return {
+            ...k,
+            expr: prefixPlain,
+            logic_cn: shortZh(k.logic_cn || '关键词直译'),
+          };
+        }
+        return k;
+      })
+      .filter(Boolean);
+
+    // 归一后再去重
+    const kwSeen = new Set();
+    keywords = keywords.filter((k) => {
+      const key = normalizePhrase(k.expr || '');
+      if (!key || kwSeen.has(key)) return false;
+      kwSeen.add(key);
+      return true;
+    });
+
+    const querySeen = new Set();
     const queries = rawQueries
       .map((item, idx) => {
         if (!item || typeof item !== 'object') return null;
         const text = normalizeText(item.text || item.query || '');
         if (!text) return null;
+        const key = text.toLowerCase();
+        if (querySeen.has(key)) return null;
+        querySeen.add(key);
         return {
           id: `gen-q-${Date.now()}-${idx + 1}`,
           text,
-          logic_cn: normalizeText(item.logic_cn || ''),
+          logic_cn: shortZh(item.logic_cn || '', 28),
           enabled: true,
           source: 'generated',
           note: normalizeText(item.note || ''),
         };
       })
-      .filter(Boolean);
+      .filter(Boolean)
+      .slice(0, 3);
 
     return { keywords, queries };
   };
@@ -251,13 +344,18 @@ window.SubscriptionsSmartQuery = (function () {
         const qCount = Array.isArray(p.semantic_queries) ? p.semantic_queries.length : 0;
         return `
           <div class="dpr-entry-card" data-profile-id="${escapeHtml(p.id || '')}">
-            <div class="dpr-entry-main">
-              <div class="dpr-entry-title">${escapeHtml(p.tag || '')}</div>
-              <div class="dpr-entry-desc">${escapeHtml(p.description || '（无描述）')}</div>
-              <div class="dpr-entry-meta">关键词 ${kwCount} 条 · Query ${qCount} 条 ${p.enabled === false ? '· 已停用' : ''}</div>
+            <div class="dpr-entry-top">
+              <div class="dpr-entry-headline">
+                <span class="dpr-entry-title">${escapeHtml(p.tag || '')}</span>
+                <span class="dpr-entry-desc-inline">${escapeHtml(p.description || '（无描述）')}</span>
+              </div>
+              <div class="dpr-entry-actions">
+                <button class="arxiv-tool-btn dpr-entry-edit-btn" data-action="edit-profile" data-profile-id="${escapeHtml(p.id || '')}">修改</button>
+                <button class="arxiv-tool-btn dpr-entry-delete-btn" data-action="delete-profile" data-profile-id="${escapeHtml(p.id || '')}">删除</button>
+              </div>
             </div>
-            <div class="dpr-entry-actions">
-              <button class="arxiv-tool-btn dpr-entry-edit-btn" data-profile-id="${escapeHtml(p.id || '')}">修改</button>
+            <div class="dpr-entry-main">
+              <div class="dpr-entry-meta">关键词 ${kwCount} · Query ${qCount} ${p.enabled === false ? '· 已停用' : ''}</div>
             </div>
           </div>
         `;
@@ -286,13 +384,10 @@ window.SubscriptionsSmartQuery = (function () {
     const kwHtml = (modalState.keywords || [])
       .map(
         (k, idx) => `
-      <label class="dpr-modal-choice">
-        <input type="checkbox" data-kind="kw" data-index="${idx}" ${k._selected ? 'checked' : ''} />
-        <div>
-          <div class="dpr-modal-choice-title">${escapeHtml(k.expr || '')}</div>
-          <div class="dpr-modal-choice-desc">${escapeHtml(k.logic_cn || '（无逻辑说明）')}</div>
-        </div>
-      </label>
+      <button type="button" class="dpr-pick-card ${k._selected ? 'selected' : ''}" data-action="toggle-kw-card" data-index="${idx}">
+        <div class="dpr-pick-title">${escapeHtml(k.expr || '')}</div>
+        <div class="dpr-pick-desc">${escapeHtml(k.logic_cn || '（待补充中文直译）')}</div>
+      </button>
     `,
       )
       .join('');
@@ -300,13 +395,10 @@ window.SubscriptionsSmartQuery = (function () {
     const qHtml = (modalState.queries || [])
       .map(
         (q, idx) => `
-      <label class="dpr-modal-choice">
-        <input type="checkbox" data-kind="query" data-index="${idx}" ${q._selected ? 'checked' : ''} />
-        <div>
-          <div class="dpr-modal-choice-title">${escapeHtml(q.text || '')}</div>
-          <div class="dpr-modal-choice-desc">${escapeHtml(q.logic_cn || '（无逻辑说明）')}</div>
-        </div>
-      </label>
+      <button type="button" class="dpr-pick-card ${q._selected ? 'selected' : ''}" data-action="toggle-query-card" data-index="${idx}">
+        <div class="dpr-pick-title">${escapeHtml(q.text || '')}</div>
+        <div class="dpr-pick-desc">${escapeHtml(q.logic_cn || '（与原始 query 保持同主题）')}</div>
+      </button>
     `,
       )
       .join('');
@@ -318,14 +410,14 @@ window.SubscriptionsSmartQuery = (function () {
       </div>
       <div class="dpr-modal-sub">标签：${escapeHtml(modalState.tag || '')} ｜ 描述：${escapeHtml(modalState.description || '（无）')}</div>
       <div class="dpr-modal-group-title">关键词候选（用于召回，勾选项之间默认 OR）</div>
-      <div class="dpr-modal-list">${kwHtml || '<div style="color:#999;">无关键词候选</div>'}</div>
+      <div class="dpr-modal-list dpr-pick-grid">${kwHtml || '<div style="color:#999;">无关键词候选</div>'}</div>
       <div class="dpr-modal-actions-inline dpr-modal-add-inline">
         <input id="dpr-add-kw-text" type="text" placeholder="手动新增关键词（召回词）" value="${escapeHtml(modalState.customKeyword || '')}" />
         <input id="dpr-add-kw-logic" type="text" placeholder="关键词说明（可选）" value="${escapeHtml(modalState.customKeywordLogic || '')}" />
         <button class="arxiv-tool-btn" data-action="add-custom-kw">加入候选</button>
       </div>
       <div class="dpr-modal-group-title">语义 Query 候选</div>
-      <div class="dpr-modal-list">${qHtml || '<div style="color:#999;">无 Query 候选</div>'}</div>
+      <div class="dpr-modal-list dpr-pick-grid">${qHtml || '<div style="color:#999;">无 Query 候选</div>'}</div>
       <div class="dpr-modal-actions-inline dpr-modal-add-inline">
         <input id="dpr-add-query-text" type="text" placeholder="手动新增润色 Query" value="${escapeHtml(modalState.customQuery || '')}" />
         <input id="dpr-add-query-logic" type="text" placeholder="Query 说明（可选）" value="${escapeHtml(modalState.customQueryLogic || '')}" />
@@ -649,15 +741,31 @@ window.SubscriptionsSmartQuery = (function () {
 
   const handleModalClick = (e) => {
     const target = e.target;
-    if (!target) return;
-
-    const action = target.getAttribute('data-action');
+    if (!target || !target.closest) return;
+    const actionEl = target.closest('[data-action]');
+    const action = actionEl ? actionEl.getAttribute('data-action') : '';
     if (action === 'close') {
       closeModal();
       return;
     }
 
     if (modalState && modalState.type === 'add') {
+      if (action === 'toggle-kw-card') {
+        const idx = Number(actionEl.getAttribute('data-index'));
+        if (idx >= 0 && idx < (modalState.keywords || []).length) {
+          modalState.keywords[idx]._selected = !modalState.keywords[idx]._selected;
+          renderAddModal();
+        }
+        return;
+      }
+      if (action === 'toggle-query-card') {
+        const idx = Number(actionEl.getAttribute('data-index'));
+        if (idx >= 0 && idx < (modalState.queries || []).length) {
+          modalState.queries[idx]._selected = !modalState.queries[idx]._selected;
+          renderAddModal();
+        }
+        return;
+      }
       if (action === 'add-custom-kw') {
         const expr = normalizeText(document.getElementById('dpr-add-kw-text')?.value || '');
         const logic = normalizeText(document.getElementById('dpr-add-kw-logic')?.value || '');
@@ -732,24 +840,14 @@ window.SubscriptionsSmartQuery = (function () {
         return;
       }
       if (action) {
-        handleEditAction(action, target.getAttribute('data-index'));
+        handleEditAction(action, actionEl ? actionEl.getAttribute('data-index') : '');
       }
     }
   };
 
   const handleModalChange = (e) => {
-    if (!modalState || modalState.type !== 'add') return;
-    const target = e.target;
-    if (!target) return;
-    if (target.type !== 'checkbox') return;
-    const kind = target.getAttribute('data-kind');
-    const idx = Number(target.getAttribute('data-index'));
-    if (kind === 'kw' && idx >= 0 && idx < (modalState.keywords || []).length) {
-      modalState.keywords[idx]._selected = !!target.checked;
-    }
-    if (kind === 'query' && idx >= 0 && idx < (modalState.queries || []).length) {
-      modalState.queries[idx]._selected = !!target.checked;
-    }
+    // 目前新增面板改为卡片点选，无需处理 checkbox change。
+    void e;
   };
 
   const generateAndOpenAddModal = async () => {
@@ -799,7 +897,7 @@ window.SubscriptionsSmartQuery = (function () {
             { role: 'system', content: '你是检索规划助手，只能返回合法 JSON。' },
             { role: 'user', content: prompt },
           ],
-          temperature: 0.2,
+          temperature: 0.1,
           response_format: { type: 'json_object' },
         }),
       });
@@ -828,11 +926,32 @@ window.SubscriptionsSmartQuery = (function () {
   };
 
   const handleDisplayClick = (e) => {
-    const btn = e.target && e.target.closest ? e.target.closest('.dpr-entry-edit-btn') : null;
-    if (!btn) return;
-    const profileId = btn.getAttribute('data-profile-id');
+    const actionEl = e.target && e.target.closest ? e.target.closest('[data-action][data-profile-id]') : null;
+    if (!actionEl) return;
+    const profileId = actionEl.getAttribute('data-profile-id');
     if (!profileId) return;
-    openEditModal(profileId);
+    const action = actionEl.getAttribute('data-action');
+    if (action === 'edit-profile') {
+      openEditModal(profileId);
+      return;
+    }
+    if (action === 'delete-profile') {
+      const profile = (currentProfiles || []).find((p) => normalizeText(p.id) === normalizeText(profileId));
+      const tag = normalizeText(profile && profile.tag) || '该词条';
+      const ok = window.confirm(`确认删除词条「${tag}」吗？此操作可在未保存前通过刷新放弃。`);
+      if (!ok) return;
+      window.SubscriptionsManager.updateDraftConfig((cfg) => {
+        const next = cfg || {};
+        if (!next.subscriptions) next.subscriptions = {};
+        const subs = next.subscriptions;
+        const profiles = Array.isArray(subs.intent_profiles) ? subs.intent_profiles.slice() : [];
+        subs.intent_profiles = profiles.filter((p) => normalizeText(p.id) !== normalizeText(profileId));
+        next.subscriptions = subs;
+        return next;
+      });
+      if (typeof reloadAll === 'function') reloadAll();
+      setMessage(`已删除词条「${tag}」，请点击「保存」。`, '#666');
+    }
   };
 
   const attach = (context) => {
@@ -846,6 +965,18 @@ window.SubscriptionsSmartQuery = (function () {
     if (createBtn && !createBtn._bound) {
       createBtn._bound = true;
       createBtn.addEventListener('click', generateAndOpenAddModal);
+    }
+
+    const autoResizeDesc = () => {
+      if (!descInputEl) return;
+      descInputEl.style.height = '36px';
+      const next = Math.min(Math.max(descInputEl.scrollHeight, 36), 240);
+      descInputEl.style.height = `${next}px`;
+    };
+    if (descInputEl && !descInputEl._boundAutoResize) {
+      descInputEl._boundAutoResize = true;
+      descInputEl.addEventListener('input', autoResizeDesc);
+      autoResizeDesc();
     }
 
     if (displayListEl && !displayListEl._bound) {

@@ -24,25 +24,27 @@ window.SubscriptionsManager = (function () {
     '{',
     '  "keywords": [',
     '    {',
-    '      "expr": "关键词短语（单条用于召回，多个关键词之间默认 OR）",',
-    '      "logic_cn": "一句中文解释该关键词为何有助于召回",',
-    '      "must_have": ["可选：该关键词关注的核心概念"],',
-    '      "optional": ["可选：该关键词相关扩展概念"],',
-    '      "exclude": ["可选：尽量避开的概念"],',
-    '      "rewrite_for_embedding": "与该关键词语义一致的自然语言短语"',
+      '      "expr": "关键词短语（单条用于召回，多个关键词之间默认 OR）",',
+    '      "logic_cn": "仅做中文直译（尽量短，不超过20字）",',
+      '      "must_have": ["可选：该关键词关注的核心概念"],',
+      '      "optional": ["可选：该关键词相关扩展概念"],',
+      '      "exclude": ["可选：尽量避开的概念"],',
+      '      "rewrite_for_embedding": "与该关键词语义一致的自然语言短语"',
     '    }',
     '  ],',
     '  "queries": [',
     '    {',
     '      "text": "润色后的语义 Query（供 embedding+ranker+LLM 链路）",',
-    '      "logic_cn": "一句中文解释该 Query 的检索意图和侧重点"',
+    '      "logic_cn": "一句中文说明该改写与原始 query 的差异"',
     '    }',
     '  ]',
     '}',
     '要求：',
     '1) keywords 请给出 5~12 条短语，便于用户多选；',
-    '2) queries 请给出 3~6 条不同侧重点的润色 Query，供用户多选；',
-    '3) 只输出 JSON，不要输出其它文本。',
+    '2) 避免输出大量“X + 核心术语”冗余形式（如 "deep symbolic regression"）。若核心术语已出现（如 "symbolic regression"），优先输出可独立召回的前缀概念（如 "machine learning"）；',
+    '3) queries 最多 3 条，且必须基于原始 query 做同义改写，不要引入新领域/新主题；',
+    '4) 如果原始 query 偏学术方向，保持该方向，不做发散；',
+    '5) 只输出 JSON，不要输出其它文本。',
   ].join('\n');
 
   const normalizeText = (v) => String(v || '').trim();
@@ -347,20 +349,28 @@ window.SubscriptionsManager = (function () {
         <div id="dpr-smart-query-section" class="arxiv-pane dpr-smart-pane">
           <div class="dpr-smart-head">统一智能 Query 决策</div>
 
-          <div class="dpr-input-card">
-            <div class="dpr-card-title">智能输入区</div>
-            <div class="dpr-inline-row">
-              <input id="dpr-sq-tag" type="text" placeholder="标签（必填），例如 SR" />
-              <button id="dpr-sq-create-btn" class="arxiv-tool-btn" style="background:#2e7d32; color:#fff;">新增</button>
-            </div>
-            <textarea id="dpr-sq-desc" rows="3" placeholder="输入用户描述：例如 我关注符号回归与科学发现交叉方向，偏向近期可复现实证研究。"></textarea>
-          </div>
-
           <div class="dpr-display-card">
-            <div class="dpr-card-title">展示区</div>
             <div id="dpr-sq-display" class="dpr-sq-display"></div>
           </div>
+
+          <div class="dpr-input-card">
+            <div class="dpr-input-layout">
+              <textarea id="dpr-sq-desc" class="dpr-desc-compact" rows="1" placeholder="用户描述（示例见右侧 ! ）"></textarea>
+              <div class="dpr-inline-row dpr-side-row">
+                <input id="dpr-sq-tag" type="text" placeholder="标签（必填）" />
+                <button id="dpr-sq-create-btn" class="arxiv-tool-btn" style="background:#2e7d32; color:#fff;">新增</button>
+                <span class="dpr-help-tip" tabindex="0">!
+                  <span class="dpr-help-pop">
+                    示例：帮我关注符号回归与科学发现交叉领域，偏向近期可复现实证研究。<br/>
+                    建议：标签尽量使用英文，且小于等于 6 个字母，体验更好。
+                  </span>
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
+
+        <div class="dpr-section-divider"></div>
 
         <div id="dpr-tracked-disabled" class="arxiv-pane dpr-disabled-pane">
           <div style="font-weight:600; margin-bottom:6px;">新增论文引用（暂未实现）</div>
