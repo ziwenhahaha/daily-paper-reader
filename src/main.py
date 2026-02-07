@@ -5,13 +5,59 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
+try:
+    import yaml  # type: ignore
+except Exception:  # pragma: no cover
+    yaml = None
+
 
 SRC_DIR = os.path.dirname(__file__)
+ROOT_DIR = os.path.abspath(os.path.join(SRC_DIR, ".."))
+CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
+LONG_RANGE_DAYS_THRESHOLD = 7
 
 
 def run_step(label: str, args: list[str]) -> None:
     print(f"[INFO] {label}: {' '.join(args)}", flush=True)
     subprocess.run(args, check=True)
+
+
+def load_arxiv_paper_setting() -> dict:
+    if yaml is None or not os.path.exists(CONFIG_FILE):
+        return {}
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    setting = data.get("arxiv_paper_setting") or {}
+    return setting if isinstance(setting, dict) else {}
+
+
+def build_sidebar_date_label(days: int) -> str:
+    safe_days = max(int(days), 1)
+    end_date = datetime.now(timezone.utc).date()
+    start_date = end_date - timedelta(days=safe_days - 1)
+    return f"{start_date:%Y-%m-%d} ~ {end_date:%Y-%m-%d}"
+
+
+def resolve_sidebar_date_label(fetch_days: int | None) -> str | None:
+    # 1) 显式传 --fetch-days 时，始终按该窗口显示日期范围。
+    if fetch_days is not None:
+        return build_sidebar_date_label(fetch_days)
+
+    # 2) 未显式传入时，按 config 的 days_window 判断：
+    #    仅在“大时间跨度”模式（默认阈值 >=30 天）自动显示区间标题。
+    setting = load_arxiv_paper_setting()
+    try:
+        days_window = int(setting.get("days_window") or 0)
+    except Exception:
+        days_window = 0
+    if days_window >= LONG_RANGE_DAYS_THRESHOLD:
+        return build_sidebar_date_label(days_window)
+    return None
 
 
 def main() -> None:
@@ -49,12 +95,7 @@ def main() -> None:
 
     python = sys.executable
 
-    sidebar_date_label = None
-    if args.fetch_days is not None:
-        days = max(int(args.fetch_days), 1)
-        end_date = datetime.now(timezone.utc).date()
-        start_date = end_date - timedelta(days=days - 1)
-        sidebar_date_label = f"{start_date:%Y-%m-%d} ~ {end_date:%Y-%m-%d}"
+    sidebar_date_label = resolve_sidebar_date_label(args.fetch_days)
 
     if args.run_enrich:
         run_step(
