@@ -4,11 +4,26 @@
 window.DPRWorkflowRunner = (function () {
   const WORKFLOWS = [
     {
+      key: 'daily-now',
       id: 'daily-paper-reader.yml',
       name: '立即爬取并处理论文',
       desc: '触发 daily-paper-reader 工作流（抓取→召回→重排→生成 docs）。',
+      dispatchInputs: {
+        run_enrich: 'true',
+      },
     },
     {
+      key: 'daily-month-skims',
+      id: 'daily-paper-reader.yml',
+      name: '立即爬取并处理论文（一个月）',
+      desc: '回溯 30 天并使用全速读（skims）模式生成结果。',
+      dispatchInputs: {
+        run_enrich: 'true',
+        fetch_days: '30',
+      },
+    },
+    {
+      key: 'sync',
       id: 'sync.yml',
       name: '同步上游代码',
       desc: '触发 Upstream Sync 工作流（合并上游 main 到当前仓库）。',
@@ -134,7 +149,7 @@ window.DPRWorkflowRunner = (function () {
                     <div style="font-size:12px; color:#666; margin-top:2px;">${escapeHtml(wf.desc)}</div>
                   </div>
                   <button class="arxiv-tool-btn dpr-wf-run-btn" data-wf="${escapeHtml(
-                    wf.id,
+                    wf.key,
                   )}" style="padding:6px 10px; background:#17a2b8; color:white; flex-shrink:0;">运行</button>
                 </div>
               </div>
@@ -181,9 +196,11 @@ window.DPRWorkflowRunner = (function () {
 
     overlay.querySelectorAll('.dpr-wf-run-btn').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        const wfId = btn.getAttribute('data-wf') || '';
-        if (!wfId) return;
-        await dispatchAndMonitor(wfId);
+        const wfKey = btn.getAttribute('data-wf') || '';
+        if (!wfKey) return;
+        const wf = WORKFLOWS.find((x) => String(x.key || '') === String(wfKey));
+        if (!wf) return;
+        await dispatchAndMonitor(wf);
       });
     });
   };
@@ -236,7 +253,7 @@ window.DPRWorkflowRunner = (function () {
       return;
     }
     const blocks = WORKFLOWS.map((wf) => {
-      const list = (byWorkflow && byWorkflow[wf.id]) || [];
+      const list = (byWorkflow && byWorkflow[String(wf.key || wf.id || '')]) || [];
       const items = Array.isArray(list) ? list : [];
       const lines = items
         .map((r) => {
@@ -324,25 +341,30 @@ window.DPRWorkflowRunner = (function () {
         recentEl.classList.add('is-loading');
       }
       const byWorkflow = {};
+      const runsByWorkflowId = {};
 
       for (const wf of WORKFLOWS) {
-        // eslint-disable-next-line no-await-in-loop
-        const url = `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${encodeURIComponent(
-          wf.id,
-        )}/runs?per_page=3`;
-        // eslint-disable-next-line no-await-in-loop
-        const res = await ghFetch(token, url);
-        if (!res.ok) {
-          const txt = await res.text().catch(() => '');
-          throw new Error(
-            `读取最近运行失败(${wf.id})：HTTP ${res.status} ${res.statusText} - ${txt}`,
-          );
+        const wfId = String(wf.id || '');
+        if (!runsByWorkflowId[wfId]) {
+          // eslint-disable-next-line no-await-in-loop
+          const url = `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${encodeURIComponent(
+            wfId,
+          )}/runs?per_page=3`;
+          // eslint-disable-next-line no-await-in-loop
+          const res = await ghFetch(token, url);
+          if (!res.ok) {
+            const txt = await res.text().catch(() => '');
+            throw new Error(
+              `读取最近运行失败(${wfId})：HTTP ${res.status} ${res.statusText} - ${txt}`,
+            );
+          }
+          // eslint-disable-next-line no-await-in-loop
+          const data = await res.json();
+          runsByWorkflowId[wfId] = Array.isArray(data.workflow_runs)
+            ? data.workflow_runs
+            : [];
         }
-        // eslint-disable-next-line no-await-in-loop
-        const data = await res.json();
-        byWorkflow[wf.id] = Array.isArray(data.workflow_runs)
-          ? data.workflow_runs
-          : [];
+        byWorkflow[String(wf.key || wfId)] = runsByWorkflowId[wfId];
       }
 
       renderRecentRuns(owner, repo, byWorkflow, '');
@@ -353,7 +375,13 @@ window.DPRWorkflowRunner = (function () {
     }
   };
 
-  const dispatchAndMonitor = async (workflowFile) => {
+  const dispatchAndMonitor = async (workflow) => {
+    const wf = workflow || {};
+    const workflowFile = String(wf.id || '');
+    if (!workflowFile) {
+      setStatus('工作流配置缺失，无法触发。', '#c00');
+      return;
+    }
     const token = loadGithubToken();
     if (!token) {
       setStatus('未检测到 GitHub Token：请在“密钥配置”或“GitHub Token”处完成配置。', '#c00');
@@ -365,7 +393,7 @@ window.DPRWorkflowRunner = (function () {
       return;
     }
 
-    setStatus(`正在触发工作流：${workflowFile} ...`, '#666');
+    setStatus(`正在触发工作流：${wf.name || workflowFile} ...`, '#666');
     runsEl.innerHTML = '<div style="color:#999;">正在触发，请稍候...</div>';
     stopPolling();
     activeRun = null;
@@ -380,7 +408,10 @@ window.DPRWorkflowRunner = (function () {
       const res = await ghFetch(token, dispatchUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ref: 'main' }),
+        body: JSON.stringify({
+          ref: 'main',
+          ...(wf.dispatchInputs ? { inputs: wf.dispatchInputs } : {}),
+        }),
       });
       if (!res.ok) {
         const txt = await res.text().catch(() => '');

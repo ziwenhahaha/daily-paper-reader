@@ -714,7 +714,7 @@
 
       closeBtn.addEventListener('click', () => {
         // 直接关闭弹窗
-        closeModal();
+        hide();
       });
 
       githubVerifyBtn.addEventListener('click', async () => {
