@@ -868,9 +868,14 @@ window.$docsify = {
                 state[rawText] = collapsed ? 'closed' : 'open';
                 state.__latestDay = latestDay;
                 ensureStateSaved();
+                // 先做一次即时同步（保证交互反馈），再在动画结束后做一次终态校准，
+                // 否则列表在 max-height 过渡中继续位移，会让高亮条“越开越往上偏”。
                 requestAnimationFrame(() => {
                   syncSidebarActiveIndicator({ animate: false });
                 });
+                setTimeout(() => {
+                  syncSidebarActiveIndicator({ animate: false });
+                }, DAY_ANIM_MS + 34);
               },
               true,
             );
@@ -1674,10 +1679,16 @@ window.$docsify = {
           // ignore
         }
 
-        const x = li.offsetLeft;
-        const y = li.offsetTop;
-        const w = li.offsetWidth;
-        const h = li.offsetHeight;
+        // 不能用 offsetTop/offsetLeft：
+        // 侧边栏是多层嵌套 li/ul，offset* 参照系会落在中间层，导致越往下选中偏移越明显。
+        // 统一使用相对 .sidebar-nav 的几何坐标，保证展开多天后仍准确对齐。
+        const nav = ensured.parent || (li.closest && li.closest('.sidebar-nav'));
+        const navRect = nav ? nav.getBoundingClientRect() : null;
+        const liRect = li.getBoundingClientRect();
+        const x = navRect ? liRect.left - navRect.left + (nav.scrollLeft || 0) : li.offsetLeft;
+        const y = navRect ? liRect.top - navRect.top + (nav.scrollTop || 0) : li.offsetTop;
+        const w = liRect.width || li.offsetWidth;
+        const h = liRect.height || li.offsetHeight;
 
         // 新建/或要求不动画时：先关 transition，直接定位到最终位置，再恢复 transition
         if (newlyCreated || !animate) {
@@ -1710,12 +1721,35 @@ window.$docsify = {
         const { animate = false } = options || {};
         const nav = document.querySelector('.sidebar-nav');
         if (!nav) return;
-        const activeLi = nav.querySelector('li.active.sidebar-paper-item');
-        if (activeLi) {
-          moveSidebarActiveIndicatorToEl(activeLi, { animate });
-        } else {
-          hideSidebarActiveIndicator();
+
+        // 1) 优先按“当前路由 href”精确匹配，避免 Docsify 多个 active 时命中错误项
+        const routeHref = DPR_NAV_STATE.currentHref || '';
+        if (routeHref) {
+          const links = Array.from(nav.querySelectorAll('a[href]'));
+          for (let i = 0; i < links.length; i += 1) {
+            const a = links[i];
+            const href = normalizeHref(a.getAttribute('href') || '');
+            if (href !== routeHref) continue;
+            const li = a.closest('li');
+            if (li && li.classList && li.classList.contains('sidebar-paper-item')) {
+              moveSidebarActiveIndicatorToEl(li, { animate });
+              return;
+            }
+          }
         }
+
+        // 2) 兜底：如果存在多个 active，取最后一个（通常是更深层、当前真正选中项）
+        const activeLis = Array.from(
+          nav.querySelectorAll('li.active.sidebar-paper-item'),
+        );
+        if (activeLis.length > 0) {
+          moveSidebarActiveIndicatorToEl(activeLis[activeLis.length - 1], {
+            animate,
+          });
+          return;
+        }
+
+        hideSidebarActiveIndicator();
       };
 
       // 暴露到全局，供 sidebar resize 时调用
@@ -2612,11 +2646,23 @@ window.$docsify = {
 
         // 让滑动高亮层跟随当前 active 项（点击、路由变化后会更新 active 类）
         try {
-          // 路由加载完成后：贴齐到实际 active 位置；若 active 位于折叠日期下则隐藏高亮层
-          syncSidebarActiveIndicator({ animate: false });
+          const movedByNavAnim = !!DPR_SIDEBAR_ACTIVE_INDICATOR.justMoved;
+          if (!movedByNavAnim) {
+            // 非“点击触发的预先滑动”场景：先立即贴齐一次
+            syncSidebarActiveIndicator({ animate: false });
+          }
+          // 统一做一次延迟终态校准：
+          // - 点击切页时避免“先对齐 -> 上跳 -> 再回位”的双重抖动
+          // - 分组展开/收起有 max-height 过渡，布局稳定后再校准一次
+          setTimeout(() => {
+            try {
+              syncSidebarActiveIndicator({ animate: false });
+            } finally {
+              DPR_SIDEBAR_ACTIVE_INDICATOR.justMoved = false;
+            }
+          }, movedByNavAnim ? 220 : 280);
         } catch {
           // ignore
-        } finally {
           DPR_SIDEBAR_ACTIVE_INDICATOR.justMoved = false;
         }
 
