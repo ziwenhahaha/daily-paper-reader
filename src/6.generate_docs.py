@@ -1337,28 +1337,30 @@ def update_sidebar(
         del lines[day_idx:end]
 
     block: List[str] = [day_heading]
-    block.append("    * 精读区\n")
-    for paper_id, title, tags in deep_entries:
-        safe_title = html.escape((title or "").strip() or paper_id)
-        href = f"#/{paper_id}"
-        tag_html = " ".join(render_sidebar_tag(kind, label) for kind, label in (tags or []))
-        tags_block = f'<div class="dpr-sidebar-tags">{tag_html}</div>' if tag_html else ""
-        block.append(
-            "      * "
-            f'<a class="dpr-sidebar-item-link" href="{href}"><div class="dpr-sidebar-title">{safe_title}</div>'
-            f"{tags_block}</a>\n"
-        )
-    block.append("    * 速读区\n")
-    for paper_id, title, tags in quick_entries:
-        safe_title = html.escape((title or "").strip() or paper_id)
-        href = f"#/{paper_id}"
-        tag_html = " ".join(render_sidebar_tag(kind, label) for kind, label in (tags or []))
-        tags_block = f'<div class="dpr-sidebar-tags">{tag_html}</div>' if tag_html else ""
-        block.append(
-            "      * "
-            f'<a class="dpr-sidebar-item-link" href="{href}"><div class="dpr-sidebar-title">{safe_title}</div>'
-            f"{tags_block}</a>\n"
-        )
+    if deep_entries:
+        block.append("    * 精读区\n")
+        for paper_id, title, tags in deep_entries:
+            safe_title = html.escape((title or "").strip() or paper_id)
+            href = f"#/{paper_id}"
+            tag_html = " ".join(render_sidebar_tag(kind, label) for kind, label in (tags or []))
+            tags_block = f'<div class="dpr-sidebar-tags">{tag_html}</div>' if tag_html else ""
+            block.append(
+                "      * "
+                f'<a class="dpr-sidebar-item-link" href="{href}"><div class="dpr-sidebar-title">{safe_title}</div>'
+                f"{tags_block}</a>\n"
+            )
+    if quick_entries:
+        block.append("    * 速读区\n")
+        for paper_id, title, tags in quick_entries:
+            safe_title = html.escape((title or "").strip() or paper_id)
+            href = f"#/{paper_id}"
+            tag_html = " ".join(render_sidebar_tag(kind, label) for kind, label in (tags or []))
+            tags_block = f'<div class="dpr-sidebar-tags">{tag_html}</div>' if tag_html else ""
+            block.append(
+                "      * "
+                f'<a class="dpr-sidebar-item-link" href="{href}"><div class="dpr-sidebar-title">{safe_title}</div>'
+                f"{tags_block}</a>\n"
+            )
 
     insert_idx = daily_idx + 1
     lines[insert_idx:insert_idx] = block
