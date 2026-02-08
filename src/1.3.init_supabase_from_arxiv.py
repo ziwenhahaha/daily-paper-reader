@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 SCRIPT_DIR = os.path.dirname(__file__)
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
 LONG_RANGE_DAYS_THRESHOLD = 7
+RANGE_TOKEN_RE = re.compile(r"^(\d{8})-(\d{8})$")
 
 
 def run_step(label: str, args: list[str]) -> None:
@@ -36,6 +38,30 @@ def resolve_date_token(date_arg: str, days: int) -> str:
     if int(days or 1) > LONG_RANGE_DAYS_THRESHOLD:
         return build_run_date_token(days)
     return TODAY_STR
+
+
+def find_latest_raw_file(project_root: str) -> str:
+    archive_root = os.path.join(project_root, "archive")
+    if not os.path.isdir(archive_root):
+        return ""
+    best_path = ""
+    best_mtime = -1.0
+    for token in os.listdir(archive_root):
+        raw_dir = os.path.join(archive_root, token, "raw")
+        if not os.path.isdir(raw_dir):
+            continue
+        for name in os.listdir(raw_dir):
+            if not (name.startswith("arxiv_papers_") and name.endswith(".json")):
+                continue
+            path = os.path.join(raw_dir, name)
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if mtime > best_mtime:
+                best_mtime = mtime
+                best_path = path
+    return best_path
 
 
 def main() -> None:
@@ -86,6 +112,7 @@ def main() -> None:
     args = parser.parse_args()
 
     python = sys.executable
+    project_root = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 
     date_str = resolve_date_token(args.date, int(args.days or 1))
     os.environ["DPR_RUN_DATE"] = date_str
@@ -95,10 +122,10 @@ def main() -> None:
         if os.path.isabs(raw_input):
             raw_path = raw_input
         else:
-            raw_path = os.path.abspath(os.path.join(os.path.abspath(os.path.join(SCRIPT_DIR, "..")), raw_input))
+            raw_path = os.path.abspath(os.path.join(project_root, raw_input))
     else:
         raw_path = os.path.join(
-            os.path.abspath(os.path.join(SCRIPT_DIR, "..")),
+            project_root,
             "archive",
             date_str,
             "raw",
@@ -120,9 +147,34 @@ def main() -> None:
         run_step("Step 1 - fetch arXiv", fetch_cmd)
     else:
         if not os.path.exists(raw_path):
-            raise FileNotFoundError(
-                f"--skip-fetch 已指定，但未找到原始文件：{raw_path}"
-            )
+            fallback = ""
+            m = RANGE_TOKEN_RE.match(date_str)
+            if m:
+                end_token = m.group(2)
+                legacy_candidate = os.path.join(
+                    project_root,
+                    "archive",
+                    end_token,
+                    "raw",
+                    f"arxiv_papers_{end_token}.json",
+                )
+                if os.path.exists(legacy_candidate):
+                    fallback = legacy_candidate
+            if not fallback:
+                latest = find_latest_raw_file(project_root)
+                if latest:
+                    fallback = latest
+
+            if fallback:
+                print(
+                    f"[WARN] --skip-fetch 指定路径不存在，已自动回退到原始文件：{fallback}",
+                    flush=True,
+                )
+                raw_path = fallback
+            else:
+                raise FileNotFoundError(
+                    f"--skip-fetch 已指定，但未找到原始文件：{raw_path}"
+                )
         print(f"[INFO] Step 1 已跳过，复用原始文件：{raw_path}", flush=True)
 
     sync_cmd = [
@@ -143,8 +195,7 @@ def main() -> None:
         "--upsert-retry-wait",
         str(max(float(args.upsert_retry_wait or 0.0), 0.0)),
     ]
-    if raw_input:
-        sync_cmd += ["--raw-input", raw_path]
+    sync_cmd += ["--raw-input", raw_path]
     if args.embed_model:
         sync_cmd += ["--embed-model", str(args.embed_model)]
     if args.embed_devices:

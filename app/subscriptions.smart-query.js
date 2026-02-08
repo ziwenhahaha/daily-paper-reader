@@ -143,7 +143,40 @@ window.SubscriptionsSmartQuery = (function () {
     return null;
   };
 
+  const extractLlmJsonText = (data) => {
+    const normalizeContentPart = (part) => {
+      if (typeof part === 'string') return normalizeText(part);
+      if (!part || typeof part !== 'object') return '';
+      return normalizeText(part.text || part.content || part.output_text || '');
+    };
+
+    const firstChoice = (((data || {}).choices || [])[0] || {});
+    const message = firstChoice.message || {};
+    const content = message.content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content.map((p) => normalizeContentPart(p)).filter(Boolean).join('\n');
+    }
+    if (content && typeof content === 'object') {
+      return normalizeContentPart(content);
+    }
+
+    const topContent = (data || {}).content;
+    if (typeof topContent === 'string') return topContent;
+    if (Array.isArray(topContent)) {
+      return topContent.map((p) => normalizeContentPart(p)).filter(Boolean).join('\n');
+    }
+
+    const outputText = (data || {}).output_text;
+    if (typeof outputText === 'string') return outputText;
+    if (Array.isArray(outputText)) {
+      return outputText.map((p) => normalizeContentPart(p)).filter(Boolean).join('\n');
+    }
+    return '';
+  };
+
   const loadJsonLenient = (text) => {
+    if (text && typeof text === 'object') return text;
     const raw = normalizeText(text);
     if (!raw) return {};
     try {
@@ -906,7 +939,7 @@ window.SubscriptionsSmartQuery = (function () {
         throw new Error(`HTTP ${res.status} ${t || res.statusText}`);
       }
       const data = await res.json();
-      const content = (((data || {}).choices || [])[0] || {}).message?.content || '';
+      const content = extractLlmJsonText(data);
       const parsed = loadJsonLenient(content);
       const candidates = normalizeGenerated(parsed);
 

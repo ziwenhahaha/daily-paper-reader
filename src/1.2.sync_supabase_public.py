@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover
 
 SCRIPT_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
-TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
+TODAY_STR = str(os.getenv("DPR_RUN_DATE") or "").strip() or datetime.now(timezone.utc).strftime("%Y%m%d")
 CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 DEFAULT_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 
@@ -209,6 +209,25 @@ def normalize_paper(x: Dict[str, Any]) -> Dict[str, Any] | None:
     }
 
 
+def deduplicate_rows_by_id(rows: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], int]:
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    duplicates = 0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        pid = _norm(row.get("id"))
+        if not pid:
+            continue
+        key = pid.lower()
+        if key in seen:
+            duplicates += 1
+            continue
+        seen.add(key)
+        out.append(row)
+    return out, duplicates
+
+
 def upsert_papers(
     *,
     url: str,
@@ -225,26 +244,23 @@ def upsert_papers(
     total = len(rows)
     if total == 0:
         return
-    for i in range(0, total, batch_size):
-        chunk = rows[i : i + batch_size]
+
+    max_attempts = max(int(retries or 0), 0) + 1
+    uploaded = 0
+
+    def _post_chunk(chunk: List[Dict[str, Any]]) -> int:
         last_error: Exception | None = None
-        max_attempts = max(int(retries or 0), 0) + 1
         for attempt in range(1, max_attempts + 1):
             try:
                 resp = requests.post(
                     endpoint,
                     headers=_headers(service_key, "resolution=merge-duplicates"),
-                    data=json.dumps(chunk, ensure_ascii=False),
+                    data=json.dumps(chunk, ensure_ascii=False, separators=(",", ":")),
                     timeout=max(int(timeout or 30), 1),
                 )
                 if resp.status_code >= 300:
                     raise RuntimeError(f"HTTP {resp.status_code} {resp.text[:200]}")
-                log(
-                    f"[Supabase] upsert papers: {min(i + batch_size, total)}/{total}"
-                    f" (batch={len(chunk)}, attempt={attempt}/{max_attempts})"
-                )
-                last_error = None
-                break
+                return attempt
             except Exception as e:
                 last_error = e
                 if attempt >= max_attempts:
@@ -257,14 +273,49 @@ def upsert_papers(
                 if wait_s > 0:
                     time.sleep(wait_s)
         if last_error is not None:
-            raise RuntimeError(
-                f"upsert papers 失败：offset={i}, batch={len(chunk)}, error={last_error}"
+            raise last_error
+
+    def _upsert_with_split(chunk: List[Dict[str, Any]], depth: int = 0) -> None:
+        nonlocal uploaded
+        if not chunk:
+            return
+        try:
+            used_attempt = _post_chunk(chunk)
+            uploaded += len(chunk)
+            log(
+                f"[Supabase] upsert papers: {uploaded}/{total} "
+                f"(batch={len(chunk)}, attempt={used_attempt}/{max_attempts}, depth={depth})"
             )
+            return
+        except Exception as e:
+            if len(chunk) <= 1:
+                pid = _norm((chunk[0] or {}).get("id")) if chunk else ""
+                raise RuntimeError(
+                    f"upsert papers 最小分片仍失败：id={pid or '<unknown>'}, error={e}"
+                ) from e
+            mid = max(len(chunk) // 2, 1)
+            left = chunk[:mid]
+            right = chunk[mid:]
+            log(
+                f"[WARN] upsert 批次失败，自动拆分重试 "
+                f"(size={len(chunk)}, depth={depth}, left={len(left)}, right={len(right)}): {e}"
+            )
+            _upsert_with_split(left, depth + 1)
+            _upsert_with_split(right, depth + 1)
+
+    for i in range(0, total, batch_size):
+        chunk = rows[i : i + batch_size]
+        try:
+            _upsert_with_split(chunk, depth=0)
+        except Exception as e:
+            raise RuntimeError(
+                f"upsert papers 失败：offset={i}, batch={len(chunk)}, error={e}"
+            ) from e
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync raw arXiv papers to Supabase public tables.")
-    parser.add_argument("--date", type=str, default=TODAY_STR, help="YYYYMMDD")
+    parser.add_argument("--date", type=str, default=TODAY_STR, help="日期 token（YYYYMMDD 或 YYYYMMDD-YYYYMMDD）")
     parser.add_argument(
         "--raw-input",
         type=str,
@@ -301,6 +352,9 @@ def main() -> None:
         raw_path = os.path.join(ROOT_DIR, "archive", args.date, "raw", f"arxiv_papers_{args.date}.json")
     rows_raw = load_raw(raw_path)
     rows = [r for r in (normalize_paper(x) for x in rows_raw) if r]
+    rows, dup_cnt = deduplicate_rows_by_id(rows)
+    if dup_cnt > 0:
+        log(f"[WARN] 检测到重复论文 ID，已去重：{dup_cnt} 条")
     if not rows:
         raise RuntimeError(f"原始文件无有效论文记录：{raw_path}")
 
