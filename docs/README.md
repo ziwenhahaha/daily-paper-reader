@@ -9,19 +9,35 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-02-09
-- 运行时间：2026-02-09 19:48:31 UTC
+- 最新运行日期：2026-02-10
+- 运行时间：2026-02-10 19:49:59 UTC
 - 运行状态：成功
-- 本次总论文数：0
-- 精读区：0
-- 速读区：0
-- 详情：[/202602/09/README](/202602/09/README)
+- 本次总论文数：9
+- 精读区：4
+- 速读区：5
+- 详情：[/202602/10/README](/202602/10/README)
 
 ### 精读区论文标签
-- 本次无精读推荐。
+1. [Interpretable Analytic Calabi-Yau Metrics via Symbolic Distillation](/202602/10/2602.07834v1-interpretable-analytic-calabi-yau-metrics-via-symbolic-distillation)  
+   标签：keyword:SR、query:SR
+2. [A few-shot and physically restorable symbolic regression turbulence model based on normalized general effective-viscosity hypothesis](/202602/10/2602.08270v1-a-few-shot-and-physically-restorable-symbolic-regression-turbulence-model-based-on-normalized-general-effective-viscosity-hypothesis)  
+   标签：keyword:SR、query:SR
+3. [Breaking the Simplification Bottleneck in Amortized Neural Symbolic Regression](/202602/10/2602.08885v1-breaking-the-simplification-bottleneck-in-amortized-neural-symbolic-regression)  
+   标签：keyword:SR、query:SR
+4. [Foundation Inference Models for Ordinary Differential Equations](/202602/10/2602.08733v1-foundation-inference-models-for-ordinary-differential-equations)  
+   标签：keyword:SR、query:SR
 
 ### 速读区论文标签
-- 本次无速读推荐。
+1. [Generative structural elucidation from mass spectra as an iterative optimization problem](/202602/10/2602.07709v1-generative-structural-elucidation-from-mass-spectra-as-an-iterative-optimization-problem)  
+   标签：keyword:SR、query:SR
+2. [Approximating Matrix Functions with Deep Neural Networks and Transformers](/202602/10/2602.07800v1-approximating-matrix-functions-with-deep-neural-networks-and-transformers)  
+   标签：keyword:SR、query:SR
+3. [Learning-guided Kansa collocation for forward and inverse PDEs beyond linearity](/202602/10/2602.07970v1-learning-guided-kansa-collocation-for-forward-and-inverse-pdes-beyond-linearity)  
+   标签：keyword:SR、query:SR
+4. [Discovering Interpretable Algorithms by Decompiling Transformers to RASP](/202602/10/2602.08857v1-discovering-interpretable-algorithms-by-decompiling-transformers-to-rasp)  
+   标签：keyword:SR、query:SR
+5. [Differentiable Logical Programming for Quantum Circuit Discovery and Optimization](/202602/10/2602.08880v1-differentiable-logical-programming-for-quantum-circuit-discovery-and-optimization)  
+   标签：keyword:SR、query:SR
 
 
 <div class="dpr-home-promo-card">
