@@ -9,27 +9,35 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-02-18
-- 运行时间：2026-02-18 19:35:45 UTC
+- 最新运行日期：2026-02-19
+- 运行时间：2026-02-19 19:40:50 UTC
 - 运行状态：成功
-- 本次总论文数：5
-- 精读区：3
-- 速读区：2
-- 详情：[/202602/18/README](/202602/18/README)
+- 本次总论文数：9
+- 精读区：2
+- 速读区：7
+- 详情：[/202602/19/README](/202602/19/README)
 
 ### 精读区论文标签
-1. [Learning the S-matrix from data: Rediscovering gravity from gauge theory via symbolic regression](/202602/18/2602.15169v1-learning-the-s-matrix-from-data-rediscovering-gravity-from-gauge-theory-via-symbolic-regression)  
-   标签：keyword:SR、query:SR
-2. [Symbolic recovery of PDEs from measurement data](/202602/18/2602.15603v1-symbolic-recovery-of-pdes-from-measurement-data)  
-   标签：keyword:SR、query:SR
-3. [Physics-informed data-driven inference of an interpretable equivariant LES model of incompressible fluid turbulence](/202602/18/2602.15743v1-physics-informed-data-driven-inference-of-an-interpretable-equivariant-les-model-of-incompressible-fluid-turbulence)  
-   标签：keyword:SR、query:SR
+1. [Discovering Unknown Inverter Governing Equations via Physics-Informed Sparse Machine Learning](/202602/19/2602.16166v1-discovering-unknown-inverter-governing-equations-via-physics-informed-sparse-machine-learning)  
+   标签：query:sr
+2. [MadEvolve: Evolutionary Optimization of Cosmological Algorithms with Large Language Models](/202602/19/2602.15951v1-madevolve-evolutionary-optimization-of-cosmological-algorithms-with-large-language-models)  
+   标签：query:sr
 
 ### 速读区论文标签
-1. [A Quantum Genetic Algorithm with application to Cosmological Parameters Estimation](/202602/18/2602.15459v1-a-quantum-genetic-algorithm-with-application-to-cosmological-parameters-estimation)  
-   标签：keyword:SR、query:SR
-2. [Controlled oscillation modeling using port-Hamiltonian neural networks](/202602/18/2602.15704v1-controlled-oscillation-modeling-using-port-hamiltonian-neural-networks)  
-   标签：keyword:SR、query:SR
+1. [A Graph Meta-Network for Learning on Kolmogorov-Arnold Networks](/202602/19/2602.16316v1-a-graph-meta-network-for-learning-on-kolmogorov-arnold-networks)  
+   标签：query:sr
+2. [Automated Extraction of Mechanical Constitutive Models from Scientific Literature using Large Language Models: Applications in Cultural Heritage Conservation](/202602/19/2602.16551v1-automated-extraction-of-mechanical-constitutive-models-from-scientific-literature-using-large-language-models-applications-in-cultural-heritage-conservation)  
+   标签：query:sr
+3. [Imaging-Derived Coronary Fractional Flow Reserve: Advances in Physics-Based, Machine-Learning, and Physics-Informed Methods](/202602/19/2602.16000v1-imaging-derived-coronary-fractional-flow-reserve-advances-in-physics-based-machine-learning-and-physics-informed-methods)  
+   标签：query:sr
+4. [Solving BDNK diffusion using physics-informed neural networks](/202602/19/2602.16117v1-solving-bdnk-diffusion-using-physics-informed-neural-networks)  
+   标签：query:sr
+5. [CADEvolve: Creating Realistic CAD via Program Evolution](/202602/19/2602.16317v1-cadevolve-creating-realistic-cad-via-program-evolution)  
+   标签：query:sr
+6. [Synthesis and Verification of Transformer Programs](/202602/19/2602.16473v1-synthesis-and-verification-of-transformer-programs)  
+   标签：query:sr
+7. [Leveraging Large Language Models for Causal Discovery: a Constraint-based, Argumentation-driven Approach](/202602/19/2602.16481v1-leveraging-large-language-models-for-causal-discovery-a-constraint-based-argumentation-driven-approach)  
+   标签：query:sr
 
 
 <div class="dpr-home-promo-card">
