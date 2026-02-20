@@ -39,7 +39,7 @@ window.$docsify = {
 
       const metaFallbacks = {
         citation_title: 'Daily Paper Reader Default Entry',
-        citation_journal_title: 'Daily Paper Reader (ArXiv)',
+        citation_journal_title: 'arxiv',
         citation_pdf_url: 'https://daily-paper-reader.invalid/default.pdf',
         citation_publication_date: '2024-01-01',
         citation_date: '2024/01/01',
@@ -51,6 +51,11 @@ window.$docsify = {
       const START_MARKER = '【🤖 AI Summary】';
       const CHAT_MARKER = '【💬 Chat History】';
       const ORIG_MARKER = '【📄 Original Abstract】';
+      const TLDR_MARKER = '【📝 TLDR】';
+      const GLANCE_MARKER = '【🧭 速览区】';
+      const GLANCE_MARKER_LEGACY = '【🧭 Glance】';
+      const DETAIL_MARKER = '【🧩 论文详细总结区】';
+      const DETAIL_MARKER_LEGACY = '【🧩 论文详细总结】';
       let latestPaperRawMarkdown = '';
 
       const extractSectionByTitle = (rawContent, matchFn) => {
@@ -106,13 +111,43 @@ window.$docsify = {
           CHAT_MARKER,
           ORIG_MARKER,
           START_MARKER,
+          TLDR_MARKER,
+          GLANCE_MARKER,
+          GLANCE_MARKER_LEGACY,
+          DETAIL_MARKER,
+          DETAIL_MARKER_LEGACY,
         ]);
         text = text.replace(new RegExp(`^\\s*${escapeRegExp(START_MARKER)}\\s*\\n?`, 'i'), '');
         text = text.replace(new RegExp(`^\\s*${escapeRegExp(ORIG_MARKER)}\\s*\\n?`, 'i'), '');
         text = text.replace(new RegExp(`^\\s*${escapeRegExp(CHAT_MARKER)}\\s*\\n?`, 'i'), '');
+        text = text.replace(new RegExp(`^\\s*${escapeRegExp(TLDR_MARKER)}\\s*\\n?`, 'i'), '');
+        text = text.replace(new RegExp(`^\\s*${escapeRegExp(GLANCE_MARKER)}\\s*\\n?`, 'i'), '');
+        text = text.replace(
+          new RegExp(`^\\s*${escapeRegExp(GLANCE_MARKER_LEGACY)}\\s*\\n?`, 'i'),
+          '',
+        );
+        text = text.replace(new RegExp(`^\\s*${escapeRegExp(DETAIL_MARKER)}\\s*\\n?`, 'i'), '');
+        text = text.replace(
+          new RegExp(`^\\s*${escapeRegExp(DETAIL_MARKER_LEGACY)}\\s*\\n?`, 'i'),
+          '',
+        );
         text = text.replace(/^Tags:\s*.*$/gim, '');
         text = text.replace(/^>?\s*由\s*daily-paper-reader\s*自动生成\s*$/gim, '');
         return text.trim();
+      };
+
+      const parseDateFromText = (value) => {
+        const text = normalizeTextForMeta(value);
+        if (!text) return '';
+        const ymdMatch = text.match(/(\d{4})-(\d{2})-(\d{2})/);
+        if (ymdMatch) {
+          return `${ymdMatch[1]}-${ymdMatch[2]}-${ymdMatch[3]}`;
+        }
+        const date8Match = text.match(/(\d{4})(\d{2})(\d{2})/);
+        if (date8Match && text.indexOf('/') === -1 && text.indexOf('.') === -1) {
+          return `${date8Match[1]}-${date8Match[2]}-${date8Match[3]}`;
+        }
+        return '';
       };
 
       const splitRawSectionByTitle = (rawContent, shouldMatchTitle) => {
@@ -120,11 +155,33 @@ window.$docsify = {
         const parsed = parseFrontMatter(source);
         const body = (parsed && parsed.body) || source;
         const lines = normalizeTextForMeta(body).split('\n');
-        const isBoundary = (lineText) => {
+        const headingMeta = (lineText) => {
+          const normalized = normalizeTextForMeta(lineText).trim();
+          const match = normalized.match(/^(#{1,6})\s+(.*)$/);
+          if (!match) return null;
+          return {
+            level: match[1].length,
+            title: normalizeTextForMeta(match[2]),
+          };
+        };
+        const isBoundary = (lineText, sectionHeadingLevel) => {
           const t = normalizeTextForMeta(lineText);
           if (!t) return false;
-          if (t.startsWith(START_MARKER) || t.startsWith(CHAT_MARKER) || t.startsWith(ORIG_MARKER)) {
+          if (
+            t.startsWith(START_MARKER) ||
+            t.startsWith(CHAT_MARKER) ||
+            t.startsWith(ORIG_MARKER) ||
+            t.startsWith(TLDR_MARKER) ||
+            t.startsWith(GLANCE_MARKER) ||
+            t.startsWith(GLANCE_MARKER_LEGACY) ||
+            t.startsWith(DETAIL_MARKER)
+            || t.startsWith(DETAIL_MARKER_LEGACY)
+          ) {
             return true;
+          }
+          const heading = headingMeta(lineText);
+          if (heading && sectionHeadingLevel) {
+            return heading.level <= sectionHeadingLevel;
           }
           return /^#{1,6}\s+/.test(t);
         };
@@ -134,16 +191,24 @@ window.$docsify = {
           if (!normalized) return '';
           if (normalized.startsWith(START_MARKER)) return START_MARKER;
           if (normalized.startsWith(CHAT_MARKER)) return CHAT_MARKER;
-          if (normalized.startsWith(ORIG_MARKER)) return ORIG_MARKER;
+            if (normalized.startsWith(ORIG_MARKER)) return ORIG_MARKER;
+            if (normalized.startsWith(TLDR_MARKER)) return TLDR_MARKER;
+            if (normalized.startsWith(GLANCE_MARKER)) return GLANCE_MARKER;
+            if (normalized.startsWith(GLANCE_MARKER_LEGACY)) return GLANCE_MARKER_LEGACY;
+            if (normalized.startsWith(DETAIL_MARKER)) return DETAIL_MARKER;
+            if (normalized.startsWith(DETAIL_MARKER_LEGACY)) return DETAIL_MARKER_LEGACY;
           return normalized.replace(/^#{1,6}\s*/, '');
         };
 
         let start = -1;
+        let sectionHeadingLevel = 1;
         for (let i = 0; i < lines.length; i += 1) {
           const title = extractHeadingTitle(lines[i]);
           if (!title) continue;
           if (shouldMatchTitle(title)) {
             start = i;
+            const heading = headingMeta(lines[i]);
+            sectionHeadingLevel = heading ? heading.level : 1;
             break;
           }
         }
@@ -153,7 +218,7 @@ window.$docsify = {
 
         let end = lines.length;
         for (let j = start + 1; j < lines.length; j += 1) {
-          if (isBoundary(lines[j])) {
+          if (isBoundary(lines[j], sectionHeadingLevel)) {
             end = j;
             break;
           }
@@ -191,6 +256,16 @@ window.$docsify = {
               t.includes('original abstract') ||
               (t.includes('摘要') && t.length <= 8)
             );
+          },
+        ),
+        tldrText: splitRawSectionByTitle(
+          rawContent,
+          (title) => {
+            const t = normalizeTextForMeta(title)
+              .replace(/^\s*#{1,6}\s*/, '')
+              .trim()
+              .toLowerCase();
+            return t.includes('tldr') || t.includes('tl;dr') || t.includes('摘要要点');
           },
         ),
       });
@@ -334,12 +409,47 @@ window.$docsify = {
             pdfUrl = new URL(pdfLinkEl.href, window.location.href).href;
           }
 
-          let date = '';
-          const matchDate = vmRouteFile
-            ? vmRouteFile.match(/(\d{4}-\d{2}-\d{2})/)
-            : null;
-          if (matchDate) {
-            date = matchDate[1];
+          const frontmatterPaperMeta = (() => {
+            try {
+              const parsed = parseFrontMatter(rawPaperContent || '');
+              return parsed && parsed.meta ? parsed.meta : {};
+            } catch {
+              return {};
+            }
+          })();
+
+          let date = parseDateFromText(frontmatterPaperMeta.date);
+          if (!date) {
+            const matchDate = vmRouteFile
+              ? vmRouteFile.match(/(\d{4}-\d{2}-\d{2})/)
+              : null;
+            if (matchDate) {
+              date = matchDate[1];
+            }
+          }
+          if (!date) {
+            const matchFolderDate = vmRouteFile
+              ? vmRouteFile.match(/(?:^|\/)(\d{4})(\d{2})\/(\d{2})(?:\/|$)/)
+              : null;
+            if (matchFolderDate) {
+              date = `${matchFolderDate[1]}-${matchFolderDate[2]}-${matchFolderDate[3]}`;
+            }
+          }
+          if (!date) {
+            date = parseDateFromText(frontmatterPaperMeta.published);
+          }
+          if (!date) {
+            date = parseDateFromText(frontmatterPaperMeta.submitted);
+          }
+          if (!date) {
+            date = parseDateFromText(frontmatterPaperMeta.submit_date);
+          }
+          if (!date && vmRouteFile) {
+            const routeMatch = vmRouteFile.match(/(\d{6})\/(\d{2})/);
+            if (routeMatch) {
+              const yyyymm = routeMatch[1];
+              date = `${yyyymm.slice(0, 4)}-${yyyymm.slice(4)}-${routeMatch[2]}`;
+            }
           }
           const citationDate = date ? date.replace(/-/g, '/') : '';
 
@@ -364,23 +474,19 @@ window.$docsify = {
           });
 
           updateMetaTag('citation_title', title);
-          updateMetaTag('citation_journal_title', 'Daily Paper Reader (ArXiv)');
+          updateMetaTag('citation_journal_title', 'arxiv');
           updateMetaTag('citation_pdf_url', pdfUrl, {
             useFallback: false,
           });
-          updateMetaTag('citation_publication_date', date);
-          updateMetaTag('citation_date', citationDate);
+          updateMetaTag('citation_publication_date', date, { useFallback: false });
+          updateMetaTag('citation_date', citationDate, { useFallback: false });
 
-          const { aiSummaryText: rawSummary, originalAbstractText: rawOriginal } =
+          const {
+            aiSummaryText: rawSummary,
+            originalAbstractText: rawOriginal,
+            tldrText: rawTldrText,
+          } =
             getRawPaperSections(rawPaperContent || '');
-          const frontmatterPaperMeta = (() => {
-            try {
-              const parsed = parseFrontMatter(rawPaperContent || '');
-              return parsed && parsed.meta ? parsed.meta : {};
-            } catch {
-              return {};
-            }
-          })();
 
           // 每次路由刷新先清理上一个页面注入的摘要 meta，避免重复残留
           clearSummaryMetaFields();
@@ -461,6 +567,9 @@ window.$docsify = {
               if (raw === START_MARKER) return "🤖 AI Summary";
               if (raw === CHAT_MARKER) return "💬 Chat History";
               if (raw === ORIG_MARKER) return "📄 Original Abstract";
+              if (raw === TLDR_MARKER) return "📝 TLDR";
+              if (raw === GLANCE_MARKER || raw === GLANCE_MARKER_LEGACY) return "🧭 速览区";
+              if (raw === DETAIL_MARKER || raw === DETAIL_MARKER_LEGACY) return "🧩 论文详细总结区";
               return raw.replace(/^#{1,6}\s*/, '');
             };
             const addRawMetaBlock = (label, content) => {
@@ -638,17 +747,30 @@ window.$docsify = {
                 ),
               ),
             );
-            addMetaSectionBlock(
-              'paper-glance-section（速览卡）',
-              cleanText(
-                buildLabeledText(glancePairs, [
-                  'motivation',
-                  'method',
-                  'result',
-                  'conclusion',
-                ]),
-              ),
+            const tldrText = pickFirst(
+              [
+                rawTldrText,
+                metaPairs.get('tldr'),
+                fallbackMetaPairs.get('tldr'),
+              ],
+              '',
             );
+            if (tldrText) {
+              addMetaBlock(TLDR_MARKER, normalizeTagValue(tldrText));
+              addRawMetaBlock(TLDR_MARKER, normalizeTagValue(tldrText));
+            }
+            const glanceText = cleanText(
+              buildLabeledText(glancePairs, [
+                'motivation',
+                'method',
+                'result',
+                'conclusion',
+              ]),
+            );
+            if (glanceText) {
+              addMetaBlock(GLANCE_MARKER, glanceText);
+              addRawMetaBlock(GLANCE_MARKER, glanceText);
+            }
             addMetaSectionBlock(
               '页面导航与交互层',
               cleanText(uiRows.join('\n')),
@@ -671,9 +793,9 @@ window.$docsify = {
               if (aiSummaryText) {
                 aiBlock += aiSummaryText;
               }
-              addMetaBlock(START_MARKER, aiBlock);
+              addMetaBlock(DETAIL_MARKER, aiBlock);
               addRawMetaBlock(
-                START_MARKER,
+                DETAIL_MARKER,
                 [tagsLine, rawSummary]
                   .filter(Boolean)
                   .join('\n\n'),
@@ -695,28 +817,15 @@ window.$docsify = {
           }
 
           if (abstractText) {
-            // 为兼容 Zotero 的摘要存储行为，将换行统一替换为占位符 __BR__
-            const abstractForMeta = abstractText.replace(/\n/g, '__BR__');
-
-            // 同步写入一组兼容字段，避免不同环境读取字段不一致
-            const summaryMetaFields = [
-              'citation_abstract',
-              'description',
-              'dc.description',
-              'DC.description',
-              'abstract',
-            ];
-            summaryMetaFields.forEach((name) => {
-              updateMetaTag(name, abstractForMeta, {
-                useFallback: false,
-              });
-            });
-
-            if (abstractTextForMetaRaw) {
-              updateMetaTag('citation_abstract_raw', abstractTextForMetaRaw.replace(/\n/g, '__BR__'), {
-                useFallback: false,
-              });
-              updateMetaTag('citation_abstract_raw_md', abstractTextForMetaRaw, {
+            const abstractTextForMeta =
+              abstractTextForMetaRaw || abstractText;
+            if (abstractTextForMeta) {
+              // 用 Zotero Connector 常识别的字段名：citation_abstract
+              // 保持原始 Markdown 的结构信息，但不再写入额外冗余字段
+              const metaText = abstractTextForMeta
+                .replace(/__BR__/g, '\n')
+                .trim();
+              updateMetaTag('citation_abstract', metaText, {
                 useFallback: false,
               });
             }
@@ -938,15 +1047,7 @@ window.$docsify = {
         document.head.appendChild(meta);
       };
 
-      const SUMMARY_META_NAMES = [
-        'citation_abstract',
-        'citation_abstract_raw',
-        'citation_abstract_raw_md',
-        'description',
-        'dc.description',
-        'DC.description',
-        'abstract',
-      ];
+      const SUMMARY_META_NAMES = ['citation_abstract'];
 
       const clearSummaryMetaFields = () => {
         SUMMARY_META_NAMES.forEach((name) => {
