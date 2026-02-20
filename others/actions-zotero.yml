@@ -80,6 +80,180 @@ actions:
         return "";
       }
 
+      function classifySectionTitle(title) {
+        const raw = normalizeText(title).toLowerCase().trim();
+        if (
+          raw.includes("论文详细总结") ||
+          raw.includes("🤖 ai summary") ||
+          raw.includes("ai summary") ||
+          (raw.includes("summary") && !raw.includes("original"))
+        ) {
+          return "summary";
+        }
+        if (raw.includes("chat history") || raw.includes("💬 chat history")) {
+          return "chat";
+        }
+        if (
+          raw.includes("original abstract") ||
+          raw.includes("📄 original abstract") ||
+          raw.includes("原文摘要") ||
+          (raw.includes("摘要") && !raw.includes("详细") && !raw.includes("原文"))
+        ) {
+          return "original";
+        }
+        return "other";
+      }
+
+      function trimLeadingMetadataLines(text) {
+        const lines = normalizeSourceText(text).split("\n");
+        const filtered = [];
+        let started = false;
+        const skipExact = new Set([
+          MARKER_SUMMARY,
+          MARKER_CHAT,
+          MARKER_ORIG,
+          "## 🤖 AI Summary",
+          "## 📄 Original Abstract",
+          "## 💬 Chat History",
+          "## 论文详细总结",
+          "## 论文详细总结（自动生成）",
+        ]);
+        for (const line of lines) {
+          const t = line.trim();
+          if (!started && (t === "" || skipExact.has(t))) {
+            continue;
+          }
+          if (
+            !started &&
+            /^#{1,6}\s+/.test(t) &&
+            (
+              /\bAI Summary\b/i.test(t) ||
+              /\bOriginal Abstract\b/i.test(t) ||
+              /\bChat History\b/i.test(t) ||
+              t.includes("论文详细总结")
+            )
+          ) {
+            continue;
+          }
+          if (t.startsWith("Tags:")) {
+            continue;
+          }
+          if (/^> 由 daily-paper-reader 自动生成/.test(t)) {
+            continue;
+          }
+          started = true;
+          filtered.push(t);
+        }
+        return filtered
+          .join("\n")
+          .replace(/\n{3,}/g, "\n\n")
+          .trim();
+      }
+
+      function splitByHeadings(text) {
+        const lines = normalizeSourceText(text).split("\n");
+        const sectionMap = { summary: [], chat: [], original: [] };
+        let currentType = null;
+        let buffer = [];
+
+        const flush = () => {
+          if (!currentType) {
+            return;
+          }
+          const merged = trimLeadingMetadataLines(buffer.join("\n"));
+          if (merged) {
+            sectionMap[currentType].push(merged);
+          }
+          buffer = [];
+        };
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          const headerMatch = line.match(/^#{1,6}\s+(.*)$/);
+          if (headerMatch) {
+            flush();
+            const kind = classifySectionTitle(headerMatch[1]);
+            currentType = kind === "other" ? null : kind;
+            continue;
+          }
+
+          if (currentType) {
+            buffer.push(rawLine);
+          }
+        }
+        flush();
+
+        return sectionMap;
+      }
+
+      function pickSection(sectionMap, keys) {
+        for (const key of keys) {
+          const arr = sectionMap[key] || [];
+          if (!arr.length) continue;
+          for (let i = 0; i < arr.length; i += 1) {
+            const item = trimLeadingMetadataLines(arr[i]);
+            if (item) {
+              return item;
+            }
+          }
+        }
+        return "";
+      }
+
+      function nextBoundary(text, startPos) {
+        let best = -1;
+        [MARKER_SUMMARY, MARKER_CHAT, MARKER_ORIG].forEach((marker) => {
+          const pos = text.indexOf(marker, startPos);
+          if (pos > -1 && (best === -1 || pos < best)) {
+            best = pos;
+          }
+        });
+        return best === -1 ? text.length : best;
+      }
+
+      function splitByMarkers(text) {
+        const s = text.indexOf(MARKER_SUMMARY);
+        const c = text.indexOf(MARKER_CHAT);
+        const o = text.indexOf(MARKER_ORIG);
+        if (s === -1 && c === -1 && o === -1) {
+          return {
+            summary: trimLeadingMetadataLines(text),
+            chat: "",
+            original: "",
+            hasMarkers: false,
+          };
+        }
+
+        const summaryStart = s === -1 ? -1 : s + MARKER_SUMMARY.length;
+        const chatStart = c === -1 ? -1 : c + MARKER_CHAT.length;
+        const originalStart = o === -1 ? -1 : o + MARKER_ORIG.length;
+
+        return {
+          summary:
+            s === -1
+              ? ""
+              : trimLeadingMetadataLines(
+                  text.substring(summaryStart, nextBoundary(text, summaryStart)),
+                ),
+          chat:
+            c === -1
+              ? ""
+              : trimLeadingMetadataLines(
+                  text.substring(chatStart, nextBoundary(text, chatStart)),
+                ),
+          original:
+            o === -1
+              ? ""
+              : trimLeadingMetadataLines(
+                  text.substring(
+                    originalStart,
+                    nextBoundary(text, originalStart),
+                  ),
+                ),
+          hasMarkers: true,
+        };
+      }
+
       function splitSections(fullText) {
         const cleaned = normalizeSourceText(fullText);
         if (!cleaned) {
@@ -88,74 +262,36 @@ actions:
             reason: "⚠️ 条目摘要为空，等待重试中。",
           };
         }
-        const s = cleaned.indexOf(MARKER_SUMMARY);
-        const c = cleaned.indexOf(MARKER_CHAT);
-        const o = cleaned.indexOf(MARKER_ORIG);
 
-        const normalizeHeadings = (text) => {
-          const lines = String(text).split("\n");
-          const findSection = (matcher) => {
-            for (let i = 0; i < lines.length; i += 1) {
-              const line = (lines[i] || "").trim();
-              if (matcher.test(line)) {
-                const titleLineIndex = i;
-                const parts = [];
-                for (let j = titleLineIndex + 1; j < lines.length; j += 1) {
-                  if (/^#{1,6}\s+/.test(lines[j])) {
-                    // 只按一级到四级标题作为分割，避免正文中的 # 公式标识误触发
-                    break;
-                  }
-                  if (lines[j].trim() === "") continue;
-                  parts.push(lines[j]);
-                }
-                return parts.join("\n").trim();
-              }
-            }
-            return "";
-          };
+        const headingParsed = splitByHeadings(cleaned);
+        const parsedSummary = pickSection(headingParsed, ["summary"]);
+        const parsedChat = pickSection(headingParsed, ["chat"]);
+        const parsedOriginal = pickSection(headingParsed, ["original"]);
 
-          const summary = findSection(/^\s*#{1,6}\s*【?🤖\s*AI Summary/i);
-          if (summary) {
-            return {
-              summary,
-              chat: findSection(/^\s*#{1,6}\s*【?💬\s*Chat History/i),
-              original: findSection(
-                /^\s*#{1,6}\s*【?📄\s*Original Abstract/i,
-              ),
-              hasMarkers: true,
-            };
-          }
-
-          return null;
-        };
-
-        const headingParsed = normalizeHeadings(cleaned);
-        if (headingParsed) {
-          return headingParsed;
-        }
-
-        if (s === -1 && c === -1 && o === -1) {
+        if (parsedSummary || parsedChat || parsedOriginal) {
           return {
             valid: true,
-            summary: cleaned,
-            chat: "",
-            original: "",
-            hasMarkers: false,
+            summary: parsedSummary,
+            chat: parsedChat,
+            original: parsedOriginal,
+            hasMarkers: true,
           };
         }
 
-        const summaryStart = s === -1 ? 0 : s + MARKER_SUMMARY.length;
-        const summaryEnd = c > -1 ? c : o > -1 ? o : cleaned.length;
-        const chatStart = c > -1 ? c + MARKER_CHAT.length : -1;
-        const chatEnd = o > -1 ? o : cleaned.length;
+        const markerParsed = splitByMarkers(cleaned);
+        if (!markerParsed.summary && !markerParsed.chat && !markerParsed.original) {
+          return {
+            valid: false,
+            reason: "⚠️ 未检测到可识别的 AI 摘要结构，等待重试中。",
+          };
+        }
 
         return {
           valid: true,
-          summary: cleaned.substring(summaryStart, summaryEnd).trim(),
-          chat: chatStart > -1 ? cleaned.substring(chatStart, chatEnd).trim() : "",
-          original:
-            o > -1 ? cleaned.substring(o + MARKER_ORIG.length).trim() : "",
-          hasMarkers: s > -1 || c > -1 || o > -1,
+          summary: markerParsed.summary,
+          chat: markerParsed.chat,
+          original: markerParsed.original,
+          hasMarkers: markerParsed.hasMarkers,
         };
       }
 
@@ -192,14 +328,18 @@ actions:
             /[.*+?^${}()|[\]\\]/g,
             "\\$&",
           );
-          return text.replace(
-            new RegExp(`^\\s*#{1,6}\\s*${escaped}\\s*\\n+`, "i"),
-            "",
-          );
+          return text
+            .replace(
+              new RegExp(`^\\s*#{1,6}\\s*${escaped}\\s*\\n+`, "i"),
+              "",
+            )
+            .trim();
         };
 
         const summaryText = parsed.summary
-          ? stripLeadingHeading(parsed.summary, "🤖 AI Summary")
+          ? trimLeadingMetadataLines(
+              stripLeadingHeading(parsed.summary, "🤖 AI Summary"),
+            )
           : "";
         addBlock(
           "🤖 AI Summary",
@@ -211,7 +351,9 @@ actions:
           addBlock("💬 Chat History", chatText);
         }
         const originalText = parsed.original
-          ? stripLeadingHeading(parsed.original, "📄 Original Abstract")
+          ? trimLeadingMetadataLines(
+              stripLeadingHeading(parsed.original, "📄 Original Abstract"),
+            )
           : "";
         if (originalText) {
           addBlock("📄 Original Abstract", originalText);
