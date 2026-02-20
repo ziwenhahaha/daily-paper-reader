@@ -40,6 +40,18 @@ actions:
           .trim();
       }
 
+      function hasAnyMarker(text) {
+        return (
+          text.includes(MARKER_SUMMARY) ||
+          text.includes(MARKER_CHAT) ||
+          text.includes(MARKER_ORIG)
+        );
+      }
+
+      function cleanForCompare(v) {
+        return normalizeSourceText(v).replace(/\s+/g, "");
+      }
+
       function escapeHtml(v) {
         return normalizeText(v)
           .replace(/&/g, "&amp;")
@@ -63,21 +75,32 @@ actions:
 
       function getSourceText(targetItem) {
         const candidateFields = [
-          "abstractNote",
-          "abstract",
-          "description",
           "citation_abstract",
           "dc.description",
           "DC.description",
+          "description",
+          "abstract",
+          "abstractNote",
           "extra",
         ];
+        let bestText = "";
+        let bestLength = 0;
         for (const fieldName of candidateFields) {
           const raw = normalizeSourceText(getFieldSafe(targetItem, fieldName));
-          if (raw) {
+          if (!raw) {
+            continue;
+          }
+
+          if (hasAnyMarker(raw)) {
             return raw;
           }
+
+          if (raw.length > bestLength) {
+            bestText = raw;
+            bestLength = raw.length;
+          }
         }
-        return "";
+        return bestText;
       }
 
       function classifySectionTitle(title) {
@@ -233,6 +256,21 @@ actions:
 
         const headingParsed = splitByHeadings(cleaned);
         if (headingParsed.summary || headingParsed.original || headingParsed.chat) {
+          const summary = headingParsed.summary;
+          const original = headingParsed.original;
+          const chat = headingParsed.chat;
+          if (
+            summary &&
+            original &&
+            cleanForCompare(summary) === cleanForCompare(original)
+          ) {
+            return {
+              valid: true,
+              summary,
+              chat,
+              original: "",
+            };
+          }
           return {
             valid: true,
             summary: headingParsed.summary,
@@ -243,6 +281,21 @@ actions:
 
         const markerParsed = splitByMarkersIfNeed(cleaned);
         if (markerParsed.summary || markerParsed.original || markerParsed.chat) {
+          const summary = markerParsed.summary;
+          const original = markerParsed.original;
+          const chat = markerParsed.chat;
+          if (
+            summary &&
+            original &&
+            cleanForCompare(summary) === cleanForCompare(original)
+          ) {
+            return {
+              valid: true,
+              summary,
+              chat,
+              original: "",
+            };
+          }
           return {
             valid: true,
             summary: markerParsed.summary,
@@ -307,6 +360,18 @@ actions:
               ),
             )
           : "";
+        const originalText = parsed.original
+          ? extractFirstSectionBlock(
+              trimLeadingMetadataLines(
+                stripLeadingHeading(parsed.original, "📄 Original Abstract"),
+              ),
+            )
+          : "";
+
+        const shouldKeepOriginal =
+          !(summaryText && originalText &&
+            cleanForCompare(summaryText) === cleanForCompare(originalText));
+
         addBlock(
           "🤖 AI Summary",
           summaryText || "（未检测到 AI Summary，已自动降级展示原始内容）",
@@ -316,14 +381,7 @@ actions:
           const chatText = formatChatMarkdown(parsed.chat);
           addBlock("💬 Chat History", chatText);
         }
-        const originalText = parsed.original
-          ? extractFirstSectionBlock(
-              trimLeadingMetadataLines(
-                stripLeadingHeading(parsed.original, "📄 Original Abstract"),
-              ),
-            )
-          : "";
-        if (originalText) {
+        if (shouldKeepOriginal && originalText) {
           addBlock("📄 Original Abstract", originalText);
         }
         return blocks.join("\n\n");
@@ -389,10 +447,53 @@ actions:
             }
             const title = normalizeText(note.getNoteTitle ? note.getNoteTitle() : "")
               .toLowerCase();
-            return title.includes("ai summary") || title.includes("daily-paper");
+            if (title.includes("ai summary") || title.includes("daily-paper")) {
+              return true;
+            }
+            const noteHtml = normalizeText(note.getNote()).toLowerCase();
+            return (
+              noteHtml.includes("🤖 ai summary") ||
+              noteHtml.includes("📄 original abstract") ||
+              noteHtml.includes("dpr-ai-summary-note")
+            );
           });
         } catch (err) {
           return false;
+        }
+      }
+
+      async function removeAutoSummaryNotes(targetItem) {
+        try {
+          const notes = Zotero.Items.get(targetItem.getNotes()) || [];
+          for (const note of notes) {
+            const tags = note.getTags ? note.getTags() : [];
+            const hasTag = tags?.some((tagItem) => tagItem.tag === AUTO_NOTE_TAG);
+            if (!hasTag) {
+              const title = normalizeText(note.getNoteTitle ? note.getNoteTitle() : "")
+                .toLowerCase();
+              const noteHtml = normalizeText(note.getNote()).toLowerCase();
+              const isAuto =
+                title.includes("ai summary") ||
+                title.includes("daily-paper") ||
+                noteHtml.includes("🤖 ai summary") ||
+                noteHtml.includes("📄 original abstract");
+              if (!isAuto) {
+                continue;
+              }
+            }
+
+            try {
+              if (note.eraseTx) {
+                await note.eraseTx();
+              } else if (note.deleteTx) {
+                await note.deleteTx();
+              }
+            } catch (err) {
+              // ignore removal failure
+            }
+          }
+        } catch (err) {
+          // ignore removal process
         }
       }
 
@@ -400,7 +501,7 @@ actions:
         const title = normalizeText(targetItem.getField("title")) || "[无标题]";
 
         if (hasAutoSummaryNote(targetItem)) {
-          return `ℹ️ [${escapeHtml(title)}] 已存在摘要笔记，已跳过`;
+          await removeAutoSummaryNotes(targetItem);
         }
 
         let sourceText = "";
