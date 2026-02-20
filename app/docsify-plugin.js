@@ -115,14 +115,83 @@ window.$docsify = {
         return text.trim();
       };
 
+      const splitRawSectionByTitle = (rawContent, shouldMatchTitle) => {
+        const source = (rawContent || '').toString();
+        const parsed = parseFrontMatter(source);
+        const body = (parsed && parsed.body) || source;
+        const lines = normalizeTextForMeta(body).split('\n');
+        const isBoundary = (lineText) => {
+          const t = normalizeTextForMeta(lineText);
+          if (!t) return false;
+          if (t.startsWith(START_MARKER) || t.startsWith(CHAT_MARKER) || t.startsWith(ORIG_MARKER)) {
+            return true;
+          }
+          return /^#{1,6}\s+/.test(t);
+        };
+
+        const extractHeadingTitle = (lineText) => {
+          const normalized = normalizeTextForMeta(lineText).trim();
+          if (!normalized) return '';
+          if (normalized.startsWith(START_MARKER)) return START_MARKER;
+          if (normalized.startsWith(CHAT_MARKER)) return CHAT_MARKER;
+          if (normalized.startsWith(ORIG_MARKER)) return ORIG_MARKER;
+          return normalized.replace(/^#{1,6}\s*/, '');
+        };
+
+        let start = -1;
+        for (let i = 0; i < lines.length; i += 1) {
+          const title = extractHeadingTitle(lines[i]);
+          if (!title) continue;
+          if (shouldMatchTitle(title)) {
+            start = i;
+            break;
+          }
+        }
+        if (start < 0) {
+          return '';
+        }
+
+        let end = lines.length;
+        for (let j = start + 1; j < lines.length; j += 1) {
+          if (isBoundary(lines[j])) {
+            end = j;
+            break;
+          }
+        }
+        return lines
+          .slice(start + 1, end)
+          .join('\n')
+          .trim();
+      };
+
       const getRawPaperSections = (rawContent) => ({
-        aiSummaryText: extractSectionByTitle(
+        aiSummaryText: splitRawSectionByTitle(
           rawContent,
-          (title) => title.includes('论文详细总结（自动生成）'),
+          (title) => {
+            const t = normalizeTextForMeta(title).replace(/^\s*#{1,6}\s*/, '').trim().toLowerCase();
+            return (
+              t.includes('论文详细总结') ||
+              t.includes('论文详细总结（自动生成）') ||
+              t.includes('ai summary') ||
+              t.includes('🤖 ai summary') ||
+              t.includes('论文详细总结')
+            );
+          },
         ),
-        originalAbstractText: extractSectionByTitle(
+        originalAbstractText: splitRawSectionByTitle(
           rawContent,
-          (title) => /abstract|摘要/i.test(title),
+          (title) => {
+            const t = normalizeTextForMeta(title)
+              .replace(/^\s*#{1,6}\s*/, '')
+              .trim()
+              .toLowerCase();
+            return (
+              t === 'abstract' ||
+              t.includes('原文摘要') ||
+              t.includes('original abstract') ||
+              (t.includes('摘要') && t.length <= 8)
+            );
+          },
         ),
       });
 
@@ -318,76 +387,11 @@ window.$docsify = {
 
           // 构造给 Zotero 用的“摘要”元信息：按「AI 总结 / 对话历史 / 原始摘要」分段组织
           let abstractText = '';
+          let abstractTextForMetaRaw = '';
           const sectionEl = document.querySelector('.markdown-section');
           if (sectionEl) {
             let aiSummaryText = rawSummary;
             let origAbstractText = rawOriginal;
-
-            // 1) 从 DOM 中提取“论文详细总结（自动生成）”这一节，作为 AI 总结（兜底）
-            const h2List = Array.from(sectionEl.querySelectorAll('h2'));
-            if (!aiSummaryText) {
-              const summaryHeader = h2List.find((h) =>
-                h.innerText.includes('论文详细总结'),
-              );
-              if (summaryHeader) {
-                let cursor = summaryHeader.nextElementSibling;
-                const parts = [];
-                while (
-                  cursor &&
-                  cursor.tagName !== 'H1' &&
-                  cursor.tagName !== 'H2'
-                ) {
-                  parts.push(cursor.innerText || '');
-                  cursor = cursor.nextElementSibling;
-                }
-                aiSummaryText = parts.join('\n\n').trim();
-              }
-            }
-
-            if (!origAbstractText) {
-              // 2) 提取「原始摘要」区域（例如 "## Abstract" 或包含“摘要”的二级标题）
-              const abstractHeader = h2List.find((h) =>
-                /abstract|摘要/i.test(h.innerText || ''),
-              );
-              if (abstractHeader) {
-                let cursor = abstractHeader.nextElementSibling;
-                const parts = [];
-                while (
-                  cursor &&
-                  cursor.tagName !== 'H1' &&
-                  cursor.tagName !== 'H2'
-                ) {
-                  // 一旦遇到聊天容器（或其父容器），立即停止，避免把“私人研讨区”等内容当作摘要
-                  if (
-                    cursor.id === 'paper-chat-container' ||
-                    (cursor.querySelector &&
-                      cursor.querySelector('#paper-chat-container'))
-                  ) {
-                    break;
-                  }
-                  parts.push(cursor.innerText || '');
-                  cursor = cursor.nextElementSibling;
-                }
-                origAbstractText = parts.join('\n\n').trim();
-              }
-            }
-            aiSummaryText = cleanSectionText(aiSummaryText);
-            origAbstractText = cleanSectionText(origAbstractText);
-
-            // 如果没有找到 AI 总结，就退回到正文前几段作为粗略总结
-            if (!aiSummaryText) {
-              const paras = [];
-              sectionEl.querySelectorAll('p').forEach((p) => {
-                if (paras.length >= 6) return;
-                // 跳过聊天区域中的段落，避免把私人研讨区内容当作总结
-                if (p.closest && p.closest('#paper-chat-container')) return;
-                paras.push(p);
-              });
-              aiSummaryText = paras
-                .map((p) => p.innerText || '')
-                .join('\n\n')
-                .trim();
-            }
             aiSummaryText = cleanSectionText(aiSummaryText);
             origAbstractText = cleanSectionText(origAbstractText);
 
@@ -430,6 +434,8 @@ window.$docsify = {
             const seenBlocks = new Set();
             const seenTitles = new Set();
             const cleanText = (value) => cleanSectionText(normalizeTextForMeta(value));
+            const rawParts = [];
+            const seenRawBlocks = new Set();
             const addMetaSectionBlock = (title, content) => {
               const cleanText = cleanSectionText(content);
               if (!cleanText) return;
@@ -456,6 +462,15 @@ window.$docsify = {
               if (raw === CHAT_MARKER) return "💬 Chat History";
               if (raw === ORIG_MARKER) return "📄 Original Abstract";
               return raw.replace(/^#{1,6}\s*/, '');
+            };
+            const addRawMetaBlock = (label, content) => {
+              const text = normalizeTextForMeta(content);
+              if (!text) return;
+              const sectionTitle = normalizeMarkerTitle(label);
+              const signature = `${sectionTitle}|${text.replace(/\s+/g, ' ')}`;
+              if (seenRawBlocks.has(signature)) return;
+              seenRawBlocks.add(signature);
+              rawParts.push(`## ${sectionTitle}\n${text}`);
             };
             const addMetaBlock = (label, content) => {
               const cleanText = cleanSectionText(content);
@@ -657,24 +672,51 @@ window.$docsify = {
                 aiBlock += aiSummaryText;
               }
               addMetaBlock(START_MARKER, aiBlock);
+              addRawMetaBlock(
+                START_MARKER,
+                [tagsLine, rawSummary]
+                  .filter(Boolean)
+                  .join('\n\n'),
+              );
             }
             if (chatSection) {
               addMetaBlock(CHAT_MARKER, chatSection);
+              addRawMetaBlock(CHAT_MARKER, chatSection);
             }
             if (origAbstractText) {
               addMetaBlock(ORIG_MARKER, origAbstractText);
+              addRawMetaBlock(ORIG_MARKER, rawOriginal);
             }
+
+            // 兜底 raw 聚合：确保保留 AI Summary / Original Abstract 原始 Markdown
+            // （避免经过 DOM 文本化路径后公式被改写）
             abstractText = parts.join('\n\n\n').trim();
+            abstractTextForMetaRaw = rawParts.join('\n\n\n').trim();
           }
 
           if (abstractText) {
             // 为兼容 Zotero 的摘要存储行为，将换行统一替换为占位符 __BR__
             const abstractForMeta = abstractText.replace(/\n/g, '__BR__');
 
-            // 仅保留 citation_abstract，避免 head 中重复注入多个相同摘要字段
-            updateMetaTag('citation_abstract', abstractForMeta, {
-              useFallback: false,
+            // 同步写入一组兼容字段，避免不同环境读取字段不一致
+            const summaryMetaFields = [
+              'citation_abstract',
+              'description',
+              'dc.description',
+              'DC.description',
+              'abstract',
+            ];
+            summaryMetaFields.forEach((name) => {
+              updateMetaTag(name, abstractForMeta, {
+                useFallback: false,
+              });
             });
+
+            if (abstractTextForMetaRaw) {
+              updateMetaTag('citation_abstract_raw', abstractTextForMetaRaw.replace(/\n/g, '__BR__'), {
+                useFallback: false,
+              });
+            }
           }
 
           document
@@ -895,6 +937,7 @@ window.$docsify = {
 
       const SUMMARY_META_NAMES = [
         'citation_abstract',
+        'citation_abstract_raw',
         'description',
         'dc.description',
         'DC.description',
