@@ -9,35 +9,45 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-02-19
-- 运行时间：2026-02-19 19:40:50 UTC
+- 最新运行日期：2026-02-11 ~ 2026-02-20
+- 运行时间：2026-02-20 19:30:14 UTC
 - 运行状态：成功
-- 本次总论文数：9
+- 本次总论文数：12
 - 精读区：2
-- 速读区：7
-- 详情：[/202602/19/README](/202602/19/README)
+- 速读区：10
+
+### 今日简报（AI）
+深度解析 12 篇前沿成果，聚焦物理启发式符号回归与神经符号图生成的跨界突破。
+满分论文揭示了量级分析
+- 详情：[/20260211-20260220/README](/20260211-20260220/README)
 
 ### 精读区论文标签
-1. [Discovering Unknown Inverter Governing Equations via Physics-Informed Sparse Machine Learning](/202602/19/2602.16166v1-discovering-unknown-inverter-governing-equations-via-physics-informed-sparse-machine-learning)  
-   标签：query:sr
-2. [MadEvolve: Evolutionary Optimization of Cosmological Algorithms with Large Language Models](/202602/19/2602.15951v1-madevolve-evolutionary-optimization-of-cosmological-algorithms-with-large-language-models)  
-   标签：query:sr
+1. [Order of Magnitude Analysis and Data-Based Physics-Informed Symbolic Regression for Turbulent Pipe Flow](/20260211-20260220/2602.17082v1-order-of-magnitude-analysis-and-data-based-physics-informed-symbolic-regression-for-turbulent-pipe-flow)  
+   标签：评分：10.0/10、query:sr
+2. [Neural Proposals, Symbolic Guarantees: Neuro-Symbolic Graph Generation with Hard Constraints](/20260211-20260220/2602.16954v1-neural-proposals-symbolic-guarantees-neuro-symbolic-graph-generation-with-hard-constraints)  
+   标签：评分：8.0/10、query:sr
 
 ### 速读区论文标签
-1. [A Graph Meta-Network for Learning on Kolmogorov-Arnold Networks](/202602/19/2602.16316v1-a-graph-meta-network-for-learning-on-kolmogorov-arnold-networks)  
-   标签：query:sr
-2. [Automated Extraction of Mechanical Constitutive Models from Scientific Literature using Large Language Models: Applications in Cultural Heritage Conservation](/202602/19/2602.16551v1-automated-extraction-of-mechanical-constitutive-models-from-scientific-literature-using-large-language-models-applications-in-cultural-heritage-conservation)  
-   标签：query:sr
-3. [Imaging-Derived Coronary Fractional Flow Reserve: Advances in Physics-Based, Machine-Learning, and Physics-Informed Methods](/202602/19/2602.16000v1-imaging-derived-coronary-fractional-flow-reserve-advances-in-physics-based-machine-learning-and-physics-informed-methods)  
-   标签：query:sr
-4. [Solving BDNK diffusion using physics-informed neural networks](/202602/19/2602.16117v1-solving-bdnk-diffusion-using-physics-informed-neural-networks)  
-   标签：query:sr
-5. [CADEvolve: Creating Realistic CAD via Program Evolution](/202602/19/2602.16317v1-cadevolve-creating-realistic-cad-via-program-evolution)  
-   标签：query:sr
-6. [Synthesis and Verification of Transformer Programs](/202602/19/2602.16473v1-synthesis-and-verification-of-transformer-programs)  
-   标签：query:sr
-7. [Leveraging Large Language Models for Causal Discovery: a Constraint-based, Argumentation-driven Approach](/202602/19/2602.16481v1-leveraging-large-language-models-for-causal-discovery-a-constraint-based-argumentation-driven-approach)  
-   标签：query:sr
+1. [Simple Baselines are Competitive with Code Evolution](/20260211-20260220/2602.16805v1-simple-baselines-are-competitive-with-code-evolution)  
+   标签：评分：7.0/10、query:sr
+2. [MxDiffusion: A Physics-Aware Maxwells Law-Guided Diffusion Model Strategy for Inverse Photonic Metasurface Design](/20260211-20260220/2602.16851v1-mxdiffusion-a-physics-aware-maxwells-law-guided-diffusion-model-strategy-for-inverse-photonic-metasurface-design)  
+   标签：评分：7.0/10、query:sr
+3. [RankEvolve: Automating the Discovery of Retrieval Algorithms via LLM-Driven Evolution](/20260211-20260220/2602.16932v1-rankevolve-automating-the-discovery-of-retrieval-algorithms-via-llm-driven-evolution)  
+   标签：评分：7.0/10、query:sr
+4. [Continual learning and refinement of causal models through dynamic predicate invention](/20260211-20260220/2602.17217v1-continual-learning-and-refinement-of-causal-models-through-dynamic-predicate-invention)  
+   标签：评分：7.0/10、query:sr
+5. [AutoNumerics: An Autonomous, PDE-Agnostic Multi-Agent Pipeline for Scientific Computing](/20260211-20260220/2602.17607v1-autonumerics-an-autonomous-pde-agnostic-multi-agent-pipeline-for-scientific-computing)  
+   标签：评分：7.0/10、query:sr
+6. [C3NN-SBI: Learning Hierarchies of $N$-Point Statistics from Cosmological Fields with Physics-Informed Neural Networks](/20260211-20260220/2602.16768v1-c3nn-sbi-learning-hierarchies-of-n-point-statistics-from-cosmological-fields-with-physics-informed-neural-networks)  
+   标签：评分：6.0/10、query:sr
+7. [Beyond Message Passing: A Symbolic Alternative for Expressive and Interpretable Graph Learning](/20260211-20260220/2602.16947v1-beyond-message-passing-a-symbolic-alternative-for-expressive-and-interpretable-graph-learning)  
+   标签：评分：6.0/10、query:sr
+8. [Sonar-TS: Search-Then-Verify Natural Language Querying for Time Series Databases](/20260211-20260220/2602.17001v1-sonar-ts-search-then-verify-natural-language-querying-for-time-series-databases)  
+   标签：评分：6.0/10、query:sr
+9. [Transforming Behavioral Neuroscience Discovery with In-Context Learning and AI-Enhanced Tensor Methods](/20260211-20260220/2602.17027v1-transforming-behavioral-neuroscience-discovery-with-in-context-learning-and-ai-enhanced-tensor-methods)  
+   标签：评分：6.0/10、query:sr
+10. [Learning-based augmentation of first-principle models: A linear fractional representation-based approach](/20260211-20260220/2602.17297v1-learning-based-augmentation-of-first-principle-models-a-linear-fractional-representation-based-approach)  
+   标签：评分：6.0/10、query:sr
 
 
 <div class="dpr-home-promo-card">
