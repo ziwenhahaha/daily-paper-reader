@@ -454,7 +454,6 @@ window.$docsify = {
           const citationDate = date ? date.replace(/-/g, '/') : '';
 
           let authors = [];
-          let tagsLine = '';
           document.querySelectorAll('.markdown-section p').forEach((p) => {
             if (p.innerText.includes('Authors:')) {
               let text = p.innerText.replace('Authors:', '').trim();
@@ -467,9 +466,6 @@ window.$docsify = {
                 .split(/,|，/)
                 .map((a) => a.trim())
                 .filter(Boolean);
-            } else if (p.innerText.includes('Tags:')) {
-              // 提取 Tags 行，用于 AI Summary 区块展示
-              tagsLine = (p.innerText || '').trim();
             }
           });
 
@@ -784,19 +780,16 @@ window.$docsify = {
               }
             });
 
-            if (aiSummaryText || tagsLine) {
-              // AI Summary 区块：保留 Tags 行，但不再包含 Authors 信息
+            if (aiSummaryText) {
+              // AI Summary 区块：仅保留 AI 摘要正文，不再自动拼入 Tags
               let aiBlock = `${START_MARKER}\n`;
-              if (tagsLine) {
-                aiBlock += `${tagsLine}\n\n`;
-              }
               if (aiSummaryText) {
                 aiBlock += aiSummaryText;
               }
               addMetaBlock(DETAIL_MARKER, aiBlock);
               addRawMetaBlock(
                 DETAIL_MARKER,
-                [tagsLine, rawSummary]
+                [rawSummary]
                   .filter(Boolean)
                   .join('\n\n'),
               );
