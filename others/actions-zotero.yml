@@ -8,260 +8,303 @@ actions:
     event: 1
     operation: 4
     data: >-
-      // === 1. 定义标记 ===
-    
       const MARKER_SUMMARY = "【🤖 AI Summary】";
-
       const MARKER_CHAT = "【💬 Chat History】";
-
       const MARKER_ORIG = "【📄 Original Abstract】";
+      const BR_PLACEHOLDER = /__BR__/g;
+      const AUTO_NOTE_TAG = "dpr-ai-summary-note";
+      const RETRY_DELAYS = [300, 800, 1500];
 
-
-      // 前端传来的占位符
-
-      const BR_PLACEHOLDER = /__BR__/g; 
-
-
-      // === 2. 获取条目（支持 item / items）===
-
-      const targetItems = (typeof items !== 'undefined' && items && items.length > 0)
-          ? items
-          : ((typeof item !== 'undefined') ? [item] : []);
-
+      const targetItems = (typeof items !== "undefined" && items && items.length > 0)
+        ? items
+        : ((typeof item !== "undefined" && item) ? [item] : []);
 
       if (!targetItems || targetItems.length === 0) {
-          return "❌ 错误：未接收到有效条目 (请确保选中了条目)";
+        return "❌ 错误：未接收到有效条目（请先在条目上触发脚本）";
       }
-
-
-      // === 3. 工具函数 ===
 
       function normalizeText(v) {
-          return (v || "").toString();
+        return (v || "").toString();
       }
-
 
       function normalizeSourceText(v) {
-          const plain = normalizeText(v)
-              .replace(/<br\s*\/?/gi, "\n")
-              .replace(/<\/p>/gi, "\n")
-              .replace(/<p[^>]*>/gi, "")
-              .replace(/<[^>]+>/g, "")
-              .replace(/\r/g, "\n");
-
-          return plain
-              .replace(/\n{3,}/g, "\n\n")
-              .trim();
+        const plain = normalizeText(v)
+          .replace(/<br\s*\/?>/gi, "\n")
+          .replace(/<\\/p>/gi, "\n")
+          .replace(/<p[^>]*>/gi, "")
+          .replace(/<[^>]+>/g, "")
+          .replace(BR_PLACEHOLDER, "\n")
+          .replace(/\r/g, "\n");
+        return plain
+          .replace(/\n{3,}/g, "\n\n")
+          .trim();
       }
-
 
       function escapeHtml(v) {
-          return normalizeText(v)
-              .replace(/&/g, '&amp;')
-              .replace(/</g, '&lt;')
-              .replace(/>/g, '&gt;')
-              .replace(/"/g, '&quot;')
-              .replace(/'/g, '&#39;');
+        return normalizeText(v)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
       }
 
-
-      function toParagraphHtml(rawText) {
-          return escapeHtml(rawText)
-              .replace(BR_PLACEHOLDER, "\n")
-              .replace(/\n/g, "<br>");
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
       }
 
+      function getFieldSafe(targetItem, fieldName) {
+        try {
+          return normalizeText(targetItem.getField(fieldName));
+        } catch (err) {
+          return "";
+        }
+      }
+
+      function getSourceText(targetItem) {
+        const candidateFields = [
+          "abstractNote",
+          "abstract",
+          "description",
+          "citation_abstract",
+          "dc.description",
+          "DC.description",
+          "extra",
+        ];
+        for (const fieldName of candidateFields) {
+          const raw = normalizeSourceText(getFieldSafe(targetItem, fieldName));
+          if (raw) {
+            return raw;
+          }
+        }
+        return "";
+      }
 
       function splitSections(fullText) {
-          const cleaned = normalizeSourceText(fullText);
-
-          const s = cleaned.indexOf(MARKER_SUMMARY);
-          const c = cleaned.indexOf(MARKER_CHAT);
-          const o = cleaned.indexOf(MARKER_ORIG);
-
-          // 兼容 Connector 直接写入的情况：没有结构标记也能落盘
-          if (s === -1 && c === -1 && o === -1) {
-              return {
-                  valid: true,
-                  summary: cleaned,
-                  chat: "",
-                  original: "",
-                  hasMarkers: false
-              };
-          }
-
-          if (s === -1) {
-              return {
-                  valid: false,
-                  reason: "❌ 摘要里没找到 'AI Summary' 标记，跳过。"
-              };
-          }
-
-          if (o === -1) {
-              return {
-                  valid: false,
-                  reason: "❌ 找不到 Original Abstract 标记。"
-              };
-          }
-
-          const summaryEnd = (c > -1) ? c : o;
-
+        const cleaned = normalizeSourceText(fullText);
+        if (!cleaned) {
           return {
-              valid: true,
-              summary: cleaned.substring(s + MARKER_SUMMARY.length, summaryEnd).trim(),
-              chat: c > -1 ? cleaned.substring(c + MARKER_CHAT.length, o).trim() : "",
-              original: cleaned.substring(o + MARKER_ORIG.length).trim(),
-              hasMarkers: true
+            valid: false,
+            reason: "⚠️ 条目摘要为空，等待重试中。",
           };
+        }
+        const s = cleaned.indexOf(MARKER_SUMMARY);
+        const c = cleaned.indexOf(MARKER_CHAT);
+        const o = cleaned.indexOf(MARKER_ORIG);
+
+        if (s === -1 && c === -1 && o === -1) {
+          return {
+            valid: true,
+            summary: cleaned,
+            chat: "",
+            original: "",
+            hasMarkers: false,
+          };
+        }
+
+        const summaryStart = s === -1 ? 0 : s + MARKER_SUMMARY.length;
+        const summaryEnd = c > -1 ? c : o > -1 ? o : cleaned.length;
+        const chatStart = c > -1 ? c + MARKER_CHAT.length : -1;
+        const chatEnd = o > -1 ? o : cleaned.length;
+
+        return {
+          valid: true,
+          summary: cleaned.substring(summaryStart, summaryEnd).trim(),
+          chat: chatStart > -1 ? cleaned.substring(chatStart, chatEnd).trim() : "",
+          original:
+            o > -1 ? cleaned.substring(o + MARKER_ORIG.length).trim() : "",
+          hasMarkers: s > -1 || c > -1 || o > -1,
+        };
       }
 
+      function formatChatMarkdown(rawChatString) {
+        if (!rawChatString) {
+          return "";
+        }
+        const segments = rawChatString.split(/(?=👤 User:|🤖 AI:)/g);
+        const lines = [];
+        for (const seg of segments) {
+          const cleanText = normalizeSourceText(seg).trim();
+          if (!cleanText) {
+            continue;
+          }
+          if (cleanText.startsWith("👤 User:")) {
+            lines.push(`**👤 User:**\n${cleanText.replace("👤 User:", "").trim()}`);
+          } else if (cleanText.startsWith("🤖 AI:")) {
+            lines.push(`**🤖 AI:**\n${cleanText.replace("🤖 AI:", "").trim()}`);
+          }
+        }
+        return lines.join("\n\n");
+      }
 
-      function formatChatHistory(rawChatString) {
-          if (!rawChatString) return "";
+      function buildNoteMarkdown(parsed) {
+        const blocks = [];
+        blocks.push("## 🤖 AI Summary");
+        blocks.push(
+          parsed.summary
+            ? parsed.summary
+            : "（未检测到 AI Summary，已自动降级展示原始内容）",
+        );
+        if (parsed.chat) {
+          const chatText = formatChatMarkdown(parsed.chat);
+          if (chatText) {
+            blocks.push("## 💬 Chat History");
+            blocks.push(chatText);
+          }
+        }
+        if (parsed.original) {
+          blocks.push("## 📄 Original Abstract");
+          blocks.push(parsed.original);
+        }
+        blocks.push("\n> 由 daily-paper-reader 自动生成");
+        return blocks.join("\n\n");
+      }
 
-          let segments = rawChatString.split(/(?=👤 User:|🤖 AI:)/g);
-          let html = '<div style="display: flex; flex-direction: column; gap: 16px;">';
+      function markdownToPlainHtml(markdownText) {
+        const lines = normalizeText(markdownText).split(/\n/);
+        const htmlParts = [];
+        let paragraphBuffer = [];
+        const flushParagraph = () => {
+          if (!paragraphBuffer.length) {
+            return;
+          }
+          const blockText = paragraphBuffer.join("\n").trim();
+          if (!blockText) {
+            paragraphBuffer = [];
+            return;
+          }
+          const headingMatch = blockText.match(/^(#{1,6})\s+(.*)$/);
+          if (headingMatch) {
+            const level = Math.min(6, headingMatch[1].length);
+            htmlParts.push(
+              `<h${level} style=\"margin: 14px 0 8px 0; color:#0277bd; border-bottom:1px solid #e3f2fd;\">${escapeHtml(
+                headingMatch[2],
+              )}</h${level}>`,
+            );
+          } else if (/^\s*>\s*/.test(blockText)) {
+            htmlParts.push(
+              `<blockquote style=\"margin: 12px 0; padding-left: 12px; color:#666; border-left: 3px solid #bbdefb; white-space: pre-wrap;\">${escapeHtml(
+                blockText.replace(/^\s*>\s*/, ""),
+              ).replace(/\n/g, "<br>")}</blockquote>`,
+            );
+          } else {
+            const esc = escapeHtml(blockText).replace(/\n/g, "<br>");
+            htmlParts.push(
+              `<p style=\"display:block; color: #333; font-size: 1em; line-height: 1.6; white-space: pre-wrap; margin: 0 0 12px 0;\">${esc}</p>`,
+            );
+          }
+          paragraphBuffer = [];
+        };
 
-          segments.forEach(seg => {
-              seg = seg.trim();
-              if (!seg) return;
+        for (const line of lines) {
+          if (!line.trim()) {
+            flushParagraph();
+            continue;
+          }
+          paragraphBuffer.push(line);
+        }
+        flushParagraph();
 
-              let cleanText = seg.replace(BR_PLACEHOLDER, "\n").trim();
-              const isUser = cleanText.startsWith("👤 User:");
-              const isAi = cleanText.startsWith("🤖 AI:");
+        return `<div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #333; line-height: 1.6;">${htmlParts
+          .filter(Boolean)
+          .join("")}</div>`;
+      }
 
-              if (!isUser && !isAi) return;
-
-              const role = isUser ? '👤 User' : '🤖 AI';
-              const roleColor = isUser ? '#0d47a1' : '#616161';
-              const bg = isUser ? '#bbdefb' : '#f5f5f5';
-              const content = isUser ?
-                  cleanText.replace("👤 User:", "").trim() :
-                  cleanText.replace("🤖 AI:", "").trim();
-
-              html += `
-                  <div style="padding: 12px 14px; border-radius: 12px; background: ${bg}; align-self: ${isUser ? 'flex-end' : 'flex-start'}; max-width: 92%; border: 1px solid ${isUser ? 'transparent' : '#eceff1'};">
-                      <div style="color: ${roleColor}; font-size: 0.8em; margin-bottom: 6px; ${isUser ? 'text-align: right;' : ''}">${role}</div>
-                      <div style="white-space: pre-wrap; font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #333; line-height: 1.5;">${escapeHtml(content)}</div>
-                  </div>
-              `;
+      function hasAutoSummaryNote(targetItem) {
+        try {
+          const notes = Zotero.Items.get(targetItem.getNotes()) || [];
+          return notes.some((note) => {
+            const tags = note.getTags ? note.getTags() : [];
+            if (tags?.some((tagItem) => tagItem.tag === AUTO_NOTE_TAG)) {
+              return true;
+            }
+            const title = normalizeText(note.getNoteTitle ? note.getNoteTitle() : "")
+              .toLowerCase();
+            return title.includes("ai summary") || title.includes("daily-paper");
           });
-
-          html += '</div>';
-          return html;
+        } catch (err) {
+          return false;
+        }
       }
-
-
-      // === 4. 处理逻辑 ===
 
       async function processItem(targetItem) {
-          const fullText = normalizeText(targetItem.getField('abstractNote'));
+        const title = normalizeText(targetItem.getField("title")) || "[无标题]";
 
-          if (!fullText) {
-              return "⚠️ 跳过：条目摘要为空。";
+        if (hasAutoSummaryNote(targetItem)) {
+          return `ℹ️ [${escapeHtml(title)}] 已存在摘要笔记，已跳过`;
+        }
+
+        let sourceText = "";
+        for (let i = 0; i <= RETRY_DELAYS.length; i += 1) {
+          sourceText = getSourceText(targetItem);
+          if (sourceText) {
+            break;
           }
-
-          const parsed = splitSections(fullText);
-          if (!parsed.valid) {
-              return parsed.reason;
+          if (triggerType === "createItem" && i < RETRY_DELAYS.length) {
+            await sleep(RETRY_DELAYS[i]);
           }
+        }
 
-          const rawSummary = parsed.summary;
-          const rawChat = parsed.chat;
-          const rawOrig = parsed.original;
-          const hasMarkers = parsed.hasMarkers;
+        if (!sourceText) {
+          return `⚠️ [${escapeHtml(title)}] 暂未读到摘要，导入失败`;
+        }
 
-          const summaryHtml = toParagraphHtml(rawSummary);
-          const chatHtml = formatChatHistory(rawChat);
+        const parsed = splitSections(sourceText);
+        if (!parsed.valid) {
+          return parsed.reason;
+        }
 
-          const title = targetItem.getField('title') || '[无标题]';
+        const noteMarkdown = buildNoteMarkdown(parsed);
+        let noteHtml = "";
+        const canUseBetterNotes =
+          !!(
+            Zotero.BetterNotes &&
+            Zotero.BetterNotes.api &&
+            Zotero.BetterNotes.api.convert &&
+            Zotero.BetterNotes.api.convert.md2html &&
+            Zotero.BetterNotes.api.note &&
+            Zotero.BetterNotes.api.note.insert
+          );
 
-          const sectionMarker = hasMarkers ? MARKER_SUMMARY : '【正文内容】';
-          const markdownSource = `${sectionMarker}\n\n${normalizeText(rawSummary).replace(BR_PLACEHOLDER, "\n")}\n\n${rawChat ? `【💬 Chat History】\n\n${normalizeText(rawChat).replace(BR_PLACEHOLDER, "\n")}\n\n` : ''}${rawOrig ? `【📄 Original Abstract】\n\n${normalizeText(rawOrig)}` : ''}`;
-
-          let noteHTML = `
-              <div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #333;">
-                  <h2 style="
-                      background: transparent; 
-                      color: #0277bd; 
-                      padding: 0; 
-                      margin-bottom: 15px; 
-                      border-bottom: 2px solid #e1f5fe; 
-                      display: inline-block;
-                  ">
-                      🤖 AI Summary
-                  </h2>
-                  <div style="margin-bottom: 30px;">
-                      <div style="
-                          display: block;
-                          color: #333;
-                          font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-                          font-size: 1em;
-                          line-height: 1.6;
-                          white-space: pre-wrap;
-                          border: none;
-                      ">${summaryHtml}</div>
-                  </div>
-          `;
-
-          if (chatHtml) {
-              noteHTML += `
-                  <hr style="border: 0; border-top: 2px dashed #ccc; margin: 30px 0;">
-                  <h3 style="
-                      background: transparent; 
-                      color: #444; 
-                      padding: 0; 
-                      margin-bottom: 20px;
-                      border-bottom: 2px solid #eee;
-                      display: inline-block;
-                  ">
-                      💬 Chat History
-                  </h3>
-
-                  ${chatHtml}
-              `;
+        if (canUseBetterNotes) {
+          try {
+            noteHtml = await Zotero.BetterNotes.api.convert.md2html(noteMarkdown);
+          } catch (err) {
+            noteHtml = markdownToPlainHtml(noteMarkdown);
           }
+        } else {
+          noteHtml = markdownToPlainHtml(noteMarkdown);
+        }
 
-          if (rawOrig) {
-              const originalHtml = toParagraphHtml(rawOrig);
-              noteHTML += `
-                  <hr style="border: 0; border-top: 2px dashed #ccc; margin: 30px 0;">
-                  <h3 style="
-                      background: transparent; 
-                      color: #444; 
-                      padding: 0; 
-                      margin-top: 26px; 
-                      margin-bottom: 12px;
-                  ">
-                      📄 Original Abstract
-                  </h3>
-                  <div style="white-space: pre-wrap; color: #555; line-height: 1.6;">${originalHtml}</div>
-              `;
+        const newNote = new Zotero.Item("note");
+        newNote.libraryID = targetItem.libraryID;
+        newNote.parentID = targetItem.id;
+        newNote.addTag(AUTO_NOTE_TAG, 1);
+        newNote.setNote(noteHtml);
+        await newNote.saveTx();
+
+        if (canUseBetterNotes && Zotero.BetterNotes?.api?.note?.insert) {
+          try {
+            await Zotero.BetterNotes.api.note.insert(newNote, noteHtml, -1);
+          } catch (err) {
+            // fallback to standard note API
           }
+        }
 
-          noteHTML += `
-                  <details style="margin-top: 16px;">
-                      <summary style="cursor: pointer; color: #0277bd;">🧮 打开 LaTeX/Markdown 源码</summary>
-                      <div style="white-space: pre-wrap; background: #fafafa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px;">${escapeHtml(markdownSource)}</div>
-                  </details>
-              </div>`;
-
-
-          let newNote = new Zotero.Item('note');
-          newNote.setNote(noteHTML);
-          newNote.parentID = targetItem.id;
-          await newNote.saveTx();
-
-          targetItem.setField('abstractNote', normalizeText(rawOrig).replace(BR_PLACEHOLDER, "\n"));
+        if (parsed.original) {
+          targetItem.setField(
+            "abstractNote",
+            normalizeText(parsed.original).replace(BR_PLACEHOLDER, "\n"),
+          );
           await targetItem.saveTx();
+        }
 
-          return `✅ [${escapeHtml(title)}] 处理完成（含 LaTeX/Markdown 源码折叠块）`;
+        return `✅ [${escapeHtml(title)}] 已自动创建 AI Summary 条目笔记`;
       }
-
 
       const results = [];
       for (let i = 0; i < targetItems.length; i += 1) {
-          results.push(await processItem(targetItems[i]));
+        results.push(await processItem(targetItems[i]));
       }
 
       return results.join("\n");
