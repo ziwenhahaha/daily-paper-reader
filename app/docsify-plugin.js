@@ -81,6 +81,40 @@ window.$docsify = {
         return chunk.join('\n').trim();
       };
 
+      const escapeRegExp = (value) =>
+        String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+      const normalizeTextForMeta = (value) =>
+        (value || '').toString().replace(/\r\n/g, '\n').trim();
+
+      const trimBeforeMarkers = (value, markers) => {
+        const text = normalizeTextForMeta(value);
+        if (!text) return '';
+        const indices = markers
+          .map((marker) => text.indexOf(marker))
+          .filter((idx) => idx >= 0)
+          .sort((a, b) => a - b);
+        if (indices.length === 0) return text;
+        return text.slice(0, indices[0]).trim();
+      };
+
+      const cleanSectionText = (value) => {
+        let text = normalizeTextForMeta(value);
+        if (!text) return '';
+
+        text = trimBeforeMarkers(text, [
+          CHAT_MARKER,
+          ORIG_MARKER,
+          START_MARKER,
+        ]);
+        text = text.replace(new RegExp(`^\\s*${escapeRegExp(START_MARKER)}\\s*\\n?`, 'i'), '');
+        text = text.replace(new RegExp(`^\\s*${escapeRegExp(ORIG_MARKER)}\\s*\\n?`, 'i'), '');
+        text = text.replace(new RegExp(`^\\s*${escapeRegExp(CHAT_MARKER)}\\s*\\n?`, 'i'), '');
+        text = text.replace(/^Tags:\s*.*$/gim, '');
+        text = text.replace(/^>?\s*由\s*daily-paper-reader\s*自动生成\s*$/gim, '');
+        return text.trim();
+      };
+
       const getRawPaperSections = (rawContent) => ({
         aiSummaryText: extractSectionByTitle(
           rawContent,
@@ -221,6 +255,8 @@ window.$docsify = {
                 origAbstractText = parts.join('\n\n').trim();
               }
             }
+            aiSummaryText = cleanSectionText(aiSummaryText);
+            origAbstractText = cleanSectionText(origAbstractText);
 
             // 如果没有找到 AI 总结，就退回到正文前几段作为粗略总结
             if (!aiSummaryText) {
@@ -236,6 +272,8 @@ window.$docsify = {
                 .join('\n\n')
                 .trim();
             }
+            aiSummaryText = cleanSectionText(aiSummaryText);
+            origAbstractText = cleanSectionText(origAbstractText);
 
             // 3) 解析聊天历史，按「User / AI」打标签
             let chatSection = '';
@@ -270,7 +308,18 @@ window.$docsify = {
               }
             }
 
+            chatSection = cleanSectionText(chatSection);
+
             const parts = [];
+            const seenBlocks = new Set();
+            const addMetaBlock = (label, content) => {
+              const cleanText = cleanSectionText(content);
+              if (!cleanText) return;
+              const signature = cleanText.replace(/\s+/g, ' ');
+              if (seenBlocks.has(signature)) return;
+              seenBlocks.add(signature);
+              parts.push(`${label}\n${cleanText}`);
+            };
             if (aiSummaryText || tagsLine) {
               // AI Summary 区块：保留 Tags 行，但不再包含 Authors 信息
               let aiBlock = `${START_MARKER}\n`;
@@ -280,13 +329,13 @@ window.$docsify = {
               if (aiSummaryText) {
                 aiBlock += aiSummaryText;
               }
-              parts.push(aiBlock.trim());
+              addMetaBlock(START_MARKER, aiBlock);
             }
             if (chatSection) {
-              parts.push(`${CHAT_MARKER}\n${chatSection}`);
+              addMetaBlock(CHAT_MARKER, chatSection);
             }
             if (origAbstractText) {
-              parts.push(`${ORIG_MARKER}\n${origAbstractText}`);
+              addMetaBlock(ORIG_MARKER, origAbstractText);
             }
             abstractText = parts.join('\n\n\n').trim();
           }
