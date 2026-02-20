@@ -22,64 +22,71 @@ actions:
       const BR_PLACEHOLDER = /__BR__/g; 
 
 
-      // === 2. 获取选中条目 (针对 Actions & Tags 优化) ===
+      // === 2. 获取条目（支持 item / items）===
 
-      // 插件会自动注入 'item' (单体) 或 'items' (数组) 变量
+      const targetItems = (typeof items !== 'undefined' && items && items.length > 0)
+          ? items
+          : ((typeof item !== 'undefined') ? [item] : []);
 
-      var targetItem = null;
 
-
-      if (typeof item !== 'undefined') {
-          targetItem = item;
-      } else if (typeof items !== 'undefined' && items.length > 0) {
-          // 如果是批量选中，本脚本逻辑较复杂，建议暂时只处理第一个
-          // 或者你可以配合插件的 "Batch" 模式使用
-          targetItem = items[0];
+      if (!targetItems || targetItems.length === 0) {
+          return "❌ 错误：未接收到有效条目 (请确保选中了条目)";
       }
 
 
-      if (!targetItem) return "❌ 错误：未接收到有效条目 (请确保选中了条目)";
+      // === 3. 工具函数 ===
 
-
-
-      // === 3. 检查内容 ===
-
-      var fullText = targetItem.getField('abstractNote');
-
-      if (!fullText || !fullText.includes("AI Summary")) {
-          return "⚠️ 摘要里没找到 'AI Summary' 标记，跳过。";
+      function normalizeText(v) {
+          return (v || "").toString();
       }
 
 
-      // === 4. 提取数据 ===
-
-      var pSummary = fullText.indexOf(MARKER_SUMMARY);
-
-      var pChat = fullText.indexOf(MARKER_CHAT);
-
-      var pOrig = fullText.indexOf(MARKER_ORIG);
-
-
-      if (pOrig === -1) return "❌ 找不到 Original Abstract 标记。";
-
-
-      var summaryEnd = (pChat > -1) ? pChat : pOrig;
-
-
-      var rawSummary = fullText.substring(pSummary + MARKER_SUMMARY.length,
-      summaryEnd).trim();
-
-      var rawChat = "";
-
-      if (pChat > -1) {
-          rawChat = fullText.substring(pChat + MARKER_CHAT.length, pOrig).trim();
+      function escapeHtml(v) {
+          return normalizeText(v)
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;')
+              .replace(/'/g, '&#39;');
       }
 
-      var rawOrig = fullText.substring(pOrig + MARKER_ORIG.length).trim();
+
+      function toParagraphHtml(rawText) {
+          return escapeHtml(rawText)
+              .replace(BR_PLACEHOLDER, "\n")
+              .replace(/\n/g, "<br>");
+      }
 
 
+      function splitSections(fullText) {
+          const s = fullText.indexOf(MARKER_SUMMARY);
+          const c = fullText.indexOf(MARKER_CHAT);
+          const o = fullText.indexOf(MARKER_ORIG);
 
-      // === 5. 【核心逻辑】生成对话气泡 ===
+          if (s === -1) {
+              return {
+                  valid: false,
+                  reason: "❌ 摘要里没找到 'AI Summary' 标记，跳过。"
+              };
+          }
+
+          if (o === -1) {
+              return {
+                  valid: false,
+                  reason: "❌ 找不到 Original Abstract 标记。"
+              };
+          }
+
+          const summaryEnd = (c > -1) ? c : o;
+
+          return {
+              valid: true,
+              summary: fullText.substring(s + MARKER_SUMMARY.length, summaryEnd).trim(),
+              chat: c > -1 ? fullText.substring(c + MARKER_CHAT.length, o).trim() : "",
+              original: fullText.substring(o + MARKER_ORIG.length).trim()
+          };
+      }
+
 
       function formatChatHistory(rawChatString) {
           if (!rawChatString) return "";
@@ -91,12 +98,10 @@ actions:
               seg = seg.trim();
               if (!seg) return;
 
-              // 还原换行符
               let cleanText = seg.replace(BR_PLACEHOLDER, "\n").trim();
-              
+
               if (cleanText.startsWith("👤 User:")) {
                   let content = cleanText.replace("👤 User:", "").trim();
-                  // User: 明显淡蓝色 (#bbdefb)
                   html += `
                       <div style="align-self: flex-end; max-width: 85%;">
                           <strong style="display:block; color:#0d47a1; font-size:0.8em; margin-bottom:4px; text-align:right;">👤 User</strong>
@@ -113,12 +118,11 @@ actions:
                               line-height: 1.5;
                               border: none;
                               box-shadow: 1px 1px 2px rgba(0,0,0,0.05);
-                          ">${content}</pre>
+                          ">${escapeHtml(content)}</pre>
                       </div>
                   `;
               } else if (cleanText.startsWith("🤖 AI:")) {
                   let content = cleanText.replace("🤖 AI:", "").trim();
-                  // AI: 灰色
                   html += `
                       <div style="align-self: flex-start; max-width: 90%;">
                           <strong style="display:block; color:#616161; font-size:0.8em; margin-bottom:4px;">🤖 AI</strong>
@@ -134,7 +138,7 @@ actions:
                               font-size: 1em;
                               line-height: 1.5;
                               border: 1px solid #e0e0e0;
-                          ">${content}</pre>
+                          ">${escapeHtml(content)}</pre>
                       </div>
                   `;
               }
@@ -145,92 +149,112 @@ actions:
       }
 
 
-      // === 6. 组装 & 保存 ===
+      // === 4. 处理逻辑 ===
 
+      async function processItem(targetItem) {
+          const fullText = normalizeText(targetItem.getField('abstractNote'));
 
-      // Summary: 纯白背景 + <br>换行修复
+          if (!fullText) {
+              return "⚠️ 跳过：条目摘要为空。";
+          }
 
-      let summaryContent = rawSummary
-          .replace(BR_PLACEHOLDER, "\n")
-          .replace(/\n/g, "<br>"); 
+          const parsed = splitSections(fullText);
+          if (!parsed.valid) {
+              return parsed.reason;
+          }
 
-      var aiSummaryHTML = `
-          <div style="
-              display: block;
-              background-color: transparent; 
-              color: #333;
-              font-family: -apple-system, BlinkMacSystemFont, sans-serif; 
-              font-size: 1em; 
-              line-height: 1.6;
-              border: none;
-          ">${summaryContent}</div>
-      `;
+          const rawSummary = parsed.summary;
+          const rawChat = parsed.chat;
+          const rawOrig = parsed.original;
 
+          const summaryHtml = toParagraphHtml(rawSummary);
+          const chatHtml = formatChatHistory(rawChat);
 
-      var chatHTML = formatChatHistory(rawChat);
+          const title = targetItem.getField('title') || '[无标题]';
 
-      var originalAbstract = rawOrig.replace(BR_PLACEHOLDER, "\n");
+          const markdownSource = `${MARKER_SUMMARY}\n\n${normalizeText(rawSummary).replace(BR_PLACEHOLDER, "\n")}\n\n${rawChat ? `${MARKER_CHAT}\n\n${normalizeText(rawChat).replace(BR_PLACEHOLDER, "\n")}\n\n` : ''}${MARKER_ORIG}\n\n${normalizeText(rawOrig)}`;
 
-
-      var noteHTML = `
-          <div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #333;">
-              
-              <h2 style="
-                  background: transparent; 
-                  color: #0277bd; 
-                  padding: 0; 
-                  margin-bottom: 15px; 
-                  border-bottom: 2px solid #e1f5fe; 
-                  display: inline-block;
-              ">
-                  🤖 AI Summary
-              </h2>
-              
-              <div style="margin-bottom: 30px;">
-                  ${aiSummaryHTML}
-              </div>
-      `;
-
-
-      if (chatHTML) {
-          noteHTML += `
-              <hr style="border: 0; border-top: 2px dashed #ccc; margin: 30px 0;">
-              
-              <h3 style="
-                  background: transparent; 
-                  color: #444; 
-                  padding: 0; 
-                  margin-bottom: 20px;
-                  border-bottom: 2px solid #eee;
-                  display: inline-block;
-              ">
-                  💬 Chat History
-              </h3>
-              
-              ${chatHTML}
+          let noteHTML = `
+              <div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #333;">
+                  <h2 style="
+                      background: transparent; 
+                      color: #0277bd; 
+                      padding: 0; 
+                      margin-bottom: 15px; 
+                      border-bottom: 2px solid #e1f5fe; 
+                      display: inline-block;
+                  ">
+                      🤖 AI Summary
+                  </h2>
+                  <div style="margin-bottom: 30px;">
+                      <div style="
+                          display: block;
+                          background-color: transparent;
+                          color: #333;
+                          font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+                          font-size: 1em;
+                          line-height: 1.6;
+                          border: none;
+                      ">${summaryHtml}</div>
+                  </div>
           `;
+
+          if (chatHtml) {
+              noteHTML += `
+                  <hr style="border: 0; border-top: 2px dashed #ccc; margin: 30px 0;">
+                  <h3 style="
+                      background: transparent; 
+                      color: #444; 
+                      padding: 0; 
+                      margin-bottom: 20px;
+                      border-bottom: 2px solid #eee;
+                      display: inline-block;
+                  ">
+                      💬 Chat History
+                  </h3>
+
+                  ${chatHtml}
+                  <h3 style="
+                      background: transparent; 
+                      color: #444; 
+                      padding: 0; 
+                      margin-top: 26px; 
+                      margin-bottom: 8px;
+                  ">
+                      🧩 Source Snapshot (LaTeX/Markdown)
+                  </h3>
+                  <div style="font-size: 0.95em; color: #555;">
+                      已保留原始文本块，便于你复制到 Better Notes 或手动二次处理。
+                  </div>
+              `;
+          }
+
+          noteHTML += `
+                  <details style="margin-top: 16px;">
+                      <summary style="cursor: pointer; color: #0277bd;">🧮 打开 LaTeX/Markdown 源码</summary>
+                      <pre style="white-space: pre-wrap; background: #fafafa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px;">${escapeHtml(markdownSource)}</pre>
+                  </details>
+              </div>`;
+
+
+          let newNote = new Zotero.Item('note');
+          newNote.setNote(noteHTML);
+          newNote.parentID = targetItem.id;
+          await newNote.saveTx();
+
+          targetItem.setField('abstractNote', normalizeText(rawOrig).replace(BR_PLACEHOLDER, "\n"));
+          await targetItem.saveTx();
+
+          return `✅ [${escapeHtml(title)}] 处理完成（含 LaTeX/Markdown 源码折叠块）`;
       }
 
-      noteHTML += `</div>`;
 
+      const results = [];
+      for (let i = 0; i < targetItems.length; i += 1) {
+          results.push(await processItem(targetItems[i]));
+      }
 
-      // 写入
-
-      let newNote = new Zotero.Item('note');
-
-      newNote.setNote(noteHTML);
-
-      newNote.parentID = targetItem.id;
-
-      await newNote.saveTx();
-
-
-      targetItem.setField('abstractNote', originalAbstract);
-
-      await targetItem.saveTx();
-
-
-      return "🤖 AI Summary: ✅ 处理完成";
+      return results.join("\n");
     shortcut: ''
     enabled: true
     menu: ''
