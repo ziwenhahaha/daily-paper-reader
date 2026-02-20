@@ -51,9 +51,53 @@ window.$docsify = {
       const START_MARKER = '【🤖 AI Summary】';
       const CHAT_MARKER = '【💬 Chat History】';
       const ORIG_MARKER = '【📄 Original Abstract】';
+      let latestPaperRawMarkdown = '';
+
+      const extractSectionByTitle = (rawContent, matchFn) => {
+        if (!rawContent || typeof rawContent !== 'string') return '';
+        const contentWithoutFrontMatter = rawContent
+          .replace(/^---[\s\S]*?---\s*/, '')
+          .replace(/\r\n/g, '\n');
+        const lines = contentWithoutFrontMatter.split('\n');
+        let headingIndex = -1;
+        for (let i = 0; i < lines.length; i += 1) {
+          const m = lines[i].match(/^#{1,6}\s+(.*)$/);
+          if (!m) continue;
+          if (matchFn(m[1])) {
+            headingIndex = i;
+            break;
+          }
+        }
+        if (headingIndex < 0) return '';
+
+        const chunk = [];
+        for (
+          let i = headingIndex + 1;
+          i < lines.length && !/^#{1,6}\s+/.test(lines[i]);
+          i += 1
+        ) {
+          chunk.push(lines[i]);
+        }
+        return chunk.join('\n').trim();
+      };
+
+      const getRawPaperSections = (rawContent) => ({
+        aiSummaryText: extractSectionByTitle(
+          rawContent,
+          (title) => title.includes('论文详细总结（自动生成）'),
+        ),
+        originalAbstractText: extractSectionByTitle(
+          rawContent,
+          (title) => /abstract|摘要/i.test(title),
+        ),
+      });
 
       // Zotero 元数据更新函数：可被 Docsify 生命周期和聊天模块重复调用
-      const updateZoteroMetaFromPage = (paperId, vmRouteFile) => {
+      const updateZoteroMetaFromPage = (
+        paperId,
+        vmRouteFile,
+        rawPaperContent = '',
+      ) => {
         try {
           // 优先使用自定义标题条（避免 h1 被隐藏/改造后 innerText 不稳定）
           const dprEn = document.querySelector('.dpr-title-en');
@@ -119,56 +163,63 @@ window.$docsify = {
           updateMetaTag('citation_publication_date', date);
           updateMetaTag('citation_date', citationDate);
 
+          const { aiSummaryText: rawSummary, originalAbstractText: rawOriginal } =
+            getRawPaperSections(rawPaperContent || '');
+
           // 构造给 Zotero 用的“摘要”元信息：按「AI 总结 / 对话历史 / 原始摘要」分段组织
           let abstractText = '';
           const sectionEl = document.querySelector('.markdown-section');
           if (sectionEl) {
-            let aiSummaryText = '';
-            let origAbstractText = '';
+            let aiSummaryText = rawSummary;
+            let origAbstractText = rawOriginal;
 
-            // 1) 从 Markdown 中提取“论文详细总结（自动生成）”这一节，作为 AI 总结
+            // 1) 从 DOM 中提取“论文详细总结（自动生成）”这一节，作为 AI 总结（兜底）
             const h2List = Array.from(sectionEl.querySelectorAll('h2'));
-            const summaryHeader = h2List.find((h) =>
-              h.innerText.includes('论文详细总结'),
-            );
-            if (summaryHeader) {
-              let cursor = summaryHeader.nextElementSibling;
-              const parts = [];
-              while (
-                cursor &&
-                cursor.tagName !== 'H1' &&
-                cursor.tagName !== 'H2'
-              ) {
-                parts.push(cursor.innerText || '');
-                cursor = cursor.nextElementSibling;
+            if (!aiSummaryText) {
+              const summaryHeader = h2List.find((h) =>
+                h.innerText.includes('论文详细总结'),
+              );
+              if (summaryHeader) {
+                let cursor = summaryHeader.nextElementSibling;
+                const parts = [];
+                while (
+                  cursor &&
+                  cursor.tagName !== 'H1' &&
+                  cursor.tagName !== 'H2'
+                ) {
+                  parts.push(cursor.innerText || '');
+                  cursor = cursor.nextElementSibling;
+                }
+                aiSummaryText = parts.join('\n\n').trim();
               }
-              aiSummaryText = parts.join('\n\n').trim();
             }
 
-            // 2) 提取「原始摘要」区域（例如 "## Abstract" 或包含“摘要”的二级标题）
-            const abstractHeader = h2List.find((h) =>
-              /abstract|摘要/i.test(h.innerText || ''),
-            );
-            if (abstractHeader) {
-              let cursor = abstractHeader.nextElementSibling;
-              const parts = [];
-              while (
-                cursor &&
-                cursor.tagName !== 'H1' &&
-                cursor.tagName !== 'H2'
-              ) {
-                // 一旦遇到聊天容器（或其父容器），立即停止，避免把“私人研讨区”等内容当作摘要
-                if (
-                  cursor.id === 'paper-chat-container' ||
-                  (cursor.querySelector &&
-                    cursor.querySelector('#paper-chat-container'))
+            if (!origAbstractText) {
+              // 2) 提取「原始摘要」区域（例如 "## Abstract" 或包含“摘要”的二级标题）
+              const abstractHeader = h2List.find((h) =>
+                /abstract|摘要/i.test(h.innerText || ''),
+              );
+              if (abstractHeader) {
+                let cursor = abstractHeader.nextElementSibling;
+                const parts = [];
+                while (
+                  cursor &&
+                  cursor.tagName !== 'H1' &&
+                  cursor.tagName !== 'H2'
                 ) {
-                  break;
+                  // 一旦遇到聊天容器（或其父容器），立即停止，避免把“私人研讨区”等内容当作摘要
+                  if (
+                    cursor.id === 'paper-chat-container' ||
+                    (cursor.querySelector &&
+                      cursor.querySelector('#paper-chat-container'))
+                  ) {
+                    break;
+                  }
+                  parts.push(cursor.innerText || '');
+                  cursor = cursor.nextElementSibling;
                 }
-                parts.push(cursor.innerText || '');
-                cursor = cursor.nextElementSibling;
+                origAbstractText = parts.join('\n\n').trim();
               }
-              origAbstractText = parts.join('\n\n').trim();
             }
 
             // 如果没有找到 AI 总结，就退回到正文前几段作为粗略总结
@@ -287,7 +338,7 @@ window.$docsify = {
       // 导出给其它前端模块（例如聊天模块）主动刷新 Zotero 元数据
       window.DPRZoteroMeta = window.DPRZoteroMeta || {};
       window.DPRZoteroMeta.updateFromPage = (paperId, vmRouteFile) =>
-        updateZoteroMetaFromPage(paperId, vmRouteFile);
+        updateZoteroMetaFromPage(paperId, vmRouteFile, latestPaperRawMarkdown);
 
       // 公共工具：在指定元素上渲染公式
       const renderMathInEl = (el) => {
@@ -2533,8 +2584,10 @@ window.$docsify = {
         const file = vm && vm.route ? vm.route.file : '';
         // 只对论文页面处理
         if (!isPaperRouteFile(file)) {
+          latestPaperRawMarkdown = '';
           return content;
         }
+        latestPaperRawMarkdown = content || '';
 
         const { meta, body } = parseFrontMatter(content);
         if (!meta) {
@@ -2682,7 +2735,11 @@ window.$docsify = {
         // H. Zotero 元数据注入逻辑 (带延时和唤醒)
         // ----------------------------------------------------
         setTimeout(() => {
-          updateZoteroMetaFromPage(paperId, vm.route.file);
+          updateZoteroMetaFromPage(
+            paperId,
+            vm.route.file,
+            latestPaperRawMarkdown,
+          );
         }, 1); // 延迟执行，等待 DOM 渲染完毕
       });
       // ----------------------------------------------------
