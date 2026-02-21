@@ -899,12 +899,7 @@ window.SubscriptionsSmartQuery = (function () {
             <span class="dpr-chat-label-text">标签</span>
             <input id="dpr-chat-tag-input" type="text" placeholder="例如：SR" value="${escapeHtml(modalState.inputTag || '')}" />
           </label>
-          <button
-            class="arxiv-tool-btn dpr-chat-apply-btn"
-            data-action="apply-chat"
-            style="background:#2e7d32;color:#fff;"
-            ${hasCandidates ? '' : 'disabled'}
-          >
+          <button class="arxiv-tool-btn" data-action="apply-chat" style="background:#2e7d32;color:#fff;" ${hasCandidates ? '' : 'disabled'}>
             应用勾选结果
           </button>
         </div>
