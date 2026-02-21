@@ -869,7 +869,7 @@ window.SubscriptionsSmartQuery = (function () {
 
     modalPanel.innerHTML = `
       <div class="dpr-modal-head">
-        <div class="dpr-modal-title">新增查询</div>
+        <div class="dpr-modal-title">新增查询（请勾选你想要了解的关键词）</div>
         <button class="arxiv-tool-btn" data-action="close">关闭</button>
       </div>
       <div class="dpr-chat-result-module">
@@ -884,7 +884,7 @@ window.SubscriptionsSmartQuery = (function () {
             </label>
             <label class="dpr-chat-label dpr-chat-inline-desc">
               <span class="dpr-chat-label-text">检索需求</span>
-              <textarea id="dpr-chat-desc-input" rows="2" placeholder="例如：我想找最近的符号回归跨学科论文" >${escapeHtml(
+              <textarea id="dpr-chat-desc-input" rows="2" placeholder="示例：我想检索近2年在符号回归方向的论文，重点关注跨学科应用场景，优先查找有可解释性、可迁移性实验的工作。请尽量覆盖不同研究团体、方法细节与任务场景，并忽略综述/重复投稿。可补充关键词偏好：物理建模、时间序列、金融预测、自动控制。">${escapeHtml(
                 modalState.inputDesc || '',
               )}</textarea>
             </label>
