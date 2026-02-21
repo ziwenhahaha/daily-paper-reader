@@ -897,7 +897,6 @@ window.SubscriptionsSmartQuery = (function () {
         <div class="dpr-modal-title">${modalState && modalState.editProfileId ? '修改词条' : '新增词条候选'}</div>
         <button class="arxiv-tool-btn" data-action="close">关闭</button>
       </div>
-      <div class="dpr-modal-sub">标签：${escapeHtml(modalState.tag || '')} ｜ 描述：${escapeHtml(modalState.description || '（无）')}</div>
       <div class="dpr-modal-group-title">关键词候选（用于召回，勾选项之间默认 OR）</div>
       <div class="dpr-modal-list dpr-pick-grid">${kwHtml || '<div style="color:#999;">无关键词候选</div>'}</div>
       <div class="dpr-modal-actions-inline dpr-modal-add-inline">
@@ -912,16 +911,33 @@ window.SubscriptionsSmartQuery = (function () {
         <input id="dpr-add-query-logic" type="text" placeholder="Query 说明（可选）" value="${escapeHtml(modalState.customQueryLogic || '')}" />
         <button class="arxiv-tool-btn" data-action="add-custom-query">加入候选</button>
       </div>
-      <div class="dpr-modal-actions">
-        <button class="arxiv-tool-btn" data-action="apply-add" style="background:#2e7d32;color:#fff;">${
-          modalState && modalState.editProfileId ? '确认修改' : '确认新增'
-        }</button>
+      <div class="dpr-modal-actions dpr-modal-add-footer">
+        <label class="dpr-modal-field">
+          <span class="dpr-modal-field-label">标签</span>
+          <input id="dpr-add-profile-tag" type="text" value="${escapeHtml(modalState.tag || '')}" placeholder="请填写标签（必填）" />
+        </label>
+        <label class="dpr-modal-field">
+          <span class="dpr-modal-field-label">描述</span>
+          <input id="dpr-add-profile-desc" type="text" value="${escapeHtml(modalState.description || '')}" placeholder="请填写描述（必填）" />
+        </label>
+        <button class="arxiv-tool-btn" data-action="apply-add" style="background:#2e7d32;color:#fff;">应用勾选结果</button>
       </div>
     `;
   };
 
   const applyAddModal = () => {
     if (!modalState || modalState.type !== 'add') return;
+    const nextTag = normalizeText(document.getElementById('dpr-add-profile-tag')?.value || '');
+    const nextDesc = normalizeText(document.getElementById('dpr-add-profile-desc')?.value || '');
+
+    if (!nextTag || !nextDesc) {
+      setMessage('标签和描述不能为空。', '#c00');
+      return;
+    }
+
+    modalState.tag = nextTag;
+    modalState.description = nextDesc;
+
     const selectedKeywords = (modalState.keywords || []).filter((x) => x._selected);
     const selectedQueries = (modalState.queries || []).filter((x) => x._selected);
     const isEditMode = !!(modalState && modalState.editProfileId);
