@@ -186,8 +186,8 @@
       e.stopPropagation();
 
       if (window.PrivateDiscussionChat && typeof window.PrivateDiscussionChat.openQuickRunPanel === 'function') {
-        window.PrivateDiscussionChat.openQuickRunPanel();
-        return;
+        const opened = window.PrivateDiscussionChat.openQuickRunPanel();
+        if (opened) return;
       }
       if (window.DPRWorkflowRunner && typeof window.DPRWorkflowRunner.open === 'function') {
         window.DPRWorkflowRunner.open();

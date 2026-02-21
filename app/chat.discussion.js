@@ -1267,6 +1267,10 @@ window.PrivateDiscussionChat = (function () {
     const chatQuickRunConferenceMsg = document.getElementById(
       'chat-quick-run-conference-msg',
     );
+    const modal = getQuickRunModal();
+    if (modal && modal.parentElement !== document.body) {
+      document.body.appendChild(modal);
+    }
     fillQuickRunOptions(chatQuickRunYearSelect, chatQuickRunConferenceSelect);
 
     const inGuestMode =
@@ -1549,14 +1553,16 @@ window.PrivateDiscussionChat = (function () {
     openQuickRunPanel: () => {
       if (typeof quickRunPanelController === 'function') {
         const ok = quickRunPanelController();
-        if (ok) return;
+        if (ok === true) return true;
       }
       if (
         window.DPRWorkflowRunner &&
         typeof window.DPRWorkflowRunner.open === 'function'
       ) {
         window.DPRWorkflowRunner.open();
+        return true;
       }
+      return false;
     },
   };
 })();
