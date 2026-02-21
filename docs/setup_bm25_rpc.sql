@@ -67,12 +67,17 @@ begin
   -- 统一清洗文本，避免单引号、双引号、标点等进入 tsquery 解析，减少语法错误。
   q_raw := coalesce(query_text, '');
   q_raw := lower(q_raw);
-  q_raw := regexp_replace(q_raw, E'[^a-z0-9\\s]', ' ', 'g');
+  q_raw := regexp_replace(q_raw, E'[^a-z0-9\\s]+', ' ', 'g');
   q_raw := regexp_replace(q_raw, E'\\s+', ' ', 'g');
   q_raw := trim(q_raw);
+
+  if q_raw = '' then
+    return;
+  end if;
+
   q := plainto_tsquery('english', q_raw);
 
-  if q_raw = '' or q = ''''::tsquery then
+  if q is null then
     return;
   end if;
 
