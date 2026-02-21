@@ -408,7 +408,7 @@ window.SubscriptionsSmartQuery = (function () {
       return msg.includes('failed to fetch') || msg.includes('network') || msg.includes('ERR_NETWORK');
     };
 
-    const buildHeaders = (withApiKeyHeader) => {
+    const doFetch = async (endpoint, useResponseFormat, withApiKeyHeader = true) => {
       const headers = {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${llm.apiKey}`,
@@ -416,13 +416,9 @@ window.SubscriptionsSmartQuery = (function () {
       if (withApiKeyHeader) {
         headers['x-api-key'] = llm.apiKey;
       }
-      return headers;
-    };
-
-    const doFetch = async (endpoint, useResponseFormat, withApiKeyHeader = true) => {
       return fetch(endpoint, {
         method: 'POST',
-        headers: buildHeaders(withApiKeyHeader),
+        headers,
         body: JSON.stringify(requestPayload(useResponseFormat)),
         signal: controller.signal,
       });
@@ -432,7 +428,9 @@ window.SubscriptionsSmartQuery = (function () {
       try {
         return await doFetch(endpoint, useResponseFormat, true);
       } catch (e) {
-        if (!isFetchFailure(e)) throw e;
+        if (!isFetchFailure(e)) {
+          throw e;
+        }
         return doFetch(endpoint, useResponseFormat, false);
       }
     };
@@ -444,16 +442,19 @@ window.SubscriptionsSmartQuery = (function () {
       for (let i = 0; i < endpoints.length; i++) {
         const endpoint = endpoints[i];
         try {
-          let current = await doFetchWithFallbackHeader(endpoint, true);
-          if (!current.ok) {
-            const txt = await current.text().catch(() => '');
-            if (current.status === 400 && /response[\s-]*format|json_object/i.test(txt)) {
-              current = await doFetchWithFallbackHeader(endpoint, false);
+          let current = null;
+          let txt = '';
+          try {
+            current = await doFetchWithFallbackHeader(endpoint, true);
+            if (current && !current.ok) {
+              txt = await current.text().catch(() => '');
+              if (current.status === 400 && /response[\s-]*format|json_object/i.test(txt)) {
+                current = await doFetchWithFallbackHeader(endpoint, false);
+              }
             }
           }
-
-          if (!current.ok) {
-            const txt = await current.text().catch(() => '');
+          if (current && !current.ok) {
+            txt = await current.text().catch(() => '');
             if (current.status === 400 || current.status === 401 || current.status === 403) {
               throw new Error(`HTTP ${current.status} ${txt || current.statusText}`);
             }
