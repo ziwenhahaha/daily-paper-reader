@@ -698,6 +698,10 @@ window.PrivateDiscussionChat = (function () {
     }
   };
 
+  const ensureQuestionNavContainer = () => {};
+
+  const renderQuestionNav = () => {};
+
   const sendMessage = async (paperId) => {
     // 游客模式或尚未解锁密钥时，禁止直接调用大模型
     if (window.DPR_ACCESS_MODE === 'guest' || window.DPR_ACCESS_MODE === 'locked') {
