@@ -604,9 +604,10 @@ window.PrivateDiscussionChat = (function () {
       const item = document.createElement('div');
       item.className = 'msg-item';
 
-      const isThinking = msg.role === 'thinking';
-      const isAi = msg.role === 'ai' || isThinking;
-      const isUser = msg.role === 'user';
+      const role = (msg.role || '').toLowerCase();
+      const isThinking = role === 'thinking';
+      const isAi = role === 'ai' || role === 'assistant' || isThinking;
+      const isUser = role === 'user';
 
       if (!isThinking) {
         // 用户消息：时间右对齐；AI 回答：不显示时间（只在思考过程显示）
