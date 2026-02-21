@@ -60,12 +60,19 @@ stable
 as $$
 declare
   safe_match_count int;
+  q_raw text;
   q tsquery;
 begin
   safe_match_count := greatest(coalesce(match_count, 0), 1);
-  q := plainto_tsquery('english', coalesce(query_text, ''));
+  -- REST 参数在某些环境里可能会带入单引号，先做一次轻量清洗，避免 tsquery 语法错误。
+  q_raw := coalesce(query_text, '');
+  q_raw := regexp_replace(q_raw, E'\\s+', ' ', 'g');
+  q_raw := trim(q_raw);
+  q_raw := btrim(q_raw, E'''\"');
+  q_raw := trim(regexp_replace(q_raw, E'[\'\"]', ' ', 'g'));
+  q := websearch_to_tsquery('english', q_raw);
 
-  if q = ''''::tsquery then
+  if q_raw = '' or q = ''''::tsquery then
     return;
   end if;
 
