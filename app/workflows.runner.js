@@ -30,6 +30,23 @@ window.DPRWorkflowRunner = (function () {
     },
   ];
 
+  const QUICK_FETCH_PRESETS = {
+    '7': {
+      key: 'daily-now',
+      dispatchInputs: {
+        run_enrich: 'true',
+        fetch_days: '7',
+      },
+    },
+    '30': {
+      key: 'daily-month-skims',
+      dispatchInputs: {
+        run_enrich: 'true',
+        fetch_days: '30',
+      },
+    },
+  };
+
   let overlay = null;
   let panel = null;
   let statusEl = null;
@@ -375,7 +392,27 @@ window.DPRWorkflowRunner = (function () {
     }
   };
 
-  const dispatchAndMonitor = async (workflow) => {
+  const getWorkflowByKey = (workflowKey) =>
+    WORKFLOWS.find((wf) => String(wf.key || '') === String(workflowKey || ''));
+
+  const combineInputs = (baseInputs, extraInputs) => {
+    const merged = {};
+    const mergeOne = (source) => {
+      if (!source || typeof source !== 'object') return;
+      Object.keys(source).forEach((k) => {
+        const v = source[k];
+        if (typeof v === 'undefined' || v === null) return;
+        const txt = String(v).trim();
+        if (!txt) return;
+        merged[String(k)] = txt;
+      });
+    };
+    mergeOne(baseInputs);
+    mergeOne(extraInputs);
+    return merged;
+  };
+
+  const dispatchAndMonitor = async (workflow, extraInputs) => {
     const wf = workflow || {};
     const workflowFile = String(wf.id || '');
     if (!workflowFile) {
@@ -405,13 +442,17 @@ window.DPRWorkflowRunner = (function () {
       const dispatchUrl = `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${encodeURIComponent(
         workflowFile,
       )}/dispatches`;
+      const dispatchInputs = combineInputs(wf.dispatchInputs, extraInputs);
+      const dispatchBody = {
+        ref: 'main',
+      };
+      if (Object.keys(dispatchInputs).length > 0) {
+        dispatchBody.inputs = dispatchInputs;
+      }
       const res = await ghFetch(token, dispatchUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ref: 'main',
-          ...(wf.dispatchInputs ? { inputs: wf.dispatchInputs } : {}),
-        }),
+        body: JSON.stringify(dispatchBody),
       });
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
@@ -592,7 +633,32 @@ window.DPRWorkflowRunner = (function () {
     }
   };
 
+  const runWorkflowByKey = async (workflowKey, extraInputs) => {
+    const wf = getWorkflowByKey(workflowKey);
+    if (!wf) {
+      setStatus('未找到对应的工作流配置。', '#c00');
+      return;
+    }
+    open();
+    return dispatchAndMonitor(wf, extraInputs);
+  };
+
+  const runQuickFetchByDays = async (days) => {
+    const parsed = parseInt(days, 10);
+    const normalized = Number.isFinite(parsed) && parsed > 0 ? String(Math.max(1, parsed)) : '7';
+    const preset = QUICK_FETCH_PRESETS[normalized] || {
+      key: 'daily-now',
+      dispatchInputs: {
+        run_enrich: 'true',
+        fetch_days: normalized,
+      },
+    };
+    return runWorkflowByKey(preset.key, preset.dispatchInputs);
+  };
+
   return {
     open,
+    runWorkflowByKey,
+    runQuickFetchByDays,
   };
 })();

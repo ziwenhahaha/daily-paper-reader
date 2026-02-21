@@ -171,9 +171,37 @@
     document.body.appendChild(btn);
   }
 
+  function createQuickRunButton() {
+    if (document.getElementById('custom-quick-run-btn')) return;
+
+    var quickBtn = document.createElement('button');
+    quickBtn.id = 'custom-quick-run-btn';
+    quickBtn.className = 'custom-toggle-btn custom-quick-run-btn';
+    quickBtn.innerHTML = '🚀';
+    quickBtn.title = '快速抓取';
+    quickBtn.setAttribute('aria-label', '快速抓取');
+
+    quickBtn.addEventListener('click', function () {
+      if (window.PrivateDiscussionChat && typeof window.PrivateDiscussionChat.openQuickRunPanel === 'function') {
+        window.PrivateDiscussionChat.openQuickRunPanel();
+        return;
+      }
+      if (window.DPRWorkflowRunner && typeof window.DPRWorkflowRunner.open === 'function') {
+        window.DPRWorkflowRunner.open();
+        return;
+      }
+      var event = new CustomEvent('dpr-open-quick-run');
+      document.dispatchEvent(event);
+    });
+
+    document.body.appendChild(quickBtn);
+  }
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', createCustomButton);
+    document.addEventListener('DOMContentLoaded', createQuickRunButton);
   } else {
     createCustomButton();
+    createQuickRunButton();
   }
 })();

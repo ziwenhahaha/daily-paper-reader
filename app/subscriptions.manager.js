@@ -340,7 +340,6 @@ window.SubscriptionsManager = (function () {
           <div style="font-weight:600;">后台管理</div>
           <div style="display:flex; gap:8px; align-items:center;">
             <button id="arxiv-config-save-btn" class="arxiv-tool-btn" style="padding:2px 10px; background:#2e7d32; color:white;">保存</button>
-            <button id="arxiv-open-workflows-btn" class="arxiv-tool-btn" style="padding:2px 10px; background:#17a2b8; color:white;">立即触发</button>
             <button id="arxiv-open-secret-setup-btn" class="arxiv-tool-btn" style="padding:2px 10px;">密钥配置</button>
             <button id="arxiv-search-close-btn" class="arxiv-tool-btn" style="padding:2px 6px;">关闭</button>
           </div>
@@ -524,22 +523,6 @@ window.SubscriptionsManager = (function () {
       });
     }
 
-    const wfBtn = document.getElementById('arxiv-open-workflows-btn');
-    if (wfBtn && !wfBtn._bound) {
-      wfBtn._bound = true;
-      wfBtn.addEventListener('click', () => {
-        try {
-          if (window.DPRWorkflowRunner && window.DPRWorkflowRunner.open) {
-            window.DPRWorkflowRunner.open();
-          } else {
-            alert('当前页面尚未加载工作流触发面板脚本，请刷新后重试。');
-          }
-        } catch (e) {
-          console.error(e);
-          alert('打开工作流面板失败，请打开控制台查看错误。');
-        }
-      });
-    }
   };
 
   const init = () => {
