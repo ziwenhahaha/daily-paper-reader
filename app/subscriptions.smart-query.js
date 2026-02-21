@@ -7,6 +7,7 @@
 window.SubscriptionsSmartQuery = (function () {
   let displayListEl = null;
   let createBtn = null;
+  let openChatBtn = null;
   let tagInputEl = null;
   let descInputEl = null;
   let msgEl = null;
@@ -327,6 +328,174 @@ window.SubscriptionsSmartQuery = (function () {
     return { keywords, queries };
   };
 
+  const buildPromptFromTemplate = (tag, desc, template) => {
+    const retrievalContext =
+      '关键词链路仅用于召回，多个关键词按 OR 关系组合；Query 链路用于 embedding + ranker + LLM 打分，请生成可多选的润色 Query。';
+    return template
+      .replace(/\{\{TAG\}\}/g, tag)
+      .replace(/\{\{USER_DESCRIPTION\}\}/g, desc)
+      .replace(/\{\{RETRIEVAL_CONTEXT\}\}/g, retrievalContext);
+  };
+
+  const requestCandidatesByDesc = async (tag, desc) => {
+    const llm = loadLlmConfig();
+    if (!llm) {
+      throw new Error('未检测到可用大模型配置，请先完成密钥配置。');
+    }
+
+    const cfg = window.SubscriptionsManager.getDraftConfig ? window.SubscriptionsManager.getDraftConfig() : {};
+    const subs = (cfg && cfg.subscriptions) || {};
+    const template = normalizeText(subs.smart_query_prompt_template || '') || defaultPromptTemplate;
+    const prompt = buildPromptFromTemplate(tag, desc, template);
+    const endpoint = (() => {
+      const raw = normalizeText(llm.baseUrl);
+      if (!raw) return '';
+      if (raw.includes('/chat/completions')) return raw;
+      const normalized = raw.replace(/\/+$/, '');
+      if (/\/v\d+$/i.test(normalized)) return `${normalized}/chat/completions`;
+      return `${normalized}/v1/chat/completions`;
+    })();
+    if (!endpoint) {
+      throw new Error('LLM 配置缺少 baseUrl。');
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000);
+    let res;
+    try {
+      res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${llm.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: llm.model,
+          messages: [
+            { role: 'system', content: '你是检索规划助手，只能返回合法 JSON。' },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0.1,
+          response_format: { type: 'json_object' },
+        }),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      clearTimeout(timeout);
+      if (e && e.name === 'AbortError') {
+        throw new Error('生成超时，请稍后重试。');
+      }
+      throw e;
+    }
+    clearTimeout(timeout);
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status} ${t || res.statusText}`);
+    }
+    const data = await res.json();
+    const content = extractLlmJsonText(data);
+    const parsed = loadJsonLenient(content);
+    const candidates = normalizeGenerated(parsed);
+    if (!candidates.keywords.length && !candidates.queries.length) {
+      throw new Error('模型未返回可用候选，请调整描述后重试。');
+    }
+    return candidates;
+  };
+
+  const applyCandidateToProfile = (tag, description, candidates) => {
+    const selectedKeywords = (candidates.keywords || []).filter((x) => x._selected);
+    const selectedQueries = (candidates.queries || []).filter((x) => x._selected);
+    if (!selectedKeywords.length && !selectedQueries.length) {
+      return false;
+    }
+
+    window.SubscriptionsManager.updateDraftConfig((cfg) => {
+      const next = cfg || {};
+      if (!next.subscriptions) next.subscriptions = {};
+      const subs = next.subscriptions;
+      const profiles = Array.isArray(subs.intent_profiles) ? subs.intent_profiles.slice() : [];
+      const profile = ensureProfile(profiles, tag, description);
+      const kwList = Array.isArray(profile.keyword_rules) ? profile.keyword_rules.slice() : [];
+      const qList = Array.isArray(profile.semantic_queries) ? profile.semantic_queries.slice() : [];
+
+      const kwSeen = new Set(kwList.map((x) => normalizeText(x.expr).toLowerCase()).filter(Boolean));
+      selectedKeywords.forEach((item, idx) => {
+        const expr = normalizeText(item.expr || '');
+        const key = expr.toLowerCase();
+        if (!expr || kwSeen.has(key)) return;
+        kwSeen.add(key);
+        kwList.push({
+          id: normalizeText(item.id) || `kw-${Date.now()}-${idx + 1}`,
+          expr,
+          logic_cn: normalizeText(item.logic_cn || ''),
+          must_have: uniqList(item.must_have),
+          optional: uniqList(item.optional),
+          exclude: uniqList(item.exclude),
+          rewrite_for_embedding:
+            normalizeText(item.rewrite_for_embedding || '') || cleanBooleanForEmbedding(expr),
+          enabled: true,
+          source: normalizeText(item.source || 'generated'),
+          note: normalizeText(item.note || ''),
+        });
+      });
+
+      const qSeen = new Set(qList.map((x) => normalizeText(x.text).toLowerCase()).filter(Boolean));
+      selectedQueries.forEach((item, idx) => {
+        const text = normalizeText(item.text || '');
+        const key = text.toLowerCase();
+        if (!text || qSeen.has(key)) return;
+        qSeen.add(key);
+        qList.push({
+          id: normalizeText(item.id) || `q-${Date.now()}-${idx + 1}`,
+          text,
+          logic_cn: normalizeText(item.logic_cn || ''),
+          enabled: true,
+          source: normalizeText(item.source || 'generated'),
+          note: normalizeText(item.note || ''),
+        });
+      });
+
+      profile.description = normalizeText(profile.description || description || '');
+      profile.keyword_rules = kwList;
+      profile.semantic_queries = qList;
+      profile.updated_at = new Date().toISOString();
+      subs.intent_profiles = profiles;
+      next.subscriptions = subs;
+      return next;
+    });
+    return true;
+  };
+
+  const parseCandidatesForState = (candidates) => {
+    return {
+      keywords: (candidates.keywords || []).map((x) => ({ ...x, _selected: true })),
+      queries: (candidates.queries || []).map((x) => ({ ...x, _selected: true })),
+    };
+  };
+
+  const setChatStatus = (text, color) => {
+    const el = modalPanel?.querySelector('#dpr-chat-inline-status');
+    if (!el) return;
+    el.textContent = text || '';
+    el.style.color = color || '#666';
+  };
+
+  const setSendBtnLoading = (loading) => {
+    const btn = modalPanel?.querySelector('[data-action="chat-send"]');
+    if (!btn) return;
+    if (loading) {
+      btn.disabled = true;
+      btn.classList.add('dpr-btn-loading');
+      const label = btn.querySelector('.dpr-chat-send-label');
+      if (label) label.textContent = '生成中...';
+      return;
+    }
+    btn.disabled = false;
+    btn.classList.remove('dpr-btn-loading');
+    const label = btn.querySelector('.dpr-chat-send-label');
+    if (label) label.textContent = '生成候选';
+  };
+
   const ensureModal = () => {
     if (modalOverlay && modalPanel) return;
     modalOverlay = document.getElementById('dpr-sq-modal-overlay');
@@ -367,7 +536,7 @@ window.SubscriptionsSmartQuery = (function () {
   const renderMain = () => {
     if (!displayListEl) return;
     if (!currentProfiles.length) {
-      displayListEl.innerHTML = '<div style="color:#999;">暂无词条，先在上方输入并点击「新增」。</div>';
+      displayListEl.innerHTML = '<div style="color:#999;">暂无词条，先点「新增」打开对话生成。</div>';
       return;
     }
 
@@ -401,14 +570,28 @@ window.SubscriptionsSmartQuery = (function () {
       type: 'add',
       tag,
       description,
-      keywords: (candidates.keywords || []).map((x) => ({ ...x, _selected: true })),
-      queries: (candidates.queries || []).map((x) => ({ ...x, _selected: true })),
+      keywords: parseCandidatesForState(candidates).keywords,
+      queries: parseCandidatesForState(candidates).queries,
       customKeyword: '',
       customKeywordLogic: '',
       customQuery: '',
       customQueryLogic: '',
     };
     renderAddModal();
+    openModal();
+  };
+
+  const openChatModal = () => {
+    modalState = {
+      type: 'chat',
+      chatTag: '',
+      rounds: [],
+      inputTag: '',
+      inputDesc: '',
+      pending: false,
+      chatStatus: '',
+    };
+    renderChatModal();
     openModal();
   };
 
@@ -466,69 +649,201 @@ window.SubscriptionsSmartQuery = (function () {
     if (!modalState || modalState.type !== 'add') return;
     const selectedKeywords = (modalState.keywords || []).filter((x) => x._selected);
     const selectedQueries = (modalState.queries || []).filter((x) => x._selected);
-    if (!selectedKeywords.length && !selectedQueries.length) {
+    if (!applyCandidateToProfile(modalState.tag, modalState.description, {
+      ...modalState,
+      keywords: selectedKeywords,
+      queries: selectedQueries,
+    })) {
       setMessage('请至少选择一条候选。', '#c00');
       return;
     }
 
-    window.SubscriptionsManager.updateDraftConfig((cfg) => {
-      const next = cfg || {};
-      if (!next.subscriptions) next.subscriptions = {};
-      const subs = next.subscriptions;
-      const profiles = Array.isArray(subs.intent_profiles) ? subs.intent_profiles.slice() : [];
-      const profile = ensureProfile(profiles, modalState.tag, modalState.description);
-      const kwList = Array.isArray(profile.keyword_rules) ? profile.keyword_rules.slice() : [];
-      const qList = Array.isArray(profile.semantic_queries) ? profile.semantic_queries.slice() : [];
-
-      const kwSeen = new Set(kwList.map((x) => normalizeText(x.expr).toLowerCase()).filter(Boolean));
-      selectedKeywords.forEach((item, idx) => {
-        const expr = normalizeText(item.expr || '');
-        const key = expr.toLowerCase();
-        if (!expr || kwSeen.has(key)) return;
-        kwSeen.add(key);
-        kwList.push({
-          id: normalizeText(item.id) || `kw-${Date.now()}-${idx + 1}`,
-          expr,
-          logic_cn: normalizeText(item.logic_cn || ''),
-          must_have: uniqList(item.must_have),
-          optional: uniqList(item.optional),
-          exclude: uniqList(item.exclude),
-          rewrite_for_embedding:
-            normalizeText(item.rewrite_for_embedding || '') || cleanBooleanForEmbedding(expr),
-          enabled: true,
-          source: normalizeText(item.source || 'generated'),
-          note: normalizeText(item.note || ''),
-        });
-      });
-
-      const qSeen = new Set(qList.map((x) => normalizeText(x.text).toLowerCase()).filter(Boolean));
-      selectedQueries.forEach((item, idx) => {
-        const text = normalizeText(item.text || '');
-        const key = text.toLowerCase();
-        if (!text || qSeen.has(key)) return;
-        qSeen.add(key);
-        qList.push({
-          id: normalizeText(item.id) || `q-${Date.now()}-${idx + 1}`,
-          text,
-          logic_cn: normalizeText(item.logic_cn || ''),
-          enabled: true,
-          source: normalizeText(item.source || 'generated'),
-          note: normalizeText(item.note || ''),
-        });
-      });
-
-      profile.description = normalizeText(profile.description || modalState.description || '');
-      profile.keyword_rules = kwList;
-      profile.semantic_queries = qList;
-      profile.updated_at = new Date().toISOString();
-      subs.intent_profiles = profiles;
-      next.subscriptions = subs;
-      return next;
-    });
-
     if (typeof reloadAll === 'function') reloadAll();
     setMessage('新增词条已应用，请点击「保存」。', '#666');
     closeModal();
+  };
+
+  const renderChatRound = (round, idx) => {
+    const kwHtml = (round.keywords || [])
+      .map(
+        (item, itemIdx) => `
+      <label class="dpr-modal-choice">
+        <input
+          type="checkbox"
+          data-action="toggle-chat-choice"
+          data-round="${idx}"
+          data-kind="kw"
+          data-index="${itemIdx}"
+          ${item._selected ? 'checked' : ''}
+        />
+        <div class="dpr-modal-choice-body">
+          <div class="dpr-modal-choice-title">${escapeHtml(item.expr || '')}</div>
+          <div class="dpr-modal-choice-desc">${escapeHtml(item.logic_cn || '（待补充中文直译）')}</div>
+        </div>
+      </label>
+    `,
+      )
+      .join('');
+
+    const queryHtml = (round.queries || [])
+      .map(
+        (item, itemIdx) => `
+      <label class="dpr-modal-choice">
+        <input
+          type="checkbox"
+          data-action="toggle-chat-choice"
+          data-round="${idx}"
+          data-kind="query"
+          data-index="${itemIdx}"
+          ${item._selected ? 'checked' : ''}
+        />
+        <div class="dpr-modal-choice-body">
+          <div class="dpr-modal-choice-title">${escapeHtml(item.text || '')}</div>
+          <div class="dpr-modal-choice-desc">${escapeHtml(item.logic_cn || '（与原始 query 保持同主题）')}</div>
+        </div>
+      </label>
+    `,
+      )
+      .join('');
+
+    return `
+      <div class="dpr-chat-round" data-round="${idx}">
+        <div class="dpr-chat-round-head">请求 ${idx + 1}</div>
+        <div class="dpr-chat-round-desc">${escapeHtml(round.description || '（无说明）')}</div>
+        <div class="dpr-modal-group-title">关键词候选</div>
+        <div class="dpr-modal-list dpr-chat-list">
+          ${kwHtml || '<div style="color:#999;">无关键词候选</div>'}
+        </div>
+        <div class="dpr-modal-group-title">语义 Query 候选</div>
+        <div class="dpr-modal-list dpr-chat-list">
+          ${queryHtml || '<div style="color:#999;">无 Query 候选</div>'}
+        </div>
+      </div>
+    `;
+  };
+
+  const renderChatModal = () => {
+    if (!modalPanel || !modalState || modalState.type !== 'chat') return;
+
+    const roundsHtml = (modalState.rounds || [])
+      .map((round, idx) => renderChatRound(round, idx))
+      .join('');
+    const hasRounds = (modalState.rounds || []).length > 0;
+
+    modalPanel.innerHTML = `
+      <div class="dpr-modal-head">
+        <div class="dpr-modal-title">新增（大模型对话）</div>
+        <button class="arxiv-tool-btn" data-action="close">关闭</button>
+      </div>
+      <div class="dpr-chat-input-group">
+        <label class="dpr-chat-label">
+          <span class="dpr-chat-label-text">标签</span>
+          <input id="dpr-chat-tag-input" type="text" placeholder="例如：SR" value="${escapeHtml(modalState.inputTag || '')}" />
+        </label>
+        <label class="dpr-chat-label">
+          <span class="dpr-chat-label-text">你的检索需求</span>
+          <textarea id="dpr-chat-desc-input" rows="2" placeholder="例如：我想找最近的符号回归跨学科论文" >${escapeHtml(
+            modalState.inputDesc || '',
+          )}</textarea>
+        </label>
+        <button
+          class="arxiv-tool-btn"
+          style="position: relative; background:#2e7d32;color:#fff; align-self:flex-end;"
+          data-action="chat-send"
+          ${modalState.pending ? 'disabled' : ''}
+        >
+          <span class="dpr-chat-send-label">生成候选</span>
+          <span class="dpr-mini-spinner" aria-hidden="true"></span>
+        </button>
+        <div id="dpr-chat-inline-status" class="dpr-chat-inline-status">${escapeHtml(modalState.chatStatus || '')}</div>
+      </div>
+      <div class="dpr-modal-group-title">对话生成记录</div>
+      <div class="dpr-modal-list dpr-chat-messages">
+        ${hasRounds ? roundsHtml : '<div style="color:#999;">暂无记录，发送一次需求生成候选。</div>'}
+      </div>
+      <div class="dpr-modal-actions">
+        <button class="arxiv-tool-btn" data-action="apply-chat" style="background:#2e7d32;color:#fff;" ${hasRounds ? '' : 'disabled'}>
+          应用勾选结果
+        </button>
+      </div>
+    `;
+  };
+
+  const applyChatSelection = () => {
+    const rounds = Array.isArray(modalState.rounds) ? modalState.rounds : [];
+    let hasSelection = false;
+    rounds.forEach((round) => {
+      const selectedKeywords = (round.keywords || []).filter((x) => x._selected);
+      const selectedQueries = (round.queries || []).filter((x) => x._selected);
+      if (!selectedKeywords.length && !selectedQueries.length) return;
+      const ok = applyCandidateToProfile(round.tag, round.description, {
+        ...round,
+        keywords: selectedKeywords,
+        queries: selectedQueries,
+      });
+      if (ok) hasSelection = true;
+    });
+
+    if (!hasSelection) {
+      setMessage('请至少勾选一条候选后再应用。', '#c00');
+      return;
+    }
+    if (typeof reloadAll === 'function') reloadAll();
+    setMessage('已应用勾选结果，请点击「保存」。', '#666');
+    closeModal();
+  };
+
+  const askChatOnce = async () => {
+    if (!modalState || modalState.type !== 'chat') return;
+    if (modalState.pending) return;
+    const tag = normalizeText(document.getElementById('dpr-chat-tag-input')?.value || modalState.chatTag || '');
+    const desc = normalizeText(document.getElementById('dpr-chat-desc-input')?.value || '');
+    const finalTag = tag || `SR-${new Date().toISOString().slice(0, 10)}`;
+    const finalDesc = desc || normalizeText(modalState.inputDesc || '');
+
+    if (!finalDesc) {
+      setChatStatus('请先填写检索需求（描述）', '#c00');
+      return;
+    }
+
+    modalState.pending = true;
+    setSendBtnLoading(true);
+    setChatStatus('正在生成候选，请稍候...', '#666');
+    setMessage('正在生成候选，请稍候...', '#666');
+
+    try {
+      const candidates = await requestCandidatesByDesc(finalTag, finalDesc);
+      const round = {
+        tag: finalTag,
+        description: finalDesc,
+        keywords: parseCandidatesForState(candidates).keywords,
+        queries: parseCandidatesForState(candidates).queries,
+      };
+      const nextRounds = Array.isArray(modalState.rounds) ? modalState.rounds.slice() : [];
+      nextRounds.push(round);
+      modalState.rounds = nextRounds;
+      modalState.chatTag = finalTag;
+      modalState.inputTag = finalTag;
+      modalState.inputDesc = '';
+      modalState.chatStatus = `已生成第 ${nextRounds.length} 次候选（关键词 ${round.keywords.length} 条，Query ${round.queries.length} 条）。`;
+      if (document.getElementById('dpr-chat-desc-input')) {
+        document.getElementById('dpr-chat-desc-input').value = '';
+      }
+      if (document.getElementById('dpr-chat-tag-input')) {
+        document.getElementById('dpr-chat-tag-input').value = finalTag;
+      }
+      renderChatModal();
+      setMessage(modalState.chatStatus, '#666');
+      setChatStatus(modalState.chatStatus, '#666');
+    } catch (e) {
+      console.error(e);
+      const msg = `生成失败：${e && e.message ? e.message : '未知错误'}`;
+      setMessage(msg, '#c00');
+      setChatStatus(msg, '#c00');
+    } finally {
+      modalState.pending = false;
+      setSendBtnLoading(false);
+    }
   };
 
   const openEditModal = (profileId) => {
@@ -876,11 +1191,39 @@ window.SubscriptionsSmartQuery = (function () {
         handleEditAction(action, actionEl ? actionEl.getAttribute('data-index') : '');
       }
     }
+
+    if (modalState && modalState.type === 'chat') {
+      if (action === 'chat-send') {
+        askChatOnce();
+        return;
+      }
+      if (action === 'apply-chat') {
+        applyChatSelection();
+        return;
+      }
+    }
   };
 
   const handleModalChange = (e) => {
-    // 目前新增面板改为卡片点选，无需处理 checkbox change。
-    void e;
+    const target = e.target;
+    if (!target || !target.matches) return;
+    if (!target.matches('input[type="checkbox"][data-action="toggle-chat-choice"]')) return;
+    if (!modalState || modalState.type !== 'chat') return;
+
+    const roundIdx = Number(target.getAttribute('data-round'));
+    const kind = target.getAttribute('data-kind');
+    const idx = Number(target.getAttribute('data-index'));
+    const rounds = Array.isArray(modalState.rounds) ? modalState.rounds : [];
+    const round = rounds[roundIdx];
+    if (!round) return;
+
+    if (kind === 'kw' && Array.isArray(round.keywords) && idx >= 0 && idx < round.keywords.length) {
+      round.keywords[idx]._selected = !!target.checked;
+      return;
+    }
+    if (kind === 'query' && Array.isArray(round.queries) && idx >= 0 && idx < round.queries.length) {
+      round.queries[idx]._selected = !!target.checked;
+    }
   };
 
   const generateAndOpenAddModal = async () => {
@@ -895,58 +1238,10 @@ window.SubscriptionsSmartQuery = (function () {
       return;
     }
 
-    const llm = loadLlmConfig();
-    if (!llm) {
-      setMessage('未检测到可用大模型配置，请先完成密钥配置。', '#c00');
-      return;
-    }
-
-    const cfg = window.SubscriptionsManager.getDraftConfig
-      ? window.SubscriptionsManager.getDraftConfig()
-      : {};
-    const subs = (cfg && cfg.subscriptions) || {};
-    const template = normalizeText(subs.smart_query_prompt_template || '') || defaultPromptTemplate;
-    const prompt = template
-      .replace(/\{\{TAG\}\}/g, tag)
-      .replace(/\{\{USER_DESCRIPTION\}\}/g, desc)
-      .replace(
-        /\{\{RETRIEVAL_CONTEXT\}\}/g,
-        '关键词链路仅用于召回，多个关键词按 OR 关系组合；Query 链路用于 embedding + ranker + LLM 打分，请生成可多选的润色 Query。',
-      );
-
     try {
       setMessage('正在生成候选，请稍候...', '#666');
       if (createBtn) createBtn.disabled = true;
-
-      const res = await fetch(llm.baseUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${llm.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: llm.model,
-          messages: [
-            { role: 'system', content: '你是检索规划助手，只能返回合法 JSON。' },
-            { role: 'user', content: prompt },
-          ],
-          temperature: 0.1,
-          response_format: { type: 'json_object' },
-        }),
-      });
-      if (!res.ok) {
-        const t = await res.text().catch(() => '');
-        throw new Error(`HTTP ${res.status} ${t || res.statusText}`);
-      }
-      const data = await res.json();
-      const content = extractLlmJsonText(data);
-      const parsed = loadJsonLenient(content);
-      const candidates = normalizeGenerated(parsed);
-
-      if (!candidates.keywords.length && !candidates.queries.length) {
-        setMessage('模型未返回可用候选，请调整描述后重试。', '#c00');
-        return;
-      }
+      const candidates = await requestCandidatesByDesc(tag, desc);
 
       openAddModal(tag, desc, candidates);
       setMessage(`候选已生成（关键词 ${candidates.keywords.length} 条，Query ${candidates.queries.length} 条）。`, '#666');
@@ -996,6 +1291,7 @@ window.SubscriptionsSmartQuery = (function () {
   const attach = (context) => {
     displayListEl = context.displayListEl || null;
     createBtn = context.createBtn || null;
+    openChatBtn = context.openChatBtn || null;
     tagInputEl = context.tagInputEl || null;
     descInputEl = context.descInputEl || null;
     msgEl = context.msgEl || null;
@@ -1004,6 +1300,11 @@ window.SubscriptionsSmartQuery = (function () {
     if (createBtn && !createBtn._bound) {
       createBtn._bound = true;
       createBtn.addEventListener('click', generateAndOpenAddModal);
+    }
+
+    if (openChatBtn && !openChatBtn._bound) {
+      openChatBtn._bound = true;
+      openChatBtn.addEventListener('click', openChatModal);
     }
 
     const autoResizeDesc = () => {
