@@ -572,11 +572,76 @@ window.SubscriptionsSmartQuery = (function () {
     return true;
   };
 
-  const parseCandidatesForState = (candidates) => {
+  const parseCandidatesForState = (candidates, selected = true) => {
     return {
-      keywords: (candidates.keywords || []).map((x) => ({ ...x, _selected: true })),
-      queries: (candidates.queries || []).map((x) => ({ ...x, _selected: true })),
+      keywords: (candidates.keywords || []).map((x) => ({ ...x, _selected: selected })),
+      queries: (candidates.queries || []).map((x) => ({ ...x, _selected: selected })),
     };
+  };
+
+  const mergeCloudSelections = (existingItems, incomingItems, keyField) => {
+    const normalizeCloudKey = (item, field) => normalizeText(item && item[field]).toLowerCase();
+    const selectedMap = new Map();
+    (Array.isArray(existingItems) ? existingItems : [])
+      .forEach((item) => {
+        const k = normalizeCloudKey(item, keyField);
+        if (!k || !item._selected) return;
+        selectedMap.set(k, { ...item });
+      });
+
+    const merged = [];
+    const seen = new Set();
+    (Array.isArray(incomingItems) ? incomingItems : []).forEach((item) => {
+      const k = normalizeCloudKey(item, keyField);
+      if (!k || seen.has(k)) return;
+      const kept = selectedMap.get(k);
+      merged.push({
+        ...(kept ? { ...item, ...kept } : item),
+        _selected: !!kept,
+      });
+      seen.add(k);
+      if (kept) {
+        selectedMap.delete(k);
+      }
+    });
+
+    selectedMap.forEach((item) => {
+      const k = normalizeText(item.expr || item.text).toLowerCase();
+      if (!k || seen.has(k)) return;
+      merged.push({ ...item, _selected: true });
+      seen.add(k);
+    });
+
+    return merged;
+  };
+
+  const renderCloudCards = (items, kind, options = {}) => {
+    const textField = options.textField || 'expr';
+    const descField = options.descField || 'logic_cn';
+    const defaultDesc = options.defaultDesc || '';
+    return (items || [])
+      .map((item, idx) => {
+        const text = normalizeText(item[textField] || '');
+        const desc = normalizeText(item[descField] || defaultDesc || '');
+        const selected = !!item._selected;
+        const checked = selected ? 'checked' : '';
+        return `
+        <label class="dpr-cloud-item ${selected ? 'selected' : ''}" data-kind="${kind}" data-index="${idx}">
+          <input
+            type="checkbox"
+            data-action="toggle-chat-choice"
+            data-kind="${kind}"
+            data-index="${idx}"
+            ${checked}
+          />
+          <span class="dpr-cloud-item-body">
+            <span class="dpr-cloud-item-title">${escapeHtml(text)}</span>
+            <span class="dpr-cloud-item-desc">${escapeHtml(desc || '（无说明）')}</span>
+          </span>
+        </label>
+      `;
+      })
+      .join('');
   };
 
   const setChatStatus = (text, color) => {
@@ -690,8 +755,8 @@ window.SubscriptionsSmartQuery = (function () {
   const openChatModal = () => {
     modalState = {
       type: 'chat',
-      chatTag: '',
-      rounds: [],
+      keywords: [],
+      queries: [],
       inputTag: '',
       inputDesc: '',
       pending: false,
@@ -769,72 +834,20 @@ window.SubscriptionsSmartQuery = (function () {
     closeModal();
   };
 
-  const renderChatRound = (round, idx) => {
-    const kwHtml = (round.keywords || [])
-      .map(
-        (item, itemIdx) => `
-      <label class="dpr-modal-choice">
-        <input
-          type="checkbox"
-          data-action="toggle-chat-choice"
-          data-round="${idx}"
-          data-kind="kw"
-          data-index="${itemIdx}"
-          ${item._selected ? 'checked' : ''}
-        />
-        <div class="dpr-modal-choice-body">
-          <div class="dpr-modal-choice-title">${escapeHtml(item.expr || '')}</div>
-          <div class="dpr-modal-choice-desc">${escapeHtml(item.logic_cn || '（待补充中文直译）')}</div>
-        </div>
-      </label>
-    `,
-      )
-      .join('');
-
-    const queryHtml = (round.queries || [])
-      .map(
-        (item, itemIdx) => `
-      <label class="dpr-modal-choice">
-        <input
-          type="checkbox"
-          data-action="toggle-chat-choice"
-          data-round="${idx}"
-          data-kind="query"
-          data-index="${itemIdx}"
-          ${item._selected ? 'checked' : ''}
-        />
-        <div class="dpr-modal-choice-body">
-          <div class="dpr-modal-choice-title">${escapeHtml(item.text || '')}</div>
-          <div class="dpr-modal-choice-desc">${escapeHtml(item.logic_cn || '（与原始 query 保持同主题）')}</div>
-        </div>
-      </label>
-    `,
-      )
-      .join('');
-
-    return `
-      <div class="dpr-chat-round" data-round="${idx}">
-        <div class="dpr-chat-round-head">请求 ${idx + 1}</div>
-        <div class="dpr-chat-round-desc">${escapeHtml(round.description || '（无说明）')}</div>
-        <div class="dpr-modal-group-title">关键词候选</div>
-        <div class="dpr-modal-list dpr-chat-list">
-          ${kwHtml || '<div style="color:#999;">无关键词候选</div>'}
-        </div>
-        <div class="dpr-modal-group-title">语义 Query 候选</div>
-        <div class="dpr-modal-list dpr-chat-list">
-          ${queryHtml || '<div style="color:#999;">无 Query 候选</div>'}
-        </div>
-      </div>
-    `;
-  };
-
   const renderChatModal = () => {
     if (!modalPanel || !modalState || modalState.type !== 'chat') return;
 
-    const roundsHtml = (modalState.rounds || [])
-      .map((round, idx) => renderChatRound(round, idx))
-      .join('');
-    const hasRounds = (modalState.rounds || []).length > 0;
+    const kwHtml = renderCloudCards(modalState.keywords || [], 'kw', {
+      textField: 'expr',
+      descField: 'logic_cn',
+      defaultDesc: '（待补充中文直译）',
+    });
+    const qHtml = renderCloudCards(modalState.queries || [], 'query', {
+      textField: 'text',
+      descField: 'logic_cn',
+      defaultDesc: '（与原始 query 保持同主题）',
+    });
+    const hasCandidates = (modalState.keywords || []).length + (modalState.queries || []).length > 0;
 
     modalPanel.innerHTML = `
       <div class="dpr-modal-head">
@@ -864,11 +877,14 @@ window.SubscriptionsSmartQuery = (function () {
         <div id="dpr-chat-inline-status" class="dpr-chat-inline-status">${escapeHtml(modalState.chatStatus || '')}</div>
       </div>
       <div class="dpr-modal-group-title">对话生成记录</div>
-      <div class="dpr-modal-list dpr-chat-messages">
-        ${hasRounds ? roundsHtml : '<div style="color:#999;">暂无记录，发送一次需求生成候选。</div>'}
+      <div class="dpr-modal-list">
+        <div class="dpr-modal-sub" style="margin-bottom: 8px;">关键词候选</div>
+        <div class="dpr-cloud-grid">${kwHtml || '<div style="color:#999;">暂无关键词候选。</div>'}</div>
+        <div class="dpr-modal-sub" style="margin: 10px 0 8px;">语义 Query 候选</div>
+        <div class="dpr-cloud-grid">${qHtml || '<div style="color:#999;">暂无 Query 候选。</div>'}</div>
       </div>
       <div class="dpr-modal-actions">
-        <button class="arxiv-tool-btn" data-action="apply-chat" style="background:#2e7d32;color:#fff;" ${hasRounds ? '' : 'disabled'}>
+        <button class="arxiv-tool-btn" data-action="apply-chat" style="background:#2e7d32;color:#fff;" ${hasCandidates ? '' : 'disabled'}>
           应用勾选结果
         </button>
       </div>
@@ -876,22 +892,24 @@ window.SubscriptionsSmartQuery = (function () {
   };
 
   const applyChatSelection = () => {
-    const rounds = Array.isArray(modalState.rounds) ? modalState.rounds : [];
     let hasSelection = false;
-    rounds.forEach((round) => {
-      const selectedKeywords = (round.keywords || []).filter((x) => x._selected);
-      const selectedQueries = (round.queries || []).filter((x) => x._selected);
-      if (!selectedKeywords.length && !selectedQueries.length) return;
-      const ok = applyCandidateToProfile(round.tag, round.description, {
-        ...round,
+    const selectedKeywords = (modalState.keywords || []).filter((x) => x._selected);
+    const selectedQueries = (modalState.queries || []).filter((x) => x._selected);
+    const hasItems = selectedKeywords.length || selectedQueries.length;
+
+    if (hasItems) {
+      const tag = normalizeText(modalState.chatTag || modalState.inputTag || (modalState.roundTag || ''));
+      const desc = normalizeText(modalState.lastDesc || modalState.inputDesc || '');
+      const ok = applyCandidateToProfile(tag || `SR-${new Date().toISOString().slice(0, 10)}`, desc, {
+        ...modalState,
         keywords: selectedKeywords,
         queries: selectedQueries,
       });
-      if (ok) hasSelection = true;
-    });
+      hasSelection = ok;
+    }
 
     if (!hasSelection) {
-      setMessage('请至少勾选一条候选后再应用。', '#c00');
+      setMessage(hasItems ? '应用失败，请重试。' : '请至少勾选一条候选后再应用。', '#c00');
       return;
     }
     if (typeof reloadAll === 'function') reloadAll();
@@ -918,20 +936,18 @@ window.SubscriptionsSmartQuery = (function () {
     setMessage('正在生成候选，请稍候...', '#666');
 
     try {
-      const candidates = await requestCandidatesByDesc(finalTag, finalDesc);
-      const round = {
-        tag: finalTag,
-        description: finalDesc,
-        keywords: parseCandidatesForState(candidates).keywords,
-        queries: parseCandidatesForState(candidates).queries,
-      };
-      const nextRounds = Array.isArray(modalState.rounds) ? modalState.rounds.slice() : [];
-      nextRounds.push(round);
-      modalState.rounds = nextRounds;
+    const candidates = await requestCandidatesByDesc(finalTag, finalDesc);
+      const nextCandidates = parseCandidatesForState(candidates, false);
+      const nextKeywords = mergeCloudSelections(modalState.keywords || [], nextCandidates.keywords, 'expr');
+      const nextQueries = mergeCloudSelections(modalState.queries || [], nextCandidates.queries, 'text');
+      modalState.keywords = nextKeywords;
+      modalState.queries = nextQueries;
       modalState.chatTag = finalTag;
       modalState.inputTag = finalTag;
+      modalState.lastTag = finalTag;
+      modalState.lastDesc = finalDesc;
       modalState.inputDesc = '';
-      modalState.chatStatus = `已生成第 ${nextRounds.length} 次候选（关键词 ${round.keywords.length} 条，Query ${round.queries.length} 条）。`;
+      modalState.chatStatus = `已生成候选（关键词 ${nextCandidates.keywords.length} 条新增、共 ${nextKeywords.length} 条；Query ${nextCandidates.queries.length} 条新增、共 ${nextQueries.length} 条）。`;
       if (document.getElementById('dpr-chat-desc-input')) {
         document.getElementById('dpr-chat-desc-input').value = '';
       }
@@ -1322,19 +1338,17 @@ window.SubscriptionsSmartQuery = (function () {
     if (!target.matches('input[type="checkbox"][data-action="toggle-chat-choice"]')) return;
     if (!modalState || modalState.type !== 'chat') return;
 
-    const roundIdx = Number(target.getAttribute('data-round'));
     const kind = target.getAttribute('data-kind');
     const idx = Number(target.getAttribute('data-index'));
-    const rounds = Array.isArray(modalState.rounds) ? modalState.rounds : [];
-    const round = rounds[roundIdx];
-    if (!round) return;
+    const list = kind === 'query' ? modalState.queries : modalState.keywords;
+    if (!Array.isArray(list) || idx < 0 || idx >= list.length) return;
 
-    if (kind === 'kw' && Array.isArray(round.keywords) && idx >= 0 && idx < round.keywords.length) {
-      round.keywords[idx]._selected = !!target.checked;
+    if (kind === 'kw' && Array.isArray(modalState.keywords) && idx >= 0 && idx < modalState.keywords.length) {
+      modalState.keywords[idx]._selected = !!target.checked;
       return;
     }
-    if (kind === 'query' && Array.isArray(round.queries) && idx >= 0 && idx < round.queries.length) {
-      round.queries[idx]._selected = !!target.checked;
+    if (kind === 'query' && Array.isArray(modalState.queries) && idx >= 0 && idx < modalState.queries.length) {
+      modalState.queries[idx]._selected = !!target.checked;
     }
   };
 
