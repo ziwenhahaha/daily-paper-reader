@@ -186,26 +186,31 @@ window.PrivateDiscussionChat = (function () {
             <button id="chat-sidebar-toggle-btn" class="chat-footer-icon-btn" type="button">☰</button>
             <button id="chat-settings-toggle-btn" class="chat-footer-icon-btn" type="button">⚙️</button>
             <button id="chat-quick-run-btn" class="chat-footer-icon-btn" type="button" title="快速抓取">🚀</button>
-            <div id="chat-quick-run-popover" class="chat-quick-run-popover" aria-hidden="true">
-              <div class="chat-quick-run-title">快速抓取</div>
-              <button id="chat-quick-run-7d-btn" class="chat-quick-run-item" type="button">立即搜寻七天内论文</button>
-              <button id="chat-quick-run-30d-btn" class="chat-quick-run-item" type="button">立即搜寻三十天内论文</button>
-              <div class="chat-quick-run-divider" aria-hidden="true"></div>
-              <div class="chat-quick-run-title">会议论文（先保留）</div>
-              <div class="chat-quick-run-row">
-                <label for="chat-quick-run-year-select">年份</label>
-                <select id="chat-quick-run-year-select">
-                  <option value="">选择年份</option>
-                </select>
+            <div id="chat-quick-run-modal" class="chat-quick-run-modal" aria-hidden="true">
+              <div class="chat-quick-run-modal-panel">
+                <div class="chat-quick-run-modal-head">
+                  <div class="chat-quick-run-title">快速抓取</div>
+                  <button id="chat-quick-run-close-btn" class="chat-quick-run-close-btn" type="button" aria-label="关闭">✕</button>
+                </div>
+                <button id="chat-quick-run-7d-btn" class="chat-quick-run-item" type="button">立即搜寻七天内论文</button>
+                <button id="chat-quick-run-30d-btn" class="chat-quick-run-item" type="button">立即搜寻三十天内论文</button>
+                <div class="chat-quick-run-divider" aria-hidden="true"></div>
+                <div class="chat-quick-run-title">会议论文（先保留）</div>
+                <div class="chat-quick-run-row">
+                  <label for="chat-quick-run-year-select">年份</label>
+                  <select id="chat-quick-run-year-select">
+                    <option value="">选择年份</option>
+                  </select>
+                </div>
+                <div class="chat-quick-run-row">
+                  <label for="chat-quick-run-conference-select">会议名</label>
+                  <select id="chat-quick-run-conference-select">
+                    <option value="">选择会议名</option>
+                  </select>
+                </div>
+                <button id="chat-quick-run-conference-run-btn" class="chat-quick-run-run-btn" type="button">运行</button>
+                <div id="chat-quick-run-conference-msg" class="chat-quick-run-msg"></div>
               </div>
-              <div class="chat-quick-run-row">
-                <label for="chat-quick-run-conference-select">会议名</label>
-                <select id="chat-quick-run-conference-select">
-                  <option value="">选择会议名</option>
-                </select>
-              </div>
-              <button id="chat-quick-run-conference-run-btn" class="chat-quick-run-run-btn" type="button">运行</button>
-              <div id="chat-quick-run-conference-msg" class="chat-quick-run-msg"></div>
             </div>
           </div>
           <select id="chat-llm-model-select" class="chat-model-select"></select>
@@ -291,27 +296,7 @@ window.PrivateDiscussionChat = (function () {
     }
   };
 
-  const isCompactWindow = () => window.innerWidth <= 1023;
-
-  const getActiveQuickRunTrigger = () => {
-    if (isCompactWindow()) return document.getElementById('chat-quick-run-btn');
-    return document.getElementById('custom-quick-run-btn');
-  };
-
-  const positionQuickRunPopover = (triggerBtn) => {
-    const popover = document.getElementById('chat-quick-run-popover');
-    if (!popover || !triggerBtn) return;
-    const rect = triggerBtn.getBoundingClientRect();
-    const width = 250;
-    const offsetY = 6;
-    let left = Math.max(8, rect.left + rect.width / 2 - width / 2);
-    let top = Math.round(rect.bottom + offsetY);
-    left = Math.min(left, window.innerWidth - width - 8);
-    popover.style.position = 'fixed';
-    popover.style.left = `${left}px`;
-    popover.style.right = 'auto';
-    popover.style.top = `${top}px`;
-  };
+  const getQuickRunModal = () => document.getElementById('chat-quick-run-modal');
 
   const safeLoadList = (key) => {
     try {
@@ -1269,7 +1254,7 @@ window.PrivateDiscussionChat = (function () {
     const chatSidebarBtn = document.getElementById('chat-sidebar-toggle-btn');
     const chatSettingsBtn = document.getElementById('chat-settings-toggle-btn');
     const chatQuickRunBtn = document.getElementById('chat-quick-run-btn');
-    const chatQuickRunPopover = document.getElementById('chat-quick-run-popover');
+    const chatQuickRunCloseBtn = document.getElementById('chat-quick-run-close-btn');
     const chatQuickRun7dBtn = document.getElementById('chat-quick-run-7d-btn');
     const chatQuickRun30dBtn = document.getElementById('chat-quick-run-30d-btn');
     const chatQuickRunConferenceBtn = document.getElementById(
@@ -1438,49 +1423,59 @@ window.PrivateDiscussionChat = (function () {
     }
 
     const closeQuickRunPopover = () => {
-      if (!chatQuickRunPopover) return;
-      chatQuickRunPopover.classList.remove('is-open');
-      chatQuickRunPopover.setAttribute('aria-hidden', 'true');
+      const modal = getQuickRunModal();
+      if (!modal) return;
+      modal.classList.remove('is-open');
+      modal.setAttribute('aria-hidden', 'true');
     };
 
-  const openQuickRunPopover = (triggerBtn) => {
-      if (!chatQuickRunPopover) return;
-      positionQuickRunPopover(triggerBtn);
-      chatQuickRunPopover.classList.add('is-open');
-      chatQuickRunPopover.setAttribute('aria-hidden', 'false');
-  };
+    const openQuickRunPopover = () => {
+      const modal = getQuickRunModal();
+      if (!modal) return;
+      modal.classList.add('is-open');
+      modal.setAttribute('aria-hidden', 'false');
+    };
 
-  const openQuickRunPanelInner = () => {
-    const triggerBtn = getActiveQuickRunTrigger();
-    if (!chatQuickRunPopover) {
-      if (chatQuickRunPopoverMsg) {
-        chatQuickRunPopoverMsg.textContent = '当前页面未完成快速抓取入口初始化。';
-        chatQuickRunPopoverMsg.style.color = '#c90';
+    const openQuickRunPanelInner = () => {
+      const modal = getQuickRunModal();
+      if (!modal) {
+        if (chatQuickRunConferenceMsg) {
+          chatQuickRunConferenceMsg.textContent = '当前页面未完成快速抓取入口初始化。';
+          chatQuickRunConferenceMsg.style.color = '#c90';
+        }
+        return;
       }
-      return;
-    }
-    toggleQuickRunPopover(triggerBtn);
-  };
+      toggleQuickRunPopover();
+    };
 
-  const toggleQuickRunPopover = (triggerBtn) => {
-    if (!chatQuickRunPopover) return;
-    if (chatQuickRunPopover.classList.contains('is-open')) {
-      closeQuickRunPopover();
-      return;
-    }
-    if (chatQuickRunConferenceMsg) {
-      chatQuickRunConferenceMsg.textContent = '';
-      chatQuickRunConferenceMsg.style.color = '#999';
-    }
-    openQuickRunPopover(triggerBtn);
-  };
+    const toggleQuickRunPopover = () => {
+      const modal = getQuickRunModal();
+      if (!modal) return;
+      if (modal.classList.contains('is-open')) {
+        closeQuickRunPopover();
+        return;
+      }
+      if (chatQuickRunConferenceMsg) {
+        chatQuickRunConferenceMsg.textContent = '';
+        chatQuickRunConferenceMsg.style.color = '#999';
+      }
+      openQuickRunPopover();
+    };
 
     if (chatQuickRunBtn && !chatQuickRunBtn._bound) {
       chatQuickRunBtn._bound = true;
       chatQuickRunBtn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        toggleQuickRunPopover(chatQuickRunBtn);
+        toggleQuickRunPopover();
+      });
+    }
+
+    if (chatQuickRunCloseBtn && !chatQuickRunCloseBtn._bound) {
+      chatQuickRunCloseBtn._bound = true;
+      chatQuickRunCloseBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        closeQuickRunPopover();
       });
     }
 
@@ -1513,19 +1508,16 @@ window.PrivateDiscussionChat = (function () {
     if (!document._dprQuickRunPopoverBound) {
       document._dprQuickRunPopoverBound = true;
       document.addEventListener('click', (e) => {
-        const popoverEl = document.getElementById('chat-quick-run-popover');
-        const triggerBtn = getActiveQuickRunTrigger();
-        const desktopTrigger = document.getElementById('custom-quick-run-btn');
-        const mobileTrigger = document.getElementById('chat-quick-run-btn');
-        if (!popoverEl || !popoverEl.classList.contains('is-open')) return;
-        const inside =
-          popoverEl.contains(e.target) ||
-          (triggerBtn && triggerBtn.contains(e.target)) ||
-          (desktopTrigger && desktopTrigger.contains(e.target)) ||
-          (mobileTrigger && mobileTrigger.contains(e.target));
-        if (!inside) {
-          popoverEl.classList.remove('is-open');
-          popoverEl.setAttribute('aria-hidden', 'true');
+        const modal = getQuickRunModal();
+        if (!modal || !modal.classList.contains('is-open')) {
+          return;
+        }
+        if (e.target === modal) {
+          closeQuickRunPopover();
+          return;
+        }
+        if (!modal.contains(e.target)) {
+          closeQuickRunPopover();
         }
       });
     }
@@ -1534,6 +1526,15 @@ window.PrivateDiscussionChat = (function () {
       document._dprQuickRunOpenEventBound = true;
       document.addEventListener('dpr-open-quick-run', () => {
         openQuickRunPanelInner();
+      });
+    }
+
+    if (!document._dprQuickRunEscBound) {
+      document._dprQuickRunEscBound = true;
+      document.addEventListener('keydown', (e) => {
+        if (e && e.key === 'Escape') {
+          closeQuickRunPopover();
+        }
       });
     }
 
