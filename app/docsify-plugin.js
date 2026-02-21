@@ -1084,7 +1084,8 @@ window.$docsify = {
           setTimeout(() => {
             const body = document.body;
             if (!body) return;
-            body.classList.add('close'); // 添加 close 类，收起侧边栏
+            // 适配 Docsify 移动端原生语义：小屏收起侧边栏时不保留 close 类
+            body.classList.remove('close');
           }, 0);
         });
       };
@@ -3275,28 +3276,23 @@ window.$docsify = {
         }, 1); // 延迟执行，等待 DOM 渲染完毕
       });
       // ----------------------------------------------------
-      // I. 响应式侧边栏：窄屏首次加载时模拟点击按钮自动折叠一次
+      // I. 响应式侧边栏：窄屏首次加载时确保收起（仅移除 close 类）
       // ----------------------------------------------------
       const SIDEBAR_AUTO_COLLAPSE_WIDTH = 1024;
 
-      const autoCollapseOnInitForNarrowScreen = () => {
+      const ensureCollapsedOnNarrowScreen = () => {
         const windowWidth =
           window.innerWidth || document.documentElement.clientWidth || 0;
         if (windowWidth >= SIDEBAR_AUTO_COLLAPSE_WIDTH) return;
 
         const body = document.body;
-        // 已经是关闭状态就不再触发，避免反向展开
-        if (body.classList && body.classList.contains('close')) return;
-
-        const toggleBtn = document.querySelector('.sidebar-toggle');
-        if (!toggleBtn) return;
-
-        // 使用原生 click，让 Docsify 自己处理 close / transform 等细节
-        toggleBtn.click();
+        if (!body.classList) return;
+        // 进入窄屏时使用 "默认不带 close" 的收起态，兼容 Docsify 的移动端语义
+        body.classList.remove('close');
       };
 
       // 初始化时执行一次
-      autoCollapseOnInitForNarrowScreen();
+      ensureCollapsedOnNarrowScreen();
     },
   ],
 };

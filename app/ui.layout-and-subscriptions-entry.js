@@ -69,9 +69,9 @@
   function initSidebarState() {
     var body = document.body;
     if (window.innerWidth < SIDEBAR_COLLAPSE_THRESHOLD) {
-      // 小屏幕默认收起 sidebar
-      if (!body.classList.contains('close')) {
-        body.classList.add('close');
+      // 小屏幕默认收起 sidebar：沿用 Docsify 原生语义，`close` 表示展开，不使用 `close` 表示收起
+      if (body.classList.contains('close')) {
+        body.classList.remove('close');
       }
     }
   }
@@ -96,7 +96,7 @@
     }
 
     // 根据窗口宽度自动同步 sidebar 展开/收起状态
-    // Docsify 中 body.close 类存在 = sidebar 收起，不存在 = sidebar 展开
+    // 桌面：body.close = 收起；移动端（<1024）：body.close = 展开（沿用 Docsify 原生语义）
     var isWide = window.innerWidth >= SIDEBAR_COLLAPSE_THRESHOLD;
     var body = document.body;
     if (isWide !== lastWasWide) {
@@ -106,9 +106,9 @@
           body.classList.remove('close');
         }
       } else {
-        // 窗口变窄，自动收起 sidebar（添加 close 类）
-        if (!body.classList.contains('close')) {
-          body.classList.add('close');
+        // 窗口变窄，沿用 Docsify 移动端语义：默认不使用 close 表示收起状态
+        if (body.classList.contains('close')) {
+          body.classList.remove('close');
         }
       }
       lastWasWide = isWide;
