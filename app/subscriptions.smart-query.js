@@ -871,7 +871,7 @@ window.SubscriptionsSmartQuery = (function () {
         <div class="dpr-modal-title">新增查询</div>
         <button class="arxiv-tool-btn" data-action="close">关闭</button>
       </div>
-      <div class="dpr-chat-result-module">
+      <div class="dpr-chat-result-module dpr-chat-result-module-no-radius">
         <div class="dpr-modal-sub">大模型 Query（语义重写）</div>
         <div class="dpr-cloud-scroll">${qHtml ? `<div class="dpr-cloud-grid">${qHtml}</div>` : '<div class="dpr-cloud-empty"></div>'}</div>
       </div>
