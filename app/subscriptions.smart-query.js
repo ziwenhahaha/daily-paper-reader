@@ -869,7 +869,15 @@ window.SubscriptionsSmartQuery = (function () {
     const hasCandidates = hasKeywords || hasQueries;
     const isFirstRound = !(Array.isArray(modalState.requestHistory) && modalState.requestHistory.length);
     const actionLabel = isFirstRound ? '生成候选' : '新增候选';
-    const mixedHtml = `${qHtml || ''}${kwHtml || ''}`;
+    const sections = [];
+    if (qHtml) {
+      sections.push(`<div class="dpr-chat-result-block">${`<div class="dpr-cloud-grid dpr-cloud-grid-query">${qHtml}</div>`}</div>`);
+    }
+    if (kwHtml) {
+      sections.push(`<div class="dpr-chat-result-block">${`<div class="dpr-cloud-grid dpr-cloud-grid-keywords">${kwHtml}</div>`}</div>`);
+    }
+    const mixedHtml = sections.join('<div class="dpr-chat-result-row-gap"></div>');
+    const emptyBlock = '<div class="dpr-cloud-empty"></div>';
 
     modalPanel.innerHTML = `
       <div class="dpr-modal-head">
@@ -877,7 +885,7 @@ window.SubscriptionsSmartQuery = (function () {
         <button class="arxiv-tool-btn" data-action="close">关闭</button>
       </div>
       <div class="dpr-chat-result-module">
-        <div class="dpr-cloud-scroll">${mixedHtml ? `<div class="dpr-cloud-grid">${mixedHtml}</div>` : '<div class="dpr-cloud-empty"></div>'}</div>
+        <div class="dpr-cloud-scroll">${mixedHtml || emptyBlock}</div>
       </div>
       <div class="dpr-modal-actions dpr-chat-action-area">
         <div class="dpr-chat-input-group">
