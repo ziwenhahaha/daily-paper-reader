@@ -957,7 +957,6 @@ window.PrivateDiscussionChat = (function () {
       null;
 
     const apiKey = modelEntry ? (modelEntry.apiKey || '').trim() : '';
-    const baseUrl = modelEntry ? (modelEntry.baseUrl || '').trim() : '';
     const model = modelEntry ? modelEntry.name : '';
 
     if (!apiKey) {
@@ -978,6 +977,29 @@ window.PrivateDiscussionChat = (function () {
         '未指定 Chat 模型，请检查密钥配置。';
       if (statusEl) {
         statusEl.textContent = '未配置 Chat 模型。';
+        statusEl.style.color = '#c00';
+      }
+      input.disabled = false;
+      btn.disabled = false;
+      btn.innerText = '发送';
+      return;
+    }
+
+    const endpoint = (() => {
+      const raw = (modelEntry && modelEntry.baseUrl ? modelEntry.baseUrl : '').trim();
+      if (!raw) return '';
+      if (raw.includes('/chat/completions')) return raw;
+      const normalized = raw.replace(/\/+$/, '');
+      if (/\/v\d+$/i.test(normalized)) {
+        return `${normalized}/chat/completions`;
+      }
+      return `${normalized}/v1/chat/completions`;
+    })();
+
+    if (!endpoint) {
+      aiAnswerDiv.textContent = '当前模型配置缺少 baseUrl。';
+      if (statusEl) {
+        statusEl.textContent = 'Chat 模型配置缺少 baseUrl，请在配置页修正。';
         statusEl.style.color = '#c00';
       }
       input.disabled = false;
@@ -1094,26 +1116,36 @@ window.PrivateDiscussionChat = (function () {
           content: question,
       });
 
-      const resp = await fetch(baseUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages,
-          stream: true,
-          // OpenAI 兼容：请求返回思考过程（reasoning_content / thinking）
-          reasoning: {
-            effort: 'medium',
+      const controller = new AbortController();
+      const timeoutMs = 120000;
+      const timerId = setTimeout(() => controller.abort(), timeoutMs);
+      let resp = null;
+
+      try {
+        resp = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
           },
-          // DeepSeek / 部分聚合网关要求通过 extra_body.return_reasoning 开启思考输出
-          extra_body: {
-            return_reasoning: true,
-          },
-        }),
-      });
+          signal: controller.signal,
+          body: JSON.stringify({
+            model,
+            messages,
+            stream: true,
+            // OpenAI 兼容：请求返回思考过程（reasoning_content / thinking）
+            reasoning: {
+              effort: 'medium',
+            },
+            // DeepSeek / 部分聚合网关要求通过 extra_body.return_reasoning 开启思考输出
+            extra_body: {
+              return_reasoning: true,
+            },
+          }),
+        });
+      } finally {
+        clearTimeout(timerId);
+      }
 
       if (!resp.ok) {
         let errorText = '';
@@ -1238,9 +1270,33 @@ window.PrivateDiscussionChat = (function () {
       input.value = '';
     } catch (e) {
       console.error(e);
-      aiAnswerDiv.textContent = '发送失败，请检查网络或模型配置。';
+      const isTimeout =
+        e &&
+        (e.name === 'AbortError' ||
+          e.name === 'TimeoutError' ||
+          /timed out|timed_out/i.test((e.message || '')));
+      if (isTimeout) {
+        aiAnswerDiv.textContent =
+          '请求超时（120 秒），请稍后重试或检查网络后再试。';
+        if (statusEl) {
+          statusEl.textContent = '聊天请求超时，请检查网络。';
+          statusEl.style.color = '#c00';
+        }
+      } else if (e && e.name === 'TypeError') {
+        aiAnswerDiv.textContent = '网络连接异常（可能为 CORS 或跨域问题）。';
+        if (statusEl) {
+          statusEl.textContent =
+            '请求失败：网络连接异常，请确认模型端点可访问（含 CORS）及代理设置。';
+          statusEl.style.color = '#c00';
+        }
+      } else {
+        aiAnswerDiv.textContent = '发送失败，请检查网络或模型配置。';
+        if (statusEl) {
+          statusEl.textContent = '发送失败，请检查网络或模型配置。';
+          statusEl.style.color = '#c00';
+        }
+      }
       if (statusEl) {
-        statusEl.textContent = '发送失败，请检查网络或模型配置。';
         statusEl.style.color = '#c00';
       }
     } finally {
