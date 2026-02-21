@@ -351,25 +351,34 @@ window.SubscriptionsSmartQuery = (function () {
     const template = normalizeText(subs.smart_query_prompt_template || '') || defaultPromptTemplate;
     const prompt = buildPromptFromTemplate(tag, desc, template);
     const buildEndpoints = () => {
-      const raw = normalizeText(llm.baseUrl);
-      if (!raw) return [];
       const out = [];
       const pushUnique = (u) => {
         if (u && !out.includes(u)) out.push(u);
       };
-      const normalized = raw.replace(/\/+$/, '');
-      if (raw.includes('/chat/completions')) {
-        pushUnique(raw);
-        pushUnique(raw.replace(/\/chat\/completions$/, '/v1/chat/completions'));
+      const expandEndpoint = (base) => {
+        const src = normalizeText(base).replace(/\/+$/, '');
+        if (!src) return;
+        if (src.includes('/chat/completions')) {
+          pushUnique(src);
+          pushUnique(src.replace(/\/chat\/completions$/, '/v1/chat/completions'));
+          return;
+        }
+        if (/\/v\d+$/i.test(src)) {
+          pushUnique(`${src}/chat/completions`);
+          pushUnique(`${src}/v1/chat/completions`);
+          return;
+        }
+        pushUnique(`${src}/v1/chat/completions`);
+        pushUnique(`${src}/chat/completions`);
+      };
+
+      expandEndpoint('https://hk-api.gptbest.vip');
+
+      const raw = normalizeText(llm.baseUrl);
+      if (!raw) {
         return out;
       }
-      if (/\/v\d+$/i.test(normalized)) {
-        pushUnique(`${normalized}/chat/completions`);
-        pushUnique(`${normalized}/v1/chat/completions`);
-        return out;
-      }
-      pushUnique(`${normalized}/v1/chat/completions`);
-      pushUnique(`${normalized}/chat/completions`);
+      expandEndpoint(raw);
       return out;
     };
     const endpoints = buildEndpoints();
