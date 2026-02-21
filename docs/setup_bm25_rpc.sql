@@ -70,18 +70,7 @@ begin
   q_raw := regexp_replace(q_raw, E'[^a-z0-9\\s]', ' ', 'g');
   q_raw := regexp_replace(q_raw, E'\\s+', ' ', 'g');
   q_raw := trim(q_raw);
-  -- 兜底解析：先走最保守的 plainto_tsquery，失败则降级到 websearch_to_tsquery，再失败直接返回空结果。
-  begin
-    q := plainto_tsquery('english', q_raw);
-  exception
-    when others then
-      begin
-        q := websearch_to_tsquery('english', q_raw);
-      exception
-        when others then
-          return;
-      end;
-  end;
+  q := plainto_tsquery('english', q_raw);
 
   if q_raw = '' or q = ''''::tsquery then
     return;
