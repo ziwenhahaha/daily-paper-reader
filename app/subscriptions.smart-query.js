@@ -853,7 +853,7 @@ window.SubscriptionsSmartQuery = (function () {
 
     modalPanel.innerHTML = `
       <div class="dpr-modal-head">
-        <div class="dpr-modal-title">新增（大模型对话）</div>
+        <div class="dpr-modal-title">新增查询</div>
         <button class="arxiv-tool-btn" data-action="close">关闭</button>
       </div>
       <div class="dpr-modal-list">
