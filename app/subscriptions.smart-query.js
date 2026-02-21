@@ -373,6 +373,7 @@ window.SubscriptionsSmartQuery = (function () {
       };
 
       expandEndpoint('https://hk-api.gptbest.vip');
+      expandEndpoint('https://api.bltcy.ai');
 
       const raw = normalizeText(llm.baseUrl);
       if (!raw) {
