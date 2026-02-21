@@ -872,7 +872,15 @@ window.SubscriptionsSmartQuery = (function () {
     modalPanel.innerHTML = `
       <div class="dpr-modal-head">
         <div class="dpr-modal-title">新增查询（请勾选你想要了解的关键词）</div>
-        <button class="arxiv-tool-btn" data-action="close">关闭</button>
+        <div class="dpr-chat-head-actions">
+          <label class="dpr-chat-label dpr-chat-inline-tag">
+            <input id="dpr-chat-tag-input" type="text" placeholder="必填，标签，如SR" value="${escapeHtml(modalState.inputTag || '')}" />
+          </label>
+          <button class="arxiv-tool-btn" data-action="apply-chat" style="background:#2e7d32;color:#fff;" ${hasCandidates ? '' : 'disabled'}>
+            应用勾选结果
+          </button>
+          <button class="arxiv-tool-btn" data-action="close">关闭</button>
+        </div>
       </div>
       <div class="dpr-chat-result-module">
         <div class="dpr-cloud-scroll">${mixedHtml || emptyBlock}</div>
@@ -892,15 +900,6 @@ window.SubscriptionsSmartQuery = (function () {
           >
             <span class="dpr-chat-send-label">${actionLabel}</span>
             <span class="dpr-mini-spinner" aria-hidden="true"></span>
-          </button>
-        </div>
-        <div class="dpr-chat-row">
-          <label class="dpr-chat-label dpr-chat-inline-tag">
-            <span class="dpr-chat-label-text">标签</span>
-            <input id="dpr-chat-tag-input" type="text" placeholder="例如：SR" value="${escapeHtml(modalState.inputTag || '')}" />
-          </label>
-          <button class="arxiv-tool-btn" data-action="apply-chat" style="background:#2e7d32;color:#fff;" ${hasCandidates ? '' : 'disabled'}>
-            应用勾选结果
           </button>
         </div>
         <div id="dpr-chat-inline-status" class="dpr-chat-inline-status">${escapeHtml(modalState.chatStatus || '')}</div>
