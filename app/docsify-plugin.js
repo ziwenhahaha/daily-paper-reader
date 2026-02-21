@@ -91,6 +91,11 @@ window.$docsify = {
 
       const normalizeTextForMeta = (value) =>
         (value || '').toString().replace(/\r\n/g, '\n').trim();
+      const CITATION_ABSTRACT_BR = '__BR__';
+      const encodeCitationAbstractForMeta = (value) =>
+        normalizeTextForMeta(value)
+          .replace(/\r/g, '\n')
+          .replace(/\n/g, CITATION_ABSTRACT_BR);
 
       const trimBeforeMarkers = (value, markers) => {
         const text = normalizeTextForMeta(value);
@@ -814,10 +819,8 @@ window.$docsify = {
               abstractTextForMetaRaw || abstractText;
             if (abstractTextForMeta) {
               // 用 Zotero Connector 常识别的字段名：citation_abstract
-              // 保持原始 Markdown 的结构信息，但不再写入额外冗余字段
-              const metaText = abstractTextForMeta
-                .replace(/__BR__/g, '\n')
-                .trim();
+              // 用占位符编码换行，避免 Connector 导入时丢失段落边界
+              const metaText = encodeCitationAbstractForMeta(abstractTextForMeta);
               updateMetaTag('citation_abstract', metaText, {
                 useFallback: false,
               });
