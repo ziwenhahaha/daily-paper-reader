@@ -9,47 +9,38 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-02-19 ~ 2026-02-28
-- 运行时间：2026-02-28 03:38:08 UTC
+- 最新运行日期：2026-02-20 ~ 2026-02-28
+- 运行时间：2026-02-28 19:00:46 UTC
 - 运行状态：成功
-- 本次总论文数：13
-- 精读区：1
-- 速读区：12
+- 本次总论文数：8
+- 精读区：0
+- 速读区：8
 
 ### 今日简报（AI）
-本期精选 13 篇前沿论文，重点聚焦利用 LLM 驱动的进化算法自动优化检索系统。
-核心突破在于 RankEvolve 实现了检索算法的自动化发现，同时 AI Agent 在有机光催化剂设计及质谱结构解析等科学发现领域展现出强大潜力。
-建议关注 LLM 与传统算法（如检索、逻辑推理）结合的自动化演进工具，尝试将其应用于复杂系统的性能调优。
-- 详情：[/20260219-20260228/README](/20260219-20260228/README)
+今日速读 8 篇前沿论文，重点解析了 Transformer 的因果学习本质及扩散模型在 CUDA 算子生成上的跨界突破。
+最值得关注 Transformer 原生的因果发现能力，以及 DICE 框架如何利用扩散 LLM 刷新高性能计算代码的生成效率。
+建议开发者关注底层算子自动化的新路径，并深入探索语义与统计结合的因果发现框架。
+- 详情：[/20260220-20260228/README](/20260220-20260228/README)
 
 ### 精读区论文标签
-1. [RankEvolve: Automating the Discovery of Retrieval Algorithms via LLM-Driven Evolution](/20260219-20260228/2602.16932v1-rankevolve-automating-the-discovery-of-retrieval-algorithms-via-llm-driven-evolution)  
-   标签：评分：8.0/10、query:sr2026
+- 本次无精读推荐。
 
 ### 速读区论文标签
-1. [ChemNavigator: Agentic AI Discovery of Design Rules for Organic Photocatalysts](/20260219-20260228/2601.17084v1-chemnavigator-agentic-ai-discovery-of-design-rules-for-organic-photocatalysts)  
+1. [Transformer Is Inherently a Causal Learner](/20260220-20260228/2601.05647v1-transformer-is-inherently-a-causal-learner)  
    标签：评分：7.0/10、query:sr2026
-2. [DeepDFA: Injecting Temporal Logic in Deep Learning for Sequential Subsymbolic Applications](/20260219-20260228/2602.03486v1-deepdfa-injecting-temporal-logic-in-deep-learning-for-sequential-subsymbolic-applications)  
+2. [DICE: Diffusion Large Language Models Excel at Generating CUDA Kernels](/20260220-20260228/2602.11715v1-dice-diffusion-large-language-models-excel-at-generating-cuda-kernels)  
    标签：评分：7.0/10、query:rl
-3. [Generative structural elucidation from mass spectra as an iterative optimization problem](/20260219-20260228/2602.07709v1-generative-structural-elucidation-from-mass-spectra-as-an-iterative-optimization-problem)  
+3. [DMCD: Semantic-Statistical Framework for Causal Discovery](/20260220-20260228/2602.20333v1-dmcd-semantic-statistical-framework-for-causal-discovery)  
    标签：评分：7.0/10、query:sr2026
-4. [Differentiable Rule Induction from Raw Sequence Inputs](/20260219-20260228/2602.13583v1-differentiable-rule-induction-from-raw-sequence-inputs)  
-   标签：评分：7.0/10、query:sr2026
-5. [Neural Proposals, Symbolic Guarantees: Neuro-Symbolic Graph Generation with Hard Constraints](/20260219-20260228/2602.16954v2-neural-proposals-symbolic-guarantees-neuro-symbolic-graph-generation-with-hard-constraints)  
-   标签：评分：7.0/10、query:sr2026
-6. [Can We Predict Before Executing Machine Learning Agents?](/20260219-20260228/2601.05930v1-can-we-predict-before-executing-machine-learning-agents)  
+4. [QUASAR: A Universal Autonomous System for Atomistic Simulation and a Benchmark of Its Capabilities](/20260220-20260228/2602.00185v1-quasar-a-universal-autonomous-system-for-atomistic-simulation-and-a-benchmark-of-its-capabilities)  
    标签：评分：6.0/10、query:sr2026
-7. [Neurosymbolic LoRA: Why and When to Tune Weights vs. Rewrite Prompts](/20260219-20260228/2601.12711v1-neurosymbolic-lora-why-and-when-to-tune-weights-vs-rewrite-prompts)  
+5. [Learning Deep Hybrid Models with Sharpness-Aware Minimization](/20260220-20260228/2602.06837v1-learning-deep-hybrid-models-with-sharpness-aware-minimization)  
    标签：评分：6.0/10、query:sr2026
-8. [Implementing Tensor Logic: Unifying Datalog and Neural Reasoning via Tensor Contraction](/20260219-20260228/2601.17188v1-implementing-tensor-logic-unifying-datalog-and-neural-reasoning-via-tensor-contraction)  
+6. [From Natural Language to Materials Discovery:The Materials Knowledge Navigation Agent](/20260220-20260228/2602.11123v1-from-natural-language-to-materials-discoverythe-materials-knowledge-navigation-agent)  
    标签：评分：6.0/10、query:sr2026
-9. [The M-Tensor Format: Optimality in High Dimensional Regression for Nonlinear Models with Scarce Data](/20260219-20260228/2602.08509v1-the-m-tensor-format-optimality-in-high-dimensional-regression-for-nonlinear-models-with-scarce-data)  
+7. [Beyond Message Passing: A Symbolic Alternative for Expressive and Interpretable Graph Learning](/20260220-20260228/2602.16947v2-beyond-message-passing-a-symbolic-alternative-for-expressive-and-interpretable-graph-learning)  
    标签：评分：6.0/10、query:sr2026
-10. [Neuro-Symbolic Synergy for Interactive World Modeling](/20260219-20260228/2602.10480v2-neuro-symbolic-synergy-for-interactive-world-modeling)  
-   标签：评分：6.0/10、query:sr2026
-11. [The Neurosymbolic Frontier of Nonuniform Ellipticity: Formalizing Sharp Schauder Theory via Topos-Theoretic Reasoning Models](/20260219-20260228/2602.10632v1-the-neurosymbolic-frontier-of-nonuniform-ellipticity-formalizing-sharp-schauder-theory-via-topos-theoretic-reasoning-models)  
-   标签：评分：6.0/10、query:sr2026
-12. [Clapeyron Neural Networks for Single-Species Vapor-Liquid Equilibria](/20260219-20260228/2602.18313v1-clapeyron-neural-networks-for-single-species-vapor-liquid-equilibria)  
+8. [KMLP: A Scalable Hybrid Architecture for Web-Scale Tabular Data Modeling](/20260220-20260228/2602.22777v1-kmlp-a-scalable-hybrid-architecture-for-web-scale-tabular-data-modeling)  
    标签：评分：6.0/10、query:sr2026
 
 
