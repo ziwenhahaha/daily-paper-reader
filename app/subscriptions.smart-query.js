@@ -62,6 +62,20 @@ window.SubscriptionsSmartQuery = (function () {
   ].join('\n');
 
   const normalizeText = (v) => String(v || '').trim();
+  const toStableId = (value) => {
+    const text = normalizeText(value).toLowerCase();
+    const slug = text
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .trim();
+    return slug || 'item';
+  };
+  const getProfileKey = (profileOrTag) => {
+    if (!profileOrTag) return '';
+    if (typeof profileOrTag === 'string') return toStableId(profileOrTag);
+    return toStableId(profileOrTag.tag) || '';
+  };
 
   const normalizeProfileKeywords = (profile) => {
     return normalizeKeywordEntries(profile && profile.keywords);
@@ -110,7 +124,6 @@ window.SubscriptionsSmartQuery = (function () {
           const query = normalizeText(item);
           if (!query) return null;
           return {
-            id: `gen-intent-${Date.now()}-${idx + 1}`,
             query,
             query_cn: '',
             enabled: true,
@@ -122,7 +135,6 @@ window.SubscriptionsSmartQuery = (function () {
         if (!query) return null;
         const queryCn = normalizeText(item.query_cn || item.query_zh || item.zh || item.note || '');
         return {
-          id: normalizeText(item.id) || `gen-intent-${Date.now()}-${idx + 1}`,
           query,
           query_cn: queryCn,
           enabled: item.enabled !== false,
@@ -163,7 +175,7 @@ window.SubscriptionsSmartQuery = (function () {
     msgEl.style.color = color || '#666';
   };
 
-  const getProfileId = (profileId) => normalizeText(profileId);
+  const getProfileId = (profileId) => getProfileKey(profileId);
 
   const isProfileDeleted = (profileId) => {
     const normalizedId = getProfileId(profileId);
@@ -176,13 +188,13 @@ window.SubscriptionsSmartQuery = (function () {
 
   const filterDeletedProfiles = (profiles) => {
     return (Array.isArray(profiles) ? profiles : []).filter(
-      (profile) => !isProfileDeleted(getProfileId(profile && profile.id)),
+      (profile) => !isProfileDeleted(getProfileId(profile)),
     );
   };
 
   const ensureProfile = (profiles, tag, description) => {
     const t = normalizeText(tag);
-    let profile = profiles.find((p) => normalizeText(p.tag) === t);
+    let profile = profiles.find((p) => getProfileKey(p) === getProfileKey(t));
     if (profile) {
       if (normalizeText(description) && !normalizeText(profile.description)) {
         profile.description = normalizeText(description);
@@ -190,7 +202,6 @@ window.SubscriptionsSmartQuery = (function () {
       return profile;
     }
     profile = {
-      id: `profile-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
       tag: t,
       description: normalizeText(description),
       enabled: true,
@@ -767,7 +778,7 @@ window.SubscriptionsSmartQuery = (function () {
   };
 
   const replaceProfileFromSelection = (profileId, tag, description, candidates) => {
-    const profileKey = normalizeText(profileId);
+    const profileKey = getProfileKey(profileId);
     if (!profileKey) return false;
 
     const selectedKeywords = (candidates.keywords || []).filter((x) => x._selected);
@@ -781,7 +792,7 @@ window.SubscriptionsSmartQuery = (function () {
       if (!next.subscriptions) next.subscriptions = {};
       const subs = next.subscriptions;
       const profiles = Array.isArray(subs.intent_profiles) ? subs.intent_profiles.slice() : [];
-      const idx = profiles.findIndex((p) => normalizeText(p.id) === profileKey);
+      const idx = profiles.findIndex((p) => getProfileKey(p) === profileKey);
       if (idx < 0) return next;
       found = true;
 
@@ -793,7 +804,6 @@ window.SubscriptionsSmartQuery = (function () {
         if (!query || intentSeen.has(query.toLowerCase())) return;
         intentSeen.add(query.toLowerCase());
         mergedIntentQueries.push({
-          id: normalizeText(queryObj.id) || `intent-q-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
           query,
           query_cn: normalizeText(queryObj.query_cn || queryObj.query_zh || queryObj.zh || ''),
           enabled: queryObj.enabled !== false,
@@ -807,7 +817,6 @@ window.SubscriptionsSmartQuery = (function () {
 
       profiles[idx] = {
         ...existedProfile,
-        id: existedProfile.id,
         tag: normalizeText(tag || existedProfile.tag || ''),
         description: normalizeText(description || existedProfile.description || ''),
         keywords:
@@ -993,15 +1002,15 @@ window.SubscriptionsSmartQuery = (function () {
     displayListEl.innerHTML = currentProfiles
       .map((p) => {
         return `
-          <div class="dpr-entry-card" data-profile-id="${escapeHtml(p.id || '')}">
+          <div class="dpr-entry-card" data-profile-id="${escapeHtml(getProfileKey(p) || '')}">
             <div class="dpr-entry-top">
               <div class="dpr-entry-headline">
                 <span class="dpr-entry-title">${escapeHtml(p.tag || '')}</span>
                 <span class="dpr-entry-desc-inline">${escapeHtml(p.description || '（无描述）')}</span>
               </div>
               <div class="dpr-entry-actions">
-                <button class="arxiv-tool-btn dpr-entry-edit-btn" data-action="edit-profile" data-profile-id="${escapeHtml(p.id || '')}">修改</button>
-                <button class="arxiv-tool-btn dpr-entry-delete-btn" data-action="delete-profile" data-profile-id="${escapeHtml(p.id || '')}">删除</button>
+                <button class="arxiv-tool-btn dpr-entry-edit-btn" data-action="edit-profile" data-profile-id="${escapeHtml(getProfileKey(p) || '')}">修改</button>
+                <button class="arxiv-tool-btn dpr-entry-delete-btn" data-action="delete-profile" data-profile-id="${escapeHtml(getProfileKey(p) || '')}">删除</button>
               </div>
             </div>
           </div>
@@ -1364,12 +1373,14 @@ window.SubscriptionsSmartQuery = (function () {
   };
 
   const openEditModal = (profileId) => {
-    const profile = (currentProfiles || []).find((p) => normalizeText(p.id) === normalizeText(profileId));
+    const targetKey = getProfileKey(profileId);
+    if (!targetKey) return;
+    const profile = (currentProfiles || []).find((p) => getProfileKey(p) === targetKey);
     if (!profile) return;
 
     modalState = {
       type: 'add',
-      editProfileId: normalizeText(profile.id),
+      editProfileId: targetKey,
       tag: profile.tag || '',
       description: profile.description || '',
       ...toProfileSelectableCandidates(profile),
@@ -1533,7 +1544,7 @@ window.SubscriptionsSmartQuery = (function () {
       return;
     }
     if (action === 'delete-profile') {
-      const profile = (currentProfiles || []).find((p) => normalizeText(p.id) === normalizeText(profileId));
+      const profile = (currentProfiles || []).find((p) => getProfileKey(p) === getProfileKey(profileId));
       const tag = normalizeText(profile && profile.tag) || '该词条';
       const desc = normalizeText(profile && profile.description);
       const keywordCount = Array.isArray(profile && profile.keywords) ? profile.keywords.length : 0;
@@ -1546,7 +1557,7 @@ window.SubscriptionsSmartQuery = (function () {
       if (normalizedProfileId) {
         pendingDeletedProfileIds.add(normalizedProfileId);
       }
-      currentProfiles = currentProfiles.filter((item) => getProfileId(item && item.id) !== normalizedProfileId);
+      currentProfiles = currentProfiles.filter((item) => getProfileKey(item) !== normalizedProfileId);
       renderMain();
 
       window.SubscriptionsManager.updateDraftConfig((cfg) => {
@@ -1554,7 +1565,7 @@ window.SubscriptionsSmartQuery = (function () {
         if (!next.subscriptions) next.subscriptions = {};
         const subs = next.subscriptions;
         const profiles = Array.isArray(subs.intent_profiles) ? subs.intent_profiles.slice() : [];
-        subs.intent_profiles = profiles.filter((p) => normalizeText(p.id) !== normalizeText(profileId));
+        subs.intent_profiles = profiles.filter((p) => getProfileKey(p) !== getProfileKey(profileId));
         next.subscriptions = subs;
         return next;
       });

@@ -31,11 +31,11 @@ window.DPRWorkflowRunner = (function () {
   ];
 
   const QUICK_FETCH_PRESETS = {
-    '7': {
+    '10': {
       key: 'daily-now',
       dispatchInputs: {
         run_enrich: 'false',
-        fetch_days: '7',
+        fetch_days: '10',
       },
     },
     '30': {
@@ -693,7 +693,7 @@ window.DPRWorkflowRunner = (function () {
 
   const runQuickFetchByDays = async (days) => {
     const parsed = parseInt(days, 10);
-    const normalized = Number.isFinite(parsed) && parsed > 0 ? String(Math.max(1, parsed)) : '7';
+    const normalized = Number.isFinite(parsed) && parsed > 0 ? String(Math.max(1, parsed)) : '10';
     const preset = QUICK_FETCH_PRESETS[normalized] || {
       key: 'daily-now',
       dispatchInputs: {

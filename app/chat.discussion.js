@@ -192,7 +192,7 @@ window.PrivateDiscussionChat = (function () {
                   <div class="chat-quick-run-title">快速抓取</div>
                   <button id="chat-quick-run-close-btn" class="chat-quick-run-close-btn" type="button" aria-label="关闭">✕</button>
                 </div>
-                <button id="chat-quick-run-7d-btn" class="chat-quick-run-item" type="button">立即搜寻七天内论文</button>
+                <button id="chat-quick-run-10d-btn" class="chat-quick-run-item" type="button">立即搜寻十天内论文</button>
                 <button id="chat-quick-run-30d-btn" class="chat-quick-run-item" type="button">立即搜寻三十天内论文</button>
                 <div class="chat-quick-run-divider" aria-hidden="true"></div>
                 <div class="chat-quick-run-title">会议论文（先保留）</div>
@@ -1336,7 +1336,7 @@ window.PrivateDiscussionChat = (function () {
     const chatSettingsBtn = document.getElementById('chat-settings-toggle-btn');
     const chatQuickRunBtn = document.getElementById('chat-quick-run-btn');
     const chatQuickRunCloseBtn = document.getElementById('chat-quick-run-close-btn');
-    const chatQuickRun7dBtn = document.getElementById('chat-quick-run-7d-btn');
+    const chatQuickRun10dBtn = document.getElementById('chat-quick-run-10d-btn');
     const chatQuickRun30dBtn = document.getElementById('chat-quick-run-30d-btn');
     const chatQuickRunConferenceBtn = document.getElementById(
       'chat-quick-run-conference-run-btn',
@@ -1582,10 +1582,10 @@ window.PrivateDiscussionChat = (function () {
       });
     }
 
-    if (chatQuickRun7dBtn && !chatQuickRun7dBtn._bound) {
-      chatQuickRun7dBtn._bound = true;
-      chatQuickRun7dBtn.addEventListener('click', () => {
-        runQuickFetch(7, statusEl, closeQuickRunPopover);
+    if (chatQuickRun10dBtn && !chatQuickRun10dBtn._bound) {
+      chatQuickRun10dBtn._bound = true;
+      chatQuickRun10dBtn.addEventListener('click', () => {
+        runQuickFetch(10, statusEl, closeQuickRunPopover);
       });
     }
 

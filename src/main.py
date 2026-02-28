@@ -15,6 +15,7 @@ SRC_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.abspath(os.path.join(SRC_DIR, ".."))
 CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 LONG_RANGE_DAYS_THRESHOLD = 7
+SKIMS_FETCH_DAYS_THRESHOLD = 11
 
 
 def run_step(label: str, args: list[str]) -> None:
@@ -129,6 +130,12 @@ def main() -> None:
     run_date_token = resolve_run_date_token(args.fetch_days)
     os.environ["DPR_RUN_DATE"] = run_date_token
     print(f"[INFO] DPR_RUN_DATE={run_date_token}", flush=True)
+    use_skims_mode = args.fetch_days is not None and args.fetch_days >= SKIMS_FETCH_DAYS_THRESHOLD
+    if args.fetch_days is not None:
+        print(
+            f"[INFO] fetch_days={args.fetch_days}, run_mode={'skims' if use_skims_mode else 'standard'}",
+            flush=True,
+        )
 
     if args.run_enrich:
         run_step(
@@ -177,7 +184,7 @@ def main() -> None:
         [
             python,
             os.path.join(SRC_DIR, "5.select_papers.py"),
-            *(["--modes", "skims"] if args.fetch_days is not None else []),
+            *(["--modes", "skims"] if use_skims_mode else []),
         ],
     )
     run_step(
@@ -185,7 +192,7 @@ def main() -> None:
         [
             python,
             os.path.join(SRC_DIR, "6.generate_docs.py"),
-            *(["--mode", "skims"] if args.fetch_days is not None else []),
+            *(["--mode", "skims"] if use_skims_mode else []),
             *(
                 ["--sidebar-date-label", sidebar_date_label]
                 if sidebar_date_label

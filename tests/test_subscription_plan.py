@@ -117,7 +117,7 @@ class SubscriptionPlanTest(unittest.TestCase):
 
         intent_bm25 = [q for q in plan['bm25_queries'] if q.get('type') == 'intent_query']
         intent_emb = [q for q in plan['embedding_queries'] if q.get('type') == 'intent_query']
-        intent_context = [q for q in plan['context_queries'] if q.get('tag', '').startswith('query:SR::intent')]
+        intent_context = [q for q in plan['context_queries'] if q.get('tag', '') == 'query:SR']
 
         self.assertEqual(len(intent_bm25), 2)
         self.assertEqual(len(intent_emb), 2)

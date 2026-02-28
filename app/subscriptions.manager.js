@@ -10,8 +10,7 @@ window.SubscriptionsManager = (function () {
   let saveBtn = null;
   let closeBtn = null;
   let msgEl = null;
-  let quickRun7dBtn = null;
-  let quickRunTodayBtn = null;
+  let quickRun10dBtn = null;
   let quickRun30dBtn = null;
   let quickRunConferenceBtn = null;
   let quickRunYearSelect = null;
@@ -78,6 +77,15 @@ window.SubscriptionsManager = (function () {
   ];
 
   const normalizeText = (v) => String(v || '').trim();
+  const toStableId = (value) => {
+    const text = normalizeText(value).toLowerCase();
+    const slug = text
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .trim();
+    return slug || 'item';
+  };
 
   const cloneDeep = (obj) => {
     try {
@@ -137,7 +145,6 @@ window.SubscriptionsManager = (function () {
       const query = normalizeText(item);
       if (!query) return null;
       return {
-        id: `intent-q-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
         query,
         query_cn: '',
         enabled: true,
@@ -151,7 +158,6 @@ window.SubscriptionsManager = (function () {
     const queryCn = normalizeText(item.query_cn || item.query_zh || item.zh || item.note || '');
 
     return {
-      id: normalizeText(item.id) || `intent-q-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
       query,
       query_cn: queryCn,
       enabled: item.enabled !== false,
@@ -200,7 +206,7 @@ window.SubscriptionsManager = (function () {
 
   const refreshQuickRunButtons = () => {
     const blocked = hasUnsavedChanges;
-    [quickRun7dBtn, quickRunTodayBtn, quickRun30dBtn].forEach((btn) => {
+    [quickRun10dBtn, quickRun30dBtn].forEach((btn) => {
       if (!btn) return;
       btn.disabled = blocked;
       btn.classList.toggle('chat-quick-run-item--disabled', blocked);
@@ -257,8 +263,7 @@ window.SubscriptionsManager = (function () {
     return profiles
       .map((p, idx) => {
         if (!p || typeof p !== 'object') return null;
-        const id = normalizeText(p.id) || `profile-${idx + 1}`;
-        const tag = normalizeText(p.tag) || id;
+        const tag = normalizeText(p.tag) || toStableId(p.description || `profile-${idx + 1}`);
         const description = normalizeText(p.description || '');
         const enabled = p.enabled !== false;
         const keywordRules = (Array.isArray(p.keywords) ? p.keywords : []).map(normalizeKeywordItem).filter(Boolean);
@@ -269,7 +274,6 @@ window.SubscriptionsManager = (function () {
         }
 
         return {
-          id,
           tag,
           description,
           enabled,
@@ -279,6 +283,47 @@ window.SubscriptionsManager = (function () {
         };
       })
       .filter(Boolean);
+  };
+
+  const stripIntentProfileIds = (config) => {
+    const next = cloneDeep(config || {});
+    if (!next || typeof next !== 'object') return next;
+    const subscriptions = next.subscriptions;
+    if (!subscriptions || typeof subscriptions !== 'object') return next;
+    const profiles = Array.isArray(subscriptions.intent_profiles) ? subscriptions.intent_profiles : [];
+    if (!profiles.length) return next;
+
+    subscriptions.intent_profiles = profiles
+      .filter((p) => p && typeof p === 'object')
+      .map((p) => {
+        const profile = cloneDeep(p) || {};
+        delete profile.id;
+
+        if (Array.isArray(profile.keywords)) {
+          profile.keywords = profile.keywords
+            .filter((k) => k && typeof k === 'object')
+            .map((k) => {
+              const keyword = cloneDeep(k);
+              delete keyword.id;
+              return keyword;
+            });
+        }
+
+        if (Array.isArray(profile.intent_queries)) {
+          profile.intent_queries = profile.intent_queries
+            .filter((item) => item && typeof item === 'object')
+            .map((item) => {
+              const intentQuery = cloneDeep(item);
+              delete intentQuery.id;
+              return intentQuery;
+            });
+        }
+
+        return profile;
+      });
+
+    next.subscriptions = subscriptions;
+    return next;
   };
 
   const migrateLegacyToProfilesIfNeeded = (subs) => {
@@ -299,7 +344,7 @@ window.SubscriptionsManager = (function () {
     const subs = next.subscriptions;
 
     migrateLegacyToProfilesIfNeeded(subs);
-    subs.intent_profiles = normalizeProfiles(subs);
+      subs.intent_profiles = normalizeProfiles(subs);
 
     if (!subs.schema_migration || typeof subs.schema_migration !== 'object') {
       subs.schema_migration = {};
@@ -316,7 +361,7 @@ window.SubscriptionsManager = (function () {
     }
 
     next.subscriptions = subs;
-    return next;
+    return stripIntentProfileIds(next);
   };
 
   const setMessage = (text, color) => {
@@ -367,8 +412,7 @@ window.SubscriptionsManager = (function () {
 
           <div id="arxiv-search-quick-run-side">
             <div class="chat-quick-run-title">快速抓取</div>
-            <button id="arxiv-admin-quick-run-today-btn" class="chat-quick-run-item" type="button">立即搜寻当天论文</button>
-            <button id="arxiv-admin-quick-run-7d-btn" class="chat-quick-run-item" type="button">立即搜寻七天内论文</button>
+            <button id="arxiv-admin-quick-run-10d-btn" class="chat-quick-run-item" type="button">立即搜寻十天内论文</button>
             <button id="arxiv-admin-quick-run-30d-btn" class="chat-quick-run-item" type="button">立即搜寻三十天内论文</button>
             <div class="chat-quick-run-divider" aria-hidden="true"></div>
             <div class="chat-quick-run-title">会议论文（先保留）</div>
@@ -562,8 +606,7 @@ window.SubscriptionsManager = (function () {
       });
     }
 
-    quickRun7dBtn = document.getElementById('arxiv-admin-quick-run-7d-btn');
-    quickRunTodayBtn = document.getElementById('arxiv-admin-quick-run-today-btn');
+    quickRun10dBtn = document.getElementById('arxiv-admin-quick-run-10d-btn');
     quickRun30dBtn = document.getElementById('arxiv-admin-quick-run-30d-btn');
     quickRunConferenceBtn = document.getElementById(
       'arxiv-admin-quick-run-conference-run-btn',
@@ -574,7 +617,7 @@ window.SubscriptionsManager = (function () {
     );
     quickRunMsgEl = document.getElementById('arxiv-admin-quick-run-msg');
     fillQuickRunOptions(quickRunYearSelect, quickRunConferenceSelect);
-    [quickRun7dBtn, quickRunTodayBtn, quickRun30dBtn].forEach((btn) => {
+    [quickRun10dBtn, quickRun30dBtn].forEach((btn) => {
       if (!btn) return;
       if (!btn.dataset.defaultTitle) {
         btn.setAttribute('data-default-title', btn.textContent || '');
@@ -582,17 +625,10 @@ window.SubscriptionsManager = (function () {
     });
     refreshQuickRunButtons();
 
-    if (quickRun7dBtn && !quickRun7dBtn._bound) {
-      quickRun7dBtn._bound = true;
-      quickRun7dBtn.addEventListener('click', () => {
-        runQuickFetch(7, quickRunMsgEl);
-      });
-    }
-
-    if (quickRunTodayBtn && !quickRunTodayBtn._bound) {
-      quickRunTodayBtn._bound = true;
-      quickRunTodayBtn.addEventListener('click', () => {
-        runQuickFetch(1, quickRunMsgEl, '已发起当天论文抓取任务。');
+    if (quickRun10dBtn && !quickRun10dBtn._bound) {
+      quickRun10dBtn._bound = true;
+      quickRun10dBtn.addEventListener('click', () => {
+        runQuickFetch(10, quickRunMsgEl);
       });
     }
 

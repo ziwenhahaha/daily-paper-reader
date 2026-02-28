@@ -69,8 +69,8 @@ class QueryTagFlowTest(unittest.TestCase):
         reqs = self.refine_mod.build_user_requirements(config, [])
         self.assertEqual(len(reqs), 3)
         self.assertEqual(reqs[0]["tag"], "query:sr")
-        self.assertTrue(reqs[1]["tag"].startswith("query:sr-intent"))
-        self.assertTrue(reqs[2]["tag"].startswith("query:sr-intent"))
+        self.assertTrue(reqs[1]["tag"].startswith("query:sr"))
+        self.assertTrue(reqs[2]["tag"].startswith("query:sr"))
         req_texts = [r["query"] for r in reqs]
         self.assertIn("symbolic regression with reinforcement learning", req_texts)
         self.assertIn("equation discovery for physical systems", req_texts)

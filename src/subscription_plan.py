@@ -89,13 +89,12 @@ def _normalize_query_item(item: Any) -> str:
   )
 
 
-def _normalize_intent_query_entry(item: Any, default_id: str) -> Dict[str, Any]:
+def _normalize_intent_query_entry(item: Any) -> Dict[str, Any]:
   if isinstance(item, str):
     query = _norm_text(item)
     if not query:
       return {}
     return {
-      "id": default_id,
       "query": query,
       "enabled": True,
       "source": "manual",
@@ -109,7 +108,6 @@ def _normalize_intent_query_entry(item: Any, default_id: str) -> Dict[str, Any]:
     return {}
 
   return {
-    "id": _norm_text(item.get("id") or default_id),
     "query": query,
     "enabled": _as_bool(item.get("enabled"), True),
     "source": _norm_text(item.get("source") or "manual"),
@@ -117,18 +115,13 @@ def _normalize_intent_query_entry(item: Any, default_id: str) -> Dict[str, Any]:
   }
 
 
-def _normalize_query_list(
-  items: Any,
-  pid: str,
-  start_index: int,
-  id_prefix: str,
-) -> List[Dict[str, Any]]:
+def _normalize_query_list(items: Any) -> List[Dict[str, Any]]:
   if not isinstance(items, list):
     return []
 
   out: List[Dict[str, Any]] = []
-  for idx, raw in enumerate(items):
-    entry = _normalize_intent_query_entry(raw, f"{pid}-{id_prefix}-{start_index + idx + 1}")
+  for raw in items:
+    entry = _normalize_intent_query_entry(raw)
     if entry:
       out.append(entry)
 
@@ -143,13 +136,12 @@ def _normalize_query_list(
   return deduped
 
 
-def _normalize_keyword_entry(item: Any, default_id: str) -> Dict[str, Any]:
+def _normalize_keyword_entry(item: Any) -> Dict[str, Any]:
   if isinstance(item, str):
     keyword = _norm_text(item)
     if not keyword:
       return {}
     return {
-      "id": default_id,
       "keyword": keyword,
       "query": keyword,
       "logic_cn": "",
@@ -169,7 +161,6 @@ def _normalize_keyword_entry(item: Any, default_id: str) -> Dict[str, Any]:
     query = keyword
 
   return {
-    "id": _norm_text(item.get("id") or default_id),
     "keyword": keyword,
     "query": query,
     "logic_cn": _norm_text(item.get("logic_cn") or ""),
@@ -179,13 +170,13 @@ def _normalize_keyword_entry(item: Any, default_id: str) -> Dict[str, Any]:
   }
 
 
-def _normalize_keyword_list(items: Any, pid: str, start_index: int = 0) -> List[Dict[str, Any]]:
+def _normalize_keyword_list(items: Any) -> List[Dict[str, Any]]:
   if not isinstance(items, list):
     return []
 
   out: List[Dict[str, Any]] = []
-  for idx, raw in enumerate(items):
-    entry = _normalize_keyword_entry(raw, f"{pid}-kw-{start_index + idx + 1}")
+  for raw in items:
+    entry = _normalize_keyword_entry(raw)
     if entry:
       out.append(entry)
 
@@ -223,25 +214,16 @@ def _normalize_keyword_expr(expr: str) -> str:
 
 
 def _normalize_profile(profile: Dict[str, Any], idx: int) -> Dict[str, Any]:
-  pid = _norm_text(profile.get("id") or "")
   tag = _norm_text(profile.get("tag") or "")
   description = _norm_text(profile.get("description") or "")
-  if not pid:
-    pid = f"profile-{idx + 1}-{_slug(tag or description or str(idx + 1))}"
   if not tag:
-    tag = pid
+    tag = f"profile-{idx + 1}"
 
   kw_rules_in = profile.get("keywords") or []
-  kw_rules: List[Dict[str, Any]] = _normalize_keyword_list(kw_rules_in, pid)
-  intent_queries: List[Dict[str, Any]] = _normalize_query_list(
-    profile.get("intent_queries"),
-    pid,
-    0,
-    "intent",
-  )
+  kw_rules: List[Dict[str, Any]] = _normalize_keyword_list(kw_rules_in)
+  intent_queries: List[Dict[str, Any]] = _normalize_query_list(profile.get("intent_queries"))
 
   return {
-    "id": pid,
     "tag": tag,
     "description": description,
     "enabled": _as_bool(profile.get("enabled"), True),
@@ -277,10 +259,7 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
     paper_tag_query = f"query:{tag}"
 
     for keyword_rule in profile.get("keywords") or []:
-      normalized = _normalize_keyword_entry(
-        keyword_rule,
-        f"{_norm_text(profile.get('id'))}-kw-{len(context_keywords) + len(context_queries) + 1}",
-      )
+      normalized = _normalize_keyword_entry(keyword_rule)
       if not normalized:
         continue
       if not _as_bool(normalized.get("enabled"), True):
@@ -296,7 +275,6 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
       expr = _normalize_keyword_expr(raw_text)
       logic_cn = _norm_text(normalized.get("logic_cn") or "")
       source = _norm_text(normalized.get("source") or "manual")
-      source_rule_id = _norm_text(normalized.get("id") or "")
       bm25_queries.append(
         {
           "type": "keyword",
@@ -306,8 +284,6 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
           "query_terms": [{"text": expr, "weight": MAIN_TERM_WEIGHT}],
           "boolean_expr": "",
           "logic_cn": logic_cn,
-          "source_profile_id": profile.get("id"),
-          "source_rule_id": source_rule_id,
           "source": source,
           "or_soft_weight": OR_SOFT_WEIGHT,
         }
@@ -319,8 +295,6 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
           "paper_tag": paper_tag_keyword,
           "query_text": raw_query,
           "logic_cn": logic_cn,
-          "source_profile_id": profile.get("id"),
-          "source_rule_id": source_rule_id,
           "source": source,
         }
       )
@@ -334,10 +308,7 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
       )
 
     for intent_query in profile.get("intent_queries") or []:
-      normalized_intent = _normalize_intent_query_entry(
-        intent_query,
-        f"{_norm_text(profile.get('id'))}-intent-query-{len(context_queries) + 1}",
-      )
+      normalized_intent = _normalize_intent_query_entry(intent_query)
       if not normalized_intent:
         continue
       if not _as_bool(normalized_intent.get("enabled"), True):
@@ -348,8 +319,7 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
         continue
 
       source = _norm_text(normalized_intent.get("source") or "manual")
-      source_rule_id = _norm_text(normalized_intent.get("id") or "")
-      intent_query_tag = f"query:{tag}::intent"
+      intent_query_tag = paper_tag_query
 
       bm25_queries.append(
         {
@@ -360,8 +330,6 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
           "query_terms": [{"text": raw_query, "weight": MAIN_TERM_WEIGHT}],
           "boolean_expr": "",
           "logic_cn": "",
-          "source_profile_id": profile.get("id"),
-          "source_rule_id": source_rule_id,
           "source": source,
           "or_soft_weight": OR_SOFT_WEIGHT,
         }
@@ -373,8 +341,6 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
           "paper_tag": f"query:{tag}",
           "query_text": raw_query,
           "logic_cn": "",
-          "source_profile_id": profile.get("id"),
-          "source_rule_id": source_rule_id,
           "source": source,
         }
       )
