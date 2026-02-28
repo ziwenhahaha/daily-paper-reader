@@ -10,16 +10,16 @@
 
 ## 每次日报
 - 最新运行日期：2026-02-28
-- 运行时间：2026-02-28 01:15:49 UTC
+- 运行时间：2026-02-28 02:31:46 UTC
 - 运行状态：成功
-- 本次总论文数：7
+- 本次总论文数：11
 - 精读区：0
-- 速读区：7
+- 速读区：11
 
 ### 今日简报（AI）
-今日聚焦符号回归与遗传算法的深度解析，通过 7 篇速读论文探索可解释 AI 的底层逻辑。
-重点关注 ECSEL 提出的正项式方程学习分类法，以及对 Transformer 架构在符号回归中内部运作机制的拆解。
-建议优先研读三篇满分论文，掌握如何利用数学公式和演化算法提升模型的可解释性。
+今日成功完成 11 篇论文速读，重点聚焦符号回归与遗传算法的可解释性前沿突破。
+研究揭示了 Transformer 在符号回归中的内在机制，并提出通过正项式方程学习实现可解释分类的新路径。
+建议关注符号回归模型从“黑盒”向“透明化”转型的技术细节，以提升复杂系统的建模可信度。
 - 详情：[/202602/28/README](/202602/28/README)
 
 ### 精读区论文标签
@@ -40,6 +40,14 @@
    标签：评分：10.0/10、query:sr2026-intent
 7. [Discovery of Interpretable Physical Laws in Materials via Language-Model-Guided Symbolic Regression](/202602/28/2602.22967v1-discovery-of-interpretable-physical-laws-in-materials-via-language-model-guided-symbolic-regression)  
    标签：评分：10.0/10、query:sr2026-intent
+8. [Neuro-Symbolic Activation Discovery: Transferring Mathematical Structures from Physics to Ecology for Parameter-Efficient Neural Networks](/202602/28/2601.10740v1-neuro-symbolic-activation-discovery-transferring-mathematical-structures-from-physics-to-ecology-for-parameter-efficient-neural-networks)  
+   标签：评分：9.0/10、query:sr2026
+9. [ROIDS: Robust Outlier-Aware Informed Down-Sampling](/202602/28/2601.19477v1-roids-robust-outlier-aware-informed-down-sampling)  
+   标签：评分：9.0/10、query:sr2026-intent
+10. [Constraint-Aware Neurosymbolic Uncertainty Quantification with Bayesian Deep Learning for Scientific Discovery](/202602/28/2601.12442v1-constraint-aware-neurosymbolic-uncertainty-quantification-with-bayesian-deep-learning-for-scientific-discovery)  
+   标签：评分：8.0/10、query:sr2026-intent
+11. [Linear-LLM-SCM: Benchmarking LLMs for Coefficient Elicitation in Linear-Gaussian Causal Models](/202602/28/2602.10282v1-linear-llm-scm-benchmarking-llms-for-coefficient-elicitation-in-linear-gaussian-causal-models)  
+   标签：评分：8.0/10、query:sr2026
 
 
 <div class="dpr-home-promo-card">
