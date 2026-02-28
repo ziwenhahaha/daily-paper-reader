@@ -6,10 +6,89 @@ from __future__ import annotations
 from datetime import timedelta, timezone, datetime
 from typing import Any, Dict, List, Tuple
 from urllib.parse import quote
+import re
 import requests
 
 
 DEFAULT_TIMEOUT = 20
+
+
+def _parse_datetime_like(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, (int, float)):
+        try:
+            n = float(value)
+        except Exception:
+            return None
+        if n <= 0:
+            return None
+        sec = n / 1000 if n > 10_000_000_000 else n
+        return datetime.fromtimestamp(sec, tz=timezone.utc)
+
+    text = _norm(value)
+    if not text:
+        return None
+
+    if re.fullmatch(r"\d{8}", text):
+        try:
+            return datetime.strptime(text, "%Y%m%d").replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+
+    if " " in text and len(text) > 10:
+        # 兼容 '2026-02-28 12:00:00'
+        text = text.replace(" ", "T", 1)
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _is_within_time_window(
+    record: Dict[str, Any],
+    *,
+    start_dt: datetime | None,
+    end_dt: datetime | None,
+    time_fields: tuple[str, ...] = ("published",),
+    keep_without_time: bool = True,
+) -> bool:
+    if not start_dt or not end_dt:
+        return True
+    if end_dt <= start_dt:
+        return True
+
+    for field in time_fields:
+        dt = _parse_datetime_like(record.get(field))
+        if dt is None:
+            continue
+        if start_dt <= dt < end_dt:
+            return True
+
+    return keep_without_time
+
+
+def _filter_rows_by_window(
+    rows: List[Dict[str, Any]],
+    *,
+    start_dt: datetime | None,
+    end_dt: datetime | None,
+    time_fields: tuple[str, ...] = ("published",),
+) -> List[Dict[str, Any]]:
+    if not rows or not start_dt or not end_dt:
+        return rows
+    return [
+        row
+        for row in rows
+        if isinstance(row, dict) and _is_within_time_window(row, start_dt=start_dt, end_dt=end_dt, time_fields=time_fields)
+    ]
 
 
 def _norm(v: Any) -> str:
@@ -124,6 +203,7 @@ def fetch_papers_by_date_range(
     schema: str = "public",
     timeout: int = DEFAULT_TIMEOUT,
     max_rows: int = 20000,
+    time_fields: tuple[str, ...] = ("published",),
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
     按明确时间区间拉取论文：
@@ -223,6 +303,9 @@ def match_papers_by_embedding(
     match_count: int,
     schema: str = "public",
     timeout: int = DEFAULT_TIMEOUT,
+    start_dt: datetime | None = None,
+    end_dt: datetime | None = None,
+    time_fields: tuple[str, ...] = ("published",),
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
     调用 Supabase RPC，在数据库侧执行向量相似度检索。
@@ -257,6 +340,12 @@ def match_papers_by_embedding(
         rows = resp.json() or []
         if not isinstance(rows, list):
             return ([], "rpc 查询结果格式异常")
+        rows = _filter_rows_by_window(
+            rows,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            time_fields=time_fields,
+        )
         out: List[Dict[str, Any]] = []
         for r in rows:
             if not isinstance(r, dict):
@@ -297,6 +386,9 @@ def match_papers_by_bm25(
     match_count: int,
     schema: str = "public",
     timeout: int = DEFAULT_TIMEOUT,
+    start_dt: datetime | None = None,
+    end_dt: datetime | None = None,
+    time_fields: tuple[str, ...] = ("published",),
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
     调用 Supabase RPC，在数据库侧执行 BM25 风格检索（PostgreSQL FTS）。
@@ -331,6 +423,12 @@ def match_papers_by_bm25(
         rows = resp.json() or []
         if not isinstance(rows, list):
             return ([], "rpc 查询结果格式异常")
+        rows = _filter_rows_by_window(
+            rows,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            time_fields=time_fields,
+        )
         out: List[Dict[str, Any]] = []
         for r in rows:
             if not isinstance(r, dict):

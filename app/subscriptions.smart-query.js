@@ -253,27 +253,77 @@ window.SubscriptionsSmartQuery = (function () {
     return '';
   };
 
+  const stripJsonWrappers = (text) => {
+    let cleaned = normalizeText(text);
+    if (!cleaned) return '';
+    const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (fenceMatch && fenceMatch[1] !== undefined) {
+      return normalizeText(fenceMatch[1]);
+    }
+    return normalizeText(cleaned);
+  };
+
+  const repairJsonSuffix = (text) => {
+    if (!text) return text;
+    const stack = [];
+    let inStr = false;
+    let escaped = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (inStr) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch === '"') {
+          inStr = false;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inStr = true;
+      } else if (ch === '{') {
+        stack.push('}');
+      } else if (ch === '[') {
+        stack.push(']');
+      } else if (ch === '}' || ch === ']') {
+        if (stack.length && stack[stack.length - 1] === ch) stack.pop();
+      }
+    }
+    let repaired = text;
+    if (inStr) repaired += '"';
+    if (stack.length) repaired += stack.reverse().join('');
+    repaired = repaired.replace(/,\s*([}\]])/g, '$1');
+    return repaired;
+  };
+
   const loadJsonLenient = (text) => {
     if (text && typeof text === 'object') return text;
-    const raw = normalizeText(text);
+    const raw = stripJsonWrappers(text);
     if (!raw) return {};
     try {
       return JSON.parse(raw);
     } catch {
-      const startArray = raw.indexOf('[');
-      const endArray = raw.lastIndexOf(']');
-      if (startArray >= 0 && endArray > startArray) {
-        try {
-          return JSON.parse(raw.slice(startArray, endArray + 1));
-        } catch {
-          // ignore and continue fallback
-        }
+      const candidates = [];
+      const rawObjectMatch = raw.match(/\{[\s\S]*\}/);
+      if (rawObjectMatch && rawObjectMatch[0]) {
+        candidates.push(rawObjectMatch[0]);
+      }
+      const rawArrayMatch = raw.match(/\[[\s\S]*\]/);
+      if (rawArrayMatch && rawArrayMatch[0]) {
+        candidates.push(rawArrayMatch[0]);
       }
 
-      const start = raw.indexOf('{');
-      const end = raw.lastIndexOf('}');
-      if (start >= 0 && end > start) {
-        return JSON.parse(raw.slice(start, end + 1));
+      for (let i = 0; i < candidates.length; i++) {
+        try {
+          const repaired = repairJsonSuffix(candidates[i]);
+          const parsed = JSON.parse(repaired);
+          if (parsed && typeof parsed === 'object') return parsed;
+        } catch {}
       }
       throw new Error('模型返回不是合法 JSON');
     }
@@ -511,7 +561,7 @@ window.SubscriptionsSmartQuery = (function () {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120000);
-    const requestPayload = (useResponseFormat) => {
+    const requestPayload = ({ useResponseFormat = true, includeTools = true }) => {
       const payload = {
         model: llm.model,
         messages: [
@@ -525,6 +575,10 @@ window.SubscriptionsSmartQuery = (function () {
         ],
         temperature: 0.1,
       };
+      if (includeTools) {
+        payload.tools = [];
+        payload.tool_choice = 'none';
+      }
       if (useResponseFormat) {
         payload.response_format = { type: 'json_object' };
       }
@@ -545,9 +599,14 @@ window.SubscriptionsSmartQuery = (function () {
       return msg.includes('failed to fetch') || msg.includes('network') || msg.includes('ERR_NETWORK');
     };
 
-    const doFetch = async (endpoint, useResponseFormat, withApiKeyHeader = true) => {
+    const doFetch = async (
+      endpoint,
+      options = { useResponseFormat: true, includeTools: true },
+      withApiKeyHeader = true,
+    ) => {
       const headers = {
         'Content-Type': 'application/json',
+        Accept: 'application/json',
         Authorization: `Bearer ${llm.apiKey}`,
       };
       if (withApiKeyHeader) {
@@ -556,19 +615,19 @@ window.SubscriptionsSmartQuery = (function () {
       return fetch(endpoint, {
         method: 'POST',
         headers,
-        body: JSON.stringify(requestPayload(useResponseFormat)),
+        body: JSON.stringify(requestPayload(options)),
         signal: controller.signal,
       });
     };
 
-    const doFetchWithFallbackHeader = async (endpoint, useResponseFormat) => {
+    const doFetchWithFallbackHeader = async (endpoint, options) => {
       try {
-        return await doFetch(endpoint, useResponseFormat, true);
+        return await doFetch(endpoint, options, true);
       } catch (e) {
         if (!isFetchFailure(e)) {
           throw e;
         }
-        return doFetch(endpoint, useResponseFormat, false);
+        return doFetch(endpoint, options, false);
       }
     };
 
@@ -581,11 +640,23 @@ window.SubscriptionsSmartQuery = (function () {
         try {
           let current = null;
           let txt = '';
-          current = await doFetchWithFallbackHeader(endpoint, true);
+          current = await doFetchWithFallbackHeader(endpoint, {
+            useResponseFormat: true,
+            includeTools: true,
+          });
           if (current && !current.ok) {
             txt = await current.text().catch(() => '');
             if (current.status === 400 && /response[\s-]*format|json_object/i.test(txt)) {
-              current = await doFetchWithFallbackHeader(endpoint, false);
+              current = await doFetchWithFallbackHeader(endpoint, {
+                useResponseFormat: false,
+                includeTools: true,
+              });
+            }
+            if (current && !current.ok && current.status === 400 && /tool_choice|tools/i.test(txt)) {
+              current = await doFetchWithFallbackHeader(endpoint, {
+                useResponseFormat: false,
+                includeTools: false,
+              });
             }
           }
           if (current && !current.ok) {

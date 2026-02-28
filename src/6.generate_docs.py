@@ -49,6 +49,87 @@ def call_blt_text(
     return (resp.get("content") or "").strip()
 
 
+def strip_json_wrappers(text: str) -> str:
+    cleaned = (text or "").strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned.strip()
+
+
+def repair_json_suffix(text: str) -> str:
+    if not text:
+        return text
+    stack: List[str] = []
+    in_str = False
+    escaped = False
+    for ch in text:
+        if in_str:
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == '{':
+            stack.append("}")
+        elif ch == '[':
+            stack.append("]")
+        elif ch in ("}", "]"):
+            if stack and stack[-1] == ch:
+                stack.pop()
+    repaired = text
+    if in_str:
+        repaired += '"'
+    if stack:
+        repaired += "".join(reversed(stack))
+    repaired = re.sub(r",(\s*[}\]])", r"\1", repaired)
+    return repaired
+
+
+def parse_llm_json(content: str) -> Dict[str, Any] | list[Any] | None:
+    raw = strip_json_wrappers(content)
+    if not raw:
+        return None
+    candidates: List[str] = []
+    decoder = json.JSONDecoder()
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1:
+        candidates.append(raw[start:])
+        if end != -1 and end > start:
+            candidates.append(raw[start : end + 1])
+    else:
+        candidates.append(raw)
+    seen = set()
+    last_exc: Exception | None = None
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            obj, _idx = decoder.raw_decode(candidate)
+            if isinstance(obj, (dict, list)):
+                return obj
+        except Exception as exc:
+            last_exc = exc
+            repaired = repair_json_suffix(candidate)
+            if repaired != candidate:
+                try:
+                    obj = json.loads(repaired)
+                    if isinstance(obj, (dict, list)):
+                        return obj
+                except Exception as exc2:
+                    last_exc = exc2
+    if last_exc:
+        raise last_exc
+    return None
+
+
 def log(message: str) -> None:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {message}", flush=True)
@@ -247,7 +328,8 @@ def translate_title_and_abstract_to_zh(title: str, abstract: str) -> Tuple[str, 
     user_prompt = (
         "请将上面的 JSON 中的 title 与 abstract 翻译成中文，并严格输出 JSON：\n"
         "{\"title_zh\": \"...\", \"abstract_zh\": \"...\"}\n"
-        "要求：只输出 JSON，不要输出任何其它说明文字。"
+        "要求：只输出 JSON，不要输出任何其它说明文字。\n"
+        "Output must be strict JSON only, no markdown, no fences, no extra text."
     )
     messages = [
         {"role": "system", "content": system_prompt},
@@ -272,6 +354,7 @@ def translate_title_and_abstract_to_zh(title: str, abstract: str) -> Tuple[str, 
                 "type": "json_schema",
                 "json_schema": {"name": "translate_zh", "schema": schema, "strict": True},
             }
+
         content = call_blt_text(
             LLM_CLIENT,
             messages,
@@ -283,7 +366,10 @@ def translate_title_and_abstract_to_zh(title: str, abstract: str) -> Tuple[str, 
         return "", ""
 
     try:
-        obj = json.loads(content)
+        parsed = parse_llm_json(content)
+        if not isinstance(parsed, dict):
+            return "", ""
+        obj = parsed
         if not isinstance(obj, dict):
             return "", ""
         zh_title = str(obj.get("title_zh") or "").strip()
@@ -559,7 +645,8 @@ def generate_glance_overview(title: str, abstract: str, max_retries: int = 3) ->
         "{\"tldr\":\"...\",\"motivation\":\"...\",\"method\":\"...\",\"result\":\"...\",\"conclusion\":\"...\"}\n"
         "要求：\n"
         "- tldr：100字左右的完整概述，涵盖研究背景、方法和主要贡献\n"
-        "- motivation/method/result/conclusion：每个字段一句话概括，简洁明了"
+        "- motivation/method/result/conclusion：每个字段一句话概括，简洁明了\n"
+        "Output must be strict JSON only, no markdown, no fences, no extra text."
     )
 
     schema = {
@@ -598,9 +685,10 @@ def generate_glance_overview(title: str, abstract: str, max_retries: int = 3) ->
                 max_tokens=2048,
                 response_format=response_format,
             )
-            obj = json.loads(content)
-            if not isinstance(obj, dict):
+            parsed = parse_llm_json(content)
+            if not isinstance(parsed, dict):
                 continue
+            obj = parsed
             tldr = str(obj.get("tldr") or "").strip()
             motivation = str(obj.get("motivation") or "").strip()
             method = str(obj.get("method") or "").strip()

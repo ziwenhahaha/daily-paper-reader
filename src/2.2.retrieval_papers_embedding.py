@@ -9,7 +9,7 @@
 import argparse
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import Dict, List, Set, Any, Optional
 
@@ -28,10 +28,46 @@ TODAY_STR = str(os.getenv("DPR_RUN_DATE") or "").strip() or datetime.now(timezon
 ARCHIVE_DIR = os.path.join(ROOT_DIR, "archive", TODAY_STR)
 RAW_DIR = os.path.join(ARCHIVE_DIR, "raw")
 FILTERED_DIR = os.path.join(ARCHIVE_DIR, "filtered")
+DATE_RE_DAY = re.compile(r"^\d{8}$")
+DATE_RE_RANGE = re.compile(r"^\d{8}-\d{8}$")
+SUPABASE_TIME_FIELDS = ("published", "updated_at", "embedding_updated_at")
 
 def log(message: str) -> None:
   ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
   print(f"[{ts}] {message}", flush=True)
+
+
+def resolve_supabase_recall_window(config: Dict[str, Any], end_dt: datetime | None = None) -> tuple[datetime, datetime]:
+  paper_setting = (config or {}).get("arxiv_paper_setting") or {}
+  try:
+    days = int(paper_setting.get("days_window") or 9)
+  except Exception:
+    days = 9
+  safe_days = max(days, 1)
+
+  anchor = end_dt or datetime.now(timezone.utc)
+  if anchor.tzinfo is None:
+    anchor = anchor.replace(tzinfo=timezone.utc)
+  anchor = anchor.astimezone(timezone.utc)
+  token = str(os.getenv("DPR_RUN_DATE") or "").strip()
+
+  if DATE_RE_RANGE.fullmatch(token):
+    start_text, end_text = token.split("-", 1)
+    try:
+      start_dt = datetime.strptime(start_text, "%Y%m%d").replace(tzinfo=timezone.utc)
+      end_day = datetime.strptime(end_text, "%Y%m%d").replace(tzinfo=timezone.utc)
+      if end_day >= start_dt:
+        return start_dt, end_day + timedelta(days=1)
+    except Exception:
+      pass
+
+  if DATE_RE_DAY.fullmatch(token):
+    day_start = datetime.strptime(token, "%Y%m%d").replace(tzinfo=timezone.utc)
+    if safe_days > 1:
+      return anchor - timedelta(days=safe_days), anchor
+    return day_start, day_start + timedelta(days=1)
+
+  return anchor - timedelta(days=safe_days), anchor
 
 
 def group_start(title: str) -> None:
@@ -301,6 +337,10 @@ def rank_papers_for_queries_via_supabase(
   queries: List[dict],
   top_k: int,
   supabase_conf: Dict[str, Any],
+  *,
+  start_dt: datetime | None = None,
+  end_dt: datetime | None = None,
+  time_fields: tuple[str, ...] = SUPABASE_TIME_FIELDS,
 ) -> dict:
   if not queries:
     return {"queries": [], "papers": {}, "total_hits": 0}
@@ -331,8 +371,11 @@ def rank_papers_for_queries_via_supabase(
       api_key=api_key,
       rpc_name=rpc_name,
       query_embedding=q_vec.tolist(),
-      schema=schema,
       match_count=max(int(top_k or 1), 1),
+      schema=schema,
+      start_dt=start_dt,
+      end_dt=end_dt,
+      time_fields=time_fields,
     )
     log(f"[Supabase Vector] {msg} | tag={q.get('tag') or ''}")
 
@@ -484,6 +527,12 @@ def main() -> None:
   config = load_config()
   pipeline_inputs = build_pipeline_inputs(config)
   supabase_conf = get_supabase_read_config(config)
+  sb_start_dt, sb_end_dt = resolve_supabase_recall_window(config)
+  log(
+    "[INFO] Supabase 向量召回窗口："
+    f"{sb_start_dt.isoformat()} ~ {sb_end_dt.isoformat()} "
+    f"(time_fields={','.join(SUPABASE_TIME_FIELDS)})"
+  )
   queries = pipeline_inputs.get("embedding_queries") or []
   comparison = pipeline_inputs.get("comparison") or {}
   if comparison:
@@ -557,6 +606,9 @@ def main() -> None:
           queries=queries,
           top_k=dynamic_top_k,
           supabase_conf=supabase_conf,
+          start_dt=sb_start_dt,
+          end_dt=sb_end_dt,
+          time_fields=SUPABASE_TIME_FIELDS,
         )
         total_hits = int(result_sb.get("total_hits") or 0)
         if total_hits > 0:
