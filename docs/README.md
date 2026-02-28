@@ -9,45 +9,48 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-02-28
-- 运行时间：2026-02-28 02:31:46 UTC
+- 最新运行日期：2026-02-19 ~ 2026-02-28
+- 运行时间：2026-02-28 03:38:08 UTC
 - 运行状态：成功
-- 本次总论文数：11
-- 精读区：0
-- 速读区：11
+- 本次总论文数：13
+- 精读区：1
+- 速读区：12
 
 ### 今日简报（AI）
-今日成功完成 11 篇论文速读，重点聚焦符号回归与遗传算法的可解释性前沿突破。
-研究揭示了 Transformer 在符号回归中的内在机制，并提出通过正项式方程学习实现可解释分类的新路径。
-建议关注符号回归模型从“黑盒”向“透明化”转型的技术细节，以提升复杂系统的建模可信度。
-- 详情：[/202602/28/README](/202602/28/README)
+本期精选 13 篇前沿论文，重点聚焦利用 LLM 驱动的进化算法自动优化检索系统。
+核心突破在于 RankEvolve 实现了检索算法的自动化发现，同时 AI Agent 在有机光催化剂设计及质谱结构解析等科学发现领域展现出强大潜力。
+建议关注 LLM 与传统算法（如检索、逻辑推理）结合的自动化演进工具，尝试将其应用于复杂系统的性能调优。
+- 详情：[/20260219-20260228/README](/20260219-20260228/README)
 
 ### 精读区论文标签
-- 本次无精读推荐。
+1. [RankEvolve: Automating the Discovery of Retrieval Algorithms via LLM-Driven Evolution](/20260219-20260228/2602.16932v1-rankevolve-automating-the-discovery-of-retrieval-algorithms-via-llm-driven-evolution)  
+   标签：评分：8.0/10、query:sr2026
 
 ### 速读区论文标签
-1. [ECSEL: Explainable Classification via Signomial Equation Learning](/202602/28/2601.21789v1-ecsel-explainable-classification-via-signomial-equation-learning)  
-   标签：评分：10.0/10、query:sr2026
-2. [Introns and Templates Matter: Rethinking Linkage in GP-GOMEA](/202602/28/2602.02311v1-introns-and-templates-matter-rethinking-linkage-in-gp-gomea)  
-   标签：评分：10.0/10、query:sr2026
-3. [Explaining the Explainer: Understanding the Inner Workings of Transformer-based Symbolic Regression Models](/202602/28/2602.03506v1-explaining-the-explainer-understanding-the-inner-workings-of-transformer-based-symbolic-regression-models)  
-   标签：评分：10.0/10、query:sr2026-intent
-4. [Interpretable Analytic Calabi-Yau Metrics via Symbolic Distillation](/202602/28/2602.07834v1-interpretable-analytic-calabi-yau-metrics-via-symbolic-distillation)  
-   标签：评分：10.0/10、query:sr2026-intent
-5. [Learning the S-matrix from data: Rediscovering gravity from gauge theory via symbolic regression](/202602/28/2602.15169v1-learning-the-s-matrix-from-data-rediscovering-gravity-from-gauge-theory-via-symbolic-regression)  
-   标签：评分：10.0/10、query:sr2026-intent
-6. [SymTorch: A Framework for Symbolic Distillation of Deep Neural Networks](/202602/28/2602.21307v1-symtorch-a-framework-for-symbolic-distillation-of-deep-neural-networks)  
-   标签：评分：10.0/10、query:sr2026-intent
-7. [Discovery of Interpretable Physical Laws in Materials via Language-Model-Guided Symbolic Regression](/202602/28/2602.22967v1-discovery-of-interpretable-physical-laws-in-materials-via-language-model-guided-symbolic-regression)  
-   标签：评分：10.0/10、query:sr2026-intent
-8. [Neuro-Symbolic Activation Discovery: Transferring Mathematical Structures from Physics to Ecology for Parameter-Efficient Neural Networks](/202602/28/2601.10740v1-neuro-symbolic-activation-discovery-transferring-mathematical-structures-from-physics-to-ecology-for-parameter-efficient-neural-networks)  
-   标签：评分：9.0/10、query:sr2026
-9. [ROIDS: Robust Outlier-Aware Informed Down-Sampling](/202602/28/2601.19477v1-roids-robust-outlier-aware-informed-down-sampling)  
-   标签：评分：9.0/10、query:sr2026-intent
-10. [Constraint-Aware Neurosymbolic Uncertainty Quantification with Bayesian Deep Learning for Scientific Discovery](/202602/28/2601.12442v1-constraint-aware-neurosymbolic-uncertainty-quantification-with-bayesian-deep-learning-for-scientific-discovery)  
-   标签：评分：8.0/10、query:sr2026-intent
-11. [Linear-LLM-SCM: Benchmarking LLMs for Coefficient Elicitation in Linear-Gaussian Causal Models](/202602/28/2602.10282v1-linear-llm-scm-benchmarking-llms-for-coefficient-elicitation-in-linear-gaussian-causal-models)  
-   标签：评分：8.0/10、query:sr2026
+1. [ChemNavigator: Agentic AI Discovery of Design Rules for Organic Photocatalysts](/20260219-20260228/2601.17084v1-chemnavigator-agentic-ai-discovery-of-design-rules-for-organic-photocatalysts)  
+   标签：评分：7.0/10、query:sr2026
+2. [DeepDFA: Injecting Temporal Logic in Deep Learning for Sequential Subsymbolic Applications](/20260219-20260228/2602.03486v1-deepdfa-injecting-temporal-logic-in-deep-learning-for-sequential-subsymbolic-applications)  
+   标签：评分：7.0/10、query:rl
+3. [Generative structural elucidation from mass spectra as an iterative optimization problem](/20260219-20260228/2602.07709v1-generative-structural-elucidation-from-mass-spectra-as-an-iterative-optimization-problem)  
+   标签：评分：7.0/10、query:sr2026
+4. [Differentiable Rule Induction from Raw Sequence Inputs](/20260219-20260228/2602.13583v1-differentiable-rule-induction-from-raw-sequence-inputs)  
+   标签：评分：7.0/10、query:sr2026
+5. [Neural Proposals, Symbolic Guarantees: Neuro-Symbolic Graph Generation with Hard Constraints](/20260219-20260228/2602.16954v2-neural-proposals-symbolic-guarantees-neuro-symbolic-graph-generation-with-hard-constraints)  
+   标签：评分：7.0/10、query:sr2026
+6. [Can We Predict Before Executing Machine Learning Agents?](/20260219-20260228/2601.05930v1-can-we-predict-before-executing-machine-learning-agents)  
+   标签：评分：6.0/10、query:sr2026
+7. [Neurosymbolic LoRA: Why and When to Tune Weights vs. Rewrite Prompts](/20260219-20260228/2601.12711v1-neurosymbolic-lora-why-and-when-to-tune-weights-vs-rewrite-prompts)  
+   标签：评分：6.0/10、query:sr2026
+8. [Implementing Tensor Logic: Unifying Datalog and Neural Reasoning via Tensor Contraction](/20260219-20260228/2601.17188v1-implementing-tensor-logic-unifying-datalog-and-neural-reasoning-via-tensor-contraction)  
+   标签：评分：6.0/10、query:sr2026
+9. [The M-Tensor Format: Optimality in High Dimensional Regression for Nonlinear Models with Scarce Data](/20260219-20260228/2602.08509v1-the-m-tensor-format-optimality-in-high-dimensional-regression-for-nonlinear-models-with-scarce-data)  
+   标签：评分：6.0/10、query:sr2026
+10. [Neuro-Symbolic Synergy for Interactive World Modeling](/20260219-20260228/2602.10480v2-neuro-symbolic-synergy-for-interactive-world-modeling)  
+   标签：评分：6.0/10、query:sr2026
+11. [The Neurosymbolic Frontier of Nonuniform Ellipticity: Formalizing Sharp Schauder Theory via Topos-Theoretic Reasoning Models](/20260219-20260228/2602.10632v1-the-neurosymbolic-frontier-of-nonuniform-ellipticity-formalizing-sharp-schauder-theory-via-topos-theoretic-reasoning-models)  
+   标签：评分：6.0/10、query:sr2026
+12. [Clapeyron Neural Networks for Single-Species Vapor-Liquid Equilibria](/20260219-20260228/2602.18313v1-clapeyron-neural-networks-for-single-species-vapor-liquid-equilibria)  
+   标签：评分：6.0/10、query:sr2026
 
 
 <div class="dpr-home-promo-card">
