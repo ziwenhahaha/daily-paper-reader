@@ -2,8 +2,6 @@
 // 依赖：GitHub Token（Classic PAT），需要 repo + workflow 权限
 
 window.DPRWorkflowRunner = (function () {
-  const WORKFLOW_PANEL_ENABLED = false;
-
   const WORKFLOWS = [
     {
       key: 'daily-now',
@@ -162,7 +160,6 @@ window.DPRWorkflowRunner = (function () {
   };
 
   const ensureOverlay = () => {
-    if (!WORKFLOW_PANEL_ENABLED) return;
     if (overlay && panel) return;
     overlay = document.getElementById('dpr-workflow-overlay');
     if (overlay) {
@@ -186,23 +183,6 @@ window.DPRWorkflowRunner = (function () {
         </div>
         <div id="dpr-workflow-body">
           <div id="dpr-workflow-status" style="font-size:12px; color:#666; margin-bottom:10px;">准备就绪。</div>
-          <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;">
-            ${WORKFLOWS.map(
-              (wf) => `
-              <div class="dpr-wf-card">
-                <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
-                  <div style="min-width:0;">
-                    <div style="font-weight:600; font-size:13px;">${escapeHtml(wf.name)}</div>
-                    <div style="font-size:12px; color:#666; margin-top:2px;">${escapeHtml(wf.desc)}</div>
-                  </div>
-                  <button class="arxiv-tool-btn dpr-wf-run-btn" data-wf="${escapeHtml(
-                    wf.key,
-                  )}" style="padding:6px 10px; background:#17a2b8; color:white; flex-shrink:0;">运行</button>
-                </div>
-              </div>
-            `,
-            ).join('')}
-          </div>
           <div style="font-weight:600; font-size:13px; margin-bottom:6px;">最近运行（各取 3 条）</div>
           <div id="dpr-workflow-recent" style="font-size:12px; color:#333; border:1px solid #eee; border-radius:8px; background:#fff; padding:10px; margin-bottom:12px;">
             <div style="color:#999;">加载中...</div>
@@ -240,20 +220,9 @@ window.DPRWorkflowRunner = (function () {
         }
       });
     }
-
-    overlay.querySelectorAll('.dpr-wf-run-btn').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const wfKey = btn.getAttribute('data-wf') || '';
-        if (!wfKey) return;
-        const wf = WORKFLOWS.find((x) => String(x.key || '') === String(wfKey));
-        if (!wf) return;
-        await dispatchAndMonitor(wf);
-      });
-    });
   };
 
   const open = () => {
-    if (!WORKFLOW_PANEL_ENABLED) return false;
     ensureOverlay();
     if (!overlay) return;
     overlay.style.display = 'flex';
