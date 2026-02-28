@@ -2,6 +2,8 @@
 // 依赖：GitHub Token（Classic PAT），需要 repo + workflow 权限
 
 window.DPRWorkflowRunner = (function () {
+  const WORKFLOW_PANEL_ENABLED = false;
+
   const WORKFLOWS = [
     {
       key: 'daily-now',
@@ -160,6 +162,7 @@ window.DPRWorkflowRunner = (function () {
   };
 
   const ensureOverlay = () => {
+    if (!WORKFLOW_PANEL_ENABLED) return;
     if (overlay && panel) return;
     overlay = document.getElementById('dpr-workflow-overlay');
     if (overlay) {
@@ -250,12 +253,14 @@ window.DPRWorkflowRunner = (function () {
   };
 
   const open = () => {
+    if (!WORKFLOW_PANEL_ENABLED) return false;
     ensureOverlay();
     if (!overlay) return;
     overlay.style.display = 'flex';
     requestAnimationFrame(() => overlay.classList.add('show'));
     // 打开面板时尝试加载最近运行（不依赖触发）
     loadRecentRuns();
+    return true;
   };
 
   const close = () => {
