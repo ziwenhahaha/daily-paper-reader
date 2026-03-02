@@ -9,26 +9,30 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-02-21 ~ 2026-03-01
-- 运行时间：2026-03-01 18:59:12 UTC
+- 最新运行日期：2026-02-22 ~ 2026-03-02
+- 运行时间：2026-03-02 19:15:42 UTC
 - 运行状态：成功
-- 本次总论文数：2
+- 本次总论文数：4
 - 精读区：0
-- 速读区：2
+- 速读区：4
 
 ### 今日简报（AI）
-今日聚焦利用先验数据拟合网络加速谱核发现，并发布了通过程序验证合成的表格数学推理评测基准。
-研究展示了摊销推理在自动化核函数选择中的潜力，同时揭示了表格学习模型在计算外推能力上的局限。
-建议关注 PFN 在时间序列预测中的应用，并尝试在复杂表格任务中引入程序化验证以提升逻辑严密性。
-- 详情：[/20260221-20260301/README](/20260221-20260301/README)
+今日速览 4 篇跨学科论文，涵盖 PDE 自动量纲分析、表格大模型及生物建模中的缩放法则。
+重点关注利用 AI 自动化处理物理方程量纲的新工具，以及更快速、可扩展的开源表格基础模型 TabICLv2。
+建议关注物理启发式 AI 与表格数据处理的结合，探索其在复杂建模与业务分析中的提效潜力。
+- 详情：[/20260222-20260302/README](/20260222-20260302/README)
 
 ### 精读区论文标签
 - 本次无精读推荐。
 
 ### 速读区论文标签
-1. [Amortized Spectral Kernel Discovery via Prior-Data Fitted Network](/20260221-20260301/2601.21731v1-amortized-spectral-kernel-discovery-via-prior-data-fitted-network)  
+1. [Automated dimensional analysis for PDEs](/20260222-20260302/2601.06535v1-automated-dimensional-analysis-for-pdes)  
+   标签：评分：7.0/10、query:sr2026
+2. [TabICLv2: A better, faster, scalable, and open tabular foundation model](/20260222-20260302/2602.11139v1-tabiclv2-a-better-faster-scalable-and-open-tabular-foundation-model)  
    标签：评分：6.0/10、query:sr2026
-2. [TabularMath: Evaluating Computational Extrapolation in Tabular Learning via Program-Verified Synthesis](/20260221-20260301/2602.02523v1-tabularmath-evaluating-computational-extrapolation-in-tabular-learning-via-program-verified-synthesis)  
+3. [Unveiling Scaling Laws of Parameter Identifiability and Uncertainty Quantification in Data-Driven Biological Modeling](/20260222-20260302/2602.20495v1-unveiling-scaling-laws-of-parameter-identifiability-and-uncertainty-quantification-in-data-driven-biological-modeling)  
+   标签：评分：6.0/10、query:sr2026
+4. [Revisiting Chebyshev Polynomial and Anisotropic RBF Models for Tabular Regression](/20260222-20260302/2602.22422v1-revisiting-chebyshev-polynomial-and-anisotropic-rbf-models-for-tabular-regression)  
    标签：评分：6.0/10、query:sr2026
 
 
