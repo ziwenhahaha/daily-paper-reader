@@ -6,86 +6,73 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-02-09 ~ 2026-03-10
-- 运行时间：2026-03-10 06:40:49 UTC
+- 最新运行日期：2026-03-10
+- 运行时间：2026-03-10 19:33:38 UTC
 - 运行状态：成功
-- 本次总论文数：21
-- 精读区：0
-- 速读区：21
+- 本次总论文数：17
+- 精读区：6
+- 速读区：11
 
 ### 今日简报（AI）
-今日速览 21 篇前沿成果，深度聚焦 LLM 驱动的自动化算法发现与启发式搜索设计。
-核心突破在于 G-LNS 与 OR-Agent 等框架，通过大模型将进化搜索与程序优化结合，实现了高效的启发式算法自动迭代。
-建议关注 LLM 在运筹优化领域的落地，探索如何利用大模型自动化构建复杂问题的求解策略。
-- 详情：[/20260209-20260310/README](/20260209-20260310/README)
+今日聚焦 Agent 驱动的代码进化与分布式算法突破，深度解析 17 篇前沿成果。
+重点关注 ParEVO 利用智能体进化合成高性能并行代码的范式，以及分布式计算中单轮循环着色的理论进展。
+建议开发者关注 Agent 在 GPU 编程框架及大规模 ML 基础设施中的实战应用。
+- 详情：[/202603/10/README](/202603/10/README)
 
 ### 精读区论文标签
-- 本次无精读推荐。
+1. [ParEVO: Synthesizing Code for Irregular Data: High-Performance Parallelism through Agentic Evolution](/202603/10/2603.02510v1-parevo-synthesizing-code-for-irregular-data-high-performance-parallelism-through-agentic-evolution)  
+   标签：评分：9.0/10、query:ahd
+   evidence：通过智能体进化合成高性能并行算法
+2. [2-Coloring Cycles in One Round](/202603/10/2603.04235v2-2-coloring-cycles-in-one-round)  
+   标签：评分：9.0/10、query:ahd
+   evidence：算法发现和证明开发主要由大语言模型驱动
+3. [Provable and Practical In-Context Policy Optimization for Self-Improvement](/202603/10/2603.01335v1-provable-and-practical-in-context-policy-optimization-for-self-improvement)  
+   标签：评分：8.0/10、query:ahd
+   evidence：用于自我改进的语境策略优化框架
+4. [CUCo: An Agentic Framework for Compute and Communication Co-design](/202603/10/2603.02376v1-cuco-an-agentic-framework-for-compute-and-communication-co-design)  
+   标签：评分：8.0/10、query:ahd
+   evidence：自动生成高性能CUDA算子
+5. [Type-Aware Retrieval-Augmented Generation with Dependency Closure for Solver-Executable Industrial Optimization Modeling](/202603/10/2603.03180v1-type-aware-retrieval-augmented-generation-with-dependency-closure-for-solver-executable-industrial-optimization-modeling)  
+   标签：评分：8.0/10、query:ahd
+   evidence：自动化工业优化建模框架
+6. [EvoScientist: Towards Multi-Agent Evolving AI Scientists for End-to-End Scientific Discovery](/202603/10/2603.08127v1-evoscientist-towards-multi-agent-evolving-ai-scientists-for-end-to-end-scientific-discovery)  
+   标签：评分：8.0/10、query:ahd
+   evidence：用于自动科学发现和策略改进的演化多代理框架
 
 ### 速读区论文标签
-1. [G-LNS: Generative Large Neighborhood Search for LLM-Based Automatic Heuristic Design](/20260209-20260310/2602.08253v1-g-lns-generative-large-neighborhood-search-for-llm-based-automatic-heuristic-design)  
-   标签：评分：10.0/10、query:ahd
-   evidence：基于大语言模型的LNS算子自动化设计
-2. [OR-Agent: Bridging Evolutionary Search and Structured Research for Automated Algorithm Discovery](/20260209-20260310/2602.13769v2-or-agent-bridging-evolutionary-search-and-structured-research-for-automated-algorithm-discovery)  
-   标签：评分：10.0/10、query:ahd
-   evidence：自动算法发现的多智能体框架
-3. [Heuristic Search as Language-Guided Program Optimization](/20260209-20260310/2602.16038v1-heuristic-search-as-language-guided-program-optimization)  
-   标签：评分：10.0/10、query:ahd
-   evidence：LLM驱动的自动启发式设计的结构化框架
-4. [Enhancing CVRP Solver through LLM-driven Automatic Heuristic Design](/20260209-20260310/2602.23092v1-enhancing-cvrp-solver-through-llm-driven-automatic-heuristic-design)  
-   标签：评分：10.0/10、query:ahd
-   evidence：大模型驱动的优化求解器启发式算法自动设计
-5. [EvoX: Meta-Evolution for Automated Discovery](/20260209-20260310/2602.23413v1-evox-meta-evolution-for-automated-discovery)  
-   标签：评分：10.0/10、query:ahd
-   evidence：用于自动发现算法和程序的元进化方法
-6. [From Heuristic Selection to Automated Algorithm Design: LLMs Benefit from Strong Priors](/20260209-20260310/2603.02792v1-from-heuristic-selection-to-automated-algorithm-design-llms-benefit-from-strong-priors)  
-   标签：评分：10.0/10、query:ahd
-   evidence：具有强先验的大模型驱动自动算法设计
-7. [Large Language Model-Driven Full-Component Evolution of Adaptive Large Neighborhood Search](/20260209-20260310/2603.06996v1-large-language-model-driven-full-component-evolution-of-adaptive-large-neighborhood-search)  
-   标签：评分：10.0/10、query:ahd
-   evidence：元启发式算法全组件的自动演化
-8. [Advancing Automated Algorithm Design via Evolutionary Stagewise Design with LLMs](/20260209-20260310/2603.07970v1-advancing-automated-algorithm-design-via-evolutionary-stagewise-design-with-llms)  
-   标签：评分：10.0/10、query:ahd
-   evidence：通过大语言模型的进化阶段性设计实现自动算法设计
-9. [Learning to Discover Iterative Spectral Algorithms](/20260209-20260310/2602.09530v1-learning-to-discover-iterative-spectral-algorithms)  
-   标签：评分：9.0/10、query:ahd
-   evidence：用于发现迭代谱算法的神经网络框架
-10. [Self-Evolving Recommendation System: End-To-End Autonomous Model Optimization With LLM Agents](/20260209-20260310/2602.10226v1-self-evolving-recommendation-system-end-to-end-autonomous-model-optimization-with-llm-agents)  
-   标签：评分：9.0/10、query:ahd
-   evidence：自主生成优化器和架构
-11. [ImprovEvolve: Ask AlphaEvolve to Improve the Input Solution and Then Improvise](/20260209-20260310/2602.10233v1-improvevolve-ask-alphaevolve-to-improve-the-input-solution-and-then-improvise)  
-   标签：评分：9.0/10、query:ahd
-   evidence：大模型引导的数学结构演化发现
-12. [RankEvolve: Automating the Discovery of Retrieval Algorithms via LLM-Driven Evolution](/20260209-20260310/2602.16932v1-rankevolve-automating-the-discovery-of-retrieval-algorithms-via-llm-driven-evolution)  
-   标签：评分：9.0/10、query:ahd
-   evidence：通过大语言模型驱动的进化自动发现检索算法
-13. [Celo2: Towards Learned Optimization Free Lunch](/20260209-20260310/2602.19142v1-celo2-towards-learned-optimization-free-lunch)  
-   标签：评分：9.0/10、query:ahd
-   evidence：元训练高性能通用学习更新规则
-14. [AdaEvolve: Adaptive LLM Driven Zeroth-Order Optimization](/20260209-20260310/2602.20133v1-adaevolve-adaptive-llm-driven-zeroth-order-optimization)  
-   标签：评分：9.0/10、query:ahd
-   evidence：大模型驱动的演化算法用于自动程序生成与自适应优化
-15. [Rethinking Code Similarity for Automated Algorithm Design with LLMs](/20260209-20260310/2603.02787v1-rethinking-code-similarity-for-automated-algorithm-design-with-llms)  
-   标签：评分：9.0/10、query:ahd
-   evidence：自动设计中评估算法相似性的原则
-16. [SEA-TS: Self-Evolving Agent for Autonomous Code Generation of Time Series Forecasting Algorithms](/20260209-20260310/2603.04873v1-sea-ts-self-evolving-agent-for-autonomous-code-generation-of-time-series-forecasting-algorithms)  
-   标签：评分：9.0/10、query:ahd
-   evidence：通过迭代自进化循环自主生成并优化预测算法代码
-17. [Learning Gradient Flow: Using Equation Discovery to Accelerate Engineering Optimization](/20260209-20260310/2602.13513v2-learning-gradient-flow-using-equation-discovery-to-accelerate-engineering-optimization)  
+1. [StitchCUDA: An Automated Multi-Agents End-to-End GPU Programing Framework with Rubric-based Agentic Reinforcement Learning](/202603/10/2603.02637v1-stitchcuda-an-automated-multi-agents-end-to-end-gpu-programing-framework-with-rubric-based-agentic-reinforcement-learning)  
    标签：评分：8.0/10、query:ahd
-   evidence：利用方程发现建模并加速优化动力学
-18. [POP: Prior-fitted Optimizer Policies](/20260209-20260310/2602.15473v1-pop-prior-fitted-optimizer-policies)  
+   evidence：用于端到端GPU程序生成的自动化多智能体框架
+2. [EvoSkill: Automated Skill Discovery for Multi-Agent Systems](/202603/10/2603.02766v1-evoskill-automated-skill-discovery-for-multi-agent-systems)  
    标签：评分：8.0/10、query:ahd
-   evidence：通过优化轨迹预测步长的元学习优化器
-19. [K-Search: LLM Kernel Generation via Co-Evolving Intrinsic World Model](/20260209-20260310/2602.19128v2-k-search-llm-kernel-generation-via-co-evolving-intrinsic-world-model)  
+   evidence：自动发现和改进代理技能的自我进化框架
+3. [stratum: A System Infrastructure for Massive Agent-Centric ML Workloads](/202603/10/2603.03589v1-stratum-a-system-infrastructure-for-massive-agent-centric-ml-workloads)  
    标签：评分：8.0/10、query:ahd
-   evidence：通过协同演化世界模型自动生成内核
-20. [Efficient Query Rewrite Rule Discovery via Standardized Enumeration and Learning-to-Rank](/20260209-20260310/2603.04169v1-efficient-query-rewrite-rule-discovery-via-standardized-enumeration-and-learning-to-rank)  
+   evidence：用于智能体流水线搜索和自动化机器学习流水线优化的基础设施
+4. [$\nabla$-Reasoner: LLM Reasoning via Test-Time Gradient Descent in Latent Space](/202603/10/2603.04948v1-nabla-reasoner-llm-reasoning-via-test-time-gradient-descent-in-latent-space)  
    标签：评分：8.0/10、query:ahd
-   evidence：自动发现用于优化的查询重写规则
-21. [AutoResearch-RL: Perpetual Self-Evaluating Reinforcement Learning Agents for Autonomous Neural Architecture Discovery](/20260209-20260310/2603.07300v1-autoresearch-rl-perpetual-self-evaluating-reinforcement-learning-agents-for-autonomous-neural-architecture-discovery)  
-   标签：评分：8.0/10、query:ahd
-   evidence：自主神经架构与超参数发现框架
+   evidence：通过对Token Logits的可微优化实时改进策略
+5. [PymooLab: An Open-Source Visual Analytics Framework for Multi-Objective Optimization using LLM-Based Code Generation and MCDM](/202603/10/2603.01345v1-pymoolab-an-open-source-visual-analytics-framework-for-multi-objective-optimization-using-llm-based-code-generation-and-mcdm)  
+   标签：评分：7.0/10、query:ahd
+   evidence：基于LLM的代码生成用于多目标优化配置
+6. [Reasoning as Gradient: Scaling MLE Agents Beyond Tree Search](/202603/10/2603.01692v1-reasoning-as-gradient-scaling-mle-agents-beyond-tree-search)  
+   标签：评分：7.0/10、query:ahd
+   evidence：在工程任务中实施基于梯度的优化MLE智能体
+7. [Bespoke OLAP: Synthesizing Workload-Specific One-size-fits-one Database Engines](/202603/10/2603.02001v1-bespoke-olap-synthesizing-workload-specific-one-size-fits-one-database-engines)  
+   标签：评分：7.0/10、query:ahd
+   evidence：针对特定工作负载的执行算法自动系统生成
+8. [Can Computational Reducibility Lead to Transferable Models for Graph Combinatorial Optimization?](/202603/10/2603.02462v1-can-computational-reducibility-lead-to-transferable-models-for-graph-combinatorial-optimization)  
+   标签：评分：7.0/10、query:ahd
+   evidence：具有可迁移模型的组合优化统一神经求解器
+9. [SciDER: Scientific Data-centric End-to-end Researcher](/202603/10/2603.01421v1-scider-scientific-data-centric-end-to-end-researcher)  
+   标签：评分：6.0/10、query:ahd
+   evidence：自动化研究生命周期，包括实验设计和代码执行
+10. [Randomized Kiring Believer for Parallel Bayesian Optimization with Regret Bounds](/202603/10/2603.01470v1-randomized-kiring-believer-for-parallel-bayesian-optimization-with-regret-bounds)  
+   标签：评分：6.0/10、query:ahd
+   evidence：并行贝叶斯优化的前沿方法
+11. [Adversarial Query Synthesis via Bayesian Optimization](/202603/10/2603.01570v1-adversarial-query-synthesis-via-bayesian-optimization)  
+   标签：评分：6.0/10、query:ahd
+   evidence：利用贝叶斯优化自动搜索困难的基准查询
 
 
 <div class="dpr-home-promo-card">

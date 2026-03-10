@@ -1,0 +1,767 @@
+Title: CUCo: An Agentic Framework for Compute and Communication Co-design
+
+URL Source: https://arxiv.org/pdf/2603.02376v1
+
+Published Time: Wed, 04 Mar 2026 01:10:25 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# CUCo: An Agentic Framework for Compute and Communication Co-design 
+
+## Bodun Hu ∗
+
+UT Austin 
+
+## Yoga Sri Varshan V ∗
+
+UT Austin 
+
+## Saurabh Agarwal 
+
+UT Austin 
+
+## Aditya Akella 
+
+UT Austin 
+
+## Abstract 
+
+Custom CUDA kernel development is essential for maximizing GPU utilization in large-scale distributed LLM training and inference, yet manually writing kernels that jointly leverage both computa-tion and communication remains a labor-intensive and error-prone process. Prior work on kernel optimization has focused almost ex-clusively on computation, leaving communication kernels largely untouched even though they constitute a significant share of total execution time. We introduce CUCo , a training-free agent-driven workflow that automatically generates high-performance CUDA kernels that jointly orchestrate computation and communication. By co-optimizing these traditionally disjoint components, CUCo 
+
+unlocks new optimization opportunities unavailable to existing approaches, outperforming state-of-the-art baselines and reducing end-to-end latency by up to 1.57 ×.
+
+## 1 Introduction 
+
+The rapid scaling of machine learning models has made distributed training and inference across large GPU clusters the de facto stan-dard. Meeting the performance demands of this paradigm requires efficiency at every level: both computation and communication kernels have been heavily optimized, and the overlap between the two has emerged as a critical axis for further improvement. Achieving this overlap requires pipelining communication with computation, hiding network latency behind useful GPU work. Historically, however, programming models and vendor-specific constraints prevented GPU compute kernels from directly invoking communication primitives [ 3 , 14 ], forcing host-side orchestration in which the CPU manages the handoff between computation and asynchronous communication. This indirection introduces synchro-nization overhead and limits how tightly the two can be interleaved. As a result, compute and communication libraries such as cuBLAS/, cuDNN [ 5 , 22 ] and NCCL [ 24 ] have evolved largely in isolation. Re-cent advances, however, have begun to bridge this barrier. Interfaces such as NVSHMEM [ 25 ] and NCCL’s device-side [ 23 ] APIs now allow GPU kernels to invoke communication primitives directly, enabling distributed logic to be expressed within a single kernel or across tightly coordinated kernels in concurrent streams. A dis-tributed matrix multiplication can now be performed entirely on the GPU without host intervention. This represents a fundamental shift in how kernels are designed for distributed machine learning: rather than treating computation and communication as separate phases orchestrated by the host, they can now be co-designed or even fused within the GPU itself. Emerging libraries [ 3 , 10 , 33 , 41 ]exemplify this trend, demonstrating both the performance potential 
+
+> ∗Both authors contributed equally to this research.
+
+of tightly integrating compute and communication and the signifi-cant architectural complexity such integration introduces. Yet, they also reveal a challenge: kernels that jointly manage computation and communication are extremely difficult to write well. First, designing high-performance CUDA kernels that jointly orchestrate computation and communication requires navigating a complex and enormous design space; effective strategies are counterintuitive, and existing tooling provides limited guidance. The relevant decisions—where to initiate communication, when to synchronize, how to define tiling boundaries, and how to size chunks [ 3, 44 ]—interact in non-trivial ways, and the right config-uration is highly sensitive to the specific operation and hardware context. Even seemingly local choices have global consequences: in distributed matrix multiplication, triggering communication at tile granularity maximizes theoretical overlap but can introduce enough synchronization overhead to erase any benefit [ 10 ], yet the optimal granularity cannot be derived from first principles and must be discovered empirically [ 45 ]. Modern ML compilers offer no relief—they assume communication lives outside the kernel bound-ary [ 11 , 34 , 44 ], treating it as a host-side side effect, and moving it inside violates the assumptions underlying operator scheduling and tiling, breaking memory access patterns in intricate ways nei-ther the compute compiler nor the communication runtime was designed to resolve [27]. Secondly, even if an optimal execution plan is identified for a spe-cific configuration, the design space complexity is exacerbated by hardware heterogeneity. While GPU architectures offer a discrete set of design points, the underlying network fabrics exhibit high variance in bandwidth, latency, and topology [ 9 , 29 , 39 ] (e.g. Infini-Band vs. RoCE, Fat-Tree vs. Torus). This variability creates a search space where the optimal kernel configuration is tightly coupled with both the device type and the specific interconnect characteris-tics [ 3 , 41 ]. Manually tuning kernels for every possible combination of compute and network architecture is intractable [ 4, 42 ]. Conse-quently, the transition to device-side communication necessitates a move away from manual kernel engineering toward automated, hardware-aware optimization frameworks [42–44]. To overcome these challenges, we argue for an automated ground-up agentic framework with three inter-twined components: (i) a structured design space specification that grounds agent reasoning in communication design decisions, API semantics, and hardware context; (ii) a fast-path agent that prioritizes correctness, producing workable kernels without getting trapped in long generation cycles; and (iii) a slow - path agent that leverages empirical feedback to rea-son about subtle compute–communication interference patterns, ultimately converging on high -performance implementations tai-lored to each workload and hardware topology. Each component is 
+
+> arXiv:2603.02376v1 [cs.DC] 2 Mar 2026
+
+Table 1: Comparison of agentic CUDA kernel generation systems.                         
+
+> System Multi-GPU Comm Support No Training Fusion
+> CUDAForge [40] ✗✗✓✗
+> STARK [8] ✗✗✓✗
+> Kevin-32B [2] ✗✗✗✗
+> KernelFalcon [37] ✗✗✓✗
+> CUCo ✓✓✓✓
+
+essential. Without a clear declarative interface, the framework can-not ground its reasoning and risks hallucinating invalid co-design strategies. Without the fast -path agent, it would over -optimize pre-maturely, breaking correctness and failing to recover. Without the slow - path agent, it would miss rich optimization opportunities, leaving substantial performance gains unrealized. We present CUCo , an agentic framework that introduces a mini-mal, declarative set of communication primitives that transforms compute–communication co-design into a structured and intention-ally constrained design space. Within this space, co-design becomes a search problem over only the schedules that these primitives can express, which sharply narrows the agent’s degrees of freedom while preserving meaningful flexibility. This structure grounds the agent’s synthesis in valid collective semantics, reducing invalid or hallucinated optimizations while leaving ample room to explore diverse scheduling strategies and overlap patterns. 
+
+CUCo ’s fast-path agent leverages the communication primitives to rapidly prototype compute-communication kernels. It prioritizes 
+
+correctness over performance: rather than aggressively interleaving computation and collectives, it composes them into a single kernel with explicit, barrier-delimited phases. These barriers enforce a coarse-grained global schedule in which all ranks advance through the same sequence of compute and communication steps in lock-step. This prevents the distributed divergence that can deadlock collectives or leave cross -device data in an inconsistent state, mak-ing verification and debugging painful. This produces a reliable, easy-to-validate baseline that the slow-path agent can later relax and refine. 
+
+CUCo ’s slow - path agent complements the fast - path agent with an evolution - style optimization loop that prioritizes diversity and performance. Starting from the fast -path’s distributed -safe base-line, the slow path explores the design space by mutating how collectives are chunked, how synchronization boundaries are posi-tioned, and how compute is interleaved with communication. It then compiles and runs these candidates, using empirical feedback (e.g. latency, throughput, and achieved bandwidth/SM occupancy) to guide the search, eliminating underperforming designs while refin-ing the promising ones. Through repeated iterations, the slow path converges on high -performance compute - communication kernels tailored to the workload and the underlying hardware topology. 
+
+CUCo is implemented in 18K lines of Python. To support the re-search community and accelerate progress on compute–communication co-design, we will fully open-source CUCo . We evaluate CUCo on four classes of multi-GPU kernels. Across these workloads, CUCo 
+
+consistently synthesizes correct fused kernels and delivers up to 
+
+1.57 × speedup over non-fused baselines. 
+
+## 2 Related Work 
+
+We begin with a brief overview of CUDA kernel fusion and compute-communication co-design, and the challenges of automating kernel generation. 
+
+## 2.1 CUDA Kernel Fusion 
+
+Kernel fusion has long been a key lever for GPU efficiency: collaps-ing operator chains into a single kernel reduces global-memory traffic and amortizes kernel-launch overheads [ 17 , 35 ]. Modern ML stacks rely on fusion across production frameworks and compiler systems [ 1, 4, 21 , 32 , 34 ], and successes like FlashAttention [ 6, 7 , 30 ]illustrate the payoff of pushing fusion through algorithm-hardware co-design. Despite significant gains due to fusion, communica-tion is still kept separate from the computation code, and even when computation and communication are being overlapped, they are typically issued in separate kernels or streams to enable over-lap [ 13 , 14 , 28 , 31 , 36 ]. The advent of device-aided communication (e.g. NVSHMEM [ 25 ], NCCL Device-Side Launch [ 23 ]) challenges this status quo, offering the opportunity to interleave communica-tion directly within the compute kernel. In this work, we precisely tackle the challenge of fusing communication with computation at the GPU kernel level to unlock distributed performance. 
+
+## 2.2 Device-initiated Communication 
+
+Device-initiated communication primitives enable GPUs to drive multi-device data transfers directly from kernel code, eliminating CPU involvement and the associated host-device synchronization overhead. Two primary methodologies have recently emerged to support this paradigm. First, NVSHMEM [ 25 ] introduced a Parti-tioned Global Address Space (PGAS) and device-callable put/get operations, facilitating fine-grained, P2P communication. Second, the NCCL Device APIs [ 23 ] extended this capability by allowing collective operations to be invoked directly within CUDA kernels. 
+
+NCCL device-initiated API. Figure 1 illustrates NCCL’s device-initiated API through an AllToAll kernel. Unlike host-driven col-lectives, where the CPU triggers communication only after kernel completion, device-initiated collectives let threads drive communi-cation directly. The kernel showcases NCCL’s two core device-side abstractions: GPU-Initiated Networking (GIN), which issues RDMA-style puts to remote peers across nodes (lines 31, 36), and Load/Store Accessible (LSA), which accesses intra-node peer memory via di-rect loads and stores (lines 46–47). Crucially, synchronization is no longer a coarse host barrier—the device API provides fine-grained, programmer-controlled primitives scoped at multiple granularities (lines 12–15), while gin.waitSignal (line 53) provides an explicit mechanism for detecting when remote data has arrived, eliminat-ing the need for custom signaling infrastructure. This fine-grained control is what enables true compute–communication fusion and remains fundamentally out of reach for host-driven APIs. Together, these primitives expose the degrees of freedom that CUCo formalizes as the fusion directive. These advancements represent a ”fork in the road” for GPU system development. Historically, compute and communication libraries evolved in isolation—compute kernels focused on through-put and resource utilization, while networking libraries optimized for interconnect efficiency. Integrating these domains into a single fused execution model is inherently difficult because existing com-piler infrastructures and development frameworks were architected on the assumption that communication and computation would re-main decoupled. Retrofitting these legacy stacks with the necessary templates and search heuristics for fused kernels would require prohibitive manual effort. To address this, we introduce CUCo , an                                                                                                                                                                                                                                                                   
+
+> 21template < typename T >
+> 2__global__ void HybridAlltoAllKernel ( ncclWindow_t sendwin ,
+> 3size_t sendoffset , ncclWindow_t recvwin ,
+> 4size_t recvoffset , size_t count , int root ,
+> 5struct ncclDevComm devComm ) {
+> 6// 1. Initialize GIN context
+> 7int ginContext =0; // GIN context index
+> 8unsigned int signalIndex =0; // Signal slot
+> 9ncclGin gin { devComm , ginContext };
+> 10 uint64_t signalValue =gin . readSignal ( signalIndex );
+> 11 12 // 2. Cross - GPU synchronization before data exchange
+> 13 ncclBarrierSession < ncclCoopCta > bar { ncclCoopCta () ,
+> 14 ncclTeamTagWorld () , gin , blockIdx .x };
+> 15 bar . sync ( ncclCoopCta () , cuda :: memory_order_relaxed ,
+> 16 ncclGinFenceLevel :: Relaxed );
+> 17 18 int tid =threadIdx .x +blockIdx .x *blockDim .x;
+> 19 int nthreads =blockDim .x *gridDim .x;
+> 20 21 // 3. Determine local ( LSA ) vs remote peers ( GIN )
+> 22 ncclTeam world =ncclTeamWorld ( devComm ); // All ranks
+> 23 ncclTeam lsa =ncclTeamLsa ( devComm ); // Same - node ranks
+> 24 const int startLsa =world . rank -lsa . rank ;
+> 25 const int lsaSize =lsa . nRanks ;
+> 26 27 // 4. Send to remote peers via GIN ( cross - node )
+> 28 const size_t size =count *sizeof (T );
+> 29 // Remote peers before LSA range
+> 30 for (int r= tid ; r < startLsa ; r += nthreads ) {
+> 31 gin . put ( world , r , recvwin , recvoffset + world . rank * size ,
+> 32 sendwin , sendoffset +r* size , size , ncclGin_SignalInc { signalIndex });
+> 33 }
+> 34 // Remote peers after LSA range
+> 35 for (int r= startLsa + lsaSize + tid ; r < world . nRanks ; r += nthreads ) {
+> 36 gin . put ( world , r , recvwin ,
+> 37 recvoffset + world . rank * size , sendwin , sendoffset +r* size ,
+> 38 size , ncclGin_SignalInc { signalIndex });
+> 39 }
+> 40 41 // 5. Send to local peers via direct memory access ( LSA )
+> 42 T* sendLocal =(T *) ncclGetLocalPointer ( sendwin , sendoffset );
+> 43 for ( size_t offset = tid ; offset < count ; offset += nthreads ) {
+> 44 for (int lp =0; lp <lsa . nRanks ; lp ++) {
+> 45 int wr =startLsa +lp ;
+> 46 T* recvPtr =(T *) ncclGetLsaPointer ( recvwin , recvoffset , lp );
+> 47 recvPtr [ world . rank * count + offset ] =sendLocal [ wr * count + offset ];
+> 48 }
+> 49 }
+> 50 51 // 6. Wait for remote GIN operations to complete
+> 52 int numRemotePeers =world . nRanks -lsa . nRanks ;
+> 53 gin . waitSignal ( ncclCoopCta () , signalIndex , signalValue + numRemotePeers );
+> 54 gin . flush ( ncclCoopCta ());
+> 55 56 // 7. Final barrier to ensure all data is visible
+> 57 bar . sync ( ncclCoopCta () , cuda :: memory_order_release ,
+> 58 ncclGinFenceLevel :: Relaxed );
+> 59 }
+
+Figure 1: NCCL device-initiated API: The code above shows how to implement an All-to-All CUDA kernel using the GPU-Initiated Networking (GIN) and Load/Store Accessible (LSA) API. 
+
+agentic framework designed to integrate seamlessly with exist-ing software stacks by automatically discovering and generating optimized, custom fused kernels. 
+
+## 2.3 Agents for Kernel Generation 
+
+Before introducing CUCo , we briefly introduce existing agentic ap-proaches to perform GPU kernel generation, how they fall short when used for benchmark-style workloads. Existing works [ 12 , 15 ,40 ] combine an LLM-based proposer with structured feedback— compilation results, unit tests, and profiling signals—to iteratively refine kernels. While effective on benchmark-style workloads, this approach has critical limitations when extended to distributed GPU settings. (1) Lack of collective communication support. Existing agents are built around single - device optimization: they generate kernels for one GPU, evaluate correctness and performance in isolation, and lack representation of cross - device coordination or collective primitives [ 12 , 15 , 40 ]. This makes them unsuitable for distributed settings, where computation and inter-GPU communi-cation must be tightly interleaved to scale [ 31 ]. (2) Dependence on Input Configuration    
+
+> Host-Side CUDA + NCCL
+> Sequential collectives
+> Config + Knowledge Base
+> API mode: GIN / LSA
+> NCCL docs, hardware context
+> strategies, constraints
+> Fast-Path Agent (Pre-Transform)
+> CUDA Analyzer
+> Collectives, buffers,
+> dependencies Host-to-Device
+> Transformation
+> Infrastructure +
+> Collective Replace
+> LLM + Judge
+> Feedback Loop
+> seed
+> EVOLVE-BLOCK
+> Markers
+> N mutable regions
+> Slow-Path Agent (LLM-Driven Evolution)
+> Two-Phase Strategy
+> Explore (rewrite)
+> Exploit (diff)
+> Evolutionary Search
+> LLM mutation operator
+> diff / full / cross
+> Select, Mutate,
+> Evaluate, Archive feedback
+> Cascade Eval
+> + LLM Feedback
+> compile, run, benchmark
+> filters recommendations
+> Novelty Filter
+> + MAP-Elites Archive
+> Embedding diversity
+> MetaSummarizer
+> Summarize, update,
+> recommend
+> Optimized Device
+> Kernels
+> Compute-comm
+> fused/overlap Multi-Island
+> Population
+> Diversity + migration
+
+Figure 2: Overall workflow of CUCo 
+
+training. Some systems [ 2] require fine -tuning on domain -specific kernel corpora [ 18 , 19 , 26 ], incurring substantial upfront cost and making them brittle to API changes across GPU generations. This limits their usefulness in rapidly evolving hardware ecosystems where new communication primitives appear frequently. (3) Prema-ture code generation without decomposition. Most critically, existing agents attempt to translate a task specification directly into ker-nel code, relying on iterative correction to fix errors [ 16 , 26 , 38 ]. This works for single -GPU operators such as GEMM, where the search space is well -structured and feedback is unambiguous. For compute - communication kernels, however, jumping straight to code is fatal: the agent must first resolve high -level coordination decisions—how to partition SMs between compute and communica-tion, the tile granularity for inter -GPU transfers, and the choice of collective primitive and topology—before any kernel can be mean-ingfully evaluated. Agents that skip this decomposition typically serialize compute and communication, misallocate resources, or is-sue collectives at inappropriate granularities, leading to correctness failures that cannot be recovered through local refinement. Table 1 summarizes the limitation of existing frameworks. These characteristics call for an agentic framework that embeds multi -GPU semantics into the search space, leverages structured signals about communication behavior, and steers the agent to-ward designs that remain robust across hardware topologies and workloads. Existing approaches still fall short, as they lack fusion strategies that generalize, scale, and integrate cleanly with modern distributed ML systems. 
+
+## 3 CULink 
+
+Goals and Overview. CUCo is an end-to-end agentic framework for generating fused compute-communication CUDA kernels. Its architecture is shown in Figure 2. It targets three requirements: (i) 
+
+minimal user involvement : users provide only high-level intent, not specific optimization instructions or communication logic; (ii) ensur-ing correctness : generated kernels must remain functionally correct across devices, communication backends, and execution schedules; and (iii) diverse performance exploration : the system should explore a wide range of optimization structures—fusion, overlap, pipelining— and communication placements to uncover high-performance de-signs. To meet these goals, CUCo comprises three essential com-ponents: (i) design space specification : a minimal specification that 
+
+3Table 2: Optimization directive dimensions. Concrete dimen-sions correspond to fixed NCCL API identifiers. Intent-based dimensions express high-level objectives that the agent in-terprets during code generation.            
+
+> Concrete API Dimensions
+> B: Backend GIN |LSA
+> I: Issuer ncclCoopThread |ncclCoopWarp |ncclCoopCta
+> Intent-Based Dimensions
+> P: Placement overlap aggressiveness vs. ordering complexity
+> S: Sync Scope synchronization tightness vs. overlap potential
+> G: Granularity transfer chunk size vs. synchronization overhead
+
+exposes the abstractions an agent needs to explore device-initiated communication and compute–communication overlap; (ii) a fast-path agent : a correctness-first agent that rapidly produces a working device-initiated kernel, establishing a reliable baseline; and (iii) a 
+
+slow-path agent : a performance-driven agent that searches a broad design space to identify optimized compute–communication ker-nels. 
+
+## 3.1 Design Space Specification 
+
+Transitioning communication into the kernel shifts the paradigm from host-driven NCCL collectives—where the CPU enforces lock-step execution between kernel launches—to device-initiated in-terfaces where individual threads drive transfers directly. How-ever, this introduces a joint configuration problem, where the code-generation framework must determine backend selection, commu-nication placement, synchronization scope, issuer granularity, and chunk size, whose interactions are subtle and topology-dependent. Providing access to these configuration is necessary, otherwise in the absence of those an LLM agent makes these decisions implicitly from training priors, overlooking network topologies and hardware absent from its training data suboptimal and incorrect kernels. 
+
+CUCo addresses this by formalizing the configuration space and requiring agents to reason over it explicitly before generating code. This section defines the design space, the directive interface through which agents express their choices, and the context injected to ground these choices in API semantics and hardware constraints. 
+
+Design Space. We define the optimization configuration space as a product of five discrete dimensions: 
+
+C = B × P × S × I × G (1) where B, P, S, I, G denote backend, placement, synchronization scope, issuer granularity, and chunk size respectively. As summa-rized in Table 2, these dimensions fall into two categories: concrete API dimensions , which map directly to fixed NCCL identifiers and must be instantiated exactly, and intent-based dimensions , which express optimization objectives that the agent realizes freely during code generation. 
+
+Optimization Directive. To use C as an agent reasoning interface, 
+
+CUCo requires both agents to emit an explicit optimization directive 
+
+before generating any kernel code:                        
+
+> 1optimization_directive :
+> 2backend : < GIN |LSA >
+> 3issuer : < ncclCoopThread |ncclCoopWarp |ncclCoopCta >
+> 4placement : < intent : overlap aggressiveness >
+> 5sync_scope : < intent : synchronization scope >
+> 6chunk_size : < intent : transfer granularity >
+
+The fast-path agent always emits a fixed conservative directive derived from correctness directives. The slow-path agent treats the directive as the search variable, reasoning over C to emit progres-sively more aggressive configurations—fused persistent kernels, multi-stream overlap, split put/wait pipelines—for a given work-load and hardware target. By requiring an explicit directive before any code is written, CUCo makes each agent’s design decisions inspectable, verifiable, and directly traceable to the kernels they produce. 
+
+Agent Context. General-purpose LLMs have almost no exposure to NCCL’s device-initiated API: it is recent, sparsely documented, and barely represented in public code. Without grounding, agents con-fuse device-initiated and host-driven semantics, misuse cooperative-group primitives, and produce synchronization sequences that ap-pear plausible but are incorrect. CUCo addresses this with a struc-tured context assembled at runtime and injected on every agent invocation. The context is conditioned on the selected backend B: a GIN run receives only GIN-specific documentation, headers, cor-rectness rules, and reference code, while an LSA run receives the corresponding LSA-specific material. Shared components—the op-timization strategy framework, evolve-block constraints, and hard-ware context—are included in both. This backend-conditioned as-sembly avoids polluting the agent’s context window with irrelevant API surface, which we found reduced hallucinated cross-API calls in early experiments. The context consists of three components. 
+
+API Documentation. The context includes interface specifications following a fixed schema of function signatures, semantic precondi-tions, valid/invalid parameter combinations, and annotated usage examples. For a GIN run, this comprises the GIN interface (one-sided RDMA put semantics, flush ordering, completion signaling), the team specification (rank organization into world, local, and rail scopes, grounding S), and the thread-group specification (thread-level participation granularity, grounding I). For an LSA run, the GIN interface is replaced by the LSA interface (direct load/store access, memory barriers, intra-node peer connectivity). These estab-lish the semantic contracts of the design space—details that cannot be inferred from general CUDA or host-driven NCCL experience alone. In addition, the context supplies the raw NCCL device-API C++ headers for the selected backend (e.g., gin.h , core.h , coop.h 
+
+for GIN) and a complete, working reference kernel that demon-strates the target communication pattern end-to-end, giving the agent both a compilable type reference and a concrete pattern to generalize from rather than invent from scratch. Table 3 shows the LSA interface specification as a representative example. 
+
+Strategy Knowledge. The optimization strategy framework is shared across both backends and steers the agent toward workload-appropriate fusion levels. It describes three principal strategies— kernel-level fu-sion (persistent kernel with warp specialization or tile-and-send, suited to iterative fine-grained exchanges), stream-level overlap (sep-arate high-priority communication and compute streams, suited to bulk transfers between large compute phases), and split put/wait (de-ferred completion with intervening compute, suited to pipelining). Critically, the framework does not prescribe a preferred strategy; it articulates the conditions under which each approach dominates and leaves the architectural decision to the agent. Layered on top of 
+
+> 4
+
+Table 3: Sample knowledge base structure as presented within the LSA interface. Field Content                    
+
+> Purpose Device-side peer memory access and barrier synchro-nization within local GPU teams via direct load/store. Core API ncclLsaBarrierSession (provides synchroniza-tion), ncclGetLsaPointer (team-indexed access),
+> ncclGetLocalPointer (local access), ... Sync Scope ncclTeamLsa (intra-node local team), ncclTeamWorld
+> (all ranks); tighter scope reduces overhead but limits overlap potential. Invariants Barrier index must be unique per CTA ( blockIdx.x ), ... Canonical Pattern Instantiate ncclLsaBarrierSession with blockIdx.x ;perform memory operations; call sync(ncclCoopCta(), memory_order_release) ;access peers via
+> ncclGetLsaPointer .
+
+this shared framework are backend-specific correctness rules , condi-tioned on B, that distill hard-won operational knowledge (e.g., for GIN: “windows must use ncclMemAlloc ”, “ waitSignal polls this rank’s own signal counter”, “ flush must match the thread group that issued the puts”; for LSA: “barrier index should use blockIdx.x 
+
+for CTA uniqueness”, “use memory_order_release after writes”). These rules reduce the space of plausible-but-incorrect programs without constraining architectural exploration. 
+
+Hardware Context. Correct and efficient kernel generation also re-quires awareness of the deployment hardware. Rather than hardcod-ing hardware descriptions, CUCo dynamically extracts the hardware context from the evaluation harness’s build and run configuration (compiler flags, MPI topology, NCCL version), mapping GPU ar-chitecture codes to known device properties via a lookup table. This makes the context portable across deployments: changing the target GPU or topology in the evaluation harness automati-cally updates the agent’s hardware knowledge. The extracted con-text provides four categories: GPU architecture (device model, SM count, HBM bandwidth, shared-memory capacity, thread limits— grounding launch configuration and occupancy decisions), topology and interconnect (number of ranks, inter- vs. intra-node placement, network type such as InfiniBand or NVLink, and peer-connectivity reachability—grounding backend selection B), build environment 
+
+(CUDA and NCCL versions, compiler flags, MPI configuration— ensuring the agent generates code compatible with the toolchain), and resource budgeting implications (concrete SM-overhead esti-mates for communication kernels, NIC DMA independence proper-ties for GIN, and guidance on how lightweight put/wait kernels are relative to the total SM budget). Together, these ensure that agent decisions—block counts, stream priorities, overlap strategy, back-end choice—reflect the physical realities of the target deployment rather than training-time priors. 
+
+## 3.2 Fast-Path Agent 
+
+The fast - path agent is dedicated entirely to producing correct ker-nels . The workflow of the fast-path agent is shown in Figure 2. It constructs an implementation that prioritizes correctness over per-formance, yielding a conservative but correct baseline. This baseline forms the initial generation for the slow -path agent’s evolution-ary search. Starting from a host - driven compute–communication program, the agent generates a verified device -initiated implemen-tation using a three-step pipeline: 
+
+• CUDA Code Analysis : Extract the communication dependency graph from the user-provided baseline, comprising standard com-pute kernels and NCCL host APIs. 
+
+• Host-to-Device Transformation : Rewrite host-driven collec-tives into device-initiated equivalents using a two-stage LLM-judge loop. 
+
+• Evolve-Block Annotation : Identify and mark code regions that can be safely mutated during evolutionary search to enable downstream performance optimization. The pipeline follows an empirical observation that converting host -driven NCCL to device - initiated communication naturally decomposes into two tasks : communication setup (memory reg-istration, window creation, communicator configuration) and se-mantic replacement of host collectives. Solving both at once signif-icantly increases the likelihood of correctness failures. The three-step pipeline mirrors this decomposition: CUDA Code Analysis identifies required modifications, Host-to-Device Transformation addresses the two subtasks thought an LLM-judge loop, and Evolve-Block Annotation scopes what can be safely mutated downstream. By isolating and validating each stage, the pipeline contains errors to well-defined boundaries and keeps the LLM feedback loop within a manageable failure space. 
+
+CUDA Analyzer. Because the input is user - written code rather than a formal specification, the agent must first recover a precise compute–communication boundary to ground the transformation. A lightweight static analyzer identifies all host - driven NCCL col-lectives, their buffer operands, data dependencies, and ordering constraints, producing a communication -dependency graph. This graph defines the transformation targets for later stages. Appen-dix A illustrates the analyzer’s input and output on a representative MoE dispatch–compute–combine pipeline. 
+
+Host-to-Device Transformation. Using the dependency graph, the agent rewrites host-driven communication into device-initiated forms. The transformation proceeds in two stages, each guided by an LLM–judge feedback loop that ensures the rewritten program both compiles and matches the host baseline in correctness. 
+
+Stage A: Communication setup. The LLM constructs the host-side setup required by the NCCL Device API in three steps: (1) allocate symmetric memory and register it as a communication window, since the Device API requires all buffers to be uniformly address-able across ranks; (2) configure the communicator requirements according to B—using the LSA barrier count for B = LSA , or the GIN barrier and signal counts for B = GIN , reflecting each back-end’s distinct synchronization model (memory-based barriers vs. network-initiated signals); (3) instantiate the device communicator using the populated requirements. Compute and communication logic remain unchanged. The LLM judge verifies compilation and, on failure, identifies the root cause and feeds corrective feedback into the next rewrite iteration. 
+
+Stage B: Communication. With communication setup in place, the LLM replaces each host-driven collective with its device-initiated equivalent. To prioritize correctness over performance, all directives are set conservatively: CTA-level issuance ( I) to avoid warp-level 
+
+> 5
+
+divergence; fully deferred placement ( P) to minimize ordering com-plexity; global synchronization scope ( S) to ensure cross-rank visi-bility before compute resumes; and coarse transfer granularity ( G)to amortize per-operation overhead. Backend-specific translation then follows: for B = GIN , host collectives map to put (one-sided network transfer with remote completion notification), followed by 
+
+waitSignal and flush to confirm remote delivery; for B = LSA , to direct peer memory stores via ncclGetLsaPointer (which resolves the locally-mapped address of a remote rank’s buffer) synchronized with ncclLsaBarrierSession . The LLM judge reviews each gen-erated variant for compilation and correctness issues, summarizes the likely root causes, and feeds targeted guidance back to the model for a corrective regeneration. Using an LLM judge rather than rule -based error parsing is essential because CUDA failures of-ten hinge on contextual reasoning—such as inferring which missing synchronization, ordering constraint, or API misuse triggered a par-ticular error. This cycle is repeated until a correct implementation is generated. Separating infrastructure from semantic replacement constrains each LLM interaction to a single concern, reducing the per-stage failure space and making judge feedback more targeted. The com-bined loop typically converges in 2–4 iterations per stage. 
+
+Evolve-Block Annotation. The verified device-initiated program is automatically annotated with mutable-region markers that de-fine the optimization scope for the slow-path agent. An annotator combining LLM analysis with pattern-based heuristics emits paired 
+
+EVOLVE-BLOCK-START / EVOLVE-BLOCK-END markers around regions whose communication or compute structure admits opti-mization under the constraint set C = {I , P, S, G, B} (issuance granularity, placement, synchronization scope, transfer granularity, and backend). Frozen regions—initialization, verification logic, out-put formatting—are excluded, ensuring that downstream mutations cannot break the evaluation harness. Critically, the 𝑛 annotated regions are co-optimized as a single candidate rather than treated as independent subproblems, since mutations can interact across boundaries: a change to transfer granularity ( G) in one region may alter the synchronization requirements ( S) of another. The resulting annotated program is promoted as the seed , a correctness - preserving but intentionally unoptimized baseline that is then passed to the slow -path agent as generation zero of the evolutionary search for performance improvements. 
+
+## 3.3 Slow-Path Agent 
+
+The slow - path agent builds on the seed, searching for execution plans that better match the workload and hardware. All the gener-ated candidates stay within the fusion -directive space C, ensuring that even aggressive strategies—fused compute - communication ker-nels, pipelined overlap, split put/wait patterns—remain structured and semantically valid. To navigate this space, the slow -path agent uses an island -based evolutionary search optimizer augmented with LLM -driven mu-tation. The consequence of using a specification enables CUCo to be optimizer - agnostic: any evolutionary framework that accepts a bounded search space, a fitness function, and structured feedback can be plugged in. The slow-path agent includes several compo-nents: (1) multi-island populations to avoid early convergence; (2) an 
+
+LLM mutation operator that leverages code semantics and governs 
+
+Algorithm 1 CUCo Slow-Path: LLM-Driven Evolutionary Search 
+
+Require: Baseline kernel 𝑐 0 ∈ C , island count 𝑘 , generation budget 
+
+𝐺 , explore fraction 𝛼 ∈ ( 0, 1)
+
+Ensure: Optimized kernel 𝑐 ∗ ∈ C  
+
+> 1:
+
+P𝑖 ← Init (𝑐 0) for 𝑖 = 1, . . . , 𝑘  
+
+> 2:
+
+DB , A ← ∅ , ∅ 
+
+> 3:
+
+for 𝑔 ← 1 to 𝐺 do  
+
+> 4:
+
+for 𝑖 ← 1 to 𝑘 do  
+
+> 5:
+
+𝑝 ← Select (P 𝑖 ) 
+
+> 6:
+
+𝑐 ′ ← LLMMutate (𝑝, A, DB , 𝑔, 𝐺, 𝛼 ) ⊲ Algorithm 2  
+
+> 7:
+
+𝑠 ← CascadeEval (𝑐 ′) ⊲ ℓ1: compile → ℓ2: verify → ℓ3:benchmark  
+
+> 8:
+
+P𝑖 , A, DB ← Update (P 𝑖 , A, DB , 𝑐 ′, 𝑠 ) 
+
+> 9:
+
+end for  
+
+> 10:
+
+Migrate (P 1, . . . , P𝑘 ) 
+
+> 11:
+
+end for  
+
+> 12:
+
+return 𝑐 ∗ ← arg max 𝑐 ∈ D B 𝑠 (𝑐 )
+
+Algorithm 2 LLMMutate : Phase-Dependent Variation Operator 
+
+Require: Parent 𝑝 ∈ C , archive A, database DB , generation 𝑔 ,budget 𝐺 , explore fraction 𝛼 
+
+Ensure: Offspring 𝑐 ′ ∈ C  
+
+> 1:
+
+𝜙 ←
+
+(
+
+Explore 𝑔 ≤ 𝛼𝐺 
+
+Exploit 𝑔 > 𝛼𝐺  
+
+> 2:
+
+ctx ← ( 𝑝, ArchiveSample (A) , MetaSummarize (DB))  
+
+> 3:
+
+if 𝜙 = Explore then  
+
+> 4:
+
+form ∼ Categorical (Rewrite ≫ Diff , Crossover ) 
+
+> 5:
+
+𝑐 ′ ← LLM (ctx , form , 𝜏 high ) 
+
+> 6:
+
+else  
+
+> 7:
+
+form ∼ Categorical (Diff ≫ Rewrite , Crossover ) 
+
+> 8:
+
+𝑐 ′ ← LLM (ctx , form , 𝜏 low ) 
+
+> 9:
+
+end if  
+
+> 10:
+
+return 𝑐 ′
+
+exploration and exploitation through a phase-dependent search policy; (3) a cascaded evaluation that screens out infeasible candi-dates cheaply; and (4) a shared candidate database that preserves history and feeds evaluation results back into mutation. Figure 2 and Algorithm 1 show the full pipeline. 
+
+Multi-Island Population. The search adopts the multi-island evolutionary framework from ShinkaEvolve [ ? ], maintaining 𝐾 
+
+independent islands each initialized from a distinct seed — a se-mantically different variant of the fast-path baseline produced by prompting the LLM with different directive configurations drawn from C. While a seed is a single starting program, an island is a full subpopulation of candidates evolved from that seed, maintaining its own evolutionary lineage. Each island evolves independently, preventing premature convergence by preserving diverse optimiza-tion strategies: one island may converge on a multi-stream overlap strategy while another develops a fused-kernel approach entirely independently. Every 𝐺 𝑚 generations, the top-𝑘 scoring individ-uals from each island are copied into randomly selected target islands, cross-pollinating successful patterns without collapsing diversity. Migration operates entirely in the program text domain: high-scoring source code is directly inserted into the target island’s 
+
+> 6
+
+population and subjected to the same LLM-guided mutation opera-tors in subsequent generations. 
+
+Selection. Within each island, parent selection uses fitness-weighted sampling with configurable selection pressure, biasing reproduction toward high-performing candidates while preserving exploration breadth. The selected parent, together with its stored evaluation history, is passed to the search policy and mutation operator. The details of the scoring function are discussed in 3.3. 
+
+LLM mutation operator. Standard evolution mutation operators are poorly matched to program -space search: random edits to CUDA source code almost universally produce non - compiling or seman-tically invalid candidates. The slow - path agent replaces random perturbation with an LLM mutation operator that proposes seman-tically informed edits while remaining structurally bounded. At each generation, the selected parent is presented to an LLM alongside three categories of context that replace the stochastic perturbation signal: 
+
+• Parent context — the parent’s source code, runtime metrics, and cascade evaluation feedback from its most recent assessment. 
+
+• Archive inspirations — structurally distinct high - performing solutions drawn from a MAP -Elites diversity archive, exposing the LLM to fit individuals outside the current lineage (analogous to crossover across distant population members). 
+
+• Meta - recommendations — cross - generation patterns distilled by the meta -summarizer (Appendix C), providing actionable guid-ance on what strategies have and have not worked across all prior generations. The LLM proposes a mutation by rewriting only the code within annotated evolve-block markers. Three mutation forms are avail-able: 
+
+• Diff patches — localized edits to existing code (fine -grained mutation). 
+
+• Full rewrites — replacement of all mutable regions (large - step mutation / restart). 
+
+• Cross - pollination patches — synthesis from multiple archive programs (crossover). 
+
+Exploitation and Exploration. Mutation form probabilities are gov-erned by a two-phase search policy (Algorithm 2). The fusion-directive space C is vast—stream topologies, synchronization scopes, fusion depth, and communication placement all interact—yet most candidates fail to compile or behave correctly, making exhaustive exploration wasteful and early commitment to a suboptimal ar-chitecture risky. To balance this tension, exploration favors high-temperature full rewrites, promoting structurally distinct designs— multi-stream pipelines, fused kernels, split put/wait patterns, warp-specialized communication—before any single architecture domi-nates. Exploitation shifts to low-temperature localized diffs, refin-ing the most promising architectures by tuning launch parameters, tightening synchronization scopes, or reordering event dependen-cies. The phase split is configurable. Critically, the LLM is confined to the role of a variation opera-tor —not an open -ended code generator. Its output is structurally bounded by the directive space C and spatially bounded by the evolve - block annotations, preserving the EA invariant that every offspring is a valid point in the search space. 
+
+Cascade Evaluation. Every offspring is evaluated through a three-level cascade ℓ1 → ℓ2 → ℓ3 that gates expensive measurements behind cheaper feasibility checks—directly controlling evaluation cost. At level ℓ1, the candidate is compiled; failure terminates evalua-tion immediately with diagnostic feedback. At level ℓ2, the compiled binary is executed via mpirun across the target rank configuration and verified for numerical correctness; failure triggers execution-trace feedback. At level ℓ3, the candidate is benchmarked: the binary is executed multiple times for measurement stability, and the best wall-clock time is recorded as fitness score (𝑐 ) = 10000 /( 1 + 𝑡 ms ),a monotone mapping from lower latency to higher fitness. Can-didates failing at ℓ1 or ℓ2 receive a score of zero but are persisted with their failure diagnostics, as negative examples inform future mutations. At every cascade level, an LLM feedback agent receives the candidate code and evaluation outcome—compiler errors, runtime failures, or performance results—and generates a concise diagnos-tic identifying the current strategy and the single highest-impact improvement. This feedback is stored with the candidate record and injected into the prompt when the candidate’s lineage is later selected as a parent, creating a closed loop between evaluation and mutation. 
+
+Candidate Database. All evaluated candidates—including those eliminated at ℓ1 and ℓ2—are persisted to a shared candidate data-base. Each record stores the program, cascade score, LLM feedback, and a code embedding vector. Failure records are retained with fitness zero; they serve as negative examples that inform future mutations, a form of explicit negative selection that is absent from classical evolutionary methods but natural here given the high in-feasibility rate of the program search space. The database serves two roles in the overall evolutionary process. First, it is the can-didate pool for parent selection and MAP - Elites archive sampling across all islands. Second, it is the persistent backing store for the meta - summarizer, which queries historical results across all gener-ations to distill cross - generation patterns into the mutation context. Every generation reads from and writes to the database, creating a shared memory that accumulates knowledge across generations and islands beyond what any single evolutionary lineage could retain. Retrieval from the database is embedding-guided: at each gener-ation, the current candidate’s code embedding is used to query the database for the 𝑘 nearest neighbors by cosine similarity, surfacing structurally similar programs and their associated feedback. The retrieved records—both successes and failures—are injected into the LLM mutation prompt as in-context examples, allowing the agent to avoid previously failed transformations and build on pat-terns that improved performance in similar program structures. The meta-summarizer additionally issues keyword and performance-threshold queries to retrieve cross-generation trends, which are summarized and prepended to the mutation context as higher-level guidance. 
+
+## 4 Evaluation 
+
+We evaluate CUCo on four representative workloads and compare it against purely host-based implementations using standard NCCL 
+
+> 7SEQ=4096
+> HD=32
+> SEQ=8192
+> HD=32
+> SEQ=8192
+> HD=64
+> SEQ=4096
+> HD=32
+> Attention Configuration
+> 0
+> 1000
+> 2000
+> 3000
+> 4000
+> 5000
+> Latency (ms)
+> -6.5%
+> -5.3%
+> -5.7%
+> -10.7%
+> Flash Attention+Context Parallelism (4-GPU Intranode)
+> GIN (Evolved)
+> Host (ncclSend/Recv)
+
+Figure 3: Flash Attention with Context Parallelism with vary-ing sequence length and attention head dimension. 2:1   
+
+> (2731/1365)
+> 3:1
+> (3072/1024)
+> 4:1
+> (3277/819)
+> 5:1
+> (3413/683)
+> Token Imbalance Ratio
+> 0
+> 50
+> 100
+> 150
+> 200
+> Latency (ms)
+> -18.0%
+> -17.6% -15.7% -14.4%
+> DeepSeek MoE (2-GPU Internode, Sparse Routing)
+> GIN (Evolved)
+> Host (ncclAlltoAll)
+
+Figure 4: DeepSeek-V3 MoE layer across inter-node RoCE links with expert skewness. S=2048  
+
+> KV=512
+> S=3072
+> KV=768
+> S=3072
+> KV=1024
+> S=4096
+> KV=1024
+> KV Cache Configuration
+> 0.0
+> 2.5
+> 5.0
+> 7.5
+> 10.0
+> 12.5
+> Latency (ms)
+> -7.6%
+> -9.5%
+> -9.2% -13.6%
+> KV Cache Transfer (LSA vs Host)
+> LSA (Evolved)
+> Host (Baseline)
+
+Figure 5: Intra-node KV cache transfer latency across varying se-quence lengths and KV dimen-sions. 2048 
+
+> M=N=K
+> 4096
+> M=N=K
+> 8192
+> M=N=K
+> 16384
+> M=N=K
+> Matrix Size
+> 5
+> 10
+> 25
+> 100
+> 250
+> 1000
+> Latency (ms, log)
+> -7.2%
+> -9.4%
+> -36.2%
+> -26.2%
+> GEMM + AllGather (GIN vs Host)
+> GIN + LSA (Evolved)
+> Host (Baseline)
+
+Figure 6: Intra- and inter-node GEMM + AllGather latency across square matrix sizes. 
+
+Table 4: Optimization breakdown: GIN fused kernel vs. host NCCL baseline on Flash Attention (SEQ = 4096 , HD = 32 , 4 GPUs, NVLink). Optimization Savings Mechanism 
+
+Pipeline bubble elimination 37.7 ms Host idles compute stream during 3 exchange rounds ( 3×12 .6 ms); GIN hides exchange behind attention. Host-side API overhead removal 37.6 ms 768 ncclSend/Recv groups ( ∼49 𝜇 s each) replaced by device-side gin.put/flush .Per-tile pipelining within rounds 63.7 ms Compute blocks poll tile availability via atomics; host must wait for all 256 tiles (SM-saturation deadlock). 
+
+Total 139.0 ms 11.3% end-to-end reduction 
+
+collective communication. CUCo consistently reduces end-to-end latency across all workloads, achieving speedups of up to 1.57 ×.
+
+Environment Setup. We conduct our evaluation on two servers, each equipped with two 16-core Intel Xeon Silver 4314 CPUs, 256 GiB of RAM, and four NVIDIA A100 GPUs with 80 GiB of HBM. The servers are connected via RoCE (RDMA over Converged Ether-net) for inter-node communication. The servers run Ubuntu 22.04.4 with Linux version 5.15, CUDA 13.1, and NCCL 2.28.9. We run both intra-node (NVLink) and inter-node (RoCE) experiments on this cluster. All LLM-driven agents (fast-path, slow-path, and feedback) use Anthropic’s Claude Sonnet 4.5 as the underlying model. 
+
+Representative Workloads. Because no existing benchmark cap-tures the combined compute–communication behavior of these CUDA kernels, we use four representative workloads that span a range of communication topologies, parallelism patterns, and compute–communication strategies. 
+
+Flash Attention with Context Parallelism Flash Attention with Con-text Parallelism scales attention over long sequences by partitioning the query, key, and value tensors along the sequence dimension across multiple GPUs. Each GPU permanently owns one Q shard while KV shards rotate in a ring topology (Ring Attention [ 20 ]). As each GPU computes attention over its local KV tile, it concurrently receives the next KV block from its neighbor. Inspired by GPT-2’s multi-head attention architecture, we evaluate on 4 GPUs (intra-node, NVLink) with configurations spanning SEQUENCE_LENGTH ∈{4096 , 8192 } and HEAD_DIM ∈ { 32 , 64 }
+
+DeepSeek-V3 MoE Dispatch and Combine We reproduce the MoE expert-parallelism layer of DeepSeek-V3, in which each GPU routes its tokens to remote experts via an AlltoAll dispatch, runs expert com-putation, and gathers results via a reverse AlltoAll combine. The pipeline consists of: (1) quantize tokens to int8, (2) dispatch via AlltoAll, (3) dequantize + GEMM1 (up/gate projection, 7168 × 4096 )+ SwiGLU activation + GEMM2 (down projection, 2048 × 7168 ) on the expert GPU, and (4) combine results via reverse AlltoAll. The host baseline uses two-stream overlap with padded ncclAlltoAll 
+
+on a dedicated communication stream. The CUCo version replaces this with GIN one-sided RDMA puts using split put/wait kernels on separate streams, enabling variable-size per-peer transfers that avoid padding overhead, and overlapping dispatch with self-chunk expert compute concurrently with the network transfer. We evalu-ate on 2 GPUs across inter-node RoCE links with 4096 total tokens per rank under four sparse routing imbalance ratios (2:1, 3:1, 4:1, 5:1) to characterize the sensitivity of GIN to workload skew. 
+
+KV-Cache Transfer KV-cache transfer in disaggregated prefill–decode serving requires the prefill GPU to compute and send the K and V projections before the decode stage can run attention. The flow is simple: compute K, send it, compute V while K is in flight, then send V with a readiness signal. The main bottleneck is the compute-to-send gap introduced by NCCL’s CPU -launched transfers, which leave the network idle after each compute phase. Our CUCo path removes this gap by chaining a K GEMM, a GPU -triggered send, an overlapping V GEMM, and a final send with a signal incre-ment; the decode GPU waits entirely on-device. We evaluate on two NVLink-connected GPUs with hidden dimension 4096. 
+
+GEMM + AllGather Each rank performs a local FP32 GEMM ( 𝐶 =
+
+𝐴𝐵, 𝑀 = 𝑁 = 𝐾 = 4096 ) and then participates in an AllGather so every GPU receives the full concatenated output. This work-load isolates the simplest post -compute collective: once a rank completes its GEMM, its output can be broadcast immediately with no cross - rank dependencies, enabling clear opportunities for device -initiated communication. Intra - node transfers over NVLink use LSA, while inter -node transfers over RoCE use GIN. We evaluate on four GPUs spanning both intra- and inter-node links. 
+
+## 4.1 CUCo ’s End-to-End Evaluation 
+
+We compare CUCo evolved CUDA code against the host-driven NCCL baseline on each workload. Latency is the median over 3 stable runs measured with CUDA events. Figures 3–6 show end-to-end latency for all four workloads. Across the completed workloads, CUCo achieves 5.3%–26.2% la-tency reduction over the host-driven baseline. The gains arise from eliminating host-side orchestration overhead: kernel launch gaps between communication rounds, CUDA event synchronization de-lays, and CPU-issued NCCL API call overhead. These costs are 
+
+> 8
+
+negligible when compute dominates but become a measurable frac-tion of wall time as the compute-to-communication ratio decreases (smaller tiles, sparse routing, or more GPUs). 
+
+## 4.2 Case Study: Flash Attention with Context Parallelism 
+
+The Flash Attention workload provides the clearest demonstration of CUCo ’s architectural advantage because the ring structure am-plifies per-round overheads across multiple exchange steps. We focus on the configuration ( SEQ = 4096 , HD = 32 ), which exhibits the largest speedup ( 11.3% ), and use Nsight Systems profiling with NVTX markers to dissect exactly where the fused kernel gains its advantage. 
+
+GIN Fused Kernel Architecture. The CUCo evolved kernel launches a single cooperative grid of 𝐵 × 𝑛 ℎ + 1 = 81 blocks via cudaLaunch-CooperativeKernel. Block 0 is the communication block : it runs the entire ring protocol—GIN put/wait/flush for all 256 tiles across all 3 exchange rounds—using device-side atomic counters for syn-chronization. The remaining 80 blocks are compute blocks , each handling one (batch, head) pair across all rounds. KV data is stored in a tile-first memory layout and double-buffered between two NCCL-registered windows. The critical capability is per-tile pipelining : as the comm block completes the transfer of tile 𝑗 and increments a tile_ready counter via atomicAdd , compute blocks immediately begin processing tile 𝑗 
+
+by polling with __nanosleep(100) —even while tiles 𝑗 +1 through 
+
+𝑇 𝑐 are still in flight. This eliminates the pipeline bubble between communication and computation within each round. 
+
+Host Baseline Architecture. The host version launches a separate at-tention kernel per round and issues per-tile ncclGroup calls from the CPU between rounds—768 host NCCL API call groups in to-tal. Because the attention kernel (80 blocks) saturates all SMs, a small signaling kernel on the communication stream can never be scheduled—creating a GPU-side priority inversion that prevents per-tile pipelining. The host version must therefore wait for all tiles to finish exchanging before launching the next round’s attention kernel, forcing a purely sequential execution pattern. The largest contributor is per-tile pipelining (63.7 ms), which is uniquely enabled by the fused kernel’s cooperative grid—the host baseline’s SM saturation prevents this overlap entirely, as described above. The remaining savings come from eliminating 37.7 ms of compute-stream idle time during the three exchange rounds and removing the cumulative 37.6 ms of host proxy overhead from 768 NCCL API call groups. Together, these three optimizations reduce the end-to-end latency from 1230.7 ms to 1091.7 ms without any change to the mathematical computation or numerical accuracy. 
+
+## 4.3 Ablation Studies 
+
+Fast-Path Agent. We evaluate whether the fast-path agent is nec-essary by comparing the full CUCo pipeline (fast-path + slow-path) against a slow-path–only ablation that runs the evolutionary agent directly on the original host NCCL code, bypassing the fast-path transformation entirely. Both configurations use the DeepSeek-V3 MoE workload (2-GPU inter-node, RoCE) with identical LLM models, evaluation harness, and evolutionary budgets. 0 1 0 2 4 6 8 10 12 14 16  
+
+> Generation
+> 0
+> 20
+> 40
+> 60
+> 80
+> Combined Score
+> Fast-Path Slow-Path
+> Fast-Path + Slow-Path Agent
+> Correct
+> Failed
+
+Figure 7: Fast-path + slow-path agent on the GIN MoE workload. 0 2 4 6 8 10 12 14 16 18 
+
+> Generation
+> 0
+> 20
+> 40
+> 60
+> 80
+> Combined Score
+> Slow-Path
+> Slow-Path Agent Only
+> Correct
+> Failed
+
+Figure 8: Slow-path agent only on the same workload. 0 2 4 6 8 10 12 14 16  
+
+> Generation
+> 0
+> 20
+> 40
+> 60
+> 80
+> Combined Score
+> Seed
+> Explore Exploit
+> Two Phase (Explore + Exploit)
+> Correct
+> Failed
+
+Figure 9: Two-phase evolution (explore then exploit) on the GIN MoE workload. 0 2 4 6 8 10 12 14 16 
+
+> Generation
+> 0
+> 20
+> 40
+> 60
+> 80
+> Combined Score
+> Seed
+> Exploit
+> Single Phase (Exploit Only)
+> Correct
+> Failed
+
+Figure 10: Single-phase evolu-tion (exploit only) on the same workload. 
+
+Figures 7 and 8 show the results. In the full pipeline (Figure 7), the fast-path agent produces a correct GIN kernel in just 2 LLM it-erations: the first sets up GIN infrastructure (device communicator, window registration, cooperative launch), and the second converts the host-side NCCL calls to device-side GIN primitives. This seed achieves a combined score of 48.34, giving the slow-path evolution-ary agent a viable starting point. From there, the slow-path agent reaches a score of 83.86 within 2 generations and peaks at 83.95 .Without the fast-path agent (Figure 8), the evolutionary agent must simultaneously discover the GIN programming model—device-side communication primitives, window registration, cooperative grid launch, signal-based synchronization—while also optimizing the compute-communication pipeline. The first 5 generations all fail to produce a correct program, wasting 25% of the evolution budget on compilation errors and broken kernels. The agent does not produce a working GIN kernel until generation 5 (score 77.83) and does not stabilize above 81 until generation 10, ultimately peaking at 81.81 —2.5% lower than the combined approach. The fast-path agent thus serves as a sample-efficiency multiplier :by decomposing the problem into correctness-focused conversion (fast-path) and performance-focused evolution (slow-path). 
+
+Explore-Exploit Phases. We study the slow-path evolutionary agent on the DeepSeek-V3 GIN MoE workload (2-GPU inter-node) under two scheduling configurations: a two-phase schedule that ded-icates the first 40% of the budget to exploration (high-temperature, diversity-promoting mutations) before switching to exploitation (greedy refinement of the best candidates), and a single-phase sched-ule that runs exploitation from the start. Both runs use identical seed programs, evaluation infrastructure, and a budget of 18 gener-ations. Figures 9 and 10 show the combined score at each generation for the two configurations. The two-phase schedule (Figure 9) reaches a score of 83.86 by generation 3—just three iterations into the explore phase—and maintains scores above 83 through the exploit phase, culminating in a best of 83.95. In contrast, the single-phase exploit-only schedule (Figure 10) oscillates between 28 and 64 for the first 
+
+> 9
+
+9 generations, does not exceed 76 until generation 10, and peaks at 80.36 after exhausting the full budget. The two-phase approach is superior on both axes: it achieves a 
+
+4.3% higher final score (83.95 vs. 80.36) and is significantly more 
+
+sample-efficient , reaching its near-best score in 3 generations compared to 10 for the single-phase schedule. The advantage stems from the explore phase’s ability to discover structurally diverse pipeline strategies—barrier-free combine overlap, split put/wait pat-terns, and signal-shadow synchronization—that the exploit phase can then refine. Without this initial diversity, the exploit-only agent repeatedly selects incremental variants of already-seen patterns, converging slowly to a lower-quality local optimum. 
+
+## 5 Conclusion 
+
+We present CUCo , an agentic framework for automatically gener-ating fused compute-communication CUDA kernels. Through a structured design space specification, a correctness-first fast-path agent, and an LLM-driven evolutionary slow-path agent, CUCo elim-inates the manual effort of compute–communication co-design while achieving up to 1.57 × latency reduction over host-driven base-lines across four representative multi-GPU workloads. As device-initiated communication becomes central to distributed ML, CUCo 
+
+demonstrates that agentic search can unlock optimization opportu-nities that are otherwise intractable to discover by hand. 
+
+Ethics : This work does not raise any ethical issues. 
+
+## References 
+
+[1] Jason Ansel, Edward Yang, Horace He, Natalia Gimelshein, Animesh Jain, Michael Voznesensky, Bin Bao, Peter Bell, David Berard, Evgeni Burovski, Geeta Chauhan, Anjali Chourdia, Will Constable, Alban Desmaison, Zachary DeVito, Elias Ellison, Will Feng, Jiong Gong, Michael Gschwind, Brian Hirsh, Sherlock Huang, Kshiteej Kalambarkar, Laurent Kirsch, Michael Lazos, Mario Lezcano, Yanbo Liang, Jason Liang, Yinghai Lu, C. K. Luk, Bert Maher, Yunjie Pan, Christian Puhrsch, Matthias Reso, Mark Saroufim, Marcos Yukio Siraichi, Helen Suk, Shunting Zhang, Michael Suo, Phil Tillet, Xu Zhao, Eikan Wang, Keren Zhou, Richard Zou, Xiaodong Wang, Ajit Mathews, William Wen, Gregory Chanan, Peng Wu, and Soumith Chintala. 2024. PyTorch 2: Faster Machine Learning Through Dynamic Python Bytecode Transformation and Graph Compilation. In Proceedings of the 29th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 (La Jolla, CA, USA) (ASPLOS ’24) . Association for Computing Machinery, New York, NY, USA, 929–947. https://doi.org/10.1145/ 3620665.3640366 [2] Carlo Baronio, Pietro Marsella, Ben Pan, Simon Guo, and Silas Alberti. 2025. Kevin: Multi-Turn RL for Generating CUDA Kernels. arXiv:2507.11948 [cs.LG] https://arxiv.org/abs/2507.11948 [3] Li-Wen Chang, Wenlei Bao, Qi Hou, Chengquan Jiang, Ningxin Zheng, Yinmin Zhong, Xuanrun Zhang, Zuquan Song, Ziheng Jiang, Haibin Lin, Xin Jin, and Xin Liu. 2024. FLUX: Fast Software-based Communication Overlap On GPUs Through Kernel Fusion. arXiv:2406.06858 [cs.LG] [4] Tianqi Chen, Thierry Moreau, Ziheng Jiang, Lianmin Zheng, Eddie Yan, Haichen Shen, Meghan Cowan, Leyuan Wang, Yuwei Hu, Luis Ceze, Carlos Guestrin, and Arvind Krishnamurthy. 2018. TVM: An Automated End-to-End Optimizing Compiler for Deep Learning. In 13th USENIX Symposium on Operating Systems Design and Implementation (OSDI 18) . USENIX Association, Carlsbad, CA, 578– 594. https://www.usenix.org/conference/osdi18/presentation/chen [5] Sharan Chetlur, Cliff Woolley, Philippe Vandermersch, Jonathan Cohen, John Tran, Bryan Catanzaro, and Evan Shelhamer. 2014. cuDNN: Efficient Primitives for Deep Learning. arXiv:1410.0759 [cs.NE] https://arxiv.org/abs/1410.0759 [6] Tri Dao. 2023. FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning. arXiv:2307.08691 [cs.LG] https://arxiv.org/abs/2307.08691 [7] Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022. FLASHATTENTION: fast and memory-efficient exact attention with IO-awareness. In Proceedings of the 36th International Conference on Neural Informa-tion Processing Systems (New Orleans, LA, USA) (NIPS ’22) . Curran Associates Inc., Red Hook, NY, USA, Article 1189, 16 pages. [8] Juncheng Dong, Yang Yang, Tao Liu, Yang Wang, Feng Qi, Vahid Tarokh, Kaushik Rangadurai, and Shuang Yang. 2025. STARK: Strategic Team of Agents for Refining Kernels. arXiv:2510.16996 [cs.AI] https://arxiv.org/abs/2510.16996 [9] Adithya Gangidi, Rui Miao, Shengbao Zheng, Sai Jayesh Bondu, Guilherme Goes, Hany Morsy, Rohit Puri, Mohammad Riftadi, Ashmitha Jeevaraj Shetty, Jingyi Yang, Shuqiang Zhang, Mikel Jimenez Fernandez, Shashidhar Gandham, and Hongyi Zeng. 2024. RDMA over Ethernet for Distributed Training at Meta Scale. In Proceedings of the ACM SIGCOMM 2024 Conference (Sydney, NSW, Australia) 
+
+(ACM SIGCOMM ’24) . Association for Computing Machinery, New York, NY, USA, 57–70. https://doi.org/10.1145/3651890.3672233 [10] Raja Gond, Nipun Kwatra, and Ramachandran Ramjee. 2025. TokenWeave: Efficient Compute-Communication Overlap for Distributed LLM Inference. https: //arxiv.org/abs/2505.11329 [11] Google. 2026. XLA: Accelerated Linear Algebra. https://openxla.org/xla. OpenXLA Project. [12] Ping Guo, Chenyu Zhu, Siyuan Chen, Fei Liu, Xi Lin, Zhichao Lu, and Qingfu Zhang. 2025. EvoEngineer: Mastering Automated CUDA Kernel Code Evolution with Large Language Models. arXiv:2510.03760 [cs.LG] https://arxiv.org/abs/ 2510.03760 [13] Ke Hong, Xiuhong Li, Minxu Liu, Qiuli Mao, Tianqi Wu, Zixiao Huang, Lufang Chen, Zhong Wang, Yichong Zhang, Zhenhua Zhu, Guohao Dai, and Yu Wang. 2025. Efficient and Adaptable Overlapping for Computation and Communication via Signaling and Reordering. arXiv preprint arXiv:2504.19519 (2025). [14] Abhinav Jangda, Jun Huang, Guodong Liu, Amir Hossein Nodehi Sabet, Saeed Maleki, Youshan Miao, Madanlal Musuvathi, Todd Mytkowicz, and Olli Saarikivi. 2022. Breaking the computation and communication abstraction barrier in dis-tributed machine learning workloads. In Proceedings of the 27th ACM International Conference on Architectural Support for Programming Languages and Operating Systems (Lausanne, Switzerland) (ASPLOS ’22) . Association for Computing Ma-chinery, New York, NY, USA, 402–416. https://doi.org/10.1145/3503222.3507778 [15] Lingcheng Kong, Jiateng Wei, Hanzhang Shen, and Huan Wang. 2025. ConCuR: Conciseness Makes State-of-the-Art Kernel Generation. arXiv:2510.07356 [cs.LG] https://arxiv.org/abs/2510.07356 [16] Robert Tjarko Lange, Qi Sun, Aaditya Prasad, Maxence Faldor, Yujin Tang, and David Ha. 2025. Towards Robust Agentic CUDA Kernel Benchmarking, Verifica-tion, and Optimization. arXiv:2509.14279 [cs.SE] https://arxiv.org/abs/2509.14279 [17] Ao Li, Bojian Zheng, Gennady Pekhimenko, and Fan Long. 2022. Automatic Horizontal Fusion for GPU Kernels. In 2022 IEEE/ACM International Symposium on Code Generation and Optimization (CGO) . 14–27. https://doi.org/10.1109/ CGO53902.2022.9741270 [18] Xiaoya Li, Xiaofei Sun, Albert Wang, Jiwei Li, and Chris Shum. 2026. CUDA-L1: Improving CUDA Optimization via Contrastive Reinforcement Learning. arXiv:2507.14111 [cs.AI] https://arxiv.org/abs/2507.14111 [19] Gang Liao, Hongsen Qin, Ying Wang, Alicia Golden, Michael Kuchnik, Yavuz Yetim, Jia Jiunn Ang, Chunli Fu, Yihan He, Samuel Hsia, Zewei Jiang, Dianshi Li, Uladzimir Pashkevich, Varna Puvvada, Feng Shi, Matt Steiner, Ruichao Xiao, Nathan Yan, Xiayu Yu, Zhou Fang, Roman Levenstein, Kunming Ho, Haishan Zhu, Alec Hammond, Richard Li, Ajit Mathews, Kaustubh Gondkar, Abdul Zainul-Abedin, Ketan Singh, Hongtao Yu, Wenyuan Chi, Barney Huang, Sean Zhang, Noah Weller, Zach Marine, Wyatt Cook, Carole-Jean Wu, and Gaoxiang Liu. 2026. KernelEvolve: Scaling Agentic Kernel Coding for Heterogeneous AI Accelerators at Meta. arXiv:2512.23236 [cs.LG] https://arxiv.org/abs/2512.23236 [20] Hao Liu, Matei Zaharia, and Pieter Abbeel. 2024. RingAttention with Blockwise Transformers for Near-Infinite Context. In The Twelfth International Conference on Learning Representations . https://openreview.net/forum?id=WsRHpHH4s0 [21] Lingxiao Ma, Zhiqiang Xie, Zhi Yang, Jilong Xue, Youshan Miao, Wei Cui, Wenx-iang Hu, Fan Yang, Lintao Zhang, and Lidong Zhou. 2020. Rammer: Enabling Holistic Deep Learning Compiler Optimizations with rTasks. In 14th USENIX Sym-posium on Operating Systems Design and Implementation (OSDI 20) . USENIX As-sociation, 881–897. https://www.usenix.org/conference/osdi20/presentation/ma [22] NVIDIA Corporation. 2026. cuBLAS Library User Guide. https://docs.nvidia. com/cuda/cublas/. [23] NVIDIA Corporation. 2026. NCCL Device-Initiated Communication. https://docs. nvidia.com/deeplearning/nccl/user-guide/docs/usage/deviceapi.html. NCCL 2.28.9 User Guide. [24] NVIDIA Corporation. 2026. NCCL: NVIDIA Collective Communications Library. https://developer.nvidia.com/nccl. [25] NVIDIA Corporation. 2026. NVSHMEM. https://developer.nvidia.com/nvshmem. [26] Anne Ouyang, Simon Guo, Simran Arora, Alex L. Zhang, William Hu, Christopher Ré, and Azalia Mirhoseini. 2025. KernelBench: Can LLMs Write Efficient GPU Kernels? arXiv:2502.10517 [cs.LG] https://arxiv.org/abs/2502.10517 [27] Kishore Punniyamurthy, Khaled Hamidouche, and Bradford M. Beckmann. 2024. Optimizing Distributed ML Communication with Fused Computation-Collective Operations. In Proceedings of the International Conference for High Performance Computing, Networking, Storage, and Analysis (Atlanta, GA, USA) (SC ’24) . IEEE Press, Article 88, 17 pages. https://doi.org/10.1109/SC41406.2024.00094 [28] Saeed Rashidi, Matthew Denton, Srinivas Sridharan, Sudarshan Srinivasan, Amoghavarsha Suresh, Jade Nie, and Tushar Krishna. 2021. Enabling Compute-Communication Overlap in Distributed Deep Learning Training Platforms. In 
+
+2021 ACM/IEEE 48th Annual International Symposium on Computer Architecture (ISCA) . 540–553. https://doi.org/10.1109/ISCA52012.2021.00049 
+
+> 10
+
+[29] Saeed Rashidi, Srinivas Sridharan, Sudarshan Srinivasan, and Tushar Krishna. 2020. ASTRA-SIM: Enabling SW/HW Co-Design Exploration for Distributed DL Training Platforms. In 2020 IEEE International Symposium on Performance Analysis of Systems and Software (ISPASS) . 81–92. https://doi.org/10.1109/ISPASS48437. 2020.00018 [30] Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, and Tri Dao. 2024. FlashAttention-3: Fast and Accurate Attention with Asynchrony and Low-precision. In The Thirty-eighth Annual Conference on Neural Information Processing Systems . https://openreview.net/forum?id=tVConYid20 [31] Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper, and Bryan Catanzaro. 2019. Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism. arXiv preprint arXiv:1909.08053 
+
+(2019). [32] Daniel Snider and Ruofan Liang. 2023. Operator Fusion in XLA: Analysis and Evaluation. arXiv:2301.13062 [cs.LG] https://arxiv.org/abs/2301.13062 [33] Stuart H. Sul, Simran Arora, Benjamin F. Spector, and Christopher Ré. 2025. ParallelKittens: Systematic and Practical Simplification of Multi-GPU AI Kernels. arXiv:2511.13940 [cs.DC] https://arxiv.org/abs/2511.13940 [34] Philippe Tillet, H. T. Kung, and David Cox. 2019. Triton: an intermediate lan-guage and compiler for tiled neural network computations. In Proceedings of the 3rd ACM SIGPLAN International Workshop on Machine Learning and Program-ming Languages (Phoenix, AZ, USA) (MAPL 2019) . Association for Computing Machinery, New York, NY, USA, 10–19. https://doi.org/10.1145/3315508.3329973 [35] Guibin Wang, YiSong Lin, and Wei Yi. 2010. Kernel Fusion: An Effective Method for Better Power Efficiency on Multithreaded GPU. In 2010 IEEE/ACM Int’l Con-ference on Green Computing and Communications and Int’l Conference on Cyber, Physical and Social Computing . 344–350. https://doi.org/10.1109/GreenCom-CPSCom.2010.102 [36] Guanhua Wang, Chengming Zhang, Zheyu Shen, Ang Li, and Olatunji Ruwase. 2024. Domino: Eliminating Communication in LLM Training via Generic Tensor Slicing and Overlapping. arXiv:2409.15241 [cs.DC] https://arxiv.org/abs/2409. 15241 [37] Laura Wang, Sijia Chen, Bert Maher, Joe Isaacson, Lu Fang, Wenyuan Chi, Jie Liu, Alec Hammond, Zacharias Fisches, Mark Saroufim, Warren Hunt, Richard Li, Jacob Kahn, Emad El-Haraty, Ajit Mathews, and the PyTorch Team at Meta. 2025. KernelFalcon: Autonomous GPU Kernel Generation via Deep Agents. PyTorch Blog. https://pytorch.org/blog/kernelfalcon-autonomous-gpu-kernel-generation-via-deep-agents/ [38] Anjiang Wei, Tianran Sun, Yogesh Seenichamy, Hang Song, Anne Ouyang, Azalia Mirhoseini, Ke Wang, and Alex Aiken. 2025. Astra: A Multi-Agent System for GPU Kernel Performance Optimization. arXiv:2509.07506 [cs.DC] https: //arxiv.org/abs/2509.07506 [39] William Won, Taekyung Heo, Saeed Rashidi, Srinivas Sridharan, Sudarshan Srinivasan, and Tushar Krishna. 2023. ASTRA-sim2.0: Modeling Hierarchical Networks and Disaggregated Systems for Large-model Training at Scale. In 2023 IEEE International Symposium on Performance Analysis of Systems and Software (ISPASS) . 283–294. https://doi.org/10.1109/ISPASS57527.2023.00035 [40] Zijian Zhang, Rong Wang, Shiyang Li, Yuebo Luo, Mingyi Hong, and Caiwen Ding. 2025. CudaForge: An Agent Framework with Hardware Feedback for CUDA Kernel Optimization. arXiv:2511.01884 [cs.LG] https://arxiv.org/abs/2511.01884 [41] Chenggang Zhao, Shangyan Zhou, Liyue Zhang, Chengqi Deng, Zhean Xu, Yuxuan Liu, Kuai Yu, Jiashi Li, and Liang Zhao. 2025. DeepEP: an efficient expert-parallel communication library. https://github.com/deepseek-ai/DeepEP. [42] Lianmin Zheng, Chengfan Jia, Minmin Sun, Zhao Wu, Cody Hao Yu, Ameer Haj-Ali, Yida Wang, Jun Yang, Danyang Zhuo, Koushik Sen, Joseph E. Gonzalez, and Ion Stoica. 2020. Ansor: Generating High-Performance Tensor Programs for Deep Learning. In 14th USENIX Symposium on Operating Systems Design and Implementation (OSDI 20) . USENIX Association, 863–879. https://www.usenix. org/conference/osdi20/presentation/zheng [43] Size Zheng, Wenlei Bao, Qi Hou, Xuegui Zheng, Jin Fang, Chenhui Huang, Tianqi Li, Haojie Duanmu, Renze Chen, Ruifan Xu, Yifan Guo, Ningxin Zheng, Ziheng Jiang, Xinyi Di, Dongyang Wang, Jianxi Ye, Haibin Lin, Li-Wen Chang, Liqiang Lu, Yun Liang, Jidong Zhai, and Xin Liu. 2025. Triton-distributed: Program-ming Overlapping Kernels on Distributed AI Systems with the Triton Compiler. arXiv:2504.19442 [cs.DC] https://arxiv.org/abs/2504.19442 [44] Size Zheng, Jin Fang, Xuegui Zheng, Qi Hou, Wenlei Bao, Ningxin Zheng, Ziheng Jiang, Dongyang Wang, Jianxi Ye, Haibin Lin, et al . 2025. Tilelink: Generating ef-ficient compute-communication overlapping kernels using tile-centric primitives. 
+
+arXiv preprint arXiv:2503.20313 (2025). [45] Kan Zhu, Yufei Gao, Yilong Zhao, Liangyu Zhao, Gefei Zuo, Yile Gu, Dedong Xie, Tian Tang, Qinyu Xu, Zihao Ye, Keisuke Kamahori, Chien-Yu Lin, Ziren Wang, Stephanie Wang, Arvind Krishnamurthy, and Baris Kasikci. 2025. NanoFlow: towards optimal large language model serving throughput. In Proceedings of the 19th USENIX Conference on Operating Systems Design and Implementation 
+
+(Boston, MA, USA) (OSDI ’25) . USENIX Association, USA, Article 41, 17 pages. 
+
+## A Static Analysis Example 
+
+Listing 1 shows a simplified host-driven MoE pipeline following the DeepSeek-V3 dispatch–compute–combine pattern. Two ncclAlltoAll 
+
+calls bracket an expert-compute phase: the first dispatches quan-tized tokens to remote experts, the second returns the processed results. All communication is host-driven and strictly sequential— no overlap with compute is possible. 
+
+Listing 1: Simplified host-driven MoE pipeline (input to the static analyzer).                                                                                                                          
+
+> 1void run_moe ( int rank , int nranks , ncclComm_t comm ) {
+> 2cudaStream_t stream ;
+> 3cudaStreamCreate (& stream );
+> 45// ---Buffers ( cudaMalloc , not device - comm compatible ) ---
+> 6int8_t * d_quant_send , * d_quant_recv ;
+> 7float * d_expert_out , * d_final_out ;
+> 8cudaMalloc (& d_quant_send , chunk_bytes );
+> 9cudaMalloc (& d_quant_recv , chunk_bytes );
+> 10 cudaMalloc (& d_expert_out , out_bytes );
+> 11 cudaMalloc (& d_final_out , out_bytes );
+> 12 13 // ---Quantize tokens ---
+> 14 quantize <<< grid , block , 0, stream > > >(
+> 15 d_input , d_quant_send , d_scales , num_tokens , HIDDEN );
+> 16 17 // ---Dispatch : host - driven AlltoAll ( int8 ) ---
+> 18 ncclAlltoAll ( d_quant_send , d_quant_recv ,
+> 19 chunk_elems , ncclInt8 , comm , stream );
+> 20 cudaStreamSynchronize ( stream );
+> 21 22 // ---Expert compute ---
+> 23 dequantize <<< grid , block , 0, stream > > >(
+> 24 d_quant_recv , d_deq , d_scales , num_tokens , HIDDEN );
+> 25 gemm <<< grid , block , 0, stream > > >(
+> 26 d_deq , d_W1 , d_gemm1 , tokens , GEMM1_DIM , HIDDEN );
+> 27 swiGLU <<< grid , block , 0, stream > > >(
+> 28 d_gemm1 , d_swiglu , tokens , INTER_DIM );
+> 29 gemm <<< grid , block , 0, stream > > >(
+> 30 d_swiglu , d_W2 , d_expert_out , tokens , HIDDEN , INTER_DIM );
+> 31 32 // ---Combine : host - driven AlltoAll (float )---
+> 33 ncclAlltoAll ( d_expert_out , d_final_out ,
+> 34 chunk_elems , ncclFloat , comm , stream );
+> 35 cudaStreamSynchronize ( stream );
+> 36 }
+
+The static analyzer processes Listing 1 and produces the com-munication dependency graph shown in Listing 2. For each NCCL collective, the graph identifies the buffer operands, their allocation method (flagging cudaMalloc buffers that will need migration to 
+
+ncclMemAlloc for device-initiated communication), and the pro-ducer/consumer kernels—establishing the data-flow context that subsequent pipeline steps use to determine transformation targets. 
+
+Listing 2: Communication dependency graph produced by the static analyzer for Listing 1.                                                                                                                                                 
+
+> 1Communication Graph
+> 2Node 1: ncclAlltoAll ( line 19)
+> 3Stream : stream
+> 4Count : chunk_elems , Datatype : ncclInt8
+> 56Send buffer :d_quant_send
+> 7Allocated : cudaMalloc ( line 8) [ needs ncclMemAlloc ]
+> 8Produced by : quantize < < <... > > > ( line 15)
+> 9Recv buffer :d_quant_recv
+> 10 Allocated : cudaMalloc ( line 9) [ needs ncclMemAlloc ]
+> 11 Consumed by : dequantize < < <... > > > ( line 24)
+> 12 13 Device - side transformation :
+> 14 Pattern : AlltoAll --rank rsends sendbuf [ peer * chunk ]
+> 11 15 to peer 'srecvbuf [r* chunk ] +local self - copy
+> 16 Buffers needing ncclMemAlloc : d_quant_send , d_quant_recv
+> 17 18 Node 2: ncclAlltoAll ( line 34)
+> 19 Stream : stream
+> 20 Count : chunk_elems , Datatype : ncclFloat
+> 21 22 Send buffer :d_expert_out
+> 23 Allocated : cudaMalloc ( line 10) [ needs ncclMemAlloc ]
+> 24 Produced by : gemm < < <... > > > ( line 30)
+> 25 Recv buffer :d_final_out
+> 26 Allocated : cudaMalloc ( line 11) [ needs ncclMemAlloc ]
+> 27 28 Device - side transformation :
+> 29 Pattern : AlltoAll --rank rsends sendbuf [ peer * chunk ]
+> 30 to peer 'srecvbuf [r* chunk ] +local self - copy
+> 31 Buffers needing ncclMemAlloc : d_expert_out , d_final_out
+> 32 33 Execution Order
+> 34 run_moe : quantize < < <... > > > [ compute ]
+> 35 -> ncclAlltoAll [ communicate ]
+> 36 -> dequantize < < <... > > > [ compute ]
+> 37 -> gemm < < <... > > > [ compute ]
+> 38 -> swiGLU < < <... > > > [ compute ]
+> 39 -> gemm < < <... > > > [ compute ]
+> 40 -> ncclAlltoAll [ communicate ]
+
+## B Novelty Filtering 
+
+Novelty Filtering. To prevent population collapse to near-identical programs, the search engine applies embedding-based novelty fil-tering. Each candidate’s code is embedded via a neural code encoder, and candidates whose cosine similarity to any existing database entry exceeds a configurable threshold are rejected and resampled. This mechanism, combined with the multi-island structure and MAP-Elites archive, maintains structural diversity throughout the search and prevents the optimizer from repeatedly proposing minor lexical variants of the current best. 
+
+## C Meta-Summarizer 
+
+The meta-summarizer is a periodic LLM-driven analysis module that extracts optimization patterns from accumulated evolution history and injects them back into the search as actionable recom-mendations. Every 𝑘 generations, it executes a three-step pipeline: (i) summarize the most recent batch of candidates—their scores, mutation types, architectural choices, and evaluation feedback— into a concise digest; (ii) update a persistent global scratchpad that tracks which strategies have been attempted, which succeeded, and which failed across the full evolution history; and (iii) recom-mend a ranked set of concrete optimization directions for the next generation, grounded in the accumulated evidence. These recommendations are injected into the system prompt con-sumed by the LLM mutation operator, providing generation-over-generation learning without modifying the optimizer’s architecture or search parameters. The meta-summarizer enables the search to develop an evolving understanding of what works for a specific workload and hardware target: early recommendations may suggest exploring different fusion levels, while later recommendations— informed by observing that multi-stream overlap consistently out-performs full fusion for a particular communication pattern—may redirect effort toward refining that specific strategy. This closed-loop meta-learning distinguishes the slow-path agent from static evolutionary code search: the mutation operator’s effective behav-ior adapts over the course of evolution based on empirical evidence rather than fixed heuristics.
