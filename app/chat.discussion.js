@@ -37,6 +37,11 @@ window.PrivateDiscussionChat = (function () {
   // 从 secret.private 解密结果中生成可用的 Chat 模型列表
   const getChatLLMConfig = () => {
     const secret = window.decoded_secret_private || {};
+    const utils = window.DPRLLMConfigUtils || {};
+    if (typeof utils.resolveChatModels === 'function') {
+      return utils.resolveChatModels(secret);
+    }
+
     const chatList = Array.isArray(secret.chatLLMs) ? secret.chatLLMs : [];
     const models = [];
     chatList.forEach((item) => {
@@ -46,8 +51,6 @@ window.PrivateDiscussionChat = (function () {
       item.models.forEach((m) => {
         const name = (m || '').trim();
         if (!name || !apiKey || !baseUrl) return;
-        // 仅保留 Gemini 系列模型，其他模型不出现在私人研讨区下拉列表中
-        if (!name.toLowerCase().startsWith('gemini-')) return;
         models.push({
           name,
           apiKey,
@@ -992,6 +995,12 @@ window.PrivateDiscussionChat = (function () {
     const endpoint = (() => {
       const raw = (modelEntry && modelEntry.baseUrl ? modelEntry.baseUrl : '').trim();
       if (!raw) return '';
+      if (
+        window.DPRLLMConfigUtils &&
+        typeof window.DPRLLMConfigUtils.buildChatCompletionsEndpoint === 'function'
+      ) {
+        return window.DPRLLMConfigUtils.buildChatCompletionsEndpoint(raw);
+      }
       if (raw.includes('/chat/completions')) return raw;
       const normalized = raw.replace(/\/+$/, '');
       if (/\/v\d+$/i.test(normalized)) {
