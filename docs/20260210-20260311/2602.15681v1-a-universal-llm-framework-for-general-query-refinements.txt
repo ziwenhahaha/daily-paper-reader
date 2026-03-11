@@ -1,0 +1,959 @@
+Title: A universal LLM Framework for General Query Refinements
+
+URL Source: https://arxiv.org/pdf/2602.15681v1
+
+Published Time: Wed, 18 Feb 2026 01:57:04 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# A universal LLM Framework for General Query Refinements 
+
+# Eldar Hacohen 
+
+Bar-Ilan University Ramat Gan, Israel eldar.hacohen@live.biu.ac.il 
+
+# Yuval Moskovitch 
+
+Ben-Gurion University of the Negev Beersheba, Israel yuvalmos@bgu.ac.il 
+
+# Amit Somech 
+
+Bar-Ilan University Ramat Gan, Israel somecha@cs.biu.ac.il 
+
+## Abstract 
+
+Numerous studies have explored the SQL query refinement problem, where the objective is to minimally modify an input query so that it satisfies a specified set of constraints. However, these works typi-cally target restricted classes of queries or constraints. We present 
+
+OmniTune , a general framework for refining arbitrary SQL queries using LLM-based optimization by prompting (OPRO). OmniTune 
+
+employs a two-step OPRO scheme that explores promising refine-ment subspaces and samples candidates within them, supported by concise history and skyline summaries for effective feedback. Experiments on a comprehensive benchmark demonstrate that Om-niTune handles both previously studied refinement tasks and more complex scenarios beyond the scope of existing solutions. 
+
+## 1 Introduction 
+
+The problem of SQL query refinement has been studied in previous work [ 17 , 23 , 37 , 42 , 46 , 48 , 49 , 54 ], with the goal of minimally modi-fying a given query so that its results satisfy predefined constraints. Early work [ 46 ], for example, focuses on refining WHERE -clause predicates in conjunctive Select–Project–Join (SPJ) queries to meet 
+
+cardinality constraints, adjusting queries that return too few or too many tuples. More recent studies [ 17 , 42 , 54 ] consider constraints defined over specific subgroups in the query output. While effective for their specific target settings, existing ap-proaches typically assume fixed notions of structured constraints and refinement, and are often restricted to relatively simple query classes. For example, [ 42 ] considers only SPJ queries with cardinal-ity constraints, the work of [ 17 ] extends this setting to SPJ with an ORDER BY clause and considers cardinality constraints over sub-groups within the top-𝑘 results, and [ 54 ] consider range queries and are limited to the refinement of numerical predicates with con-straint over a single binary attribute. In practice, however, users may wish to refine a much broader range of queries—including those with GROUP BY clauses or subqueries—and may impose application-specific definitions of both constraints and refinement criteria. To illustrate this gap, we next consider an example of a group-by query refinement problem. 
+
+Example 1.1. In Middle-earth, the Knightly Order plans to launch a pilot continental scholarship program aimed at identifying and supporting young, promising warriors. To this end, the Order tasks its chief analyst, Galadriel, with reviewing the pool of applicants and proposing initial selection criteria for the program’s first cy-cle. These criteria include: (i) a minimum GPA threshold, (ii) an approved set of majors, and (iii) a minimum representation quota per participating region. 
+
+id gender region major GPA 1 F Shire Archery 3.7 2 M Rivendell Swordcraft 3.8 3 M Mordor Tactics 3.7 4 F Rohan Melee 3.7 5 M Erebor Scouting 3.8 
+
+· · · · · · · · · · · · · · · 
+
+9996 F Rohan Swordcraft 3.8 9997 F Khazad-dûm Stealth 3.6 9998 M Lothlórien Tactics 3.9 9999 F Shire Melee 3.6 10000 M Rohan Archery 3.5 
+
+Table 1: The Middle-earth Students dataset 𝐷 .
+
+SELECT region, avg(GPA), COUNT_IF(gender = F), COUNT(*) FROM MiddleEarth_Applicants WHERE GPA > 3.5 AND major IN ( 'Tactics ', 'Archery ')GROUP BY region HAVING COUNT(*) > 100 
+
+Figure 1: Initial Scholarship Query 𝑄 
+
+Senior leadership further specifies two program-level constraints that must be satisfied by any proposed parameterization: (1) ge-ographic coverage—at least eight distinct regions must be repre-sented in the pilot cohort; and (2) gender balance—the overall ratio of female to male recipients should be approximately 1:1. Galadriel examines the applications database (see Table 1 for a sample), consisting of five attributes: ID, gender, region, major, and grade point average (GPA). She issues an initial SQL query 1, as depicted in Figure 1, representing an intuitively suitable criteria: GPA threshold of 3.5, majors are Tactics and Archery , and minimum region-quota of 100 students. Galadriel now examines the results (see Table 2); unfortunately, none of the constraints are satisfied: (1) The initial scholarship design includes only 5 regions, fewer than the required 8. (2) The total number of female students is 170 , out of 632 which is significantly below the required ratio of 0.5.Consequently, Galadriel needs to refine the selection criteria in order to meet the stated constraints. □
+
+Unfortunately, even the simple query of the example above is not supported by existing query refinement frameworks [ 17 , 42 ,46 , 54 ], as none support the refinement of group-by queries with predicates in the HAVING clause, as well as free-form constraints. Addressing this would require to formally define the refinement problem, design a constraint satisfaction framework, and explore    
+
+> 1Note that the function COUNT_IF is not supported in all databases, yet can be easily implemented in native SQL: COUNT(CASE gender=F THEN 1 ELSE 0 END;) .1
+> arXiv:2602.15681v1 [cs.DB] 17 Feb 2026 Eldar Hacohen, Yuval Moskovitch, and Amit Somech
+
+adaptations of existing solutions to support these query settings. Alternatively, refining the query manually can be a tedious and repetitive task. To this end, we present a universal framework for SQL query refinement problems. Given a database 𝐷 and starter query 𝑄 , as well as notions for refinement distance and constraints (represented as Python functions), our framework iteratively seeks a refined query that is as close as possible to 𝑄 while (approximately) satisfying the constraints. Our solution builds on the optimization-by-prompting (OPRO) paradigm [ 21 , 62 ], where an LLM is iteratively prompted to propose candidate refinements based on a textual specification of the task, a description of the search domain, and the history of past candi-dates. However, as we show empirically, a direct application of this paradigm performs poorly, due to the vast combinatorial search space and the long, low-information interaction histories that fail to effectively guide subsequent proposals. We therefore design a dedicated two-step OPRO scheme for the query refinement prob-lem. First, the LLM selects a promising refinement subspace that aggregates many potential refinements. Then, a subsequent LLM samples individual refinements that aim to satisfy the constraints while minimizing the distance from the original query 𝑄 .We then design OmniTune , an efficient prototype system that instantiates our query-refinement OPRO scheme in practice. Omni-Tune addresses several core challenges, including representing an exponentially large space of refinement subspaces without material-ization, constructing concise, query-dependent textual descriptions of the database and search domain, and providing informative yet compact guidance to LLM-based optimizers. At a high level, OmniTune operates in two phases: (1) a light-weight pre-processing phase that derives tailored representations of the database and refinement domain, and (2) an optimization loop that alternates between selecting promising refinement subspaces and sampling concrete refinement assignments via two specialized LLM modules. Throughout optimization, OmniTune maintains a skyline of candidate assignments that captures the best observed trade-offs between query distance and constraint satisfaction; this skyline serves primarily as a multi-objective signal that guides both subspace selection and assignment generation, and additionally enables an effective early-stopping mechanism when the skyline stabilizes across iterations. Our empirical evaluation demonstrates the effectiveness of our framework across a wide range of query refinement tasks: (i) Top-
+
+𝑘 queries with group-representation constraints [ 17 ], (ii) range queries with group-ratio constraints [54], (iii) diversity-aware SPJ queries [ 42 ], and (iv) complex queries beyond the scope of prior ded-icated approaches. We compare OmniTune against strong state-of-the-art LLMs, including OpenAI GPT-5-Thinking [50] and Google Gemini 2.5 Flash-Thinking [ 24 ]. Our results show that OmniTune 
+
+achieves performance close to that of specialized refinement so-lutions on their native problem classes, while substantially out-performing LLM-based baselines and extending effective query refinement to previously unsupported settings. We presented an early prototype of OmniTune [31 ], comprising two components: a wizard that translates natural-language spec-ifications into formal query refinement problems, and an initial optimization engine. This work focuses on the latter, which we substantially extend and evaluate.                   
+
+> region Avg. GPA Count_if(gender=F) Count(*)
+> Rivendell 3.9 50 150 Gondor 3.7 33 125 Lothlórien 3.8 32 120 Mordor 3.8 34 135 Erebor 3.7 21 105
+
+Table 2: Query output 𝑄 (𝐷 )
+
+Contributions & Paper Outline. 
+
+• We formulate the Universal Query Refinement problem, a universal query refinement problem that provides a unified ab-straction encompassing prior refinement settings and a wide range of new, previously unsupported scenarios (Section 2). 
+
+• We devise a dedicated LLM-based optimization-by-prompting (OPRO) scheme for query refinement, addressing the challenges of large, combinatorial refinement spaces via structured subspace selection and assignment sampling (Section 3). 
+
+• We design OmniTune , an end-to-end prototype instantiating our OPRO scheme, including query-conditioned database represen-tations and skyline-based multi-objective (Section 4). 
+
+• We empirically evaluate OmniTune on a diverse collection of query refinement tasks adopted from prior work [ 17 , 42 , 54 ], as well as on more complex query patterns beyond the scope of existing solutions. The results show that OmniTune achieves performance close to specialized approaches while substantially outperforming strong LLM baselines (Section 5). We survey related work in Section 6 and conclude in Section 7. 
+
+## 2 Preliminaries and Problem Definition 
+
+In this section, we provide an overview of the Universal Query Refinement problem. Notations are summarized in Table 3. 
+
+Refinable predicates, supported queries. We build on the notion of query refinement introduced in [ 46 ]. Given a query 𝑄 over a dataset 𝐷 , a refinement of 𝑄 modifies one or more of its refinable 
+
+predicates. We call a predicate in an SQL query refinable if it is of the form ⟨𝐴 op 𝐶 ⟩, where 𝐴 is an attribute in 𝐷 , op is a comparison operator, and 𝐶 is a literal constant. The attribute 𝐴 may be either a 
+
+base (schema-native) attribute or a derived attribute, such as one ob-tained via aggregation or column-wise computation. If 𝐴 is numeric ,then op ∈ { <, ≤, =, ≥, >} and 𝐶 ∈ R. If 𝐴 is categorical , then op = IN 
+
+and 𝐶 denotes a set of categorical values, such that 𝐶 ⊆ Dom (𝐴 ),where Dom (𝐴 ) is the set of distinct values appearing in column 
+
+𝐷 (𝐴 ). We consider general SQL queries containing WHERE and/or 
+
+HAVING clauses, with at least one refinable predicate. Let 𝑃𝑟𝑒𝑑𝑠 (𝑄 )
+
+denote the set of all refinable predicates in a query 𝑄 . For each predicate 𝑝 ∈ 𝑃𝑟𝑒𝑑𝑠 (𝑄 ), we write 𝑝.𝐴 , 𝑝. op , and 𝑝.𝐶 to denote its attribute, operator, and literal(s), respectively. 
+
+Example 2.1. Consider again the dataset 𝐷 shown in Table 1 and the query 𝑄 in Figure 1. The set of refinable predicates in 𝑄 
+
+consists of three predicates. The first two appear in the WHERE clause: 
+
+𝑝 1 = ⟨GPA , >, 3.5⟩ and 𝑝 2 = ⟨major , IN , {Tactics , Archery }⟩ . The third predicate appears in the HAVING clause and is given by 𝑝 3 =
+
+⟨COUNT(*) , >, 100 ⟩. □                                                     
+
+> 2A universal LLM Framework for General Query Refinements
+> Notation Description
+> 𝐷 ;𝐴 ;𝐷 (𝐴 )Database; Attribute; Column (att. 𝐴 projected on 𝐷 ).
+> 𝑄 ;𝑄 (𝐷 )Query; Query results over 𝐷 .
+> 𝑃𝑟𝑒𝑑𝑠 (𝑄 )The set of refinable predicates in 𝑄 .
+> 𝑝 =⟨𝑝.𝐴, 𝑝.𝑜𝑝, 𝑝.𝐶 ⟩Attribute, operator and constant of predicate 𝑝 .Dom (𝐴 )Set of all distinct values in column 𝐷 (𝐴 ).
+> 𝜃 ;𝜃 0A refinement assignment for 𝑄 ; Baseline assignment.
+> 𝜃 ∗A minimal-distance 𝜀 -satisfying refinement assignment.
+> S ( Q ) The space of all individual assignments for query 𝑄 .
+> Θ;S+(𝑄 )Refinement subspace; Domain of all subspaces for 𝑄 .
+> 𝜓, 𝜀 Output constraints deviation function, tolerance thresh.
+> Δ𝜃 0(or simply Δ)Refinement distance function.
+> 𝑇 ;𝐾 Horizon (# of iterations); # of samples per iteration.
+> H;H𝑡 Refinement history; History at iteration 𝑡 .
+> H [ Θ𝑡 ]Local refinements history within subspace Θ𝑡 .
+
+Table 3: Notations Summary 
+
+Query refinement assignment. Following [ 46 ], a valid refinement consists of modifying the literal(s) in 𝑝.𝐶 for each predicate 𝑝 ∈
+
+𝑃𝑟𝑒𝑑𝑠 (𝑄 ). For predicates over numerical attributes, refinement is performed by directly altering the value in 𝑝.𝐶 , whereas for cate-gorical predicates, refinement is achieved by adding to or removing items from the set specified by 𝑝.𝐶 .A refinement assignment is denoted by 𝜃 = {𝜃 .𝑝 | 𝑝 ∈ 𝑃𝑟𝑒𝑑𝑠 (𝑄 )} ,where each component 𝜃 .𝑝 specifies a (possibly unchanged) refined literal 𝑝.𝐶 ′ for predicate 𝑝 . We denote by 𝑄 𝜃 the refined query obtained by applying assignment 𝜃 to 𝑄 , and by 𝜃 0 the baseline 
+
+assignment, corresponding to the original query, that is, 𝜃 0.𝑝 = 𝑝.𝐶 
+
+for all 𝑝 ∈ 𝑃𝑟𝑒𝑑𝑠 (𝑄 ).
+
+Example 2.2. Consider again the database 𝐷 and query 𝑄 , as de-picted in Table 1 and Figure 1 (resp.). The baseline assignment 𝜃 0 =
+
+{3.5, (Tactics , Archery ), 100 }, corresponding with the original query 𝑄 . A new refinement assignment is thus 𝜃 ′ = {3.6, (Tactics ), 80 },which represents the following refined query 𝑄 𝜃 ′ (modifications in 
+
+bold ):      
+
+> SELECT region, AVG(GPA), COUNT_IF(gender = F), count(*) FROM Students_Performance WHERE GPA > 3.6 AND major IN ('Tactics ')
+> GROUP BY region HAVING COUNT(*) > 80 □
+
+In the remainder of the paper, we use ’refinement’ to denote both the assignment 𝜃 and the resulting query 𝑄 𝜃 interchangeably. We further denote the set of all possible assignments for 𝑄 by S( 𝑄 ).
+
+Query output constraints. Expanding the line of work on query refinement for output constraint satisfaction [ 17 , 18 , 42 , 43 , 54 ], we consider general constraints over the output. Since achieving perfect satisfaction may be infeasible [ 17 ], we adopt the notion of satisfaction deviation, relax the goal of exact satisfaction, and allow for approximate satisfaction. To this end, we define the output constraints as a function that measures the degree of violation of a query’s result with respect to the constraints for a given database. 
+
+Definition 2.3 (Constraint deviation function). Given a refinement assignment 𝜃 , a constraints deviation function 𝜓 : S( 𝑄 ) → [ 0, 1]
+
+depicts the degree of violation of the output of the refined query 
+
+𝑄 𝜃 (𝐷 ). Given a tolerance 𝜀 ∈ [ 0, 1), we say that an assignment 𝜃 is 
+
+𝜀 -satisfying, if 𝜓 (𝜃 ) ≤ 𝜀 .By formulating constraints as functions, we enable the expres-sion of any general constraint on the query output 𝑄 (𝐷 ).
+
+Example 2.4. Recall the constraints specified in Example 1.1: (i) A 1:1 female-to-male ratio ; and (ii) At least 8 distinct regions are represented . We first define a deviation function for the geographic coverage constraint. This function counts the number of regions returned by 𝑄 𝜃 (𝐷 ) and returns the normalized slack when fewer than 8 regions are selected, and 0 otherwise: 
+
+𝑓 1 (𝜃 ) =
+
+
+
+8 − | 𝑄 𝜃 (𝐷 )| 
+
+8 , if |𝑄 𝜃 (𝐷 )| < 8,
+
+0, otherwise. The gender-balance deviation is measured by the (normalized) distance of the fraction of female students from the desired value 
+
+1/2, aggregated across all regions: 
+
+𝑓 2 (𝜃 ) = 2 · SUM(#Female) in 𝑄 𝜃 (𝐷 )
+
+SUM(Count(*)) in 𝑄 𝜃 (𝐷 ) − 12 .
+
+Using 𝑓 1 and 𝑓 2, we define the overall constraint deviation func-tion 𝜓 as their average: 
+
+𝜓 (𝜃 ) = 12
+
+ 𝑓 1 (𝜃 ) + 𝑓 2 (𝜃 ).
+
+Consider again the baseline assignment 𝜃 0 corresponding to the original query 𝑄 (Figure 1) and its output 𝑄 (𝐷 ), shown in Table 2. The query result contains 5 distinct regions, and the ratio of female students among all selected students is 0.267 . Therefore, 
+
+𝜓 (𝜃 0) = 12
+
+  8−58 + 2 · | 0.267 − 0.5| = 12 (0.375 + 0.466 ) = 0.421 .
+
+If 𝜀 is set to 0.1, then 𝜃 0 is not 𝜀 -satisfying. □
+
+In our solution, as described in Section 3, the constraint deviation function is provided to OmniTune as a Python code (see examples in our Github repository [29]). 
+
+Refinement distance. The query refinement problem aims to make 
+
+minimal modifications to the query to satisfy the constraints. mini-mality may be defined in various ways, such as based on the set of output tuples of the queries [ 17 , 54 ], known as outcome-based dis-tance [ 17 ], or by the semantic distance in query predicates [ 17 , 42 ], referred to as predicate-based distance [ 17 ]. It may also involve a combination of both approaches. To keep our framework general, we use a refinement distance function Δ𝜃 0,𝐷 : S( 𝑄 ) → R≥0 that, given a refinement 𝜃 ∈ S( 𝑄 ), returns a value in R≥0 that reflects the distance of 𝜃 from 𝜃 0 (possibly with respect to 𝐷 , as in [ 54 ]). For brevity, when unambiguous, we write Δ(𝜃 ) in place of Δ𝜃 0,𝐷 (𝜃 ).
+
+Example 2.5. The work of [ 17 ] defined a predicate-based dis-tance where the distance is measured with respect to each refinable predicate in the query. For a numerical predicate, the distance is defined as |𝑝.𝐶 −𝑝.𝐶 ′ | 
+
+> 𝑝.𝐶
+
+, where 𝑝.𝐶 ′ is the constant value of the predi-cate 𝑝 in the refined query. The difference is normalized to show deviation from the original value of 𝑝 . For categorical attributes, the distance is measured using Jaccard distance over the sets 𝑝.𝐶 
+
+and 𝑝.𝐶 ′. The overall distance is then the sum of the per-predicate distance over all the refinable attributes. Consider again the re-finement assignment 𝜃 ′ = {3.6, [Tactics ], 80 } and the baseline 
+
+> 3Eldar Hacohen, Yuval Moskovitch, and Amit Somech
+
+assignment 𝜃 0 = {3.5, [Tactics , Archery ], 100 }, described in Ex-ample 2.2. Using a predicate-based Δ(𝜃 ′) we obtain 
+
+Δ(𝜃 ′) = |3.6 − 3.5|
+
+3.5 +  1− 12
+
+ + |100 − 80 |
+
+100 = 0.029 +0.5+0.2 = 0.729 
+
+We are now ready to formally define the Universal Query Refinement problem. 
+
+Problem 1 (Universal Query Refinement ). Given a database 
+
+𝐷 , a query 𝑄 with baseline assignment 𝜃 0, a constraint-deviation function 𝜓 with tolerance threshold 𝜀 , and a query distance measure 
+
+Δ𝜃 0,𝐷 , we define an optimal refinement, denoted 𝜃 ∗, as: 
+
+𝜃 ∗ = arg min      
+
+> 𝜃 ∈ S ( 𝑄 ):𝜓 (𝜃 ) ≤ 𝜀
+
+Δ𝜃 0,𝐷 𝑓 (𝜃 ).
+
+As discussed above, our formulation subsumes a wide range of prior work (e.g., [ 17 , 42 , 54 ]), each of which addresses a restricted variant of the problem (see Section 6), while also enabling many previously unsupported cases involving arbitrary constraints, re-finement distance measures, and query types. We refer to a specific instantiation of the problem as a tuple 
+
+QRP = ⟨𝑄, 𝐷,𝜓, 𝜀, Δ⟩
+
+We next present an OPRO scheme for solving any instance of the universal query refinement problem, followed by the OmniTune 
+
+architecture that instantiates this approach. As shown in our ex-perimental evaluation, our approach achieves performance close to problem-specific solutions, while naturally extending to a much broader class of instances covered by the universal formulation. 
+
+## 3 OPRO Scheme for Query Refinement 
+
+Our solution builds on the optimization-by-prompting (OPRO) par-adigm [ 21 , 62 ], a recent and promising approach for general black-box optimization. In OPRO, an LLM-based agent is given a natural-language specification of the objective and search domain, and iteratively proposes candidate solutions. Each selection is condi-tioned on the full interaction history, enabling the agent to adapt its decisions based on previously explored candidates and their evaluated outcomes. We next describe a naïve, straightforward instantiation of the OPRO paradigm, followed by our dedicated, two-step OPRO scheme for the Universal Query Refinement problem. 
+
+Naïve OPRO for Query Refinement. Given an instance of the query refinement problem QRP = ⟨𝑄, 𝐷,𝜓, 𝜀, Δ⟩, the naïve approach repeatedly prompts the LLM to modify the query 𝑄 so as to produce an optimal refinement assignment 𝜃 ∗. For a fixed horizon of 𝑇 
+
+iterations, at each iteration 1 ≤ 𝑡 ≤ 𝑇 , the LLM is asked to generate a new candidate refinement assignment 𝜃 𝑡 , while being provided with the complete interaction history of prior attempts, including both distance and constraint-deviation scores, namely, 
+
+{⟨ 𝜃 𝑡 ′ , Δ(𝜃 𝑡 ′ ),𝜓 (𝜃 𝑡 ′ )⟩} 𝑡 ′ <𝑡 𝑡 ′=1 .
+
+However, as demonstrated in our experimental evaluation (Sec-tion 5), this naïve OPRO approach is largely ineffective. The underly-ing reasons are twofold: (i) the combinatorial size of the refinement search space, and (ii) the growing history of previous attempts, which, when presented in raw form, provides limited informative signal to guide subsequent refinements. We therefore propose a two-step OPRO scheme. In the first step, the agent selects a promising refinement subspace that contains multiple candidate assignments. In the second step, the agent sam-ples individual assignments from the selected subspace with the goal of identifying 𝜀 -satisfying refinements that minimize the query distance from the original query 𝑄 . We next formally define refine-ment subspaces and then present our OPRO scheme. 
+
+Refinement Subspace. A refinement subspace , denoted Θ, defines a range of assignments, by restricting the admissible values for each predicate in 𝑃𝑟𝑒𝑑𝑠 (𝑄 ). For predicates with numerical attributes, this restriction takes the form of an interval over the value domain, while for categorical attributes it is defined using set inclusion, following the partial-order formulation of [53]. 
+
+Definition 3.1 (Refinement Subspace). Given a query 𝑄 and data-base 𝐷 , a refinement subspace is a collection Θ = {Θ.𝑝 | 𝑝 ∈
+
+Preds (𝑄 )} , where each component Θ.𝑝 constrains the admissi-ble values for 𝑝.𝐶 . For numerical attributes, Θ.𝑝 is an interval contained in min (Dom (𝑝.𝐴 )) , max (Dom (𝑝.𝐴 )) . For categorical attributes, Θ.𝑝 is a set-inclusion range [𝐶 min , 𝐶 max ] with 𝐶 min ⊆
+
+𝐶 max ⊆ Dom (𝑝.𝐴 ).An assignment 𝜃 is compatible with a subspace Θ, if it assigns to each predicate a value that lies within the range permitted by that subspace. Namely, 𝜃 ∈ Θ ⇐⇒ 𝜃 .𝑝 ∈ Θ.𝑝 ∀𝑝 ∈ 𝑃𝑟𝑒𝑑𝑠 (𝑄 ).
+
+Example 3.2. Recall again from our running example, 𝑃𝑟𝑒𝑑𝑠 (𝑄 )
+
+contains three predicates over the GPA , major , and COUNT(*) at-tributes of query 𝑄 (see Figure 1). In Example 2.2 we examine two refinement assignments: 𝜃 0 = {3.5, (Tactics , Archery ), 100 }, and 
+
+𝜃 ′ = {3.6, (Tactics ), 80 }.Now, let us consider the follwoing refinement subspace :
+
+Θ = {[ 3.4, 3.7], [( Tactics ), (Tactics , Melee , Stealth )] , [70 , 120 ]} 
+
+See that 𝜃 ′ ∈ Θ, as 3.5 ∈ [ 3.4, 3.7], (Tactics ) ∈ [( Tactics ),
+
+(Tactics , Melee , Stealth )] , and 80 ∈ [ 70 , 120 ]; whereas 𝜃 0 ∉ Θ
+
+because (Tactics , Archery ) ⊈ (Tactics , Melee , Stealth ). □
+
+We denote the set of all possible refinements subspaces for query 
+
+𝑄 by S+ (𝑄 ).Building on the definition of refinement subspaces, we devise an OPRO scheme for the query refinement problem. Our two-step OPRO scheme is depicted in Algorithm 1. We next describe the inputs and algorithm steps: 
+
+Inputs. The system takes as input: (1) an instance of the Universal Query Refinement problem QRP = ⟨𝑄, 𝐷,𝜓, 𝜀, Δ⟩; (2) the set 
+
+S+ (𝑄 ), representing the domain of all refinement subspaces (we describe below how a concise textual representation of S+ (𝑄 ) is constructed without explicitly materializing it); and (3) the horizon 
+
+𝑇 , specifying the maximum number of iterations, and the number of assignments sampled from each subspace 𝐾 , as detailed below. 
+
+Initialization & History Management. As mentioned above, in our iterative OPRO scheme, we keep the history of previously chosen assignments. We use a key-value structure, denoted H
+
+(Line 1), in which the keys are unique subspaces Θ0, Θ1, . . . ; and the values are lists of all individual assignments examined thus far, that are compatible with each Θ ∈ H , along with their distance and satisfaction values. Namely, H [ Θ] = {⟨ 𝜃, Δ(𝜃 ),𝜓 (𝜃 )⟩ | 𝜃 ∈ Θ}. We 
+
+> 4A universal LLM Framework for General Query Refinements
+
+Algorithm 1: Two-Step OPRO Scheme for Query Refine-ment                                                                                        
+
+> Input: Query refinement instance Q R P =⟨𝑄, 𝐷,𝜓, 𝜀, Δ⟩;Refinement subspaces domain S+(𝑄 ); horizon 𝑇 ; samples per iteration 𝐾
+> Output: 𝜀 -satisfying assignment 𝜃 with min. refinement distance
+> 1H ← ∅ // Initialize refinement history
+> 2𝑆𝐴𝑇 ← ∅ // Initialize constraint-satisfying set
+> 3for 𝑡 =1to 𝑇 do
+> 4Θ𝑡 ← M 𝑠 ( S ( 𝑄 ),H) // Suggest subspace
+> 5if Θ𝑡 ∉Hthen
+> 6H [ Θ𝑡 ] ← ∅ // Initialize subspace-specific history
+> 7for 𝑘 =1to 𝐾 do
+> 8𝜃 𝑘 ← M 𝑎 (Θ𝑡 ,H [ Θ𝑡 ] ) // Suggest refinement
+> 9for Θ∈ H do // Update history
+> 10 if 𝜃 𝑘 ∈Θthen
+> 11 H [ Θ] ← H [ Θ] ∪ { 𝜃 𝑘 :(Δ(𝜃 𝑘 ) ) ,𝜓 (𝜃 𝑘 ) }
+> 12 if 𝜓 (𝜃 𝑘 ) ≤ 𝜀 then // If constraints are met
+> 13 𝑆𝐴𝑇 ←𝑆𝐴𝑇 ∪ { 𝜃 𝑘 }
+> 14 return arg min 𝜃 ∈𝑆𝐴𝑇 Δ(𝜃 )
+
+also initialize the set 𝑆𝐴𝑇 (Line 2), which will contain all 𝜀 -satisfying assignments, throughout the optimization process. 
+
+Subspace-Selection Step (LLM Call #1). At each iteration 𝑡 , we abstractly model the first step as an LLM call that selects the next 
+
+refinement subspace Θ𝑡 ∈ S + (𝑄 ). This call, denoted M𝑠 , takes as input the optimization history H (Line 4) and outputs a candidate subspace Θ𝑡 . In Section 4, we detail how this abstract call is instan-tiated in OmniTune by the SubspaceLM module, which provides the LLM with a concise, textual representation for S+ (𝑄 ) and H .
+
+Assignment-Sampling Step (LLM Call #2). Given the selected subspace Θ𝑡 , we issue 𝐾 consecutive LLM calls that sample individ-ual refinement assignments {𝜃 𝑘 ∈ Θ𝑡 }𝐾 𝑘 =1. We denote this abstract LLM call by M𝑎 (Line 8), where each call is conditioned on the subspace-specific history H [ Θ𝑡 ], which contains assignments pre-viously sampled from Θ𝑡 . In OmniTune , this call is instantiated by the AssignmentLM module (Section 4). After each call, the global history H is updated, such that each previously generated sub-space Θ ∈ H is appended with the currently sampled assignment 
+
+𝜃 𝑘 whenever 𝜃 𝑘 ∈ Θ (Lines 9–11). Any 𝜃 𝑘 that is 𝜀 -satisfying is appended to 𝑆𝐴𝑇 (Lines 12–13). 
+
+Termination & Return value. Finally, after 𝑇 iterations, we return the set of 𝜀 -satisfying assignments stored in 𝑆𝐴𝑇 that attain the minimum query distance from the baseline assignment 𝜃 0 (Line 14). We next describe the architecture of OmniTune , designed in accordance with Algorithm 1. The architecture incorporates several key components, including concise yet effective textual represen-tations of 𝐷 and S+ (𝑄 ), mechanisms for summarizing subspace-history information H [ Θ𝑡 ], skyline-based objective definitions for realistic optimization, and an early-stopping mechanism. 
+
+## 4 OmniTune Architecture 
+
+We designed OmniTune , an efficient system that implements the two-step OPRO scheme for query refinement, as described above. 
+
+OmniTune overcomes numerous challenges, such as producing concise textual representations for the database 𝐷 , subspace domain 
+
+S+ (𝑄 ), and history H , as well as introducing realistic objectives for the LLM calls, and early stopping mechanisms. 
+
+Workflow Overview. Figure 2 illustrates the overall architecture and execution flow of OmniTune . Given a query refinement prob-lem instance QRP = ⟨𝑄, 𝐷,𝜓, 𝜀, Δ⟩, OmniTune operates in two main phases. In the pre-processing phase, OmniTune constructs concise yet informative textual representations of the database 𝐷 ,tailored to the input query 𝑄 , as well as a representation of the refinement subspace domain S+ (𝑄 ), which serves as the search space for subspace generation. In the optimization loop phase, Om-niTune iteratively issues LLM calls via two specialized modules, in accordance with Algorithm 1: The SubspaceLM module generates a candidate refinement subspace Θ𝑡 , while the AssignmentLM module samples individual refinement assignments from Θ𝑡 . To guide this process, OmniTune maintains a compact summary of the interac-tion history H , which provides the SubspaceLM with high-level statistics over previously explored subspaces {Θ𝑡 ′ | 𝑡 ′ < 𝑡 }. In addi-tion, both modules are guided by skyline-based objectives derived from the set of previously observed assignments. Intuitively, the skyline maintains a set of high-quality assignments that represent the best trade-offs observed so far between query distance and constraint satisfaction. Finally, OmniTune employs a skyline-based early-stopping mech-anism that directly builds on this trade-off view: when the skyline remains unchanged for several consecutive iterations, indicating that no new assignment improves the current trade-offs between distance and satisfaction, the system halts and returns the best assignment found so far. We next elaborate on each part of the system. We start with the preprocessing phase and then describe in details the optimization loop modules. 
+
+## 4.1 Pre-processing phase 
+
+As mentioned above, in this phase, given the problem instance 
+
+QRP = ⟨𝑄, 𝐷,𝜓, 𝜀, Δ⟩, we first generate a concise description of the database 𝐷 and refinement subspace domain S+ (𝑄 ):
+
+1. 𝑄 -driven Database description. Producing an effective and concise database schema description is a well-recognized chal-lenge in LLM-based data management tasks, including text-to-SQL [ 35 , 59 ], LLM-based schema matching [ 44 ], and LLM-driven BI and analytics [ 33 ]. Overly long or exhaustive descriptions often degrade LLM performance (see, e.g., the context rot problem [ 40 ]), motivating the need for concise and focused task descriptions. To that end, rather than providing an exhaustive description of the entire database 𝐷 , we derive a concise, query-conditioned representation tailored to the given query refinement instance (see Figure 4a for an example). This representation includes only the tables and attributes that appear in the query 𝑄 . Specifically, for each table referenced in 𝑄 , we describe its primary and foreign keys, as well as the names and data types of the attributes used in 𝑄 . In addition, we provide summary statistics for each such attribute: for numeric columns, the mean, standard deviation, and quartile values; and for categorical columns, the prevalence of each category. 
+
+2. Description of the Subspace Domain S+ (𝑄 ). The goal in this component is to provide the SubspaceLM module with a com-pact yet expressive description of the refinement subspace domain               
+
+> 5Eldar Hacohen, Yuval Moskovitch, and Amit Somech Refinement
+> Subpace Θₜ
+> Assignment θₖ
+> Set of ε-Satisfying
+> Assignments SAT
+> Constraints Deviation
+> Function Ψ, Threshold ε
+> Subspace-Level
+> Summary of Hₜ
+> Subspace-Specific
+> History H[ Θₜ ]
+> Initial Query Q
+> SubspaceLM
+> AssignmentLM
+> Interaction History H
+> Refinement Distance
+> Function Δ
+> Database D
+> Minimal ε-Satisfying Assignment θ*
+> Q-Driven
+> Database Representation
+> Refinement Subspace
+> Domain S⁺(Q) LLM
+> Pre-Processing
+> Inputs Optimization Loop (Horizon T with K Assignments per Subspace)
+> Termination & Return
+> Value
+> Constraints &
+> Distance
+> Calculator
+> Constraints/Distance Skyline Set Sky(H)
+> Early
+> Stopping
+> User
+
+Figure 2: OmniTune Workflow & Architecture Subspace-specific history  H[Θₜ ] 
+
+> Instructions: Generate individual
+> assignments that
+> are likely to improve the current skyline Sky( H).
+
+Shared Context     
+
+> Subspace-Level Summary of H
+> Instructions: Propose a
+> refinement subspace likely to
+> yield assignments that may
+> improve the skyline Sky(H).
+
+AssignmentLM Prompt SubspaceLM Prompt     
+
+> Distance-Constraints
+> Skyline Set Sky( H)
+> Subspace Domain S ⁺(Q) Desc. Current Subspace Θₜ Desc.
+> Distance Δ, Constraints ψ
+> as Python Functions
+> Initial
+> Query Q
+> Q-derived
+> repr. of D
+
+Figure 3: Prompts Formulation 
+
+S+ (𝑄 ), from which refinement subspaces Θ𝑡 can be generated. Ex-plicitly materializing S+ (𝑄 ) is infeasible, as it contains all possible combinations of per-predicate value ranges and would far exceed the context limitations of current LLMs. Instead, we construct a concise characterization of S+ (𝑄 ) by specifying, for each refinable predicate 𝑝 ∈ 𝑃𝑟𝑒𝑑𝑠 (𝑄 ), the maximal admissible range of values for 𝑝.𝐶 . For base attributes appearing directly in the database 𝐷 , this process is straightforward: for nu-merical attributes, we compute the minimum and maximum values observed in the data, and for categorical attributes, we provide the set of distinct values. However, handling derived or computed 
+
+attributes—such as those appearing in a HAVING clause—poses a greater challenge. To address this case, we employ an LLM-assisted approach in which the model is prompted to generate auxiliary SQL queries that compute the minimum and maximum values of each derived field. For example, in our running scenario (Example 2.2), where the 
+
+HAVING clause includes the refinable predicate COUNT(*) > 100 ,the LLM produces the following query: 
+
+SELECT MIN(size), MAX(size) FROM (SELECT COUNT(*) AS size FROM MiddleEarth_Applicants GROUP BY region) 
+
+An example representation of S+ (𝑄 ) is depicted in Figure 4b We provide the exact prompt used in our implementation in [29]). 
+
+## 4.2 Optimization loop, prompt formulations 
+
+In accordance with Algorithm 1, the main optimization loop runs for a horizon of 𝑇 iterations. At each iteration 𝑡 , OmniTune invokes the 
+
+SubspaceLM module to generate a refinement subspace Θ𝑡 , and then issues 𝐾 calls to the AssignmentLM module to sample individual assignments from Θ𝑡 , while maintaining the interaction history H .We next describe the SubspaceLM and AssignmentLM modules, with a focus on the formulation of their respective prompts (see Figure 3 for illustration). In particular, we introduce two techniques that substantially enhance optimization performance, as demonstrated in our experimental evaluation (Section 5): (i) a skyline-based ob-jective, used in place of naïve instructions to generate the “best” subspace or assignment; and (ii) a concise, subspace-level summary of the history H , employed by the SubspaceLM module. In [ 29 ], we provide the exact prompt templates, as well as numerous example workflows of OmniTune .
+
+Shared information. The following items are included in both the SubspaceLM and AssignmentLM prompts: 
+
+1. Description of the instance. We begin with a brief, task-agnostic overview of the query refinement problem, then describe the input instance ⟨𝑄, 𝐷,𝜓, 𝜀, Δ⟩ as follows: The 𝑄 -derived represen-tation of the database 𝐷 , as described above, together with the query 
+
+𝑄 itself. In addition, the distance function Δ and the constraint-deviation function 𝜓 are provided as executable Python code. Code-based representations are widely regarded as particularly effective for LLM-based reasoning and instruction following [20]. 
+
+2. Skyline-based Objectives. Prior work has shown that clear, context-rich instructions can substantially improve zero-shot LLM performance across domains (e.g., [ 55 , 56 ]). However, in our setting, naively prompting an LLM to generate an “optimal” refinement subspace Θ𝑡 or assignment 𝜃 𝑘 proves ineffective (see Section 5). Existing OPRO solutions [ 62 ] typically instruct the LLM, at each iteration, to surpass the “best” solution obtained so far with re-spect to a single objective. In contrast, our setting is inherently multi-objective, as assignments must be 𝜀 -satisfying w.r.t. 𝜓 while simultaneously minimizing the distance Δ. To this end, we devise a skyline-based objective. Intuitively, a skyline [14 ] captures the set of “best” assignments by retaining only those for which no other assignment achieves both a smaller query distance Δ(𝜃 ) and a strictly better constraint devia-tion 𝜓 (𝜃 ). In our setting, all 𝜀 -satisfying assignments are treated as 
+
+> 6A universal LLM Framework for General Query Refinements
+
+equivalent with respect to constraint satisfaction, which we capture via the constraints-threshold deviation function 
+
+𝜓 𝜀 (𝜃 ) ≜ min {𝜓 (𝜃 ), 𝜀 }
+
+An assignment 𝜃 ∈ H is said to belong to the skyline set, denoted 
+
+𝜃 ∈ Sky (H ) , if and only if it is not dominated by any other assign-ment 𝜃 ′ ∈ H , that is, 
+
+𝜃 ∈ Sky (H ) ⇔  𝜃 ′ ∈ H :
+
+ Δ(𝜃 ′) < Δ(𝜃 ) ∧ 𝜓 𝜀 (𝜃 ′) ≤ 𝜓 𝜀 (𝜃 )
+
+∨  𝜓 𝜀 (𝜃 ′) < 𝜓 𝜀 (𝜃 ) ∧ Δ(𝜃 ′) ≤ Δ(𝜃 )
+
+An example skyline set is depicted in Figure 4c. We leverage the skyline set Sky (H ) when instructing the LLM in both stages of our procedure (see Figure 3): During subspace generation, the LLM is instructed to propose a refinement subspace that is likely to include assignments capable of entering the skyline . During assignment sam-pling, the LLM is instructed to generate an individual refinement assignment that could join the current skyline set The SubspaceLM prompt (LLM Call #1). Given the problem in-stance description and the current skyline, as introduced above, the LLM is instructed to propose a refinement subspace likely to yield assignments that may improve the skyline. Rather than providing the full interaction history H , we supply a concise yet informative 
+
+subspace-level summary (see Figure 4d for an example). Specifi-cally, for each previously explored subspace Θ𝑡 ′ with 𝑡 ′ < 𝑡 , we present aggregate statistics over the assignments sampled from that subspace, as recorded in H [ Θ𝑡 ′ ], including the total number of sampled assignments |H [ Θ𝑡 ′ ]| , as well as the median and standard deviation of their distance and constraint-deviation scores. 
+
+AssignmentLM Prompt (LLM Call #2). Given the refinement sub-space Θ𝑡 selected by the SubspaceLM module, the AssignmentLM 
+
+is invoked 𝐾 times to generate individual assignments 𝜃 𝑘 that are likely to improve the current skyline Sky (H 𝑡 ) where H𝑡 is the his-tory H at iteration 𝑡 . As in the subspace-generation step, providing the full history H is unnecessary; instead, the prompt includes only the subspace-specific history H [ Θ𝑡 ], containing assignments previously sampled from the current subspace. 
+
+Early stopping criteria. Finally, we introduce an early-stopping mechanism[ 52 ] based on the skyline set Sky (H ) defined above, which allows OmniTune to terminate the optimization process before reaching the full horizon 𝑇 , thereby reducing LLM token consumption. At iteration 𝑡 , OmniTune halts if: 
+
+Sky (H 𝑡 ) = Sky (H 𝑡 −𝑢 )
+
+That is, if the skyline set remains unchanged for 𝑢 consecutive itera-tions. Intuitively, this condition indicates that the system has failed to identify a new assignment that dominates previously observed ones with respect to both refinement distance Δ and constraint satisfaction 𝜓 . In such cases, OmniTune terminates and returns the 
+
+𝜀 -satisfying assignment in SAT with minimum distance from the baseline assignment (see Line 14 in Algorithm 1). In our implemen-tation, we set 𝑢 = 2.
+
+## 5 Experimental Setup and Evaluation 
+
+We performed an experimental analysis of our proposed solution using a dedicated benchmark composed of real-life datasets and considering realistic scenarios utilizing the queries and constraints used in prior works. We first examine the ability of OmniTune to successfully produce refinements as well as the quality of the gener-ated refinements, comparing the results across different LLM-based baselines. We conduct an ablation study to evaluate the impact of our two-step OPRO scheme and the history representation com-ponent used in our system implementation on the resulting refine-ments. We conclude with an assessment of the effect of the horizon (𝑇 ) and the number of refinements per subspace ( 𝐾 ) on the quality of the resulting refinement and the token costs of generating it. 
+
+## 5.1 Experimental Setup 
+
+Implementation. OmniTune is implemented in Python 3 and uses DuckDB[ 26 ]. The structural prompt verification utilizes the Pydantic Python implementation [ 13 ]. The SubspaceLM and As-signmentLM components are built into LangChain [ 11 ] and support various LLM provider APIs. Across all experiments, the decoding parameters were fixed to temperature = 0 and top-𝑝 = 0. All exper-iments were run on a 24-core CPU server. The code and data are provided in [ 29 ]. As default setting, we set the horizon 𝑇 and the number of refinements per iteration 𝐾 to 5, early stopping criterion 
+
+𝑢 = 2, and use GPT-4o-mini. 
+
+Benchmark. To evaluate OmniTune , we constructed a unified benchmark of Universal Query Refinement instances. Each in-stance comprises a dataset, a query, a constraint function along with a tolerance value, and a distance function. The benchmark encom-passes 32 instances utilizing 11 real-world datasets of varying sizes and attribute dimensions, including adaptations of instances used in prior works [ 17 , 42 , 54 ]. In particular, we consider 4 instance classes: 
+
+(1) Top-𝑘 queries as presented in [ 17 ] with constraint representa-tion over the representation of different groups in the top-𝑘 results, 
+
+(2) Range [ 54 ] queries with constraint over the ratio of data groups in the output, (3) Diversity in the output of SPJ queries as was studied in [ 42 ], and (4) Complex queries that are not supported by previews works. The benchmark includes eight instances per class. For the instance classes (1)-(3), we used queries, constraints, and distance functions as defined in the corresponding prior work, with the addition of four new instances for the Range class and two additional instances to the Diversity class. Table 5 depicts the dataset used for each instance class, and their full description is available in [29]. 
+
+Evaluating Metrics. We evaluated the performance of the pro-posed solution using two criteria: success rate and optimality . The 
+
+success rate measures the number of tasks we were able to ob-tain a refinement that 𝜀 -satisfies the constraints function. For each successful execution, we measure the optimality of the resulting refinement 𝜃 with respect to the resulting refinement 𝜃 𝑜𝑝𝑡 pro-duced by a task-specific dedicated solution for the instance class (i.e., [ 17 ] for top-𝑘 instances, [ 42 ] for diversity and [ 54 ] for range). The optimality metric is defined as 
+
+Opt (𝜃 ) = Δmax − Δ(𝜃 )
+
+Δmax − Δ(𝜃 𝑜𝑝𝑡 )
+
+where Δmax is the max possible distance value for the given Δ (e.g., 1
+
+for Jaccard-based distance function, or the |𝑃𝑟𝑒𝑑𝑠 (𝑄 )| for predicate-based distances) and is used to normalize the result. Since there      
+
+> 7Eldar Hacohen, Yuval Moskovitch, and Amit Somech
+> { "table":"MiddleEarth_Applicants","primary_key":"id", "attributes":{ "GPA":{"type":"float","domain":[2.0,4.0], "stats":{"mean":3.12,"std":0.41, "q1":2.85,"median":3.10,"q3":3.40}}, ... "gender":{"type":"category","domain":["F","M"], "stats":{"distribution":[{"value":"F","p":0.46}, {"value":"M","p":0.54}]}}}
+> (a) 𝑄 -driven Database Schema Description.
+> [{"attribute": "gpa", "value_range": {"min_val":2, "max_val":4}}, { "attribute": "major", "value_range": {"min_val":[], "max_val": [Archery, Melee, Spearmanship, Tactics, Camouflage, Scouting, Swordship, Horsemanship]}}, { "attribute": "COUNT(*)", "value_range": {"min_val":34, "max_val":452}}]
+> (b) Subspaces Domain Definition S+(𝑄 )
+> [{ "assignment_id:1, "vals":{3.7,"(Tactics,Archery)",90}, "dev":0.49, "dist":0.20 }, { "assignment_id:7, "vals":{3.6,"(Tactics,Archery)",80}, "dev":0.24, "dist":0.23 }, ... { "assignment_id:13, "vals":{3.9,"(Tactics,Melee)",100}, "dev":0.20, "dist":0.57 }]
+> (c) Skyline Set Sky ( H) .
+> [{ "subspace_id":1, "subspace":{"gpa":[3.4,3.8], "major":["Tactics","Archery"], "Count(*)":[60,90]}, "history_size":5, "stats":{"deviation":{"med":.49,"std":.25}, "distance":{"med":.20,"std":.03}} }, { "subspace_id":2, ...]
+> (d) Subspace-level History Summary.
+
+Figure 4: Examples of textual representations of OmniTune objects              
+
+> Class Databases Used
+> Top-𝑘 [17] Astronauts [ 2], Law Students [ 9], MEPS [ 1], TPC-H [ 6]Range [54] Texas Tribune [ 10 ], COMPAS [ 3], Housing Prices [ 8], Fraud Detection [12] Diversity [42] Healthcare [ 7], ACSIncome [ 4], COMPAS, Students [ 5]Complex (new) Law Students, Texas Tribune, TPC-H
+
+Figure 5: Datasets used per instance class 
+
+is no dedicated solution that can handle instances in the Complex class, we set Δ(𝜃 𝑜𝑝𝑡 ) to 0 for these instances, which provides a lower bound on the possible distance value. Each experiment was repeated 5 times, and we report the success rate and the maximal 
+
+Opt score obtained for each task. 
+
+Baselines. Our implementation of OmniTune interacts with LLMs via a standard API, making it compatible with any general-purpose model. To evaluate the performance of OmniTune , we used three lightweight, general-purpose LLMs: 
+
+• ChatGPT Base OpenAI GPT-4.1-mini [51] 
+
+• Gemini Base Google Gemini 2.0 Flash-Lite [24] 
+
+• Mistral Base Mistral 3.1 Small 24B-Instruct [47] To the best of our knowledge, there is no existing solution that can handle the Universal Query Refinement problem. As our framework utilizes LLMs, they serve as a natural baseline for per-formance comparison. To this end, we considered the above light-weight, general-purpose LLMs, which we used as part of OmniTune ,as standalone baseline solutions. Additionally, as our framework performs iterative multi-step computation, we further considered models that implement explicit chain-of-thought or multi-stage reasoning pipelines internally. To this end, we used 
+
+• ChatGPT Thinking OpenAI GPT-5-Thinking [50] 
+
+• Gemini Thinking Google Gemini 2.5 Flash-Thinking [24] 
+
+• Mistral Thinking Mistral Magistral Small-Thinking [47] Both the Base and Thinking LLMs, were presented with QRP 
+
+(using the same representation as in OmniTune ), and asked to refine the query 𝑄 . At each iteration, we also provided the history of previous outputs. The models were stopped after 𝑇 · 𝐾 iterations (25), yet all terminated earlier, due to the limit of their context. See [ 29 ] for the full implementation details of these baselines. In addition to the LLM-based baselines, we implemented a sampling-based baseline , which is given the search-space ranges for each of the refineable predicates and randomly samples 100 assignments uniformly from the given ranges. The 𝜀 -satisfying assignment 𝜃 (if such a refinement exists) with minimal Δ is returned. 
+
+Results Summary 
+
+• OmniTune is able to handle a wide range of instance classes of Universal Query Refinement , including instances with existing dedicated solutions and instances that are not sup-ported by existing solutions, and outperform all baselines. 
+
+• OmniTune performs consistently across different LLMs, showing that the approach is robust and model-agnostic. 
+
+• The 2-steps OPRO scheme for query refinement employed by 
+
+OmniTune plays a central role in achieving high performance as opposed to a naive OPRO implementation. 
+
+• The OmniTune components for summarized history repre-sentation, together with the skyline component, significantly improve performance. 
+
+• While there is a natural tradeoff between the quality metrics and token cost when varying the horizon 𝑇 and the refinement per subspace 𝐾 , the configuration of 𝑇 = 5 and 𝐾 = 5 yields an empirical optimal tradeoff. 
+
+## 5.2 Success rates and optimality 
+
+The first set of experiments aims to evaluate the success rates and optimality scores of our solution in comparison to baseline approaches. Figures 6 and 7 depict the success rate and optimal-ity, respectively, for all instances and baselines. The lightweight, general-purpose LLMs are denoted as Base (blue bars), multi-stage reasoning models are denoted as Thinking (orange bars), and the performance of OmniTune is shown in green. Each category on the                
+
+> 8A universal LLM Framework for General Query Refinements Base Thinking Omnitune Random ChatGPT Mistral Gemini
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate
+> (a) Top-𝑘 Instances ChatGPT Mistral Gemini
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate (b) Range Instances ChatGPT Mistral Gemini
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate (c) Diversity Instances ChatGPT Mistral Gemini
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate (d) Complex Instances
+
+Figure 6: Success rate of OmniTune and compared baseline approaches across different instance classes. ChatGPT Mistral Gemini           
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Optimality Score
+> (a) Top-𝑘 Instances ChatGPT Mistral Gemini
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Optimality Score (b) Range Instances ChatGPT Mistral Gemini
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Optimality Score (c) Diversity Instances ChatGPT Mistral Gemini
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Optimality Score (d) Complex Instances
+
+Figure 7: Optimality values of OmniTune and compared baseline approaches across different instance classes. 
+
+𝑥 -axis represents a model family, e.g., in the ChatGPT cluster group in Figure 6a, the success rate of OpenAI GPT-4.1-mini is shown in blue, OpenAI GPT-5-Thinking in orange, and the success rate of 
+
+OmniTune using GPT-4.1-mini is shown in green. The success rate of the sampling-based baseline solution is shown as a dashed line. As shown in Figure 6, OmniTune outperforms all baselines in all settings, achieving a success rate of 75% -100% , while the com-petitors’ success rate was much lower, below 50% in most cases. In particular, for Range and Diversity instances, LLM-based com-petitors perform worse than the random sampling solution, where, in some cases, they completely failed to generate 𝜀 -satisfying as-signments (as shown in Figures 6b and 6c). Moreover, the success rate of OmniTune remained consistent across different models, illustrating the robustness of our solution. The optimality of the resulting refinements is shown in Figure 7. Similarly to the success rate, OmniTune outperforms all other com-petitors. The observed optimality scores for refinements generated by OmniTune range from 77% to 100% , with consistent performance across different LLM models. In contrast, the maximal optimality score for a refinement generated by a competitor was 62% (OpenAI GPT-5-Thinking over Complex instance shown in Figure 7) and an average optimality of 37% overall. 
+
+## 5.3 Ablation Study 
+
+The second set of experiments evaluates the usefulness of compo-nents in the OPRO scheme as well as the OmniTune system. 
+
+Ablation for the two-step OPRO scheme. To evaluate the effective-ness of the two-step OPRO scheme, we compared the performance of OmniTune to two variants of the system: (1) No-SubspaceLM , which omits subspace selection, forcing the AssignmentLM to explore the full refinement space S( 𝑄 ). This corresponds to a naïve instantiation of the OPRO paradigm. (2) No-AssignmentLM . In this variant of the system, the SubspaceLM agent generates subspaces, and the AssignmentLM is replaced with a simple random sampling process that selects five random refinements from the subspace. The success rate and the optimality values of the generated refine-ments are presented in Table 4. The results highlight the need for both AssignmentLM and SubspaceLM. In particular, we observed a substantial drop in performance for No-SubspaceLM, with up to a 
+
+62 .5% decrease in success rate and a 63 .7% decrease in optimality values for the Diversity instances when using the Mistral model, reflecting the difficulty of unguided exploration in large refine-ment spaces. While the No-AssignmentLM performs better than No-SubspaceLM in most cases, it still achieves lower success scores than the full system, underscoring the necessity of AssignmentLM. 
+
+Ablation for OmniTune history component implementation. The second ablation study focused on the effect of the history repre-sentation component presented in Section 4 on the preference of 
+
+OmniTune . In particular, we aim to study the advantage of using the skyline component of OmniTune . We therefore considered the following alternative representation of the history: (1) Complete History, W/O Skyline , feeds the full raw conversation history of the LLM at every iteration and disables the skyline component concatenated to the AssignmentLM’s prompt. (2) Summarized History, W/O Skyline , utilizes history-summarization instead of the full conversation log, with skyline tracking by the AssignmentLM disabled. Table 5 presents the resulting success rates and optimality val-ues. Across all models and refinement classes, OmniTune , when equipped with both components (history summarization and the skyline), achieves the highest success rates and optimality values, demonstrating the value of these components within the system. We observed a significant improvement of an average of 48 .3% 
+
+in success rate when using OmniTune compared to the complete history and without the skyline component, with a prominent im-provement of 86 .8% for the Diversity class when using Gemini.                                                                                   
+
+> 9Eldar Hacohen, Yuval Moskovitch, and Amit Somech
+> Success Rate (%) Refinement Optimality (%) Model Setting Top-K Range Diversity Complex Top-K Range Diversity Complex GPT-4.1-mini No-SubspaceLM 70.0 75.0 75.0 65.0 72.4 51.6 73.7 63.2 No-AssignmentLM 82.5 22.5 57.5 62.5 83.71 21.20 72.79 68.73
+> OmniTune (Full) 97.5 97.5 90.0 98.0 96.0 85.5 96.5 93.8
+> Gemini-2.0-Flash-Lite No-SubspaceLM 90.0 90.5 47.5 50.0 90.73 66.81 57.40 76.37 No-AssignmentLM 95.0 92.5 57.5 72.5 91.52 68.42 77.24 80.16
+> OmniTune (Full) 95.0 100.0 75.0 87.5 94.75 76.71 92.50 92.34
+> Mistral-Small-3.1-24B No-SubspaceLM 62.5 87.5 37.5 100.0 48.63 63.07 34.59 85.55 No-AssignmentLM 100.0 100.0 75.0 87.5 77.50 63.10 67.74 63.29
+> OmniTune (Full) 100.0 100.0 100.0 100.0 91.06 87.43 95.27 85.78
+
+Table 4: Two-step OPRO scheme ablation Study: Success Rate and Refinement Optimality.                                                                                   
+
+> Success Rate (%) Refinement Optimality (%) Model Setting Top-K Range Diversity Complex Top-K Range Diversity Complex GPT-4.1-mini Complete History (W/O Skyline) 70.0 25.0 37.5 42.5 59.88 20.68 63.95 44.85 Summarized History (W/O Skyline) 90.0 92.5 67.5 87.5 94.49 69.62 92.23 77.29
+> OmniTune (Summ. History+Skyline) 97.5 97.5 90.0 98.0 96.0 85.5 96.5 93.8
+> Gemini-2.0-Flash-Lite Complete History (W/O Skyline) 22.5 42.5 12.5 17.5 12.51 23.18 11.55 39.60 Summarized History (W/O Skyline) 90.0 87.5 52.5 87.5 94.07 64.44 82.54 75.01
+> OmniTune (Summ. History+Skyline) 95.0 100.0 75.0 87.5 94.75 76.71 92.50 92.34
+> Mistral-Small-3.1-24B Complete History (W/O Skyline) 62.5 87.5 75.0 75.0 33.51 60.79 67.98 64.35 Summarized History (W/O Skyline) 100.0 75.0 62.5 87.5 91.00 49.67 57.49 69.26
+> OmniTune (Summ. History+Skyline) 100.0 100.0 100.0 100.0 91.06 87.43 95.27 85.78
+
+Table 5: History Structures Ablation Study: Success Rate and Refinement Optimality. 
+
+While using summarized history (without the skyline component) shows improvement over full history in most cases (with the excep-tion of some classes when using the Mistral model), we observed an average improvement of 37 .3% when using both, summarized history and the skyline component in OmniTune .
+
+## 5.4 Effect of Parameters 
+
+Next, we analyze the impact of the horizon 𝑇 and per-subspace refinements 𝐾 on OmniTune , measuring success rate, optimality, and token cost as 𝑇 , 𝐾 ∈ [ 1, 10 ] using GPT-4o-mini. 
+
+Refinements per Iteration ( 𝐾 ). In Figures 8, 9 and 10 we report the success rates, optimality values, and token cost, respectively, when ranging 𝐾 from 1 to 10 using different (fixed) number of subspaces ( 𝑇 ). As expected, we observed an overall improvement in most cases in the success rates and optimality values with the cost of a growing amount of tokens sent to the LLM model as 𝐾 
+
+increases. For the Top-𝑘 , Range and Diversity instances (Figures 8a-8c and 9a-9c), when the horizon is set to 5 or more, the incremental gains in both success rates and optimality become negligible. For Complex instances (Figures 8d and 9d), the resulting success and optimality did not show a clear trend when using a low number of subspaces (i.e., 1-3 subspaces). This is due to the complex structure of the queries, e.g., including a HAVING clause predicates, which requires a larger number of iterations to improve the quality of the output. The observed token cost (Figure 10) showed, as expected, consistent, linear growth in tokens used as 𝐾 increases. 
+
+Horizon ( 𝑇 ). Figures 11, 12, and 13 show the effect of varying the horizon 𝑇 for different (fixed) numbers of refinements per iteration. Consistent with the impact of increasing refinements per iteration, when increasing 𝑇 , as expected, the overall trend is growth in both the quality of the solution (success rate and optimality values) as well as the token cost. We observed some deviations with respect to this trend in the quality of the results for the Top-𝑘 class, likely due to the inherent complexity of the constraint objectives in this class, which can involve internal trade-offs in certain scenarios. As with 𝐾 , we observed a diminishing improvement in the success rate and optimality beyond the point of 𝑇 = 5 when using 5 or more refinements per iteration. In contrast to the linear growth observed in the token cost when increasing 𝐾 , we observed only a moderate growth for increasing values of 𝑇 (Figure 13). This is due to the effect of a higher number of refinements per subspace, leading to faster convergence in finding the minimal refinement. Thus, coupled with the early stopping mechanism, the system requires fewer subspace iterations to yield a successful refinement and terminate. 
+
+## 6 Related Work 
+
+Query refinement. The problem of query refinement, i.e., mod-ifying queries to satisfy some output constraints, was studied in 
+
+> 10
+
+A universal LLM Framework for General Query Refinements K=1 K=3 K=5 K=7 K=10 1 3 5 7 10 
+
+Refinements per subspace (K) 
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate
+
+(a) Top-𝑘 Instances 1 3 5 7 10 
+
+Refinements per subspace (K)  
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate
+
+(b) Range Instances 1 3 5 7 10 
+
+Refinements per subspace (K)  
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate
+
+(c) Diversity Instances 1 3 5 7 10 
+
+Refinements per subspace (K)  
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate
+
+(d) Complex Instances 
+
+Figure 8: Success rate as a function of refinement per subspace 𝐾 1 3 5 7 10 
+
+Refinements per subspace (K) 
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Optimality
+
+(a) Top-𝑘 Instances 1 3 5 7 10 
+
+Refinements per subspace (K)  
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Optimality
+
+(b) Range Instances 1 3 5 7 10 
+
+Refinements per subspace (K)  
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Optimality
+
+(c) Diversity Instances 1 3 5 7 10 
+
+Refinements per subspace (K)  
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Optimality
+
+(d) Complex Instances 
+
+Figure 9: Optimality score as a function of refinements per subspace 𝐾 .1 3 5 7 10 
+
+Refinements per subspace (K) 
+
+0
+
+100 
+
+> Num Tokens (K)
+
+(a) Top-K Instances 1 3 5 7 10 
+
+Refinements per subspace (K) 
+
+50 
+
+100  
+
+> Num Tokens (K)
+
+(b) Range Instances 1 3 5 7 10 
+
+Refinements per subspace (K) 
+
+50 
+
+100  
+
+> Num Tokens (K)
+
+(c) Diversity Instances 1 3 5 7 10 
+
+Refinements per subspace (K) 
+
+0
+
+50 
+
+100  
+
+> Num Tokens (K)
+
+(d) Complex Instances 
+
+Figure 10: Token-cost vs. refinements per subspace 𝐾 .T=1 T=3 T=5 T=7 T=10 1 3 5 7 10 
+
+Horizon T 
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate
+
+(a) Top-𝑘 Instances 1 3 5 7 10 
+
+Horizon T  
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate
+
+(b) Range Instances 1 3 5 7 10 
+
+Horizon T  
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate
+
+(c) Diversity Instances 1 3 5 7 10 
+
+Horizon T  
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate
+
+(d) Complex Instances 
+
+Figure 11: Success rate as a function of the number of subspaces 𝑇 .
+
+a line of work [ 17 , 18 , 23 , 37 , 42 , 43 , 46 , 48 , 49 , 54 , 57 , 58 ]. For ex-ample, [ 37 , 49 ] aim to relax queries with an empty result set to produce some answers. Other works like [ 23 , 46 ] address the is-sues of too many or too few answers by refining queries to meet specific cardinality constraints on the result’s size. A recent line of work has studied the use of refinement to satisfy diversity con-straints [ 17 , 18 , 42 , 43 , 54 ] and primarily focused on SPJ queries, where a refinement of a query is a set of modifications to the con-stants in the WHERE clause. The authors of [ 54 ] consider range queries, namely, selection queries with conjunction of range con-ditions over predicates of the data, and [ 17 , 18 ] proposed an auto-mated approach using linear optimization techniques to refine SPJ queries with an ORDER BY clause. Different notions of similarity measures used to define the minimality of refinements were defined in these works. E.g.,in [ 54 ], the similarity between queries is mea-sured by the Jaccard similarity of their outputs, whereas in [ 42 , 43 ], the similarity between queries is defined with respect to the values of the constants in their WHERE clause. Our proposed solution generalizes the concept of query refinements to support a broader class of queries, constraints, and similarity measures. Imposing con-straints over answer sets and performing query relaxation has also been studied in the context of package queries [ 15 , 16 ]. However, because package queries are not standard SQL, supporting them was outside the scope of this paper. 
+
+LLMs for SQL Generation. Recent work has demonstrated that large language models (LLMs) achieve state-of-the-art performance on the text-to-SQL task [ 28 , 65 ], in which users express their in-formation needs in natural language and the system generates a 
+
+11 Eldar Hacohen, Yuval Moskovitch, and Amit Somech 1 3 5 7 10 
+
+> Horizon T
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Optimality
+
+(a) Top-𝑘 Instances 1 3 5 7 10  
+
+> Horizon T
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Optimality
+
+(b) Range Instances 1 3 5 7 10  
+
+> Horizon T
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Optimality
+
+(c) Diversity Instances 1 3 5 7 10  
+
+> Horizon T
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Optimality
+
+(d) Complex Instances 
+
+Figure 12: Optimality score as a function of the number of subspaces 𝑇 .1 3 5 7 10 
+
+> Horizon T
+> 0
+> 100
+> Num Tokens (K)
+
+(a) Top-𝑘 Instances 1 3 5 7 10  
+
+> Horizon T
+> 50
+> 100
+> Num Tokens (K)
+
+(b) Range Instances 1 3 5 7 10  
+
+> Horizon T
+> 50
+> 100
+> Num Tokens (K)
+
+(c) Diversity Instances 1 3 5 7 10  
+
+> Horizon T
+> 0
+> 50
+> 100
+> Num Tokens (K)
+
+(d) Complex Instances 
+
+Figure 13: Token-cost vs. number of subspaces (Horizon 𝑇 ). 
+
+SQL query whose execution answers those needs [ 35 , 67 ]. LLM-based solutions surpass earlier dedicated architectures [ 30 , 64 ], pri-marily due to their strong semantic reasoning capabilities, which enable them to jointly interpret underspecified user intent and data-base schemas. Accordingly, most text-to-SQL systems are designed around single-pass query synthesis pipelines, commonly emphasiz-ing schema linking [ 27 , 41 , 61 ], clause-level SQL generation [ 38 ], and execution-based validation mechanisms [ 63 ] that are primarily used to detect and correct syntactic errors or mismatches with the database schema. In contrast, our setting considers a substantially different prob-lem. Rather than generating a SQL query from a natural language description, the model is given an existing query and is tasked with refining it so as to satisfy a set of constraints while minimizing de-viation from the original query. This refinement process inherently requires iterative reasoning over query modifications, explicit trade-offs between competing objectives, and feedback from previous attempts, which goes beyond execution-based correctness checks and fundamentally differs from the one-shot generation paradigm underlying most text-to-SQL approaches. 
+
+Black-Box and LLM-Based Optimization. In contrast to white-box optimization, where the objective function and constraints are explicitly specified and structurally accessible to the solver, black-box optimization treats the objective function as an oracle that can only be evaluated at sampled points, without access to its internal structure. Representative approaches include Monte-Carlo sam-pling, multi-armed bandits, evolutionary algorithms, and related population-based methods [ 25 , 32 , 34 , 36 , 60 ]. While broadly appli-cable, these methods rely on the ability to meaningfully sample the search space and learn solely from observed objective values, often requiring extensive exploration and struggling in large, discrete, or highly discontinuous domains. Recently, large language models have been proposed as opti-mization engines in settings where both the search space and the objective can be expressed in natural language. Prior work shows that LLMs can optimize prompts, heuristics, and symbolic pro-grams—through iterative prompting [ 19 , 22 , 39 , 45 , 62 ]. However, existing OPRO-style approaches degrade in large, discrete, and combinatorial domains, where naïve candidate generation and un-structured interaction histories provide weak guidance and limit scalability [62, 66]. To address these limitations, we build on the OPRO framework and introduce a dedicated two-step scheme for query refinement, explicitly structuring both the refinement search space and the optimization feedback to guide LLMs more effectively. 
+
+## 7 Conclusion 
+
+We presented OmniTune , a general framework for SQL query re-finement that seeks refinements minimizing distance to an original query while approximately satisfying user-defined constraints. Our approach adapts the OPRO paradigm to query refinement via a dedicated two-step scheme that combines structured subspace ex-ploration with focused refinement sampling, guided by compact history summarization and skyline-based feedback. An extensive empirical evaluation demonstrates that OmniTune is effective and robust across a broad range of existing and novel query refinement scenarios beyond the scope of prior solutions. In future work, we plan to further enhance the OPRO scheme and the OmniTune design, for example by incorporating skyline-aware exploration–exploitation strategies and extending the LLM modules into agentic components capable of issuing and analyzing auxiliary analytical queries. 
+
+## References            
+
+> [1] 2016. Medical Expenditure Panel Survey Dataset. https://meps.ahrq.gov/data_ stats/download_data/pufs/h192/h192doc.shtml. (2016). [2] 2016. NASA Astronauts, 1959-Present (Kaggle). https://www.kaggle.com/ datasets/nasa/astronaut-yearbook. (2016). [3] 2017. COMPAS Dataset (Kaggle). https://www.kaggle.com/datasets/danofer/ compass. (2017). [4] 2018. ACS Income Dataset. https://github.com/socialfoundations/folktables. (2018). [5] 2018. Students Performance in Exams (Kaggle). https://www.kaggle.com/ datasets/spscientist/students-performance-in-exams. (2018). 12
+
+A universal LLM Framework for General Query Refinements 
+
+[6] 2019. TPCH Dataset. https://github.com/aleaugustoplus/tpch-data. (2019). [7] 2021. Healthcare Dataset. https://github.com/stefan-grafberger/mlinspect/tree/ master/example_pipelines/healthcare. (2021). [8] 2021. Housing Prices Dataset (Kaggle). https://www.kaggle.com/datasets/ yasserh/housing-prices-dataset. (2021). [9] 2022. Law School Admissions Bar Passage Dataset (Kaggle). https://www.kaggle. com/datasets/danofer/law-school-admissions-bar-passage. (2022). [10] 2022. Texas Tribune Dataset (Kaggle). https://www.kaggle.com/datasets/ mexwell/texas-tribune-government-salaries/data. (2022). [11] 2023. LangChain Python Library. https://github.com/langchain-ai/langchain. (2023). [12] 2024. Fraud Detection Transactions Dataset (Kaggle). https://www.kaggle.com/ datasets/samayashar/fraud-detection-transactions-dataset. (2024). [13] 2024. Pydantic Validation Python Library. https://github.com/pydantic/pydantic. (2024). [14] S. Borzsony, Donald Kossmann, and Konrad Stocker. 2001. The Skyline Operator. 
+
+Proceedings - International Conference on Data Engineering , 421 – 430. https: //doi.org/10.1109/ICDE.2001.914855 [15] Matteo Brucato, Azza Abouzied, and Alexandra Meliou. 2014. Improving package recommendations through query relaxation. In Proceedings of the First Interna-tional Workshop on Bringing the Value of" Big Data" to Users (Data4U 2014) . 13–18. [16] Matteo Brucato, Juan Felipe Beltran, Azza Abouzied, and Alexandra Meliou. 2016. Scalable Package Queries in Relational Database Systems. Proc. VLDB Endow. 9, 7 (2016), 576–587. https://doi.org/10.14778/2904483.2904489 [17] Felix S. Campbell, Alon Silberstein, Julia Stoyanovich, and Yuval Moskovitch. 2024. Query Refinement for Diverse Top-k Selection. Proc. ACM Manag. Data 2, 3 (2024), 166. https://doi.org/10.1145/3654969 [18] Felix S. Campbell, Julia Stoyanovich, and Yuval Moskovitch. 2024. Rodeo: Making Refinements for Diverse Top-k Queries. Proc. VLDB Endow. 17, 12 (2024), 4341– 4344. https://doi.org/10.14778/3685800.3685870 [19] Linnan Chen, Hao Tan, Tianyu Gao, Logan Dery, Ruilian Jiang, Xiyou Liu, Ce Deng, and Feng Li. 2022. Multi-step Planning for Automated Hyperparameter Optimization with OptFormer. arXiv preprint arXiv:2210.04971 (2022). [20] Wenhu Chen, Xueguang Ma, Xinyi Wang, and William W. Cohen. 2023. Pro-gram of Thoughts Prompting: Disentangling Computation from Reasoning for Numerical Reasoning Tasks. Transactions on Machine Learning Research (2023). https://openreview.net/forum?id=YfZ4ZPt8zd [21] Yongchao Chen, Jacob Arkin, Yilun Hao, Yang Zhang, Nicholas Roy, and Chuchu Fan. 2024. PRompt Optimization in Multi-Step Tasks (PROMST): Integrating Human Feedback and Heuristic-based Sampling. In Proceedings of the 2024 Con-ference on Empirical Methods in Natural Language Processing , Yaser Al-Onaizan, Mohit Bansal, and Yun-Nung Chen (Eds.). Association for Computational Linguis-tics, Miami, Florida, USA, 3859–3920. https://doi.org/10.18653/v1/2024.emnlp-main.226 [22] Zhiyu Chen, Qiusi Guo, Zifan Cai, Xiang Zhang, and Yujiu Wang. 2023. Evo-Prompt: Connecting LLMs with Evolutionary Algorithms Yields Powerful Prompt Optimizers. arXiv preprint arXiv:2309.08532 (2023). [23] Wesley W. Chu and Qiming Chen. 1994. A Structured Approach for Cooperative Query Answering. IEEE Trans. Knowl. Data Eng. 6, 5 (1994), 738–749. https: //doi.org/10.1109/69.317704 [24] Gheorghe Comanici, Eric Bieber, Mike Schaekermann, Ice Pasupat, Noveen Sachdeva, Inderjit Dhillon, and more. 2025. Gemini 2.5: Pushing the Frontier with Advanced Reasoning, Multimodality, Long Context, and Next Generation Agentic Capabilities . Technical Report. arXiv:cs.CL/2507.06261 https://arxiv.org/abs/ 2507.06261 [25] Remi Coulom. 2006. Efficient Selection and Backup Operators in Monte-Carlo Tree Search. In Computers and Games, 5th International Conference, CG 2006, Turin, Italy, May 22-24, 2006, Revised Selected Papers (Lecture Notes in Computer Science) , Vol. 4630. Springer, 72–83. https://doi.org/10.1007/978-3-540-75540-8_7 [26] DuckDB. n.d.. DuckDB: Documentation . https://duckdb.org/docs/stable/ Online documentation. [27] Authors from ACL Anthology. 2025. GenLink: Generation-Driven Schema-Linking via Multi-Task Fine-Tuning for Text-to-SQL. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing (EMNLP) . 1518. https://aclanthology.org/2025.emnlp-main.1518/ [28] Dawei Gao, Haibin Wang, Yaliang Li, Xiuyu Sun, Yichen Qian, Bolin Ding, and Jingren Zhou. 2024. Text-to-SQL Empowered by Large Language Models: A Benchmark Evaluation. Proc. VLDB Endow. 17, 5, 1132–1145. https://doi.org/10. 14778/3641204.3641221 [29] OmniTune Github. 2024. OmniTune: GitHub repository. https://github.com/analysis-bots/OmniTune. (2024). Accessed: 2026-02-13. [30] Jiaqi Guo, Zecheng Zhan, Yan Gao, Yan Xiao, Jian-Guang Lou, Ting Liu, and Dongmei Zhang. 2019. Towards Complex Text-to-SQL in Cross-Domain Database with Intermediate Representation. In Proceedings of the 57th Conference of the Association for Computational Linguistics, ACL 2019, Florence, Italy, July 28- August 2, 2019, Volume 1: Long Papers , Anna Korhonen, David R. Traum, and Lluís Màrquez (Eds.). Association for Computational Linguistics, 4524–4535. https: //doi.org/10.18653/V1/P19-1444 [31] Eldar Hacohen, Yuval Moskovitch, and Amit Somech. 2025. OmniTune: A Uni-versal Framework for Query Refinement via LLMs. In Companion of the 2025 International Conference on Management of Data, SIGMOD/PODS 2025, Berlin, Ger-many, June 22-27, 2025 , Volker Markl, Joseph M. Hellerstein, and Azza Abouzied (Eds.). ACM, 111–114. https://doi.org/10.1145/3722212.3725121 [32] Nikolaus Hansen and Andreas Ostermeier. 2001. Completely Derandomized Self-Adaptation in Evolution Strategies. Evolutionary Computation 9, 2 (2001), 159–195. [33] Jie Jiang, Haining Xie, Siqi Shen, Yu Shen, Zihan Zhang, Meng Lei, Yifeng Zheng, Yang Li, Chunyou Li, Danqing Huang, Yinjun Wu, Wentao Zhang, Xiaofeng Yang, Bin Cui, and Peng Chen. 2025. SiriusBI: A Comprehensive LLM-powered Solution for Data Analytics in Business Intelligence. Proc. VLDB Endow. 18, 12 (2025), 4860–4873. https://www.vldb.org/pvldb/vol18/p4860-xie.pdf [34] James Kennedy and Russell Eberhart. 1995. Particle Swarm Optimization. In 
+
+Proceedings of the IEEE International Conference on Neural Networks . 1942–1948. [35] Hyeonji Kim, Byeong-Hoon So, Wook-Shin Han, and Hongrae Lee. 2020. Natural language to SQL: where are we today? Proc. VLDB Endow. 13, 10 (June 2020), 1737–1750. https://doi.org/10.14778/3401960.3401970 [36] S. Kirkpatrick, C. D. Gelatt, and M. P. Vecchi. 1983. Optimization by Simulated Annealing. Science 220, 4598 (1983), 671–680. [37] Nick Koudas, Chen Li, Anthony K. H. Tung, and Rares Vernica. 2006. Relaxing Join and Selection Queries. In Proceedings of the 32nd International Conference on Very Large Data Bases, Seoul, Korea, September 12-15, 2006 , Umeshwar Dayal, Kyu-Young Whang, David B. Lomet, Gustavo Alonso, Guy M. Lohman, Martin L. Kersten, Sang Kyun Cha, and Young-Kuk Kim (Eds.). ACM, 199–210. http: //dl.acm.org/citation.cfm?id=1164146 [38] Dongjun Lee. 2019. Clause-Wise and Recursive Decoding for Complex and Cross-Domain Text-to-SQL Generation. In Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-IJCNLP) , Kentaro Inui, Jing Jiang, Vincent Ng, and Xiaojun Wan (Eds.). Association for Computational Linguistics, Hong Kong, China, 6045–6051. https://doi.org/10.18653/v1/D19-1624 [39] Joel Lehman, Jonathan Gordon, Shawn Jain, Kamal Ndousse, Cathy Yeh, and Kenneth O. Stanley. 2022. Evolution through Large Models. arXiv preprint arXiv:2206.08896 (2022). [40] Mosh Levy, Alon Jacoby, and Yoav Goldberg. 2024. Same Task, More Tokens: the Impact of Input Length on the Reasoning Performance of Large Language Models. In 62nd Annual Meeting of the Association for Computational Linguistics, ACL 2024 . Association for Computational Linguistics (ACL), Association for Computational Linguistics, Bangkok, Thailand, 15339–15353. [41] Haoyang Li, Jing Zhang, Cuiping Li, and Hong Chen. 2023. RESDSQL: decoupling schema linking and skeleton parsing for text-to-SQL. In Proceedings of the Thirty-Seventh AAAI Conference on Artificial Intelligence and Thirty-Fifth Conference on Innovative Applications of Artificial Intelligence and Thirteenth Symposium on Educational Advances in Artificial Intelligence (AAAI’23/IAAI’23/EAAI’23) . AAAI Press, Article 1466, 9 pages. https://doi.org/10.1609/aaai.v37i11.26535 [42] Jinyang Li, Yuval Moskovitch, Julia Stoyanovich, and H. V. Jagadish. 2023. Query Refinement for Diversity Constraint Satisfaction. Proc. VLDB Endow. 17, 2 (2023), 106–118. https://doi.org/10.14778/3626292.3626295 [43] Jinyang Li, Alon Silberstein, Yuval Moskovitch, Julia Stoyanovich, and H. V. Jagadish. 2023. ERICA: Query Refinement for Diversity Constraint Satisfaction. 
+
+Proc. VLDB Endow. 16, 12 (2023), 4070–4073. https://doi.org/10.14778/3611540. 3611623 [44] Yurong Liu, Eduardo H. M. Pena, Aécio Santos, Eden Wu, and Juliana Freire. 2025. Magneto: Combining Small and Large Language Models for Schema Matching. Proc. VLDB Endow. 18, 8 (April 2025), 2681–2694. https://doi.org/10. 14778/3742728.3742757 [45] Eric Meyerson, Jason Nelson, Matthew Bradley, Adam Gaier, Hanie Moradi, Alexander Hoover, and Joel Lehman. 2023. Language Model Crossover: Variation through Few-Shot Prompting. arXiv preprint arXiv:2307.12043 (2023). [46] Chaitanya Mishra and Nick Koudas. 2009. Interactive query refinement. In 
+
+EDBT 2009, 12th International Conference on Extending Database Technology, Saint Petersburg, Russia, March 24-26, 2009, Proceedings (ACM International Conference Proceeding Series) , Martin L. Kersten, Boris Novikov, Jens Teubner, Vladimir Polutin, and Stefan Manegold (Eds.), Vol. 360. ACM, 862–873. https://doi.org/10. 1145/1516360.1516459 [47] Mistral-AI, :, Abhinav Rastogi, Albert Q. Jiang, Andy Lo, Gabrielle Berrada, Guillaume Lample, and more. 2025. Magistral . Technical Report. arXiv:cs.CL/2506.10910 https://arxiv.org/abs/2506.10910 [48] Yuval Moskovitch, Jinyang Li, and H. V. Jagadish. 2022. Bias analysis and mitiga-tion in data-driven tools using provenance. In Proceedings of the 14th International Workshop on the Theory and Practice of Provenance, TaPP 2022, Philadelphia, Penn-sylvania, 17 June 2022 , Adriane Chapman, Daniel Deutch, and Tanu Malik (Eds.). ACM, 1:1–1:4. https://doi.org/10.1145/3530800.3534528 [49] Ion Muslea and Thomas J. Lee. 2005. Online Query Relaxation via Bayesian Causal Structures Discovery. In Proceedings, The Twentieth National Conference on Artificial Intelligence and the Seventeenth Innovative Applications of Artificial 
+
+13 Eldar Hacohen, Yuval Moskovitch, and Amit Somech 
+
+Intelligence Conference, July 9-13, 2005, Pittsburgh, Pennsylvania, USA , Manuela M. Veloso and Subbarao Kambhampati (Eds.). AAAI Press / The MIT Press, 831–836. http://www.aaai.org/Library/AAAI/2005/aaai05-131.php [50] OpenAI. 2025. GPT-5 System Card . Technical Report. OpenAI. https://cdn.openai. com/gpt-5-system-card.pdf System card. [51] OpenAI, Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman, and more. 2024. GPT-4 Technical Report . Tech-nical Report. arXiv:cs.CL/2303.08774 https://arxiv.org/abs/2303.08774 [52] Lutz Prechelt. 2002. Early stopping-but when? In Neural Networks: Tricks of the trade . Springer, Berlin, Heidelberg, 55–69. [53] Alex A. T. Rathke. 2025. A representation theorem for events within lattice structures of state-spaces . Papers 2505.18615. arXiv.org. https://doi.org/None [54] Suraj Shetiya, Ian P. Swift, Abolfazl Asudeh, and Gautam Das. 2022. Fairness-Aware Range Queries for Selecting Unbiased Data. In 38th IEEE International Conference on Data Engineering, ICDE 2022, Kuala Lumpur, Malaysia, May 9-12, 2022 . IEEE, 1423–1436. https://doi.org/10.1109/ICDE53745.2022.00111 [55] Sonish Sivarajkumar, Mark Kelley, Alyssa Samolyk-Mazzanti, Shyam Visweswaran, and Yanshan Wang. 2024. An Empirical Evaluation of Prompting Strategies for Large Language Models in Zero-Shot Clinical Natural Language Processing: Algorithm Development and Validation Study. JMIR Med Inform 12 (Apr 2024), e55318. https://doi.org/10.2196/55318 [56] Deshan Koshala Sumanathilaka, Nicholas Micallef, and Julian Hough. 2024. Can LLMs assist with Ambiguity? A Quantitative Evaluation of various Large Lan-guage Models on Word Sense Disambiguation. Proceedings of the First Interna-tional Conference on Natural Language Processing and Artificial Intelligence for Cyber Security (2024). https://aclanthology.org/2024.nlpaics-1.12/ [57] Quoc Trung Tran and Chee-Yong Chan. 2010. How to ConQueR why-not ques-tions. In Proceedings of the ACM SIGMOD International Conference on Man-agement of Data, SIGMOD 2010, Indianapolis, Indiana, USA, June 6-10, 2010 ,Ahmed K. Elmagarmid and Divyakant Agrawal (Eds.). ACM, 15–26. https: //doi.org/10.1145/1807167.1807172 [58] Quoc Trung Tran, Chee-Yong Chan, and Srinivasan Parthasarathy. 2009. Query by output. In Proceedings of the ACM SIGMOD International Conference on Man-agement of Data, SIGMOD 2009, Providence, Rhode Island, USA, June 29 - July 2, 2009 , Ugur Çetintemel, Stanley B. Zdonik, Donald Kossmann, and Nesime Tatbul (Eds.). ACM, 535–548. https://doi.org/10.1145/1559845.1559902 [59] Immanuel Trummer. 2024. Generating Succinct Descriptions of Database Schemata for Cost-Efficient Prompting of Large Language Models. Proceed-ings of the VLDB Endowment 17, 11 (2024), 3511–3523. https://www.vldb.org/ pvldb/vol17/p3511-trummer.pdf [60] Niki van Reiß. 2018. Monte Carlo Tree Search for Combinatorial Optimization .Ph.D. Dissertation. Radboud University. https://dblp.org/rec/phd/pt/Rei18.html [61] Yihan Wang, Peiyu Liu, and Xin Yang. LinkAlign: Scalable Schema Linking for Real-World Large-Scale Multi-Database Text-to-SQL. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing (EMNLP) .https://aclanthology.org/2025.emnlp-main.51 [62] Chengrun Yang, Xuezhi Wang, Yifeng Lu, Hanxiao Liu, Quoc V. Le, Denny Zhou, and Xinyun Chen. 2024. Large Language Models as Optimizers. (2024). arXiv:cs.LG/2309.03409 https://arxiv.org/abs/2309.03409 [63] Yicun Yang, Zhaoguo Wang, Yu Xia, Zhuoran Wei, Haoran Ding, Ruzica Piskac, Haibo Chen, and Jinyang Li. 2025. Automated Validating and Fixing of Text-to-SQL Translation with Execution Consistency. Proc. ACM Manag. Data 3, 3, Article 134 (June 2025), 28 pages. https://doi.org/10.1145/3725271 [64] Tao Yu, Michihiro Yasunaga, Kai Yang, Rui Zhang, Dongxu Wang, Zifan Li, and Dragomir Radev. 2018. SyntaxSQLNet: Syntax Tree Networks for Complex and Cross-Domain Text-to-SQL Task. In Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing , Ellen Riloff, David Chiang, Julia Hockenmaier, and Jun’ichi Tsujii (Eds.). Association for Computational Linguistics, Brussels, Belgium, 1653–1663. https://doi.org/10.18653/v1/D18-1193 [65] Tao Yu, Rui Zhang, Kai Yang, Michihiro Yasunaga, Dongxu Wang, Zifan Li, James Ma, Irene Li, Qingning Yao, Shanelle Roman, Zilin Zhang, and Dragomir Radev. 2018. Spider: A Large-Scale Human-Labeled Dataset for Complex and Cross-Domain Semantic Parsing and Text-to-SQL Task. In Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing , Ellen Riloff, David Chiang, Julia Hockenmaier, and Jun’ichi Tsujii (Eds.). Association for Computational Linguistics, Brussels, Belgium, 3911–3921. https://doi.org/10. 18653/v1/D18-1425 [66] Tuo Zhang, Jinyue Yuan, and Salman Avestimehr. 2024. Revisiting OPRO: The Limitations of Small-Scale LLMs as Optimizers. In Findings of the Association for Computational Linguistics: ACL 2024 . Association for Computational Linguistics, Bangkok, Thailand, 1727–1735. https://aclanthology.org/2024.findings-acl.100 [67] Yuze Zhang et al . 2025. EVOSCHEMA: Towards Text-to-SQL Robustness against Schema Evolution. Proc. VLDB Endow. 18 (2025). https://www.vldb.org/pvldb/ vol18/p3655-zhang.pdf 14
