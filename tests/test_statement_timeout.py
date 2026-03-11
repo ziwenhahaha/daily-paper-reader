@@ -27,7 +27,9 @@ sys.path.insert(0, str(ROOT / "src"))
 from supabase_source import (
     _build_date_filter_payload,
     _is_statement_timeout,
+    _parse_content_range_total,
     _request_with_retries,
+    count_papers_by_date_range,
     match_papers_by_embedding,
     match_papers_by_bm25,
 )
@@ -170,6 +172,36 @@ class BuildDateFilterPayloadTest(unittest.TestCase):
     def test_neither(self):
         out = _build_date_filter_payload(None, None)
         self.assertEqual(out, {})
+
+
+class ParseContentRangeTotalTest(unittest.TestCase):
+    def test_parse_standard_content_range(self):
+        self.assertEqual(_parse_content_range_total("0-0/6707"), 6707)
+
+    def test_parse_zero_content_range(self):
+        self.assertEqual(_parse_content_range_total("*/0"), 0)
+
+    def test_parse_missing_content_range(self):
+        self.assertIsNone(_parse_content_range_total(""))
+
+
+class CountPapersByDateRangeTest(unittest.TestCase):
+    @patch("supabase_source._request_with_retries")
+    def test_count_uses_content_range_total(self, mock_req):
+        resp = MagicMock()
+        resp.status_code = 206
+        resp.headers = {"Content-Range": "0-0/10772"}
+        mock_req.return_value = resp
+
+        count, msg = count_papers_by_date_range(
+            url="https://example.supabase.co",
+            api_key="test-key",
+            papers_table="arxiv_papers",
+            start_dt=datetime(2026, 3, 2, tzinfo=timezone.utc),
+            end_dt=datetime(2026, 3, 12, tzinfo=timezone.utc),
+        )
+        self.assertEqual(count, 10772)
+        self.assertIn("10772", msg)
 
 
 class EmbeddingPayloadContainsDateFiltersTest(unittest.TestCase):

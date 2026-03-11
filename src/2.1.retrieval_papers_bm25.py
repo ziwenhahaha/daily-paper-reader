@@ -24,7 +24,11 @@ from query_boolean import (
   match_term,
 )
 from subscription_plan import build_pipeline_inputs
-from supabase_source import get_supabase_read_config, match_papers_by_bm25
+from supabase_source import (
+  count_papers_by_date_range,
+  get_supabase_read_config,
+  match_papers_by_bm25,
+)
 
 
 # 当前脚本位于 src/ 下，config.yaml 在上一级目录
@@ -569,6 +573,17 @@ def build_bm25_index(papers: List[Paper], k1: float = 1.5, b: float = 0.75) -> B
   return BM25Index(tokenized_docs=tokenized, k1=k1, b=b)
 
 
+def estimate_dynamic_top_k(total_papers: int | None) -> int:
+  try:
+    total = int(total_papers or 0)
+  except Exception:
+    total = 0
+  if total <= 0:
+    return 50
+  blocks = (total - 1) // 1000
+  return 50 * (blocks + 1)
+
+
 def rank_papers_for_queries_via_supabase(
   queries: List[dict],
   top_k: int,
@@ -955,10 +970,28 @@ def main() -> None:
     and not bool(args.disable_supabase_bm25)
   )
 
+  supabase_window_count: int | None = None
+  if supabase_enabled and (args.top_k is None or args.top_k <= 0):
+    count_value, count_msg = count_papers_by_date_range(
+      url=str(supabase_conf.get("url") or "").strip(),
+      api_key=str(supabase_conf.get("anon_key") or "").strip(),
+      papers_table=str(supabase_conf.get("papers_table") or "arxiv_papers").strip(),
+      start_dt=sb_start_dt,
+      end_dt=sb_end_dt,
+      schema=str(supabase_conf.get("schema") or "public").strip(),
+    )
+    log(f"[INFO] Supabase BM25 窗口计数：{count_msg}")
+    supabase_window_count = count_value
+
   def run_supabase_rank(output_path: str) -> bool:
     label = os.path.basename(output_path)
     if args.top_k is None or args.top_k <= 0:
-      dynamic_top_k = 50
+      dynamic_top_k = estimate_dynamic_top_k(supabase_window_count)
+      log(
+        f"[INFO] Supabase BM25 自适应 Top K = {dynamic_top_k} "
+        f"(window_count={supabase_window_count if supabase_window_count is not None else 'unknown'})，"
+        f"输出文件：{label}"
+      )
     else:
       dynamic_top_k = args.top_k
       log(f"[INFO] Supabase BM25 使用命令行指定的 Top K = {dynamic_top_k}，输出文件：{label}")

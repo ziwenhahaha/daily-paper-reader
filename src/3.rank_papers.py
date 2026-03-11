@@ -21,6 +21,13 @@ MAX_CHARS_PER_DOC = 850
 BATCH_SIZE = 100
 TOKEN_SAFETY = 29000
 RRF_K = 60
+LANE_TOP_K_BASE = 30
+LANE_TOP_K_STEP = 10
+LANE_TOP_K_MAX = 120
+GLOBAL_POOL_GUARANTEED_MIN = 5
+GLOBAL_POOL_GUARANTEED_MAX = 20
+GLOBAL_POOL_RRF_MIN = 60
+GLOBAL_POOL_RRF_MAX = 300
 
 
 def log(message: str) -> None:
@@ -106,6 +113,97 @@ def get_top_ids(query_obj: Dict[str, Any]) -> List[str]:
   return list(top_ids)
 
 
+def _unique_keep_order(items: List[str]) -> List[str]:
+  seen = set()
+  out: List[str] = []
+  for item in items:
+    pid = str(item or "").strip()
+    if not pid or pid in seen:
+      continue
+    seen.add(pid)
+    out.append(pid)
+  return out
+
+
+def _clamp_int(value: float | int, min_value: int, max_value: int) -> int:
+  return max(min_value, min(int(value), max_value))
+
+
+def resolve_global_pool_budget(
+  total_papers: int,
+  intent_query_count: int,
+) -> Tuple[int, int, int]:
+  """
+  统一候选池预算：
+  - lane_top_k 随论文总数递增：1000 篇内 30，每增加 1000 篇 +10，上限 120；
+  - guaranteed_per_lane = lane_top_k 的 25%，限制在 [5, 20]；
+  - global_rrf_top = lane_top_k * intent_query_count，限制在 [60, 300]。
+  """
+  total = max(int(total_papers or 0), 0)
+  intent_count = max(int(intent_query_count or 0), 1)
+  if total <= 0:
+    lane_top_k = LANE_TOP_K_BASE
+  else:
+    blocks = (total - 1) // 1000
+    lane_top_k = min(LANE_TOP_K_BASE + LANE_TOP_K_STEP * blocks, LANE_TOP_K_MAX)
+  guaranteed_per_lane = _clamp_int(
+    round(lane_top_k * 0.25),
+    GLOBAL_POOL_GUARANTEED_MIN,
+    GLOBAL_POOL_GUARANTEED_MAX,
+  )
+  global_rrf_top = _clamp_int(
+    lane_top_k * intent_count,
+    GLOBAL_POOL_RRF_MIN,
+    GLOBAL_POOL_RRF_MAX,
+  )
+  return lane_top_k, guaranteed_per_lane, global_rrf_top
+
+
+def build_global_candidate_ids(
+  queries: List[Dict[str, Any]],
+  *,
+  guaranteed_per_lane: int,
+  global_limit: int,
+) -> List[str]:
+  """
+  将所有 query lane 的候选论文合并成统一候选池。
+  - 不区分 keyword / intent_query 来源；
+  - 使用 rank-based RRF 做全局聚合，避免不同分数量纲直接混用；
+  - 每条 lane 的前 guaranteed_per_lane 固定保留；
+  - 再加入全局 RRF 前 global_limit 篇；
+  - 最终按“固定保留 + 全局排序”去重合并。
+  """
+  score_map: Dict[str, float] = {}
+  hit_count: Dict[str, int] = {}
+  guaranteed_ids: List[str] = []
+
+  for q in queries or []:
+    top_ids = get_top_ids(q)
+    if not top_ids:
+      continue
+    if guaranteed_per_lane > 0:
+      guaranteed_ids.extend(top_ids[:guaranteed_per_lane])
+    for rank_idx, pid in enumerate(top_ids, start=1):
+      paper_id = str(pid or "").strip()
+      if not paper_id:
+        continue
+      score_map[paper_id] = score_map.get(paper_id, 0.0) + 1.0 / (RRF_K + rank_idx)
+      hit_count[paper_id] = hit_count.get(paper_id, 0) + 1
+
+  ranked = sorted(
+    score_map.items(),
+    key=lambda item: (
+      -item[1],
+      -hit_count.get(item[0], 0),
+      item[0],
+    ),
+  )
+  global_ids = [pid for pid, _score in ranked]
+  if global_limit > 0:
+    global_ids = global_ids[:global_limit]
+  return _unique_keep_order(list(guaranteed_ids) + list(global_ids))
+
+
 def iter_batches(
   docs_with_idx: List[Tuple[int, str]],
   query_tokens: int,
@@ -163,22 +261,45 @@ def process_file(
     log("[WARN] 当前输入中没有可用于 rerank 的意图查询，跳过 rerank。")
     # 保持输出结构一致，避免后续步骤读不到文件
     meta_generated_at = data.get("generated_at") or ""
-    data["reranked_at"] = datetime.utcnow().isoformat()
+    data["reranked_at"] = datetime.now(timezone.utc).isoformat()
     data["generated_at"] = meta_generated_at
     save_json(data, output_path)
     return
 
   papers_by_id = {str(p.get("id")): p for p in papers_list if p.get("id")}
+  lane_top_k, guaranteed_per_lane, global_rrf_top = resolve_global_pool_budget(
+    len(papers_list),
+    len(queries),
+  )
+  global_candidate_ids = build_global_candidate_ids(
+    all_queries,
+    guaranteed_per_lane=guaranteed_per_lane,
+    global_limit=global_rrf_top,
+  )
+  data["global_candidate_ids"] = global_candidate_ids
+  data["global_pool_lane_top_k"] = lane_top_k
+  data["global_pool_limit"] = global_rrf_top
+  data["global_pool_guaranteed_per_lane"] = guaranteed_per_lane
+  if not global_candidate_ids:
+    log("[WARN] 未能从任意 query 中构建统一候选池，跳过 rerank。")
+    meta_generated_at = data.get("generated_at") or ""
+    data["reranked_at"] = datetime.now(timezone.utc).isoformat()
+    data["generated_at"] = meta_generated_at
+    save_json(data, output_path)
+    return
   encoder = build_token_encoder()
   group_start(f"Step 3 - rerank {os.path.basename(input_path)}")
   log(
     f"[INFO] 开始 rerank：queries={len(queries)}（仅 intent/语义查询），papers={len(papers_list)}，"
-    f"batch_size={BATCH_SIZE}，max_chars={MAX_CHARS_PER_DOC}，token_safety={TOKEN_SAFETY}"
+    f"global_pool={len(global_candidate_ids)}（lane_top_k={lane_top_k}, "
+    f"guaranteed_per_lane={guaranteed_per_lane}, global_top={global_rrf_top}），"
+    f"batch_size={BATCH_SIZE}，"
+    f"max_chars={MAX_CHARS_PER_DOC}，token_safety={TOKEN_SAFETY}"
   )
 
   for q_idx, q in enumerate(queries, start=1):
     q_text = (q.get("rewrite") or q.get("query_text") or "").strip()
-    top_ids = get_top_ids(q)
+    top_ids = list(global_candidate_ids)
     if not q_text or not top_ids:
       continue
 
@@ -258,7 +379,7 @@ def process_file(
     q["ranked"] = ranked_for_query
 
   meta_generated_at = data.get("generated_at") or ""
-  data["reranked_at"] = datetime.utcnow().isoformat()
+  data["reranked_at"] = datetime.now(timezone.utc).isoformat()
   data["generated_at"] = meta_generated_at
 
   save_json(data, output_path)

@@ -19,7 +19,11 @@ import numpy as np
 
 from filter import EmbeddingCoarseFilter, encode_queries
 from subscription_plan import build_pipeline_inputs
-from supabase_source import get_supabase_read_config, match_papers_by_embedding
+from supabase_source import (
+  count_papers_by_date_range,
+  get_supabase_read_config,
+  match_papers_by_embedding,
+)
 
 
 # 当前脚本位于 src/ 下，config.yaml 在上一级目录
@@ -556,6 +560,17 @@ def try_use_precomputed_embeddings(
   return np.vstack(vectors)
 
 
+def estimate_dynamic_top_k(total_papers: int | None) -> int:
+  try:
+    total = int(total_papers or 0)
+  except Exception:
+    total = 0
+  if total <= 0:
+    return 50
+  blocks = (total - 1) // 1000
+  return 50 * (blocks + 1)
+
+
 def rank_papers_for_queries(
   model,
   papers: List[Paper],
@@ -890,6 +905,24 @@ def main() -> None:
   # 使用 EmbeddingCoarseFilter 类进行粗筛（模型只加载一次）
   coarse_filter = None
 
+  supabase_enabled = (
+    bool(supabase_conf.get("enabled"))
+    and bool(supabase_conf.get("use_vector_rpc"))
+    and not bool(args.disable_supabase_vector)
+  )
+  supabase_window_count: int | None = None
+  if supabase_enabled and (args.top_k is None or args.top_k <= 0):
+    count_value, count_msg = count_papers_by_date_range(
+      url=str(supabase_conf.get("url") or "").strip(),
+      api_key=str(supabase_conf.get("anon_key") or "").strip(),
+      papers_table=str(supabase_conf.get("papers_table") or "arxiv_papers").strip(),
+      start_dt=sb_start_dt,
+      end_dt=sb_end_dt,
+      schema=str(supabase_conf.get("schema") or "public").strip(),
+    )
+    log(f"[INFO] Supabase 向量召回窗口计数：{count_msg}")
+    supabase_window_count = count_value
+
   def get_filter() -> EmbeddingCoarseFilter:
     nonlocal coarse_filter
     if coarse_filter is None:
@@ -902,10 +935,17 @@ def main() -> None:
       )
     return coarse_filter
 
-  def run_supabase_vector_recall(output_path: str, top_k: int = 50) -> bool:
+  def run_supabase_vector_recall(output_path: str, top_k: int | None = None) -> bool:
     """Supabase-only 向量召回：不依赖本地原始文件。"""
     filter_inst = get_filter()
     label = os.path.basename(output_path)
+    dynamic_top_k = top_k if isinstance(top_k, int) and top_k > 0 else estimate_dynamic_top_k(supabase_window_count)
+    if not (isinstance(top_k, int) and top_k > 0):
+      log(
+        f"[INFO] Supabase 向量召回自适应 Top K = {dynamic_top_k} "
+        f"(window_count={supabase_window_count if supabase_window_count is not None else 'unknown'})，"
+        f"输出文件：{label}"
+      )
     group_start(f"Step 2.2 - supabase vector recall ({label})")
     try:
       exact_rpc = str(supabase_conf.get("vector_rpc_exact") or "").strip()
@@ -929,7 +969,7 @@ def main() -> None:
         result_sb = rank_papers_for_queries_via_supabase(
           model=filter_inst.model,
           queries=queries,
-          top_k=top_k,
+          top_k=dynamic_top_k,
           supabase_conf=supabase_conf,
           start_dt=sb_start_dt,
           end_dt=sb_end_dt,
@@ -993,11 +1033,6 @@ def main() -> None:
     filter_inst.top_k = dynamic_top_k
 
     result: Optional[dict] = None
-    supabase_enabled = (
-      bool(supabase_conf.get("enabled"))
-      and bool(supabase_conf.get("use_vector_rpc"))
-      and not bool(args.disable_supabase_vector)
-    )
 
     # 1) 优先数据库侧向量召回（Supabase pgvector RPC）
     if supabase_enabled:

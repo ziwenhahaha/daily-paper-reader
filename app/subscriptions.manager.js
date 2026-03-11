@@ -5,6 +5,8 @@
 // 3) 保存前仅保留 intent_profiles
 
 window.SubscriptionsManager = (function () {
+  const MAX_KEYWORDS_PER_PROFILE = 6;
+  const MAX_INTENT_QUERIES_PER_PROFILE = 4;
   let overlay = null;
   let panel = null;
   let saveBtn = null;
@@ -61,7 +63,7 @@ window.SubscriptionsManager = (function () {
     '   {"keyword":"symbolic regression","query":"deep symbolic regression methods","keyword_cn":"符号回归","query_cn":"符号回归深度方法"},',
     '   {"keyword":"reinforcement learning","query":"policy gradient symbolic regression","keyword_cn":"强化学习","query_cn":"策略梯度在符号回归中的应用"},',
     '   {"keyword":"MCTS","query":"MCTS for symbolic regression"}',
-    '5) intent_queries: output 3-8 actionable intent queries. Each item should include query and optional query_cn.',
+    '5) intent_queries: output 1-4 actionable intent queries. Each item should include query and optional query_cn.',
     '6) Do not output extra fields like must_have / optional / exclude / rewrite_for_embedding / must_have.',
     '7) Return pure JSON only, no explanations.',
     '8) Tag suggestion should be concise, preferably under 6 characters.',
@@ -325,6 +327,36 @@ window.SubscriptionsManager = (function () {
       .filter(Boolean);
   };
 
+  const validateIntentProfiles = (config) => {
+    const cfg = cloneDeep(config || {});
+    const subs = (cfg && cfg.subscriptions) || {};
+    const profiles = Array.isArray(subs.intent_profiles) ? subs.intent_profiles : [];
+    for (let idx = 0; idx < profiles.length; idx += 1) {
+      const profile = profiles[idx];
+      if (!profile || typeof profile !== 'object') continue;
+      const tag = normalizeText(profile.tag) || `词条${idx + 1}`;
+      const keywords = dedupeKeywords(
+        (Array.isArray(profile.keywords) ? profile.keywords : [])
+          .map(normalizeKeywordItem)
+          .filter(Boolean),
+      );
+      const intentQueries = normalizeIntentQueries(profile.intent_queries);
+      if (!keywords.length) {
+        return `词条「${tag}」至少需要 1 条关键词。`;
+      }
+      if (keywords.length > MAX_KEYWORDS_PER_PROFILE) {
+        return `词条「${tag}」的关键词最多只能保留 ${MAX_KEYWORDS_PER_PROFILE} 条。`;
+      }
+      if (!intentQueries.length) {
+        return `词条「${tag}」至少需要 1 条意图Query。`;
+      }
+      if (intentQueries.length > MAX_INTENT_QUERIES_PER_PROFILE) {
+        return `词条「${tag}」的意图Query 最多只能保留 ${MAX_INTENT_QUERIES_PER_PROFILE} 条。`;
+      }
+    }
+    return '';
+  };
+
   const stripIntentProfileIds = (config) => {
     const next = cloneDeep(config || {});
     if (!next || typeof next !== 'object') return next;
@@ -571,8 +603,13 @@ window.SubscriptionsManager = (function () {
       if (saveBtn) {
         saveBtn.disabled = true;
       }
-      setMessage('正在保存配置...', '#666');
       const toSave = normalizeSubscriptions(draftConfig || {});
+      const validationError = validateIntentProfiles(toSave);
+      if (validationError) {
+        setMessage(validationError, '#c00');
+        return;
+      }
+      setMessage('正在保存配置...', '#666');
       await window.SubscriptionsGithubToken.saveConfig(
         toSave,
         'chore: save smart query config from dashboard',
@@ -812,5 +849,6 @@ window.SubscriptionsManager = (function () {
       refreshQuickRunButtons();
     },
     getDraftConfig: () => cloneDeep(draftConfig || {}),
+    validateDraftConfig: () => validateIntentProfiles(draftConfig || {}),
   };
 })();
