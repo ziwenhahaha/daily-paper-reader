@@ -509,6 +509,11 @@ window.DPRWorkflowRunner = (function () {
       });
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
+        if (res.status === 422 && txt.includes('disabled workflow')) {
+          const err = new Error('触发失败：该 Workflow 当前处于禁用状态，请先前往 Actions 页面启用该工作流。');
+          err.workflowEnableUrl = `https://github.com/${owner}/${repo}/actions/workflows/${encodeURIComponent(workflowFile)}`;
+          throw err;
+        }
         throw new Error(`触发失败：HTTP ${res.status} ${res.statusText} - ${txt}`);
       }
 
@@ -568,8 +573,15 @@ window.DPRWorkflowRunner = (function () {
       loadRecentRuns();
     } catch (e) {
       console.error(e);
-      setStatus(`触发失败：${e.message || e}`, '#c00');
-      runsEl.innerHTML = `<div style="color:#c00;">${escapeHtml(e.message || String(e))}</div>`;
+      const msg = e.message || String(e);
+      setStatus(`触发失败：${msg}`, '#c00');
+      if (e.workflowEnableUrl) {
+        runsEl.innerHTML =
+          `<div style="color:#c00;">${escapeHtml(msg)}<br/>` +
+          `👉 <a href="${e.workflowEnableUrl}" target="_blank" style="color:#1a73e8;">前往 Actions 页面启用工作流</a></div>`;
+      } else {
+        runsEl.innerHTML = `<div style="color:#c00;">${escapeHtml(msg)}</div>`;
+      }
     }
   };
 

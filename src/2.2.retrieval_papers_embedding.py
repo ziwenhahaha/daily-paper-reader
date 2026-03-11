@@ -414,6 +414,11 @@ def rank_papers_for_queries_via_supabase(
     )
     log(f"[Supabase Vector:{rpc_mode}] {msg} | tag={q.get('tag') or ''}")
 
+    # 语句超时（57014）是服务端配置限制，后续批次也会超时，直接跳过
+    if not rows and "57014" in msg:
+      log(f"[Supabase Vector:{rpc_mode}] 检测到数据库语句超时，跳过剩余批次。")
+      break
+
     sim_scores: Dict[str, Dict[str, float | int]] = {}
     for rank_idx, row in enumerate(rows, start=1):
       pid = str(row.get("id") or "").strip()

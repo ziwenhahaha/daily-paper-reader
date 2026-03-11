@@ -15,6 +15,19 @@ DEFAULT_TIMEOUT = 20
 _DEFAULT_SUPABASE_RETRY = 3
 _DEFAULT_SUPABASE_RETRY_WAIT_SECONDS = 1.0
 
+# PostgreSQL error code for "canceling statement due to statement timeout"
+_PG_STATEMENT_TIMEOUT_CODE = "57014"
+
+
+def _is_statement_timeout(resp: requests.Response) -> bool:
+    """判断响应是否为 PostgreSQL 语句超时（error code 57014）。"""
+    try:
+        import json as _json
+        body = _json.loads(resp.text or "")
+        return isinstance(body, dict) and body.get("code") == _PG_STATEMENT_TIMEOUT_CODE
+    except Exception:
+        return False
+
 
 def _parse_datetime_like(value: Any) -> datetime | None:
     if value is None:
@@ -205,6 +218,10 @@ def _request_with_retries(
       )
       if resp.status_code < 500 or attempt >= attempts:
         return resp
+      # 语句超时（57014）是服务端配置限制，重试不会改善
+      if _is_statement_timeout(resp):
+        print(f"[WARN] {log_prefix} 检测到数据库语句超时 (57014)，跳过重试。", flush=True)
+        return resp
       msg = f"{log_prefix} 状态码重试 ({attempt}/{attempts})：HTTP {resp.status_code}"
       print(f"[WARN] {msg}", flush=True)
     except Exception as e:
@@ -366,6 +383,21 @@ def fetch_papers_by_date_range(
         return ([], f"papers 查询异常：{e}")
 
 
+def _build_date_filter_payload(
+    start_dt: datetime | None,
+    end_dt: datetime | None,
+) -> Dict[str, str]:
+    """构造日期过滤参数（ISO 8601），供 RPC 在数据库侧做 WHERE 过滤。"""
+    out: Dict[str, str] = {}
+    if isinstance(start_dt, datetime):
+        dt = start_dt.astimezone(timezone.utc) if start_dt.tzinfo else start_dt.replace(tzinfo=timezone.utc)
+        out["filter_published_start"] = dt.isoformat()
+    if isinstance(end_dt, datetime):
+        dt = end_dt.astimezone(timezone.utc) if end_dt.tzinfo else end_dt.replace(tzinfo=timezone.utc)
+        out["filter_published_end"] = dt.isoformat()
+    return out
+
+
 def match_papers_by_embedding(
     *,
     url: str,
@@ -384,6 +416,8 @@ def match_papers_by_embedding(
     约定 RPC 参数：
       - query_embedding: vector(N)
       - match_count: int
+      - filter_published_start: timestamptz (可选，数据库侧 WHERE 过滤)
+      - filter_published_end:   timestamptz (可选，数据库侧 WHERE 过滤)
     """
     safe_rpc = _norm(rpc_name)
     if not safe_rpc:
@@ -393,9 +427,10 @@ def match_papers_by_embedding(
         return ([], "query embedding 为空")
     k = max(int(match_count or 1), 1)
     endpoint = f"{_base_rest_url(url)}/rpc/{safe_rpc}"
-    payload = {
+    payload: Dict[str, Any] = {
         "query_embedding": vec,
         "match_count": k,
+        **_build_date_filter_payload(start_dt, end_dt),
     }
     try:
         resp = _request_with_retries(
@@ -471,6 +506,8 @@ def match_papers_by_bm25(
     约定 RPC 参数：
       - query_text: text
       - match_count: int
+      - filter_published_start: timestamptz (可选，数据库侧 WHERE 过滤)
+      - filter_published_end:   timestamptz (可选，数据库侧 WHERE 过滤)
     """
     safe_rpc = _norm(rpc_name)
     if not safe_rpc:
@@ -480,9 +517,10 @@ def match_papers_by_bm25(
         return ([], "query_text 为空")
     k = max(int(match_count or 1), 1)
     endpoint = f"{_base_rest_url(url)}/rpc/{safe_rpc}"
-    payload = {
+    payload: Dict[str, Any] = {
         "query_text": q,
         "match_count": k,
+        **_build_date_filter_payload(start_dt, end_dt),
     }
     try:
         resp = _request_with_retries(
