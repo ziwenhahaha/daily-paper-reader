@@ -29,7 +29,7 @@ class NormalizeArxivIdTest(unittest.TestCase):
     def test_keeps_plain_id(self):
         self.assertEqual(self.mod.normalize_arxiv_id("2501.12345"), "2501.12345")
 
-    def test_non_arxiv_id_unchanged(self):
+    def test_non_arxiv_id_lowercased(self):
         self.assertEqual(self.mod.normalize_arxiv_id("custom-paper-id"), "custom-paper-id")
         self.assertEqual(self.mod.normalize_arxiv_id("ABC123"), "abc123")
 

@@ -272,6 +272,8 @@ def build_scored_papers(papers: List[Dict[str, Any]], llm_ranked: List[Dict[str,
             continue
         norm_pid = normalize_arxiv_id(pid)
         paper_map[norm_pid] = p
+        # Also store under original ID so llm_ranked items using versioned IDs
+        # (e.g. "2501.12345v1") can still find their paper.
         if pid != norm_pid:
             paper_map[pid] = p
 
@@ -322,7 +324,7 @@ def build_candidates(
     carryover_items: List[Dict[str, Any]],
     seen_ids: set,
 ) -> List[Dict[str, Any]]:
-    norm_seen = {normalize_arxiv_id(sid) for sid in seen_ids} | seen_ids
+    norm_seen = {normalize_arxiv_id(sid) for sid in seen_ids}
     merged: Dict[str, Dict[str, Any]] = {}
 
     for item in carryover_items:
