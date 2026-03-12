@@ -10,14 +10,15 @@ import argparse
 import json
 import os
 import math
+import hashlib
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
-from typing import Dict, List, Set, Any, Optional
+from typing import Dict, List, Set, Any, Optional, Callable
 import re
 
 import numpy as np
 
-from filter import EmbeddingCoarseFilter, encode_queries
+from filter import E5_QUERY_PREFIX, EmbeddingCoarseFilter, encode_queries
 from subscription_plan import build_pipeline_inputs
 from supabase_source import (
   count_papers_by_date_range,
@@ -38,6 +39,9 @@ DATE_RE_DAY = re.compile(r"^\d{8}$")
 DATE_RE_RANGE = re.compile(r"^\d{8}-\d{8}$")
 SUPABASE_TIME_FIELDS = ("published",)
 SUPABASE_VECTOR_SHARD_DAYS = 7
+EMBEDDING_CACHE_VERSION = 1
+EMBEDDING_CACHE_FIELD = "embedding_cache"
+LEGACY_EMBEDDING_CACHE_KEY = "embedding_cache"
 
 def log(message: str) -> None:
   ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -156,6 +160,233 @@ def load_config() -> dict:
   except Exception as e:
     log(f"[WARN] 读取 config.yaml 失败：{e}")
     return {}
+
+
+def build_prefixed_query_text(text: str) -> str:
+  value = str(text or "").strip()
+  if not value:
+    return ""
+  return f"{E5_QUERY_PREFIX}{value}"
+
+
+def build_query_embedding_hash(model_name: str, query_text: str) -> str:
+  payload = f"v1|{str(model_name or '').strip().lower()}|{build_prefixed_query_text(query_text)}"
+  return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _remove_legacy_embedding_cache(config: Dict[str, Any]) -> None:
+  if not isinstance(config, dict):
+    return
+  subs = config.get("subscriptions")
+  if not isinstance(subs, dict):
+    return
+  legacy = subs.get(LEGACY_EMBEDDING_CACHE_KEY)
+  if isinstance(legacy, dict) and "query_vectors" in legacy:
+    subs.pop(LEGACY_EMBEDDING_CACHE_KEY, None)
+
+
+def _parse_cached_query_embedding(entry: Dict[str, Any], expected_model: str, expected_text: str) -> Optional[np.ndarray]:
+  if not isinstance(entry, dict):
+    return None
+  stored_model = str(entry.get("model") or "").strip().lower()
+  if stored_model and stored_model != str(expected_model or "").strip().lower():
+    return None
+  stored_text = str(entry.get("prefixed_text") or "").strip()
+  if stored_text and stored_text != expected_text:
+    return None
+
+  raw_embedding = entry.get("embedding_json")
+  if isinstance(raw_embedding, str) and raw_embedding.strip():
+    try:
+      loaded = json.loads(raw_embedding)
+      if isinstance(loaded, list):
+        raw_embedding = loaded
+    except Exception:
+      return None
+
+  if not isinstance(raw_embedding, list) or not raw_embedding:
+    raw_embedding = entry.get("embedding")
+  if not isinstance(raw_embedding, list) or not raw_embedding:
+    return None
+  try:
+    vec = np.asarray([float(x) for x in raw_embedding], dtype=np.float32)
+  except Exception:
+    return None
+  if vec.ndim != 1 or vec.shape[0] <= 0:
+    return None
+  return vec
+
+
+def save_config_with_embedding_cache(config: Dict[str, Any], path: str = CONFIG_FILE) -> bool:
+  try:
+    import yaml  # type: ignore
+  except Exception:
+    log("[WARN] 未安装 PyYAML，跳过 embedding cache 写回 config.yaml。")
+    return False
+
+  with open(path, "w", encoding="utf-8") as f:
+    yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False, width=10**9)
+  return True
+
+
+def _build_query_cache_payload(model_name: str, query_text: str, vec: np.ndarray, now_iso: str) -> Dict[str, Any]:
+  cache_hash = build_query_embedding_hash(model_name, query_text)
+  rounded = [float(f"{float(x):.6f}") for x in vec.tolist()]
+  return {
+    "version": EMBEDDING_CACHE_VERSION,
+    "hash": cache_hash,
+    "model": model_name,
+    "query_text": query_text,
+    "prefixed_text": build_prefixed_query_text(query_text),
+    "embedding_json": json.dumps(rounded, ensure_ascii=False, separators=(",", ":")),
+    "updated_at": now_iso,
+  }
+
+
+def _ensure_query_cache_target(config: Dict[str, Any], cache_ref: Dict[str, Any], query: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+  if not isinstance(config, dict) or not isinstance(cache_ref, dict):
+    return None
+  subs = config.get("subscriptions")
+  if not isinstance(subs, dict):
+    return None
+  profiles = subs.get("intent_profiles")
+  if not isinstance(profiles, list):
+    return None
+
+  try:
+    profile_index = int(cache_ref.get("profile_index"))
+    item_index = int(cache_ref.get("item_index"))
+  except Exception:
+    return None
+  item_kind = str(cache_ref.get("item_kind") or "").strip()
+  if item_kind not in {"keywords", "intent_queries"}:
+    return None
+  if profile_index < 0 or profile_index >= len(profiles):
+    return None
+  profile = profiles[profile_index]
+  if not isinstance(profile, dict):
+    return None
+  items = profile.get(item_kind)
+  if not isinstance(items, list):
+    return None
+  if item_index < 0 or item_index >= len(items):
+    return None
+
+  current = items[item_index]
+  if isinstance(current, str):
+    if item_kind == "keywords":
+      items[item_index] = {
+        "keyword": str(current or "").strip(),
+        "query": str(query.get("query_text") or current or "").strip(),
+      }
+    else:
+      items[item_index] = {
+        "query": str(query.get("query_text") or current or "").strip(),
+      }
+    current = items[item_index]
+  if not isinstance(current, dict):
+    return None
+  return current
+
+
+def _cache_entry_matches_query(entry: Dict[str, Any], model_name: str, query_text: str) -> bool:
+  return _parse_cached_query_embedding(entry, expected_model=model_name, expected_text=build_prefixed_query_text(query_text)) is not None
+
+
+def hydrate_query_embeddings_from_config(
+  *,
+  config: Dict[str, Any],
+  queries: List[dict],
+  model_name: str,
+  model_provider: Callable[[], Any],
+  batch_size: int,
+  max_length: int | None,
+  config_path: str = CONFIG_FILE,
+) -> Dict[str, int]:
+  if not queries:
+    return {"hits": 0, "misses": 0, "written": 0}
+
+  prepared_vectors: Dict[str, np.ndarray] = {}
+  prepared_payloads: Dict[str, Dict[str, Any]] = {}
+  misses_by_hash: Dict[str, str] = {}
+  hits = 0
+
+  for q in queries:
+    q_text = str(q.get("query_text") or "").strip()
+    if not q_text:
+      continue
+    cache_hash = build_query_embedding_hash(model_name, q_text)
+    prefixed_text = build_prefixed_query_text(q_text)
+    q["query_embedding_hash"] = cache_hash
+    q["prefixed_query_text"] = prefixed_text
+
+    if cache_hash in prepared_vectors:
+      q["query_embedding"] = prepared_vectors[cache_hash]
+      continue
+
+    cached_entry = q.get(EMBEDDING_CACHE_FIELD) if isinstance(q.get(EMBEDDING_CACHE_FIELD), dict) else {}
+    cached_vec = _parse_cached_query_embedding(
+      cached_entry,
+      expected_model=model_name,
+      expected_text=prefixed_text,
+    )
+    if cached_vec is not None:
+      prepared_vectors[cache_hash] = cached_vec
+      prepared_payloads[cache_hash] = dict(cached_entry)
+      q["query_embedding"] = cached_vec
+      hits += 1
+      continue
+
+    if cache_hash not in misses_by_hash:
+      misses_by_hash[cache_hash] = q_text
+
+  written = 0
+  if misses_by_hash:
+    model = model_provider()
+    miss_hashes = list(misses_by_hash.keys())
+    miss_texts = [misses_by_hash[h] for h in miss_hashes]
+    miss_vectors = encode_queries(
+      model,
+      miss_texts,
+      batch_size=max(int(batch_size or 1), 1),
+      max_length=max_length,
+    )
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for idx, cache_hash in enumerate(miss_hashes):
+      vec = np.asarray(miss_vectors[idx], dtype=np.float32)
+      prepared_vectors[cache_hash] = vec
+      q_text = misses_by_hash[cache_hash]
+      prepared_payloads[cache_hash] = _build_query_cache_payload(model_name, q_text, vec, now_iso)
+
+  changed = False
+  for q in queries:
+    cache_hash = str(q.get("query_embedding_hash") or "").strip()
+    q_text = str(q.get("query_text") or "").strip()
+    if not cache_hash or cache_hash not in prepared_vectors or not q_text:
+      continue
+    payload = prepared_payloads.get(cache_hash) or {}
+    q["query_embedding"] = prepared_vectors[cache_hash]
+    q[EMBEDDING_CACHE_FIELD] = dict(payload) if isinstance(payload, dict) else None
+    current_entry = q.get(EMBEDDING_CACHE_FIELD) if isinstance(q.get(EMBEDDING_CACHE_FIELD), dict) else {}
+    target = _ensure_query_cache_target(config, q.get("cache_ref") or {}, q)
+    if target is None:
+      continue
+    existing_entry = target.get(EMBEDDING_CACHE_FIELD) if isinstance(target.get(EMBEDDING_CACHE_FIELD), dict) else {}
+    if _cache_entry_matches_query(existing_entry, model_name, q_text):
+      continue
+    target[EMBEDDING_CACHE_FIELD] = dict(payload)
+    written += 1
+    changed = True
+
+  if changed:
+    _remove_legacy_embedding_cache(config)
+    save_config_with_embedding_cache(config, config_path)
+
+  return {
+    "hits": hits,
+    "misses": len(misses_by_hash),
+    "written": written,
+  }
 
 
 def load_paper_pool(path: str) -> List[Paper]:
@@ -606,11 +837,19 @@ def rank_papers_for_queries(
 
     log(f"[INFO] 正在处理查询（{q.get('type')}）：tag={q.get('tag') or ''}")
 
-    # 查询向量编码：若底层模型（如 Qwen3-Embedding）支持 "query" prompt，则自动使用
-    q_emb = encode_queries(
-      model,
-      [q_text],
-    )[0]  # 形状为 (D,)
+    raw_cached = q.get("query_embedding")
+    if isinstance(raw_cached, np.ndarray):
+      q_emb = raw_cached
+    elif isinstance(raw_cached, list) and raw_cached:
+      q_emb = np.asarray([float(x) for x in raw_cached], dtype=np.float32)
+    else:
+      if model is None:
+        raise RuntimeError("缺少 query embedding 且未提供可编码模型。")
+      # 查询向量编码：若底层模型（如 Qwen3-Embedding）支持 "query" prompt，则自动使用
+      q_emb = encode_queries(
+        model,
+        [q_text],
+      )[0]  # 形状为 (D,)
 
     # 相似度 = 归一化向量的点积
     sims = np.dot(paper_embeddings, q_emb)  # 形状 (N,)
@@ -670,8 +909,27 @@ def rank_papers_for_queries_via_supabase(
   if not url or not api_key:
     return {"queries": [], "papers": {}, "total_hits": 0}
 
-  q_texts = [str(q.get("query_text") or "").strip() for q in queries]
-  q_embs = encode_queries(model, q_texts)
+  q_embs: List[np.ndarray] = []
+  missing_indices: List[int] = []
+  missing_texts: List[str] = []
+  for idx, q in enumerate(queries):
+    raw_cached = q.get("query_embedding")
+    if isinstance(raw_cached, np.ndarray):
+      q_embs.append(raw_cached)
+      continue
+    if isinstance(raw_cached, list) and raw_cached:
+      q_embs.append(np.asarray([float(x) for x in raw_cached], dtype=np.float32))
+      continue
+    q_embs.append(np.asarray([], dtype=np.float32))
+    missing_indices.append(idx)
+    missing_texts.append(str(q.get("query_text") or "").strip())
+
+  if missing_indices:
+    if model is None:
+      raise RuntimeError("缺少 query embedding 且未提供可编码模型。")
+    encoded_missing = encode_queries(model, missing_texts)
+    for local_idx, query_idx in enumerate(missing_indices):
+      q_embs[query_idx] = np.asarray(encoded_missing[local_idx], dtype=np.float32)
 
   id_to_paper: Dict[str, Paper] = {}
   results_per_query: List[dict] = []
@@ -935,9 +1193,24 @@ def main() -> None:
       )
     return coarse_filter
 
+  cache_stats = hydrate_query_embeddings_from_config(
+    config=config,
+    queries=queries,
+    model_name=args.model,
+    model_provider=lambda: get_filter().model,
+    batch_size=args.batch_size,
+    max_length=args.max_length,
+    config_path=CONFIG_FILE,
+  )
+  log(
+    "[INFO] Query embedding cache："
+    f"hits={cache_stats.get('hits', 0)} "
+    f"misses={cache_stats.get('misses', 0)} "
+    f"written={cache_stats.get('written', 0)}"
+  )
+
   def run_supabase_vector_recall(output_path: str, top_k: int | None = None) -> bool:
     """Supabase-only 向量召回：不依赖本地原始文件。"""
-    filter_inst = get_filter()
     label = os.path.basename(output_path)
     dynamic_top_k = top_k if isinstance(top_k, int) and top_k > 0 else estimate_dynamic_top_k(supabase_window_count)
     if not (isinstance(top_k, int) and top_k > 0):
@@ -967,7 +1240,7 @@ def main() -> None:
       for mode, rpc_name in rpc_plan:
         log(f"[INFO] Supabase 向量召回尝试：mode={mode} rpc={rpc_name}")
         result_sb = rank_papers_for_queries_via_supabase(
-          model=filter_inst.model,
+          model=None,
           queries=queries,
           top_k=dynamic_top_k,
           supabase_conf=supabase_conf,
@@ -1028,10 +1301,6 @@ def main() -> None:
         f"原始论文数为 {total_papers} 篇。"
       )
 
-    # 更新粗筛器的 top_k
-    filter_inst = get_filter()
-    filter_inst.top_k = dynamic_top_k
-
     result: Optional[dict] = None
 
     # 1) 优先数据库侧向量召回（Supabase pgvector RPC）
@@ -1056,7 +1325,7 @@ def main() -> None:
         for mode, rpc_name in rpc_plan:
           log(f"[INFO] Supabase 向量召回尝试：mode={mode} rpc={rpc_name}")
           result_sb = rank_papers_for_queries_via_supabase(
-            model=filter_inst.model,
+            model=None,
             queries=queries,
             top_k=dynamic_top_k,
             supabase_conf=supabase_conf,
@@ -1102,6 +1371,8 @@ def main() -> None:
 
     # 2) 回退：本地 embedding 检索（保留原有逻辑）
     if result is None:
+      filter_inst = get_filter()
+      filter_inst.top_k = dynamic_top_k
       paper_embeddings = try_use_precomputed_embeddings(papers, expected_model=args.model)
       if paper_embeddings is not None:
         group_start(f"Step 2.2 - use precomputed embeddings ({os.path.basename(input_path)})")

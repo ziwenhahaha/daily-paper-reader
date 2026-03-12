@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 import re
@@ -112,17 +113,25 @@ def _normalize_intent_query_entry(item: Any) -> Dict[str, Any]:
     "enabled": _as_bool(item.get("enabled"), True),
     "source": _norm_text(item.get("source") or "manual"),
     "note": _norm_text(item.get("note") or ""),
+    "embedding_cache": copy.deepcopy(item.get("embedding_cache")) if isinstance(item.get("embedding_cache"), dict) else None,
+    "_cache_ref": copy.deepcopy(item.get("_cache_ref")) if isinstance(item.get("_cache_ref"), dict) else None,
   }
 
 
-def _normalize_query_list(items: Any) -> List[Dict[str, Any]]:
+def _normalize_query_list(items: Any, profile_index: int | None = None) -> List[Dict[str, Any]]:
   if not isinstance(items, list):
     return []
 
   out: List[Dict[str, Any]] = []
-  for raw in items:
+  for item_index, raw in enumerate(items):
     entry = _normalize_intent_query_entry(raw)
     if entry:
+      if profile_index is not None:
+        entry["_cache_ref"] = {
+          "profile_index": int(profile_index),
+          "item_kind": "intent_queries",
+          "item_index": int(item_index),
+        }
       out.append(entry)
 
   seen = set()
@@ -167,17 +176,25 @@ def _normalize_keyword_entry(item: Any) -> Dict[str, Any]:
     "enabled": _as_bool(item.get("enabled"), True),
     "source": _norm_text(item.get("source") or "manual"),
     "note": _norm_text(item.get("note") or ""),
+    "embedding_cache": copy.deepcopy(item.get("embedding_cache")) if isinstance(item.get("embedding_cache"), dict) else None,
+    "_cache_ref": copy.deepcopy(item.get("_cache_ref")) if isinstance(item.get("_cache_ref"), dict) else None,
   }
 
 
-def _normalize_keyword_list(items: Any) -> List[Dict[str, Any]]:
+def _normalize_keyword_list(items: Any, profile_index: int | None = None) -> List[Dict[str, Any]]:
   if not isinstance(items, list):
     return []
 
   out: List[Dict[str, Any]] = []
-  for raw in items:
+  for item_index, raw in enumerate(items):
     entry = _normalize_keyword_entry(raw)
     if entry:
+      if profile_index is not None:
+        entry["_cache_ref"] = {
+          "profile_index": int(profile_index),
+          "item_kind": "keywords",
+          "item_index": int(item_index),
+        }
       out.append(entry)
 
   seen = set()
@@ -220,8 +237,8 @@ def _normalize_profile(profile: Dict[str, Any], idx: int) -> Dict[str, Any]:
     tag = f"profile-{idx + 1}"
 
   kw_rules_in = profile.get("keywords") or []
-  kw_rules: List[Dict[str, Any]] = _normalize_keyword_list(kw_rules_in)
-  intent_queries: List[Dict[str, Any]] = _normalize_query_list(profile.get("intent_queries"))
+  kw_rules: List[Dict[str, Any]] = _normalize_keyword_list(kw_rules_in, profile_index=idx)
+  intent_queries: List[Dict[str, Any]] = _normalize_query_list(profile.get("intent_queries"), profile_index=idx)
 
   return {
     "tag": tag,
@@ -296,6 +313,8 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
           "query_text": raw_query,
           "logic_cn": logic_cn,
           "source": source,
+          "embedding_cache": copy.deepcopy(normalized.get("embedding_cache")) if isinstance(normalized.get("embedding_cache"), dict) else None,
+          "cache_ref": copy.deepcopy(normalized.get("_cache_ref")) if isinstance(normalized.get("_cache_ref"), dict) else None,
         }
       )
       context_keywords.append({"tag": paper_tag_keyword, "keyword": raw_text, "logic_cn": logic_cn})
@@ -342,6 +361,8 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
           "query_text": raw_query,
           "logic_cn": "",
           "source": source,
+          "embedding_cache": copy.deepcopy(normalized_intent.get("embedding_cache")) if isinstance(normalized_intent.get("embedding_cache"), dict) else None,
+          "cache_ref": copy.deepcopy(normalized_intent.get("_cache_ref")) if isinstance(normalized_intent.get("_cache_ref"), dict) else None,
         }
       )
       context_queries.append(

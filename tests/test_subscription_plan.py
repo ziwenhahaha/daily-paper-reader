@@ -121,7 +121,7 @@ class SubscriptionPlanTest(unittest.TestCase):
 
         self.assertEqual(len(intent_bm25), 2)
         self.assertEqual(len(intent_emb), 2)
-        self.assertEqual(len(intent_context), 2)
+        self.assertEqual(len(intent_context), 3)
 
         bm25_texts = [q.get('query_text') for q in intent_bm25]
         self.assertIn('symbolic regression with reinforcement learning', bm25_texts)
@@ -132,6 +132,7 @@ class SubscriptionPlanTest(unittest.TestCase):
         self.assertIn('equation discovery for physical systems', emb_texts)
 
         context_texts = [q.get('query') for q in intent_context]
+        self.assertIn('symbolic regression methods', context_texts)
         self.assertIn('symbolic regression with reinforcement learning', context_texts)
         self.assertIn('equation discovery for physical systems', context_texts)
 

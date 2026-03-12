@@ -219,6 +219,10 @@ window.SubscriptionsSmartQuery = (function () {
           keyword,
           keyword_cn: keywordCn,
           query: query || keyword,
+          embedding_cache:
+            item.embedding_cache && typeof item.embedding_cache === 'object'
+              ? deepClone(item.embedding_cache)
+              : undefined,
         };
       })
       .filter(Boolean);
@@ -249,6 +253,10 @@ window.SubscriptionsSmartQuery = (function () {
           enabled: item.enabled !== false,
           source: normalizeText(item.source || 'generated'),
           note: normalizeText(item.note || ''),
+          embedding_cache:
+            item.embedding_cache && typeof item.embedding_cache === 'object'
+              ? deepClone(item.embedding_cache)
+              : undefined,
         };
       })
       .filter((item) => {
@@ -857,6 +865,10 @@ window.SubscriptionsSmartQuery = (function () {
           keyword,
           keyword_cn: normalizeText(item.keyword_cn || item.keyword_zh || item.zh || ''),
           query: normalizeText(item.query || item.text || keyword),
+          embedding_cache:
+            item.embedding_cache && typeof item.embedding_cache === 'object'
+              ? deepClone(item.embedding_cache)
+              : undefined,
         });
       });
 
@@ -873,6 +885,10 @@ window.SubscriptionsSmartQuery = (function () {
         mergedIntentQueries.push({
           query,
           query_cn: normalizeText(item.query_cn || item.query_zh || item.zh || ''),
+          embedding_cache:
+            item.embedding_cache && typeof item.embedding_cache === 'object'
+              ? deepClone(item.embedding_cache)
+              : undefined,
         });
       };
 
@@ -907,23 +923,6 @@ window.SubscriptionsSmartQuery = (function () {
       found = true;
 
       const existedProfile = profiles[idx] || {};
-      const mergedIntentQueries = [];
-      const intentSeen = new Set();
-      const pushIntent = (queryObj) => {
-        const query = normalizeText(queryObj && queryObj.query);
-        if (!query || intentSeen.has(query.toLowerCase())) return;
-        intentSeen.add(query.toLowerCase());
-        mergedIntentQueries.push({
-          query,
-          query_cn: normalizeText(queryObj.query_cn || queryObj.query_zh || queryObj.zh || ''),
-          enabled: queryObj.enabled !== false,
-          source: normalizeText(queryObj.source || 'manual'),
-          note: normalizeText(queryObj.note || ''),
-        });
-      };
-
-      (normalizeIntentQueryEntries(existedProfile.intent_queries) || []).forEach(pushIntent);
-      intentQueries.forEach(pushIntent);
 
       profiles[idx] = {
         ...existedProfile,
@@ -936,10 +935,26 @@ window.SubscriptionsSmartQuery = (function () {
                   keyword: normalizeText(item.keyword || item.text || item.expr || ''),
                   keyword_cn: normalizeText(item.keyword_cn || item.keyword_zh || item.zh || ''),
                   query: normalizeText(item.query || item.text || item.keyword || ''),
+                  embedding_cache:
+                    item.embedding_cache && typeof item.embedding_cache === 'object'
+                      ? deepClone(item.embedding_cache)
+                      : undefined,
                 }))
                 .filter((x) => x.keyword)
             : normalizeProfileKeywords(existedProfile),
-        intent_queries: mergedIntentQueries,
+        intent_queries: intentQueries
+          .map((queryObj) => ({
+            query: normalizeText(queryObj && queryObj.query),
+            query_cn: normalizeText(queryObj.query_cn || queryObj.query_zh || queryObj.zh || ''),
+            enabled: queryObj.enabled !== false,
+            source: normalizeText(queryObj.source || 'manual'),
+            note: normalizeText(queryObj.note || ''),
+            embedding_cache:
+              queryObj.embedding_cache && typeof queryObj.embedding_cache === 'object'
+                ? deepClone(queryObj.embedding_cache)
+                : undefined,
+          }))
+          .filter((x) => x.query),
         updated_at: new Date().toISOString(),
       };
       subs.intent_profiles = profiles;
@@ -1094,9 +1109,13 @@ window.SubscriptionsSmartQuery = (function () {
     if (field !== meta.primary && field !== meta.secondary) return;
     const item = candidates[index];
     if (!item) return;
+    const prevValue = normalizeText(item[field]);
     item[field] = normalizeText(value);
     if (realKind !== 'intent' && field === meta.primary && !normalizeText(item.query)) {
       item.query = normalizeText(value);
+    }
+    if (realKind === 'intent' && field === meta.primary && prevValue !== normalizeText(value)) {
+      delete item.embedding_cache;
     }
     candidates[index] = item;
   };
@@ -1338,6 +1357,10 @@ window.SubscriptionsSmartQuery = (function () {
       keyword: normalizeText(k.keyword || ''),
       query: normalizeText(k.query || k.keyword || ''),
       keyword_cn: normalizeText(k.keyword_cn || ''),
+      embedding_cache:
+        k.embedding_cache && typeof k.embedding_cache === 'object'
+          ? deepClone(k.embedding_cache)
+          : undefined,
     }));
 
     const keywordState = parseCandidatesForState({ keywords }, false);

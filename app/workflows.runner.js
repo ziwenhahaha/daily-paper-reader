@@ -69,6 +69,7 @@ window.DPRWorkflowRunner = (function () {
   let activeRun = null;
   let selectedRun = null;
   const lastRunStateById = {};
+  let repoContextCache = null;
 
   const escapeHtml = (str) => {
     if (!str) return '';
@@ -125,6 +126,46 @@ window.DPRWorkflowRunner = (function () {
     }
 
     return { owner: '', repo: '' };
+  };
+
+  const resolveRepoContext = async (token, options = {}) => {
+    const { forceRefresh = false } = options || {};
+    const { owner, repo } = await resolveRepoFromUrl(token);
+    if (!owner || !repo) {
+      return { owner: '', repo: '', isFork: null, defaultBranch: 'main' };
+    }
+
+    const cacheKey = `${owner}/${repo}`;
+    if (!forceRefresh && repoContextCache && repoContextCache.key === cacheKey && repoContextCache.value) {
+      return repoContextCache.value;
+    }
+    if (!forceRefresh && repoContextCache && repoContextCache.key === cacheKey && repoContextCache.promise) {
+      return repoContextCache.promise;
+    }
+
+    const fetchPromise = (async () => {
+      try {
+        const repoUrl = `https://api.github.com/repos/${owner}/${repo}`;
+        const res = await ghFetch(token, repoUrl);
+        if (!res.ok) {
+          return { owner, repo, isFork: null, defaultBranch: 'main' };
+        }
+        const data = await res.json().catch(() => null);
+        return {
+          owner,
+          repo,
+          isFork: !!(data && data.fork),
+          defaultBranch: String((data && data.default_branch) || 'main'),
+        };
+      } catch {
+        return { owner, repo, isFork: null, defaultBranch: 'main' };
+      }
+    })();
+
+    repoContextCache = { key: cacheKey, promise: fetchPromise, value: null };
+    const value = await fetchPromise;
+    repoContextCache = { key: cacheKey, promise: null, value };
+    return value;
   };
 
   const ghFetch = async (token, url, init) => {
@@ -298,7 +339,7 @@ window.DPRWorkflowRunner = (function () {
     }
   };
 
-  const renderRecentRuns = (owner, repo, byWorkflow, errText) => {
+  const renderRecentRuns = (owner, repo, byWorkflow, errText, repoContext = null) => {
     if (!recentEl) return;
     recentEl.classList.remove('is-loading');
     if (errText) {
@@ -306,6 +347,14 @@ window.DPRWorkflowRunner = (function () {
       return;
     }
     const blocks = WORKFLOWS.map((wf) => {
+      if (wf.key === 'sync' && repoContext && repoContext.isFork === false) {
+        return `
+          <div class="dpr-wf-recent-block">
+            <div class="dpr-wf-recent-block-title">${escapeHtml(wf.name)}</div>
+            <div style="color:#c90;">当前仓库不是 GitHub Fork，已禁用上游同步。</div>
+          </div>
+        `;
+      }
       const list = (byWorkflow && byWorkflow[String(wf.key || wf.id || '')]) || [];
       const items = Array.isArray(list) ? list : [];
       const lines = items
@@ -378,7 +427,8 @@ window.DPRWorkflowRunner = (function () {
     }
 
     try {
-      const { owner, repo } = await resolveRepoFromUrl(token);
+      const repoContext = await resolveRepoContext(token);
+      const { owner, repo } = repoContext;
       if (!owner || !repo) {
         renderRecentRuns(owner, repo, null, '无法推断目标仓库，无法加载最近运行记录。');
         return;
@@ -436,11 +486,11 @@ window.DPRWorkflowRunner = (function () {
         byWorkflow[String(wf.key || wfId)] = (runsByWorkflowId[wfId] || []).slice(0, 3);
       });
 
-      renderRecentRuns(owner, repo, byWorkflow, '');
+      renderRecentRuns(owner, repo, byWorkflow, '', repoContext);
     } catch (e) {
       console.error(e);
       if (recentEl) recentEl.classList.remove('is-loading');
-      renderRecentRuns('', '', null, e.message || String(e));
+      renderRecentRuns('', '', null, e.message || String(e), null);
     }
   };
 
@@ -476,9 +526,17 @@ window.DPRWorkflowRunner = (function () {
       setStatus('未检测到 GitHub Token：请在“密钥配置”或“GitHub Token”处完成配置。', '#c00');
       return;
     }
-    const { owner, repo } = await resolveRepoFromUrl(token);
+    const repoContext = await resolveRepoContext(token);
+    const { owner, repo } = repoContext;
     if (!owner || !repo) {
       setStatus('无法推断目标仓库：请确认 GitHub Token 有效，或使用 xxx.github.io/仓库名/ 访问。', '#c00');
+      return;
+    }
+    if (wf.key === 'sync' && repoContext.isFork === false) {
+      setStatus('当前仓库不是 GitHub Fork，无法使用上游同步。', '#c00');
+      runsEl.innerHTML =
+        '<div style="color:#c00;">当前仓库不是 Fork 仓库，Upstream Sync 不会运行。</div>' +
+        `<div style="margin-top:8px;"><a class="arxiv-tool-btn" style="padding:6px 10px; text-decoration:none;" target="_blank" href="https://github.com/${owner}/${repo}/fork">前往 Fork 当前仓库</a></div>`;
       return;
     }
 
@@ -525,7 +583,7 @@ window.DPRWorkflowRunner = (function () {
       )}/dispatches`;
       const dispatchInputs = combineInputs(wf.dispatchInputs, extraInputs);
       const dispatchBody = {
-        ref: 'main',
+        ref: String(repoContext.defaultBranch || 'main'),
       };
       if (Object.keys(dispatchInputs).length > 0) {
         dispatchBody.inputs = dispatchInputs;

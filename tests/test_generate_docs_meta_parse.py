@@ -35,7 +35,7 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
         self.assertIn("query:transformer", item["tags"])
         self.assertEqual(item["date"], "20170612")
         self.assertIn("https://arxiv.org/pdf", item["pdf"])
-        self.assertEqual(item["selection_source"], "")
+        self.assertEqual(item["selection_source"], "fresh_fetch")
 
     def test_parse_fallback_to_legacy_meta_lines(self):
         with tempfile.TemporaryDirectory() as d:
