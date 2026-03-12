@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import requests
 
 from src.model_loader import RemoteSentenceTransformer, load_sentence_transformer
 
@@ -50,6 +51,33 @@ class RemoteSentenceTransformerTest(unittest.TestCase):
         self.assertEqual(first_call.kwargs["json"], {"texts": ["a", "b"]})
         self.assertEqual(first_call.kwargs["headers"]["Authorization"], "Bearer test-key")
         self.assertEqual(first_call.kwargs["timeout"], 30)
+
+    @patch("src.model_loader._load_local_sentence_transformer")
+    @patch("src.model_loader.requests.post")
+    def test_remote_encode_falls_back_to_local_model_when_remote_fails(self, mock_post, mock_load_local):
+        mock_post.side_effect = requests.exceptions.Timeout("remote timeout")
+        local_model = MagicMock()
+        local_model.encode.return_value = np.asarray([[0.1, 0.2]], dtype=np.float32)
+        mock_load_local.return_value = local_model
+
+        model = RemoteSentenceTransformer(
+            model_name="BAAI/bge-small-en-v1.5",
+            endpoint="https://embed.zwwen.online",
+            api_key="test-key",
+            timeout=30,
+            default_batch_size=2,
+        )
+        arr = model.encode(
+            ["a"],
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            batch_size=2,
+        )
+
+        self.assertEqual(mock_post.call_count, 1)
+        mock_load_local.assert_called_once()
+        local_model.encode.assert_called_once()
+        self.assertEqual(arr.shape, (1, 2))
 
     @patch.dict(
         os.environ,

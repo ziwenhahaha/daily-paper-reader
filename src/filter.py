@@ -1,18 +1,20 @@
 #!/usr/bin/env python
 # 通用向量检索工具：封装 sentence-transformers 的向量计算与粗筛逻辑
 
+from __future__ import annotations
+
 import os
 import numpy as np
-from typing import Any, Dict, List
+from typing import Any, Dict, List, TYPE_CHECKING
 import time
 from datetime import datetime, timezone
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 
-import torch
-from sentence_transformers import SentenceTransformer
+from model_loader import is_remote_embedding_enabled, load_sentence_transformer
 
-from model_loader import load_sentence_transformer
+if TYPE_CHECKING:
+  from sentence_transformers import SentenceTransformer
 
 # E5 系列推荐使用 query/passsage 前缀来区分检索侧与文档侧
 E5_QUERY_PREFIX = "query: "
@@ -29,6 +31,8 @@ def debug_hf_runtime(prefix: str) -> None:
   """
   enable = (os.getenv("DPR_DEBUG_HF") == "1") or (os.getenv("GITHUB_ACTIONS") == "true")
   if not enable:
+    return
+  if is_remote_embedding_enabled():
     return
 
   log(f"[DEBUG][HF] {prefix}")
@@ -73,7 +77,7 @@ def debug_hf_runtime(prefix: str) -> None:
     ls_dir(hf_home)
 
 
-def _set_max_seq_length(model: SentenceTransformer, max_length: int | None) -> None:
+def _set_max_seq_length(model: Any, max_length: int | None) -> None:
   """尽量通过 SentenceTransformer 的 max_seq_length 控制截断长度。"""
   if max_length is None or max_length <= 0:
     return
@@ -93,7 +97,7 @@ def _set_max_seq_length(model: SentenceTransformer, max_length: int | None) -> N
 
 
 def encode_queries(
-  model: SentenceTransformer,
+  model: Any,
   texts: List[str],
   batch_size: int = 8,
   max_length: int | None = None,
@@ -128,7 +132,7 @@ def encode_queries(
 
 
 def compute_embeddings(
-  model: SentenceTransformer,
+  model: Any,
   items: List[Any],
   batch_size: int = 8,
   max_length: int | None = None,
@@ -206,15 +210,27 @@ class EmbeddingCoarseFilter:
     self.batch_size = batch_size
     self.max_length = max_length
 
+    remote_mode = is_remote_embedding_enabled()
     if device is None:
-      self.device = "cuda" if torch.cuda.is_available() else "cpu"
+      if remote_mode:
+        self.device = "remote"
+      else:
+        try:
+          import torch
+          self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+          self.device = "cpu"
     else:
-      self.device = device
+      self.device = device if not remote_mode else "remote"
 
-    print(f"[INFO] 正在加载向量模型：{self.model_name}，device={self.device}")
-    debug_hf_runtime("before SentenceTransformer()")
+    if remote_mode:
+      print(f"[INFO] 正在初始化远程向量服务：{self.model_name}，device={self.device}")
+    else:
+      print(f"[INFO] 正在加载本地向量模型：{self.model_name}，device={self.device}")
+      debug_hf_runtime("before SentenceTransformer()")
     self.model = load_sentence_transformer(self.model_name, device=self.device)
-    debug_hf_runtime("after SentenceTransformer()")
+    if not remote_mode:
+      debug_hf_runtime("after SentenceTransformer()")
     _set_max_seq_length(self.model, self.max_length)
 
   def filter(self, items: List[Any], queries: List[Dict[str, Any]]) -> Dict[str, Any]:
