@@ -1,0 +1,1738 @@
+Title: Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts
+
+URL Source: https://arxiv.org/pdf/2603.07169v1
+
+Published Time: Tue, 10 Mar 2026 00:42:37 GMT
+
+Number of Pages: 27
+
+Markdown Content:
+# Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+Yuxuan Han 1 2 Meng-Hao Guo 1 Zhengning Liu 2 Wenguang Chen 1 Shi-Min Hu 1
+
+## Abstract 
+
+Optimizing GPU kernels manually is a challeng-ing and time-consuming task. With the rapid development of LLMs, automated GPU kernel optimization is gradually becoming a tangible re-ality. However, current LLM-driven automated optimization methods narrowly focus on machine learning applications, such as PyTorch operator optimization, while overlooking broader domains like sparse matrix operations in scientific com-puting. Extending to these broader applications brings new challenges for the benchmark and al-gorithm. Therefore, developing a general-purpose automated kernel optimization method becomes our primary focus. In this paper, we address the ab-sence of systematic evaluation for multi-scenario settings by introducing MSKernelBench, which spans multiple scenarios, including fundamen-tal algebraic operations, common LLM kernels, sparse matrix operators, and scientific computing routines, each supporting both FP32 and BF16 pre-cision. Building on this benchmark, we introduce CUDAMaster, a multi-agent, hardware-aware sys-tem for kernel optimization that leverages pro-filing information and automatically constructs the full compilation and execution toolchain. Ex-perimental results demonstrate that CUDAMaster achieves significant speedups across most opera-tors, outperforming Astra by about 35%. In several cases, its performance matches or surpasses that of highly optimized, closed-source libraries such as cuBLAS. A demo showcasing the original and op-timized code for each operator is available at https: //hanyx2021.github.io/MSKernelBenchDemo/. 
+
+## 1. Introduction 
+
+Recent advances in Large Language Models (LLMs) have demonstrated remarkable potential in automating various software engineering tasks (Wang & Chen, 2023). This has naturally spurred interest in applying LLMs to the  
+
+> 1Tsinghua University 2Proxseer Inc.
+
+domain of GPU kernel optimization (Chen et al., 2025). Initial explorations, however, have largely been conducted within the context of high-level deep learning frameworks like PyTorch (Paszke et al., 2019) and have focused pre-dominantly on a narrow set of operators common in deep learning models, for example KernelBench (Ouyang et al., 2025). While valuable, this approach inherits framework abstractions and optimizations that bias evaluation toward deep-learning-centric execution patterns and fail to capture the broader diversity of GPU kernels found in real-world high-performance computing workloads, such as scientific computing. Therefore, this work aims to explore general GPU kernel optimization strategies, an area where existing benchmarks and algorithms remain insufficiently developed. Recent benchmarks, such as KernelBench, have a funda-mental limitation in perspective: they equate the problem of 
+
+kernel optimization with the problem of accelerating LLM components . These computational tasks are often character-ized by computational intensity and regular memory access. This approach fails to test the ability of automated systems to handle more challenging general-purpose computational tasks with more irregular memory access patterns, such as those in sparse linear algebra and scientific computing kernels. Besides, most optimization paths for LLM opera-tors are highly public, and their success may stem from the model’s recall of known solutions. However, evaluations that include non-LLM operators force the system to create 
+
+in an open question without standard answers, which better tests its true optimization and generalization capabilities. As for kernel optimization, the multi-scenario optimiza-tion task is inherently complex, presenting diverse chal-lenges across sparse linear algebra, scientific simulations, and other domains, each with distinct optimization pat-terns. This diversity of patterns leads to difficulties in existing solutions, which are bifurcated: hand-tuned li-braries (e.g., cuBLAS (NVIDIA Corporation, 2026a), cuS-PARSE (NVIDIA Corporation, 2026c)) deliver peak perfor-mance but lack flexibility and incur immense engineering costs per operator and hardware generation; compiler-based approaches (e.g., TVM (Chen et al., 2018), Triton (Tillet et al., 2019)) improve productivity but often struggle to match expert performance across such diverse domains. Therefore, a system capable of automatically optimizing multi-scenario kernels to achieve performance that meets 1
+
+> arXiv:2603.07169v1 [cs.LG] 7 Mar 2026
+
+Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 0       
+
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1
+> 0124816 32 64
+> Percentage
+
+Speed Up Threshold                                 
+
+> o4-mini DeepSeek
+> Task Baseline Ours
+> SpMV CSR cuSPARSE :2.23 xo4 -mini : 2.96 x
+> Conv 2D cuDNN :0.9 7xDeepSeek : 1. 83 x
+> Dot Product cuBlas :26.09 xo4 -mini : 46.83 x
+> Rms Norm Astra : 1. 78 xo4 -mini : 2.44x
+> Silu and Mul Astra : 3. 58 xo4 -mini : 3. 67 x
+> Merge Attn. St. Astra : 1.0 5xDeepSeek : 1.3 5x
+
+Overall Speed Up  Per -task Speed Up 
+
+Median Speedup for Typical Tasks 
+
+Across Diverse Data Sizes  
+
+> Compute Bound Memory Bandwidth Bound
+
+CUDA Master LLM  bash    
+
+> execution
+> file
+> IO compiler hardware
+> profile
+> profile
+> filter
+> memory
+> check
+> optimized
+> cuda file
+> Memory Latency Bound
+
+Hardware Analysis MSKernelBench 
+
+Multi -scenario 
+
+> Stencil
+> Computation
+> Sparse
+> Matrix
+> Numerical
+> Computation
+> Dense
+> Matrix
+> Activation
+> Function
+> Tensor
+> Processing
+> LLM Operator
+> Sequence
+> ......
+
+Figure 1. Overview of MSKernelBench and CUDAMaster . Left : MSKernelBench is a comprehensive multi-scenario CUDA optimization benchmark covering dense, sparse, LLM, and scientific kernels, etc. Top right : CUDAMaster classifies tasks according to performance bottlenecks, filters profile information in a targeted manner, and uses a multi-agent system based on various tools to achieve CUDA kernel optimization. Bottom right : On a macro level, the framework successfully balances performance improvements with operator correctness, increasing performance demands across all tested scenarios. On a micro level, the framework can generate kernels surpassing hand-tuned implementations like closed-source libraries across multiple domains. 
+
+or even surpasses that of closed-source libraries would be a revolutionary advancement. Such a system would guide fu-ture library development and solve optimization challenges that even human experts struggle with, thus redefining the upper limit of automated programming powered by LLMs. In this work, we address it by investigating the limits of LLM-powered agents for general-purpose CUDA kernel optimiza-tion. First, we introduce a comprehensive, multi-scenario benchmark designed to strip away framework dependencies and evaluate optimization capabilities at the fundamental level. It encompasses foundational algebraic operations, common LLM operators, sparse matrix kernels, and scien-tific computing operators, each supporting FP32 and BF16 data types. Second, building on it, we propose a multi-agent framework, which strategically leverages selectively filtered hardware profiling data to guide the optimization process and generates complete toolchain requirements. Our experiments demonstrate that our agent-driven approach achieves significant acceleration on most kernels. Notably, in several cases, it produces code that rivals the performance of heavily optimized, closed-source libraries like cuBLAS and cuSPARSE. This demonstrates that LLM-based agents, when provided with a suitable environment and information, can approximate expert-level tuning for diverse, low-level GPU programming tasks, paving the way for more adaptive and comprehensive high-performance code generation systems. In summary, our key contributions are as follows: 
+
+• MSKernelBench , a comprehensive multi-scenario CUDA optimization benchmark covering dense, sparse, LLM, and scientific kernels, with FP32/BF16 support and multi-scale evaluation. 
+
+• CUDAMaster , a multi-agent, filtered-profiling-guided, end-to-end optimization framework that generates opti-mized kernels and the associated toolchain for compi-lation and execution. 
+
+• Superior performance. Experiments show that our method delivers substantial speedups for most operators, outperforming Astra by about 35%. In some cases, it matches or even exceeds the performance of highly optimized closed-source libraries such as cuBLAS. 
+
+## 2. Related Work 
+
+2.1. Methodologies for GPU Kernel Optimization 
+
+GPU kernel optimization often follows two paradigms: auto-mated high-level abstractions and manual low-level program-ming. The former leverages compilers and domain-specific 2Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+languages such as TVM (Chen et al., 2018) and Triton (Tillet et al., 2019), which employ auto-tuning (e.g. Ansor (Zheng et al., 2020)) to explore parameter spaces for development efficiency. The latter relies on either hand-tuned vendor libraries such as cuBLAS (NVIDIA Corporation, 2026a) , which set the performance ceiling, or open-source tem-plate libraries such as CUTLASS (NVIDIA Corporation, 2026d) that provide flexible abstractions for experts. Both demand deep hardware expertise and turn each operator into a hardware-dependent engineering challenge. 
+
+2.2. Standardized Benchmarking for Kernel Optimization 
+
+KernelBench (Ouyang et al., 2025) is established as the au-thoritative benchmark in this field, systematically evaluating the capability of LLMs to generate performant GPU kernels through 250 PyTorch-based workloads and the fast_p metric. Other notable extensions include Robust -kbench (Lange et al., 2025), which extends by assessing kernel robustness across varied scenarios and data shapes to ensure general-izable improvements; and MultiKernelBench (Wen et al., 2025), which builds upon KernelBench functionally primar-ily by adding support for verification across multiple backend platforms. Apart from CUDA, TritonBench (Li et al., 2025a) is another notable benchmark designed specifically for the Triton GPU programming language. 
+
+2.3. LLM-Based Optimization of CUDA Kernels 
+
+Recent systems leverage multi - agent or evolutionary ap-proaches to directly optimize kernels. FSR (Chen et al., 2025) jointly optimizes compilation and runtime perfor-mance. CudaForge (Zhang et al., 2025) iteratively refines kernels using the profiler feedback from the NVIDIA Nsight Compute tool. Astra (Wei et al., 2025) uses specialized agents to produce correct, high -performance kernels selected from SGLang (Zheng et al., 2024). In parallel, training -based methods create specialized models: Kevin (Baronio et al., 2025) is the first model trained with multi-turn RL for CUDA kernel generation and optimization. CUDA -L1 (Li et al., 2025b) uses contrastive reinforcement learning to learn optimization strategies, while CUDA - L2 (Su et al., 2025) generates matrix multiplication kernels outperforming cuBLAS (NVIDIA Corporation, 2026a). 
+
+## 3. MSKernelBench: A multi-scenario CUDA operator optimization benchmark 
+
+Current benchmarks for automated CUDA operator tuning focus mainly on common LLM operators and their fused variants, overlooking a wider range of high-performance computing (HPC) scenarios. These tasks have distinct mem-ory, parallelism, and precision requirements. This narrow  
+
+> Table 1. Comparison of Benchmark Design: KernelBench vs. MSKernelBench.
+
+Feature KernelBench MSKernelBench 
+
+Task Scenario Selection 
+
+Dense matrix operators ✓ ✓
+
+LLM operator sequences ✓ ✓
+
+Sparse matrix operators × ✓
+
+Scientific kernels × ✓
+
+Numerical methods × ✓
+
+Implementation 
+
+Language Python C/C++ Multi-precision ✓ ✓
+
+Evaluation Protocol 
+
+Scalable data sizes × ✓
+
+Complexity weighted × ✓
+
+Hardware profiling limited ✓
+
+scope limits the generalizability of tuning research. Addi-tionally, evaluating operators using only a single, fixed data size fails to capture how optimizations scale under vary-ing computational loads and hardware utilization regimes. This limitation undermines the reliability of the reported speedups. Consequently, such a limited scope fails to fully represent the challenges of real-world, high-performance kernel optimization (METR, 2025). To address it, we introduce a new benchmark MSKernel-Bench designed to support broader, more rigorous evaluation of operator tuning methods, with a summary comparison to KernelBench (Ouyang et al., 2025) provided in Table 1. 
+
+3.1. Task selection 
+
+To ensure diversity and reliability, we curated a set of 50 tasks from multiple fields, all having a sizable computational scale. These tasks are collected from authoritative sources, including the official NVIDIA document (NVIDIA Corpo-ration, 2026b), common use cases in CUDA libraries (e.g., cuBLAS, cuSPARSE), open-source benchmarks like Ker-nelBench, and cloud-based CUDA programming learning platform like LeetGPU (LeetGPU, 2026). Detailed task list is provided in the Appendix C. 
+
+3.2. Benchmark Implementation & Structure 
+
+3.2.1. Design Rationale: Pure C Language for Portability and Control 
+
+We implemented the benchmark in pure C to prioritize portability and low-level control, both critical for scientific and HPC contexts. C provides a stable and widely sup-ported interface for these domains, facilitating seamless integration with established libraries (e.g., BLAS, sparse 3Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts Total    
+
+> 50
+> 14.0%
+> 16.0%
+> 8.0%
+> 14.0% 6.0%
+> 12.0%
+> 8.0%
+> 10.0%
+> 12.0% Dense Linear Algebra (7)
+> Sparse Matrix (8)
+> Normalization (4)
+> Activate Function (7)
+> Loss Function (3)
+> LLM Operator Sequence (6)
+> Tensor Process (4)
+> Stencil Computation (5)
+> Math & Algorithm (6)
+> Figure 2. Composition of the 50 Operators by Task Category.
+
+solvers) and avoiding the framework-level overhead asso-ciated with AI-centric tools like PyTorch (Imanishi & Xu, 2024). Furthermore, C allows fine-grained control over memory access and parallelism, enabling the optimization of irregular computations such as sparse matrix operations. 
+
+3.2.2. Implementation Strategy: Manually Crafted Baselines 
+
+Constructing a comprehensive benchmark in pure C is chal-lenging because well-optimized industrial libraries are usu-ally closed-source. Consequently, our strategy is twofold for each task. First, we leverage existing educational or reference implementations where available (e.g., from open-source HPC course materials). Second, when such implementations are unavailable, we manually develop these tasks in C/CUDA. Crucially, every implementation is rigorously validated for numerical correctness through data alignment with a trusted reference, such as a closed-source optimized library (e.g., cuBLAS) or a serial CPU version. Only after passing this validation is it adopted as a performance baseline. 
+
+3.2.3. Benchmark Structure: Precision Separation and Interface Unification 
+
+The benchmark comprises 50 tasks, each implemented in both FP32 and BF16 precision following two design princi-ples: precision separation and interface unification. For pre-cision separation, each operator has distinct FP32 and BF16 implementations, with the latter marked by a "_bf16" file-name suffix. For interface unification, all implementations are accessed through a consistent C wrapper, accompanied by a dedicated test suite built from a common template. This design decouples the core optimization work from the test-ing harness: researchers can integrate and evaluate custom kernels by replacing only a clearly demarcated optimization segment within the testing template. 
+
+3.3. Evaluation metrics 
+
+Building upon the provision of ground-truth kernels, our benchmark implements a rigorous, multi-faceted evaluation protocol consisting of the following metrics: 
+
+Compilation Correctness The submitted CUDA code must first be successfully compiled by the test framework. The test harness for each operator enforces a strictly defined C function interface including function name and parameter list. Any deviation will result in a compilation failure, ensuring all subsequent comparisons are based on a consistent calling convention. 
+
+Multi-Scale Execution Correctness Each operator is eval-uated across a predefined set of data sizes. For each data size, random test cases are generated. Then the output of a submitted optimized kernel is compared against the output of our ground-truth kernel. The submission is correct only if the numerical error is within tolerance across all test scales. 
+
+Performance Measurement Performance is measured as the speedup relative to our provided ground-truth baseline kernel. For each data size, we employ a robust timing methodology: after 3 warm-up runs, the kernel is executed 50 times, and the average execution time is calculated. The final performance score is computed as a complexity-weighted average of its speedups across all test cases. For-mally, the weight 𝑤 𝑖 for the data size 𝑁 𝑖 is proportional to the theoretical computational complexity of the baseline implementation (unoptimized) for that input size: 
+
+𝑤 𝑖 ∝ 𝑇 (𝑁 𝑖 ) (1) where 𝑇 (𝑁 𝑖 ) represents the theoretical computational com-plexity of the baseline implementation at data size 𝑁 𝑖 which is pre-calculated in the test program shown in Appendix C. The overall performance score 𝑃 , designed to represent the average speedup weighed by workload, is defined as: 
+
+𝑃 =
+
+Í𝑖 𝑤 𝑖 𝑆 𝑖 
+
+Í𝑖 𝑤 𝑖 
+
+=
+
+Í𝑖 𝑇 (𝑁 𝑖 )𝑆 𝑖 
+
+Í𝑖 𝑇 (𝑁 𝑖 ) (2) where 𝑆 𝑖 denotes the measured end-to-end speedup at data size 𝑁 𝑖 using a consistent and fixed framework. Since the weights are derived from the complexity of the baseline, larger data sizes naturally receive higher weights. Consequently, if an optimized implementation reduces the actual runtime complexity (e.g., from 𝑂 (𝑁 2) to 𝑂 (𝑁 log 𝑁 )), the speedup 𝑆 𝑖 will be more pronounced for larger 𝑁 𝑖 . As the larger cases on the scale carry a greater weight on average, the overall score 𝑃 amplifies the advantage gained from algorithmic improvements, making it a sensitive and equitable metric for comparing optimizations that scale differently with the size of the problem. 
+
+## 4. CUDAMaster: A Multi-agent System Works like Experts 
+
+4.1. How Human Expert Optimize CUDA Kernels 
+
+Effectively optimizing GPU kernels requires an iterative cycle of implementation, validation, and optimization. This 4Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+manual process is bottlenecked by two major inefficiencies: laborious data triage and context-switching workflows. In a conventional workflow, an engineer must manually sift through voluminous hardware profiling data (e.g., from NVIDIA Nsight Compute) to diagnose the specific bot-tleneck. Extracting the few key performance signatures from overwhelming profiling data is time-consuming and expertise-dependent. Meanwhile, the constant switching between correctness debugging, performance analysis, and code implementation disrupts focus and slows progress. Based on this, our optimization scheme corresponds to two parts: profile filtering and multi-agent cooperation. 
+
+4.2. Hardware Analysis Filter 
+
+To provide targeted profiling guidance, we first establish a taxonomy of hardware bottlenecks. This allows our filter to extract only the relevant metrics for each type. We begin by collecting comprehensive profiling data for all key kernels in our benchmark suite using NVIDIA Nsight Compute. To objectively define the boundaries between bottleneck categories, we apply Otsu’s method to the distribution of key throughput metrics across all tasks, determining ro-bust classification thresholds (see Appendix A). Combining these thresholds with classical bottleneck characteristics, we classify every task into one of three distinct types: 
+
+Compute Bound : High utilization of computational units. 
+
+Memory Latency Bound : Significant idle time of compu-tational units due to waiting for data to be ready. 
+
+Memory Bandwidth Bound : Saturated utilization of the memory interface bandwidth while computational unit idle-ness is less pronounced. Based on this taxonomy, our hardware analysis filter operates during execution. For each launched kernel, it leverages a unified mapping table (Table 2) which defines both the classification criteria for the three bound types and their associated sets of key metrics. The filter classifies the kernel, selects only the relevant metrics according to the table, and discards redundant data. This process distills the profiling context, focusing downstream LLM agents on bottleneck-specific optimization strategies. 
+
+4.3. CUDAMaster: A Multi-agent System 
+
+As illustrated in Figure 3, we propose a multi-agent frame-work consisting of four specialized agents to automate the kernel tuning process. The complete execution flow of this system, governed by Algorithm 1, is controlled by two key parameters: the number of iteration rounds 𝑅 and the maximum number of debugging rounds 𝐷 .The process begins by running the original kernel to collect a performance baseline and hardware profiling data, which 
+
+Algorithm 1 CUDAMaster Pipeline 
+
+input Number of iterations 𝑅 , max debug rounds 𝐷 ,original kernel code 𝐶 0, original execution script 𝑆 0
+
+output Best code 𝐶 ∗, best execution script 𝑆 ∗ 
+
+> 1:
+
+Record profile 𝜋 0 ← ExecuteAndFilter (𝐶 0, 𝑆 0) 
+
+> 2:
+
+Initialize 𝐶 ∗ ← 𝐶 0, 𝑆 ∗ ← 𝑆 0, 𝑃 ∗ ← 1.0,
+
+𝜋 ∗ ← 𝜋 0, scheme ← "Baseline"  
+
+> 3:
+
+for 𝑖 = 1 to 𝑅 do  
+
+> 4:
+
+scheme ← PlannerAgent (𝐶 ∗, 𝜋 ∗, scheme ) 
+
+> 5:
+
+𝐶 𝑖 ← CoderAgent (scheme , 𝐶 ∗) 
+
+> 6:
+
+𝑆 𝑖 ← CompilerAgent (scheme , 𝐶 𝑖 ) 
+
+> 7:
+
+𝜋 𝑖 ← ExecuteAndFilter (𝐶 𝑖 , 𝑆 𝑖 ) 
+
+> 8:
+
+if CheckValid (𝜋 𝑖 ) = False then  
+
+> 9:
+
+for 𝑑 = 1 to 𝐷 do  
+
+> 10:
+
+debug_scheme ← DebugAgent (𝐶 ∗, 𝜋 ∗) 
+
+> 11:
+
+𝐶 (𝑑 ) 
+
+> 𝑖
+
+← CoderAgent (debug_scheme , 𝐶 𝑖 ) 
+
+> 12:
+
+𝑆 (𝑑 ) 
+
+> 𝑖
+
+← CompilerAgent (scheme , 𝐶 (𝑑 ) 
+
+> 𝑖
+
+) 
+
+> 13:
+
+𝜋 (𝑑 ) 
+
+> 𝑖
+
+← ExecuteAndFilter (𝐶 (𝑑 ) 
+
+> 𝑖
+
+, 𝑆 (𝑑 ) 
+
+> 𝑖
+
+) 
+
+> 14:
+
+if CheckValid (𝜋 (𝑑 ) 
+
+> 𝑖
+
+) = True then  
+
+> 15:
+
+(𝐶 𝑖 , 𝑆 𝑖 , 𝜋 𝑖 ) ← ( 𝐶 (𝑑 ) 
+
+> 𝑖
+
+, 𝑆 (𝑑 ) 
+
+> 𝑖
+
+, 𝜋 (𝑑 ) 
+
+> 𝑖
+
+) 
+
+> 16:
+
+BREAK  
+
+> 17:
+
+end if  
+
+> 18:
+
+end for  
+
+> 19:
+
+end if  
+
+> 20:
+
+if CheckValid (𝜋 𝑖 ) = True and 𝑃 (𝜋 𝑖 ) > 𝑃 ∗ then  
+
+> 21:
+
+(𝐶 ∗, 𝑆 ∗, 𝜋 ∗) ← ( 𝐶 𝑖 , 𝑆 𝑖 , 𝜋 𝑖 ) 
+
+> 22:
+
+Update scheme  
+
+> 23:
+
+else  
+
+> 24:
+
+Mark scheme as invalid  
+
+> 25:
+
+end if  
+
+> 26:
+
+end for  
+
+> 27:
+
+return 𝐶 ∗, 𝑆 ∗
+
+is filtered to isolate key bottleneck metrics. The system then iterates for 𝑅 rounds. In each round, the Planner Agent first analyzes the distilled profiling insights from the historical data to propose high-level optimization strategies. These strategies are then passed to the Coder Agent , which implements them into executable kernel code within the provided test harness. Subsequently, the Compiler Agent 
+
+manages all compilation commands, execution scripts, and compiler-level optimizations to build and run the code. If the newly generated kernel fails the execution correctness check, a debugging subprocess (limited to 𝐷 rounds) is invoked. Within this subprocess, the Debug Agent is responsible for diagnosing and correcting any errors encountered during code implementation or compilation, ensuring the robustness of the tuning process. Successful kernels are evaluated, and the best-performing solution is retained, enabling continuous exploration of the optimization space. Throughout this iterative process, the entire testing and 5Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts  
+
+> Table 2. Bottleneck Classification and Metric Filtering Strategy
+
+Bottleneck Type Classification Rule Filtered Metrics 
+
+Compute Bound Compute.Th > 30% Compute (SM) Throughput, Issue Slots Busy, Executed Ipc Active, SM Busy Memory Latency Bound Compute.Th < 30%, DRAM.Th < 30% and Memory.Th < 30 % L2 Hit Rate, L1/TEX Hit Rate, Executed Ipc Elapsed, Mem Busy Memory Bandwidth Bound Compute.Th < 30%, DRAM.Th > 30% or Memory.Th > 30 % DRAM Throughput, Memory Throughput, Max Bandwidth, Mem Pipes Busy Coder Agent        
+
+> Compiler Agent
+> Planner Agent
+> Debug Agent
+> Profile Filter Local Execute Origin
+> Fixed
+> Optimized
+> Log
+> Each error code is debugged Dtimes.
+> Full pipeline iterates for Rrounds.
+> Figure 3. CUDAMaster Framework for Automated Kernel Optimization Pipeline.
+
+execution environment remains anchored to the benchmark’s standardized code. None of the agents alter the core test logic, guaranteeing that every optimized kernel is evaluated under consistent and fair conditions. 
+
+## 5. Experiment 
+
+5.1. Experimental Setup 
+
+We evaluate our method using MSKernelBench on 50 distinct tasks, each implemented in both FP32 and BF16 precision, resulting in a total of 100 kernel optimization tasks. 
+
+5.1.1. Base LLMs & Hardware 
+
+We evaluate our framework on two leading LLMs in code generation: OpenAI o4-mini and DeepSeek-V3.2 (Liu et al., 2025). All kernel compilation and performance profiling are conducted on an NVIDIA RTX 4090 GPU. 
+
+5.1.2. Agent Configuration 
+
+Our framework uses the following fixed parameters: iteration rounds 𝑅 = 3 and debug trials per candidate 𝐷 = 3.
+
+5.1.3. Metrics 
+
+We use two complementary metrics: a macro-analysis of cumulative success across all tasks, and a micro-analysis of per-operator speedup against established baselines. 
+
+Cumulative Success Rate (Macro-analysis) : We define the cumulative success rate as the percentage of tasks, whose complexity-weighted average speedup 𝑃 exceeds a threshold 
+
+𝜏 . We focus mainly on results at key thresholds: 𝜏 = 0
+
+(functional correctness), 𝜏 = 1 (beating the naive baseline), and 𝜏 > 1 (degree of optimization). 
+
+Per-Operator Speedup (Micro-analysis) : To gauge precise performance, we evaluate a subset of tasks that have au-thoritative baselines: either highly-optimized closed-source libraries (e.g., cuBLAS, cuSPARSE) or state-of-the-art re-search implementations (e.g., Astra (Wei et al., 2025) for optimizing SGLang (Zheng et al., 2024) kernels). For each task, we measure the speedup of our generated imple-mentation against the naive baseline provided by MSKernel-Bench. We then compare this value directly with the speedup achieved by the authoritative baseline over the same naive baseline. This reveals our method’s absolute effectiveness and competitiveness compared with prior work. 
+
+5.2. Results on Cumulative Success Distribution 
+
+As shown in Figure 4, o4-mini demonstrates a clear and consistent performance advantage over DeepSeek-V3.2 in generating successful optimizations across speedup thresh-olds ( 𝜏 ) and numerical precisions (FP32/BF16). This lead is substantial at key thresholds: 100% vs. 95% at 𝜏 = 0, 94% vs. 80% at 𝜏 = 1, and 60% vs. 49% at 𝜏 = 2.The effect of numerical precision is secondary but notable: BF16 offers a slight edge for o4-mini at moderate-to-high thresholds ( 𝜏 ≤ 8), while FP32 ensures greater stability for both models under stringent optimization targets ( 𝜏 ≥ 32 ). 6Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 0 1 2 4 8 16 32 64 
+
+> Threshold
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Percentage
+> o4-mini (FP32)
+> DeepSeek (FP32)
+> o4-mini (BF16)
+> DeepSeek (BF16)
+
+Figure 4. Cumulative success rate of all tasks versus speedup threshold( 𝜏 ) for OpenAI o4-mini and DeepSeek-V3.2 models under FP32 and BF16 precision. 
+
+These results confirm that our optimization framework ef-fectively balances correctness with performance gains, with o4-mini proving to be the more robust model for this task. 
+
+5.3. Results on Single Task Speedup Compared with Established Implementation 
+
+We evaluated our method on six representative operators with authoritative baselines: three from industry-standard libraries (cuBLAS: Dot Product, cuDNN (Chetlur et al., 2014): 2D Convolution, cuSPARSE: SpMV CSR) and three from SGLang (Zheng et al., 2024) kernel optimized by Astra (Wei et al., 2025) framework (RMS norm, SiLU & Mul, Merge Attention States). For each, we compare the speedup achieved by our agent with that of the baseline relative to a common reference. As shown in Figure 5, our framework delivers competitive or superior performance across all tested cases. Both models outperform cuSPARSE in SpMV CSR and achieve up to 1.8 ×
+
+speedup over cuDNN in 2D Convolution and over cuBLAS in Dot Product. Against the Astra-optimized kernels, o4-mini leads by around 35% on RMSNorm and matches or surpasses it on the other two fused operators. These results validate that automated optimization can not only match but also exceed expert-hand-tuned libraries, with o4-mini demonstrating particular strength in both general-purpose and specialized computations. 
+
+5.4. Ablation Study 
+
+5.4.1. Impact of Iterative Planning and Debugging 
+
+We conducted an ablation study on our framework’s two key parameters: iteration rounds ( 𝑅 ) and debugging attempts per candidate ( 𝐷 ). We evaluated four configurations: Full (𝑅 = 3, 𝐷 = 3), No Debug (N.D.) ( 𝐷 = 0), Single Iteration (S.I.) ( 𝑅 = 1) and Single Run (S.R.) ( 𝑅 = 1, 𝐷 = 0). 
+
+Table 3. Cumulative success rate across all multi-agent parameters. 
+
+Model 𝜏 parameters Full N.D. S.I. S.R. 
+
+OpenAI o4-mini 0 100% 90% 96% 90% 1 94% 77% 74% 77% 2 60% 50% 46% 50% 4 47% 35% 35% 35% 
+
+≥8 25% 19% 17% 19% DeepSeek-V3.2 0 95% 87% 82% 82% 1 80% 67% 61% 61% 2 49% 36% 37% 37% 4 40% 30% 31% 31% 
+
+≥8 22% 15% 18% 18% 
+
+Note : Abbreviations: N.D. (No Debug), S.I. (Single Iteration), S.R. (Single Run). 
+
+Table 4. Cumulative success rate across all profile patterns. 
+
+Model 𝜏 Profile Pattern Filtered No Prof. Full Prof. 
+
+OpenAI o4-mini 0 100% 99% 100% 1 94% 90% 94% 2 60% 56% 62% 
+
+4 47% 43% 47% 
+
+≥8 25% 22% 25% DeepSeek-V3.2 0 95% 95% 94% 1 80% 69% 73% 2 49% 41% 43% 4 40% 34% 33% 
+
+≥8 22% 20% 16% 
+
+Results in Table 3 show that the Full configuration con-sistently achieves the highest success rates. For instance, using the o4-mini model at 𝜏 = 1, it attains a 94% success rate, surpassing the N.D. (77%) and S.I. (74%) configu-rations. The performance gap widens at more stringent thresholds ( 𝜏 ≥ 8), where Full maintains a 25% success rate, compared to 17–19% for the ablated variants. The Single Run baseline performs the worst, highlighting the necessity of a structured optimization process. Experiments with DeepSeek-V3.2 exhibit a similar trend, albeit at an overall lower performance level. These results demonstrate that both iterative refinement and systematic debugging are indispensable components of our framework for achieving substantial speedups in challenging optimization scenarios. 
+
+5.4.2. Impact of Profile-Guided Optimization 
+
+We further analyze the effect of hardware profiling strategies through three configurations: Filtered, No Profile (No Prof.), and Full Profile (Full Prof.). Results in Table 4 demonstrate the effectiveness of our filtered approach. For o4-mini, the Filtered configuration matches Full Profile 7Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts Complexity      
+
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> Speed Up Ratio
+> 223 224 225 226
+> 1.43
+> 2.23
+> 3.68
+> 5.46
+> 1.27
+> 1.97
+> 3.19
+> 5.66
+> 1.17
+> 1.76
+> 2.70
+> 4.44
+> OpenAI o4-mini(Ours) DeepSeek-V3.2(Ours) cuSPARSE
+
+(a) SpMV CSR vs. cuSPARSE Complexity              
+
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> 1.25
+> 1.50
+> 1.75
+> 2.00
+> Speed Up Ratio
+> 228 230 232 234
+> 1.77 1.75
+> 1.90 1.89
+> 1.76 1.68
+> 1.89 1.95
+> 0.99 0.96 0.92 0.97
+> OpenAI o4-mini(Ours) DeepSeek-V3.2(Ours) cuDNN
+
+(b) 2D Convolution vs. cuDNN Complexity         
+
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> Speed Up Ratio
+> 217 218 219 220
+> 28.00
+> 52.45
+> 49.62
+> 44.03
+> 23.93
+> 45.22
+> 42.42
+> 35.72
+> 14.87
+> 27.22 27.03 25.15
+> OpenAI o4-mini(Ours) DeepSeek-V3.2(Ours) cublasSdot
+
+(c) Dot Product vs. cuBLAS Complexity               
+
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> Speed Up Ratio
+> 272829210
+> 2.42 2.44 2.43 2.55
+> 1.15 1.17 1.20 1.24
+> 1.73 1.75 1.80 1.88
+> OpenAI o4-mini(Ours) DeepSeek-V3.2(Ours) Astra
+
+(d) RMSNorm vs. Astra Complexity         
+
+> 0
+> 1
+> 2
+> 3
+> 4
+> Speed Up Ratio
+> 217 218 219 220
+> 3.53
+> 3.80
+> 3.45
+> 4.27
+> 1.69
+> 2.42 2.49 2.43
+> 3.28
+> 3.72
+> 3.43
+> 4.24
+> OpenAI o4-mini(Ours) DeepSeek-V3.2(Ours) Astra
+
+(e) SiLU&Mul vs. Astra Complexity          
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> 1.2
+> 1.4
+> Speed Up Ratio
+> 221 3×2 20 222 3×2 21
+> 1.24 1.31 1.33
+> 1.42
+> 1.26
+> 1.41
+> 1.30
+> 1.40
+> 1.01 1.00
+> 1.09
+> 1.37
+> OpenAI o4-mini(Ours) DeepSeek-V3.2(Ours) Astra
+
+(f) Merge Attention States vs. Astra 
+
+Figure 5. Performance comparison of our agent-optimized kernels against closed-source libraries (cuBLAS, cuDNN, cuSPARSE) and existing optimization frameworks (Astra) across six representative operators and varying problem scales. Subfigures (a), (b), and (c) show performance advantages over closed-source libraries in three key operations: (a) sparse matrix-vector multiplication (SpMV) over cuSPARSE, (b) 2D convolution over cuDNN, and (c) dot product over cuBLAS. Subfigures (d), (e), and (f) show competitive performance against Astra on LLM operators (RMSNorm, SiLU&Mul and Merge Attention States). 
+
+Table 5. Average cost and token usage per task across all profile patterns. 
+
+Configuration Average Cost Average Tokens OpenAI o4-mini 
+
+Filtered Profile $0.2707 123,036 No Profile $0.2120 96,373 Full Profile $0.3804 172,917 
+
+DeepSeek-V3.2 
+
+Filtered Profile $0.0310 223,294 No Profile $0.0277 167,971 Full Profile $0.0687 387,432 
+
+performance across all thresholds while reducing profiling overhead. At 𝜏 = 1, both achieve 94-95% success, higher than No Profile (90%). This advantage persists at higher thresholds, with Filtered maintaining 25% success at 𝜏 ≥ 8
+
+versus No Profile’s 22%. DeepSeek-V3.2 shows similar trends, though with more variation between configurations. These results validate our filtered profiling strategy as an efficient mechanism for providing targeted guidance. Furthermore, analysis of API cost and token consumption in Table 5 shows that our filtering strategy provides an optimal trade-off. It retains the critical hardware diagnostics that the low-cost No-Profile configuration lacks, while signifi-cantly reducing the resource overhead of the Full-Profile approach—cutting cost by up to 32% and token usage by 30–40%. This confirms that bottleneck-aware filtering ef-fectively controls the expense of LLM-assisted optimization without sacrificing optimization guidance. 
+
+## 6. Conclusion 
+
+We introduce MSKernelBench, a comprehensive and diverse suite of operators spanning multiple domains and numerical precisions, establishing a rigorous testbed for GPU code optimization. Building on this benchmark, we propose CU-DAMaster, an end-to-end multi-agent framework designed to interpret hardware profiling data and autonomously gen-erate, debug, and deploy optimized CUDA code alongside its complete toolchain. Experimental results demonstrate that our agent-driven approach achieves significant speedups across this benchmark and produces code competitive with manually tuned libraries in several cases. Overall, this work demonstrates that LLM-based agents can effectively automate the optimization of complex, low-level CUDA kernels, achieving significant speedups across a diverse set of scenarios. By open-sourcing our framework and benchmark, we provide a foundation for making LLMs optimize multi-scenario CUDA kernels like experts. 8Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+## References 
+
+Baronio, C., Marsella, P., Pan, B., Guo, S., and Alberti, S. Kevin: Multi-turn RL for generating CUDA kernels, 2025. URL https://arxiv.org/abs/2507.11948. Chen, T., Moreau, T., Jiang, Z., Zheng, L., Yan, E., Shen, H., Cowan, M., Wang, L., Hu, Y., Ceze, L., Guestrin, C., and Krishnamurthy, A. TVM: An automated End-to-End optimizing compiler for deep learning. In 13th USENIX Symposium on Operating Systems Design and Implemen-tation (OSDI 18) , pp. 578–594, Carlsbad, CA, October 2018. USENIX Association. ISBN 978-1-939133-08-3. URL https://www.usenix.org/conference/osdi18/present ation/chen. Chen, W., Zhu, J., Fan, Q., Ma, Y., and Zou, A. CUDA-LLM: LLMs can write efficient CUDA kernels, 2025. URL https://arxiv.org/abs/2506.09092. Chetlur, S., Woolley, C., Vandermersch, P., Cohen, J., Tran, J., Catanzaro, B., and Shelhamer, E. cuDNN: Efficient primitives for deep learning, 2014. URL https://arxiv.or g/abs/1410.0759. Imanishi, A. and Xu, Z. A heuristic for periodic mem-ory allocation with little fragmentation to train neu-ral networks. In Proceedings of the 2024 ACM SIG-PLAN International Symposium on Memory Manage-ment , ISMM 2024, pp. 82–94, New York, NY, USA, 2024. Association for Computing Machinery. ISBN 9798400706158. doi: 10.1145/3652024.3665508. URL https://doi.org/10.1145/3652024.3665508. Lange, R. T., Sun, Q., Prasad, A., Faldor, M., Tang, Y., and Ha, D. Towards robust agentic CUDA kernel bench-marking, verification, and optimization, 2025. URL https://arxiv.org/abs/2509.14279. LeetGPU. LeetGPU - The GPU Programming Platform ,2026. URL https://leetgpu.com/challenges. [Online; accessed 2026-01-17]. Li, J., Li, S., Gao, Z., Shi, Q., Li, Y., Wang, Z., Huang, J., WangHaojie, W., Wang, J., Han, X., Liu, Z., and Sun, M. TritonBench: Benchmarking large language model capabilities for generating triton operators. In Che, W., Nabende, J., Shutova, E., and Pilehvar, M. T. (eds.), 
+
+Findings of the Association for Computational Linguistics: ACL 2025 , pp. 23053–23066, Vienna, Austria, July 2025a. Association for Computational Linguistics. ISBN 979-8-89176-256-5. doi: 10.18653/v1/2025.findings-acl.1183. URL https://aclanthology.org/2025.findings-acl.1183/. Li, X., Sun, X., Wang, A., Li, J., and Shum, C. CUDA-L1: Improving CUDA optimization via contrastive reinforce-ment learning, 2025b. URL https://arxiv.org/abs/2507.1 4111. Liu, A., Mei, A., Lin, B., Xue, B., Wang, B., Xu, B., Wu, B., Zhang, B., Lin, C., Dong, C., et al. DeepSeek-V3.2: Pushing the frontier of open large language models, 2025. URL https://arxiv.org/abs/2512.02556. METR. Measuring automated kernel engineering. https: //metr.org/blog/2025-02-14-measuring-automated-ker nel-engineering/, 02 2025. NVIDIA Corporation. cuBLAS . NVIDIA Corporation, 2026a. URL https://docs.nvidia.com/cuda/cublas/. Release v13.1, [Online; accessed 2026-01-17]. NVIDIA Corporation. cuda-samples . NVIDIA Corporation, 2026b. URL https://github.com/NVIDIA/cuda-samples. Release v13.1, [Online; accessed 2026-01-17]. NVIDIA Corporation. cuSPARSE . NVIDIA Corporation, 2026c. URL https://docs.nvidia.com/cuda/cusparse/. Release v13.1, [Online; accessed 2026-01-17]. NVIDIA Corporation. CUTLASS: CUDA Templates for Linear Algebra Subroutines . NVIDIA Corporation, 2026d. URL https://docs.nvidia.com/cutlass/latest/. Release v4.3.5, [Online; accessed 2026-01-17]. Ouyang, A., Guo, S., Arora, S., Zhang, A. L., Hu, W., Ré, C., and Mirhoseini, A. Kernelbench: Can llms write efficient gpu kernels?, 2025. URL https://arxiv.org/abs/2502.105 17. Paszke, A., Gross, S., Massa, F., Lerer, A., Bradbury, J., Chanan, G., Killeen, T., Lin, Z., Gimelshein, N., Antiga, L., Desmaison, A., Kopf, A., Yang, E., DeVito, Z., Raison, M., Tejani, A., Chilamkurthy, S., Steiner, B., Fang, L., Bai, J., and Chintala, S. Pytorch: An imperative style, high-performance deep learning library. In Wallach, H., Larochelle, H., Beygelzimer, A., d 'Alché-Buc, F., Fox, E., and Garnett, R. (eds.), Advances in Neural Information Processing Systems , volume 32. Curran Associates, Inc., 2019. URL https://proceedings.neurips.cc/paper_files/p aper/2019/file/bdbca288fee7f92f2bfa9f7012727740-P aper.pdf. Su, S., Sun, X., Li, X., Wang, A., Li, J., and Shum, C. CUDA-L2: Surpassing cuBLAS performance for matrix multiplication through reinforcement learning, 2025. URL https://arxiv.org/abs/2512.02551. Tillet, P., Kung, H. T., and Cox, D. Triton: an interme-diate language and compiler for tiled neural network computations. In Proceedings of the 3rd ACM SIGPLAN International Workshop on Machine Learning and Pro-gramming Languages , MAPL 2019, pp. 10–19, New York, NY, USA, 2019. Association for Computing Machinery. ISBN 9781450367196. doi: 10.1145/3315508.3329973. URL https://doi.org/10.1145/3315508.3329973. 9Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+Wang, J. and Chen, Y. A review on code genera-tion with LLMs: Application and evaluation. In 
+
+2023 IEEE International Conference on Medical Arti-ficial Intelligence (MedAI) , pp. 284–289, 2023. doi: 10.1109/MedAI59581.2023.00044. URL https: //ieeexplore.ieee.org/document/10403378. Wei, A., Sun, T., Seenichamy, Y., Song, H., Ouyang, A., Mirhoseini, A., Wang, K., and Aiken, A. Astra: A multi-agent system for gpu kernel performance optimization, 2025. URL https://arxiv.org/abs/2509.07506. Wen, Z., Zhang, Y., Li, Z., Liu, Z., Xie, L., and Zhang, T. MultiKernelBench: A multi-platform benchmark for kernel generation, 2025. URL https://arxiv.org/abs/2507 .17773. Zhang, Z., Wang, R., Li, S., Luo, Y., Hong, M., and Ding, C. CudaForge: An agent framework with hardware feedback for CUDA kernel optimization, 2025. URL https://arxiv.org/abs/2511.01884. Zheng, L., Jia, C., Sun, M., Wu, Z., Yu, C. H., Haj-Ali, A., Wang, Y., Yang, J., Zhuo, D., Sen, K., Gonzalez, J. E., and Stoica, I. Ansor: Generating High-Performance tensor programs for deep learning. In 14th USENIX Symposium on Operating Systems Design and Implementation (OSDI 20) , pp. 863–879. USENIX Association, November 2020. ISBN 978-1-939133-19-9. URL https://www.usenix.org /conference/osdi20/presentation/zheng. Zheng, L., Yin, L., Xie, Z., Sun, C., Huang, J., Yu, C. H., Cao, S., Kozyrakis, C., Stoica, I., Gonzalez, J. E., Barrett, C., and Sheng, Y. SGLang: Efficient execution of structured language model programs. In Globerson, A., Mackey, L., Belgrave, D., Fan, A., Paquet, U., Tomczak, J., and Zhang, C. (eds.), Advances in Neural Information Processing Systems , volume 37, pp. 62557–62583. Curran Associates, Inc., 2024. doi: 10.52202/079017-2000. URL https://proc eedings.neurips.cc/paper_files/paper/2024/file/724be4 472168f31ba1c9ac630f15dec8-Paper-Conference.pdf. 10 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+## A. Hardware Profile Summary 
+
+A.1. Full Metrics 
+
+We employ NVIDIA Nsight Compute (v2024.1) to collect fine-grained hardware performance counters. Table 6 lists the key metrics we filter and extract from these counters, organized by profiling section:                       
+
+> Table 6. Filtered Hardware Performance Metrics for Bottleneck Analysis by Profiling Section.
+> Profiling Section Analysis Focus Filtered Key Metrics
+> Compute Workload Analysis Computational Efficiency Executed Ipc Active, Executed Ipc Elapsed, Issue Slots Busy, Issued Ipc Active, SM Busy
+> GPU Speed Of Light Throughput & Utilization Compute (SM) Throughput, DRAM Throughput, Duration, Memory Throughput
+> Memory Workload Analysis Memory Subsystem L1/TEX Cache Throughput, L1/TEX Hit Rate, L2 Cache Throughput, L2 Hit Rate, Max Bandwidth, Mem Busy, Mem Pipes Busy
+> Occupancy Hardware Resource Usage Achieved Active Warps Per SM, Achieved Occupancy
+> Scheduler Statistics Instruction Scheduler Active Warps Per Scheduler, Eligible Warps Per Scheduler, Issued Warp Per Scheduler, No Eligible, One or More Eligible
+> Warp State Statistics Warp Execution Warp Cycles Per Executed Instruction, Warp Cycles Per Issued Instruction
+
+A.2. Bottleneck Classification Logic 
+
+To translate raw profiling data into actionable optimization guidance, our system first identifies the primary performance bottleneck. This classification is based on the analysis of four foundational metrics: 
+
+Duration : Provides the absolute execution time, serving as the baseline for measuring the impact of any optimization. 
+
+Compute (SM) Throughput : Indicates the utilization level of the streaming multiprocessors (SMs). 
+
+DRAM Throughput : Reflects the utilization of the GPU’s main memory interface, the most critical indicator for bandwidth saturation. 
+
+Memory Throughput : Represents the total data movement throughput across the entire memory hierarchy (caches and DRAM). The three throughput metrics Compute (SM) Throughput , DRAM Throughput and Memory Throughput serve as the primary axes for our bottleneck classification. To move beyond heuristic thresholds and establish objective criteria, we adopted a data-driven calibration process. For each operator in our benchmark, we first identified its most time-consuming, performance-critical bottleneck CUDA kernel via Duration . We then executed all baseline (unoptimized) implementations of these kernels and collected three key throughput metrics. This process resulted in a dataset where each data point corresponds to the throughput profile of a distinct bottleneck kernel. To determine the optimal threshold that separates “high” and “low” utilization for each throughput metric, we applied Otsu’s method – a classical algorithm for image thresholding that maximizes the inter-class variance. In our context, it automatically finds a threshold value that best separates the distribution of a given metric into two classes, effectively identifying the value where the distinction between “compute-bound” and “non-compute-bound” kernels is most pronounced. Based on the distributions visualized in Figure 6, we observe that the Otsu-derived thresholds for the three key throughput metrics consistently fall near 30%. This value provides a unified and effective demarcation for classifying kernel behavior: a Compute (SM) Throughput above this threshold indicates high computational load, while DRAM Throughput and Memory Throughput below it signify underutilized memory subsystems. The convergence of thresholds around this point simplifies our classification heuristic while maintaining its discriminative power across different bottleneck types. 11 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 0 10 20 30 40 50   
+
+> Index
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Compute (SM) Throughput (%)
+> 31.14
+> 31.142 > 31.142 Boundary: 31.142
+
+(a) Compute (SM) Throughput 0 10 20 30 40 50    
+
+> Index
+> 0
+> 20
+> 40
+> 60
+> 80
+> DRAM Throughput (%)
+> 32.55
+> 32.552 > 32.552 Boundary: 32.552
+
+(b) DRAM Throughput 0 10 20 30 40 50    
+
+> Index
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Memory Throughput (%)
+> 35.81
+> 35.806 > 35.806 Boundary: 35.806
+
+(c) Memory Throughput 
+
+Figure 6. Data-Driven Threshold Calibration for Bottleneck Classification. The three scatter plots visualize the distributions of the key throughput metrics collected from all bottleneck kernels in our benchmark suite. The optimal classification thresholds (parallel lines) are determined automatically using Otsu’s method, which maximizes the separability between high and low utilization clusters for each metric. These objective thresholds form the basis of our automated bottleneck classification rules. 
+
+Guided by this data and the underlying hardware semantics, we establish the following classification rules (as summarized in Table 2): 
+
+• Compute Bound : Defined by Compute (SM) Throughput > 30%. This indicates that the computational units are the primary, active bottleneck. 
+
+• Memory Latency Bound : Characterized by insufficient memory system utilization, specifically DRAM Throughput < 30% and Memory Throughput < 30%. The low utilization, coupled with low cache hit rates (see filtered metrics), points to stalls due to long data fetch latencies rather than bandwidth saturation. 
+
+• Memory Bandwidth Bound : This serves as the default category for cases not meeting the above criteria, most notably when DRAM Throughput is high. It encompasses scenarios where performance is limited by the saturated memory interface, which can arise from various complex access patterns, making optimizations less straightforward than for the other two categories. This rule set translates the empirical data distributions into a robust, three-way classification heuristic that directly informs our hardware-aware optimization strategy. 
+
+A.3. Interpretation of Filtered Metrics per Bottleneck Type 
+
+Once the primary bottleneck type is classified, our hardware analysis filter distills the comprehensive profiling data down to a focused set of metrics most relevant to diagnosing the root cause of that specific bottleneck. This targeted filtering reduces noise for the planning agent and directs its attention to the most actionable hardware signals. For kernels classified as Compute Bound , the core question is what limits the instruction execution throughput of the streaming multiprocessors (SMs). Therefore, the filtered set— Compute (SM) Throughput , Issue Slots Busy ,
+
+Executed Ipc Active and SM Busy —focuses on computational activity and resource utilization. Compute (SM) Throughput serves as the primary performance scorecard. A low Issue Slots Busy percentage points to front-end bottlenecks like instruction fetch inefficiencies or branch divergence, guiding optimizations such as loop unrolling. A low 
+
+Executed Ipc Active signals inefficiencies in the execution pipelines. For kernels identified as Memory Latency Bound , the diagnostic goal is to pinpoint where and to what extent execution stalls occur due to memory access latency. The filtered metrics— L2 Hit Rate , L1/TEX Hit Rate , Warp Cycles Per Executed Instruction , Executed Ipc Elapsed , and Mem Busy —target cache efficiency and stall quantification. Low cache hit rates directly identify poor data locality, prompting strategies like algorithmic tiling or using shared memory as a managed cache. Concurrently, a low Executed Ipc Elapsed quantifies the severity of stalls, reinforcing the need for latency-hiding techniques such as increasing arithmetic intensity or improving thread-level parallelism. For kernels identified as Memory Bandwidth Bound , the objective is to confirm bandwidth saturation and identify its 12 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+source. The selected metrics— DRAM Throughput , Memory Throughput , Max Bandwidth , and Mem Pipes Busy —concentrate on memory interface pressure. A DRAM Throughput value approaching the theoretical Max Bandwidth provides definitive evidence of saturation, setting the clear optimization objective of reducing data movement volume or improving its efficiency. This steers the agent toward strategies like enhancing access coalescence or employing data compression, while Mem Pipes Busy offers additional nuance on pressure within specific memory subsystems. In summary, this metric filtering strategy transforms a generic performance profile into a contextualized diagnostic report. By supplying only the most salient signals aligned with the identified bottleneck, it enables the downstream planning agent to reason efficiently and generate highly targeted optimization proposals. 
+
+A.4. Bottleneck Distribution and Task-Type Correlation Total  
+
+> 11
+> 27.3%
+> 9.1%
+> 18.2% 9.1%
+> 27.3%
+> 9.1%
+> Dense Linear Algebra (3)
+> Sparse Matrix (1)
+> LLM Operator Sequence (2)
+> Tensor Process (1)
+> Stencil Computation (3)
+> Math & Algorithm (1)
+
+(a) Compute Bound Total  
+
+> 24
+> 12.5%
+> 4.2%
+> 16.7%
+> 29.2%
+> 12.5%
+> 8.3%
+> 16.7%
+> Dense Linear Algebra (3)
+> Sparse Matrix (1)
+> Normalization (4)
+> Activate Function (7)
+> Loss Function (3)
+> LLM Operator Sequence (2)
+> Math & Algorithm (4)
+
+(b) Memory Latency Bound Total  
+
+> 15
+> 6.7%
+> 40.0%
+> 13.3%
+> 20.0%
+> 13.3%
+> 6.7%
+> Dense Linear Algebra (1)
+> Sparse Matrix (6)
+> LLM Operator Sequence (2)
+> Tensor Process (3)
+> Stencil Computation (2)
+> Math & Algorithm (1)
+
+(c) Memory Bandwidth Bound 
+
+Figure 7. Correlation between Hardware Bottleneck Types and Task Categories. The three pie charts illustrate the distribution of different task types within each of the three hardware bottleneck categories identified by our automated analysis across the benchmark suite. 
+
+The statistical breakdown of the 50 benchmark tasks across the three bottleneck categories is as follows: Compute Bound (11 tasks), Memory Latency Bound (24 tasks), and Memory Bandwidth Bound (15 tasks). The distribution is shown in Figure 7, which reveals a clear correlation between bottleneck types and the computational patterns of the tasks. 
+
+Compute Bound tasks are predominantly compute-intensive and highly regular. This category is heavily represented by Dense Linear Algebra, Stencil Computation, and core LLM operators (e.g., attention layers), all characterized by high arithmetic intensity and predictable memory access. 
+
+Memory Latency Bound tasks are primarily memory-access sensitive with low data reuse. This includes operations like various Normalization functions, Loss functions, and Activation functions. Their element-wise or reduction-based nature often leads to scattered memory accesses and low cache efficiency, making performance sensitive to access latency rather than pure compute throughput. 
+
+Memory Bandwidth Bound tasks are characterized by operations that demand high-volume, contiguous, or structured data movement. This category is common in Sparse Matrix computations (e.g., SpMV) and certain Tensor Processing routines. These tasks often stream large datasets through the memory hierarchy with relatively low arithmetic intensity, thereby saturating the memory bus bandwidth. This strong task-type correlation validates that our automated bottleneck classification captures fundamental and distinct hardware performance limitations, which directly correspond to different optimization priorities. 
+
+A.5. Optimization-Induced Transformation of Hardware Bottleneck Profiles 
+
+To comprehensively assess how our optimizations alter hardware utilization patterns, we analyze changes across two complementary dimensions: 1) macroscopic shifts in operator bottleneck classifications, and 2) microscopic improvements in hardware performance metrics within each bottleneck category. This dual approach provides both a high-level view of optimization effectiveness and granular insights into underlying performance changes. The macroscopic shifts in operator distributions across bottleneck categories are illustrated in Figure 8. Our optimizations demonstrate significant hardware-level effectiveness through four key transformations: 
+
+Computational enhancement : 6 memory-bound tasks were transformed into compute-bound, indicating reduced memory pressure and increased computational intensity. 
+
+Memory latency alleviation : 14 tasks shifted from memory latency to bandwidth bottlenecks—a critical improvement, as bandwidth is more predictable and optimizable than latency. 13 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts Compute Mem. Latency Mem. Bandwidth 
+
+Bottleneck Type 
+
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> Number of Operators
+> 11
+> 24
+> 15
+> 16
+> 8
+> 26
+> Before Optimization
+> After Optimization
+> Compute
+> Mem. Latency
+> Mem. Bandwidth
+
+After Optimization       
+
+> Compute
+> Mem. Latency
+> Mem. Bandwidth
+> Before Optimization
+> 10 10
+> 3714
+> 3012
+> 0
+> 2
+> 4
+> 6
+> 8
+> 10
+> 12
+> 14
+> Number of Operators
+
+Figure 8. Changes in operator distributions across hardware bottleneck categories after optimization. The left bar chart shows the number of operators in each bottleneck category (Compute, Memory Latency, Memory Bandwidth) before and after optimization. The right heatmap illustrates the migration flows of operators between these bottleneck types, where the diagonal entries represent operators that remained in the same category, and off - diagonal entries indicate how many operators transitioned from one bottleneck type to another. 75 50 25 0 25 50 75 100 
+
+Average Improvement % ± Std Dev 
+
+Issue Slots Busy (%) 
+
+Executed Ipc Active (inst/cycle) 
+
+SM Busy (%) 
+
+Compute (SM) Throughput (%) 
+
+> 16.8% ± 79.5
+> 15.4% ± 78.8
+> 12.8% ± 76.6
+> 0.5% ± 58.2
+
+(a) Compute-Bound 1000 0 1000 2000 3000 
+
+Average Improvement % ± Std Dev 
+
+Mem Busy (%) 
+
+Executed Ipc Elapsed (inst/cycle) 
+
+L2 Hit Rate (%) 
+
+L1/TEX Hit Rate (%) 
+
+> 1312.7% ± 1388.5
+> 889.4% ± 1539.0
+> 33.8% ± 289.0
+> 0.7% ± 57.0
+
+(b) Memory-Latency-Bound 1000 500 0 500 1000 1500 
+
+Average Improvement % ± Std Dev 
+
+DRAM Throughput (%) 
+
+Mem Pipes Busy (%) 
+
+Max Bandwidth (%) 
+
+Memory Throughput (%) 
+
+> 537.3% ± 1278.9
+> 98.9% ± 187.9
+> 21.6% ± 50.5
+> 2.6% ± 20.7
+
+(c) Memory-Bandwidth-Bound 
+
+Figure 9. Detailed Metric-wise Improvement Analysis by Kernel Classification. These three charts provide a detailed breakdown of optimization effects on different hardware metrics for each of the three kernel classifications: (a) Compute-Bound, (b) Memory-Bandwidth-Bound, and (c) Memory-Latency-Bound. Each bar represents the average improvement percentage with standard deviation for the filtered hardware metric. 
+
+14 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+Severe bottleneck reduction : Memory latency-bound tasks decreased by 67% (from 24 to 8), substantially mitigating the most performance-critical bottleneck. 
+
+Better hardware balance : Compute -bound tasks increased by 45% and memory - bandwidth - bound by 73%, better aligning with GPU resources where compute is abundant and bandwidth is more scalable than latency. To understand the performance mechanisms underlying these classification shifts, we analyze the improvements in key hardware metrics for each bottleneck category, as illustrated in Figure 9. These microscopic measurements quantify how our optimizations affect the fundamental hardware behaviors within each classification: 
+
+Compute-Bound : Moderate gains in compute utilization (Issue Slots Busy: +16.8%, Executed Ipc Active: +15.4%). 
+
+Memory-Latency-Bound : Dramatic improvements in latency hiding (Mem Busy: +1312.7%, Executed Ipc Elapsed: +889.4%). 
+
+Memory-Bandwidth-Bound : Enhanced bandwidth utilization (DRAM Throughput: +537.3%, Mem Pipes Busy: +98.9%). Together, these analyses reveal a coherent optimization narrative: our techniques systematically transform operators from latency-sensitive to more manageable bottleneck types while substantially improving the hardware efficiency within each category. The most significant improvements occur in memory-related metrics, validating our approach’s effectiveness in addressing the most critical performance constraints in GPU computing. 
+
+## B. Prompts 
+
+B.1. Planner Agent Prompt 
+
+Planner Agent System Prompt 
+
+## Role Positioning You are an algorithm expert, responsible for analyzing and optimizing the CUDA kernel code to maximize computa-tional performance while ENSURING CORRECTNESS. You only need to design optimization schemes, providing only ONE INCREMENTAL IMPROVEMENT STRATEGY at a time. No programming or code execution is required. ## Hardware information {info} ## Core Workflow 1. Code Analysis The user will provide a mathematical description of the CUDA operator and its implementation code. Please carefully read the provided CUDA operator implementation, understand its functionality, input/output interfaces, and computational logic, and identify performance bottlenecks such as memory access patterns, computationally intensive operations, and control flow divergences. 2. Test Result Analysis The user will provide test results, which are compared with the initial baseline operator implementation, and the correctness of compilation and execution has been guaranteed. The results contain several sets of test case size and test results, separated by a line "=====". The first line of each result set will display the test case size, for example, "Test case size: M: 8, K: 8, N: 8. Complexity: 128", where M, N, and K describe the matrix size, and complexity describes the estimated computational complexity of the naive implementation. The next line will give the speedup ratio compared to the baseline, "Speedup ratio: xxx". A higher speedup ratio is better. If speedup ratio is less than 1.0, previous optimization methods may have problems and you may need to reconsider or discard some of them. Additionally, an execution report of the optimized operator obtained by using the NVIDIA Nsight Compute tool will be provided. For each of the given input specifications, an execution report will be provided, containing key information such as core frequency performance and cache efficiency metrics, which is crucial for proposing optimization solutions. Your optimization strategy should maximize the speedup ratio while ensuring that the operator’s execution result is completely consistent with the original operator, and it needs to comprehensively consider different data scales. 3. Optimization Strategy Formulation 
+
+15 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+You can consider various optimization techniques and utilize your high-performance computing knowledge to improve the kernel function. To ensure correctness, I suggest that your optimization scheme adopt a progressive, incremental, and robust approach, proposing one optimization scheme each time, and ensuring that the previous optimization methods are different. The user will provide a description of the strategies used in the previous optimization step. If the former strategy failed to generate the correct kernel function, it will begins with "All error plan: ". You can optimize by improving the implementation of a single kernel function, merging multiple kernel functions, setting more suitable startup parameters of ‘blocksize‘ and ‘gridsize‘, etc. You can also choose different kernel functions based on the data size, even including the original implementation. However, do not use any existing computing libraries like cuBLAS or cuDNN. The final optimization results are integrated into the external C function wrapper. Please note that you must ensure correct execution within precision range. The actual data size in the test may be relatively large. Careful consideration is needed when using methods such as shared memory; otherwise, it’s easy to encounter issues where small-scale execution works correctly but large-scale execution fails. ## Output Specifications The output only needs to provide an optimization plan according to the format required above. Do not provide specific code snippets in the optimization plan. No file modification is required. 
+
+Planner Agent User Prompt 
+
+My CUDA operator implementation is as follows: {code_file_content} The function of this operator, size settings and data type are as followed: {description} The current speedup of this operator in testing is {result_log}. The previous optimization plan was {former_plan}. 
+
+B.2. Coder Agent 
+
+Coder Agent System Prompt 
+
+## Role Positioning You are a professional CUDA programmer. You are responsible for rewriting and optimizing the CUDA kernel code based on the existing CUDA kernel operator codebase, and referring to user-provided optimization suggestions or fixes. Please pay special attention to the following operator project structure requirements. Failure to comply with code structure requirements will result in code failing to compile due to redundancy, missing content, or errors, leading to serious consequences. ## Hardware information {info} ## Core Workflow 1. Code Analysis Carefully read the CUDA operator implementation I provide with kernel function and external C function wrapper, understanding the original operator’s functionality, input/output interfaces, and computational logic. This code may contain errors and may also have room for performance optimization. Users will provide some fixes or optimization suggestions; you do not need to analyze them yourself. 2. Understanding Fixes and Optimization Schemes Users have provided fixes or optimization suggestions for this CUDA kernel code. You need to carefully read these suggestions, understand what the user wants to fix or optimize, and locate the code that needs to be modified in the source code, or consider the code that needs to be added. 3. Optimize Code Writing Based on your understanding of the provided source code and user-suggested fixes or optimizations, please write your optimized code. The optimized code must meet the following requirements: - Kernel Function Definitions You must name kernel functions to their names with the suffix "_kernel_optimized". For example, ‘qk_matmul_kernel_optimized‘ or ‘find_max_of_rows_kernel_optimized‘. If there are multiple kernel func-
+
+16 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+tions in the implementation, all of these kernel functions must end with the suffix "_kernel_optimized". If you define some structs, try to end them with ‘Optimized‘. Also, DO NOT RETAIN ANY ORIGINIAL OPERATORS and ensure there are no kernel functions with the same name. - External C Function Wrapper Definition The actual call to the operator needs to be defined using an external C function wrapper, and the naming must the original kernel function name with the suffix "_optimized". For example, ‘matrix_mul_optimized‘. You must define ONLY ONE external C function wrapper while maintaining EXACTLY THE SAME PARAMETER LIST as the original operator. In the wrapper function, you need to set startup configuration for the kernel function, mainly configuring ‘block‘ and ‘grid‘. Then call the kernel function. If there are multiple kernel functions in the implementation, you need to consider how to joint call and add temporary variables if necessary. Finally, use cudaDeviceSynchronize() to complete the synchronization. - Operator Project Structure Your CUDA operator belongs to a project, therefore please AVOID MAKING SIGNIF-ICANT MODIFICATIONS TO THE OPERATOR PROJECT STRUCTURE, such as adding extra namespaces, forcibly considering different data types, or adding extra wrappers. If you add any necessary header files, you need to ensure CORRECT INCLUSION OF HEADER FILES to prevent compilation errors such as ‘undefined‘ errors for functions. - Result Correctness If users provide code fix suggestions, you need to ensure that the optimized code can fix these issues and that the fixed code can execute correctly. If users provide performance optimization suggestions, please follow these suggestions to ensure that the optimized code can improve performance, but the premise is al-ways that the result is correct. Note that the absolute error precision requirement for correct operator execution is 1e-5. ## Output Specifications Please use the ‘write_file‘ tool to write the optimized code and the config structure to the target file. The code must contain ONLY OPTIMIZED KERNEL FUNCTION WITH SPECIFIED NAME AND OPTIMIZEDCONFIG STRUCTURE. If auxiliary functions are needed, please INCORPORATE THEM INTO THE OPTIMIZED KERNEL FUNCTION. The file name and file path are specified by the user. Please also explicitly tell me the name of the function wrapper you wrote in the output, in the format <function_name> enclosed in angle brackets, for example, <matrix_mul_optimized>. 
+
+Coder Agent User Prompt 
+
+My CUDA operator implementation is as follows:{code_file_content} Please help me fix or optimize this CUDA operator using the following suggestions:{instructions} The CUDA file you write should be written to {dst_file_name}. 
+
+B.3. Compiler Agent 
+
+Compiler Agent System Prompt 
+
+## Role Positioning You are a CUDA expert and will receive a CUDA operator test program .cu file along with an original compilation com-mand. You need to provide an optimized compilation command that is suitable for execution and provide acceleration. ## Hardware Information {info} ## Core Workflow 1. Code Analysis The user will provide a .cu file and an original compilation ‘nvcc‘ command. You need to provide a compilation ‘nvcc‘ command based on the .cu file, especially the optimized operator implementations ending with ‘_optimized‘, which can optimize and accelerate compilation while ensuring compile correctness. Pay special attention if your code includes any SPECIAL HEADER FILES used for optimization. Ensure that you include the corresponding 
+
+17 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+library linking options during compilation, for example ‘-arch=sm_xx‘ if wmma is used. 2. Providing Compilation Command You need to provide a compilation command with the same functionality as the original compilation command, including effective compilation optimization options. The command must be given on a single line without a newline character. ## Output Specification You only need to provide a reasonable compilation ‘nvcc‘ command in the output without any explanations; no modifications to the file are required. 
+
+Compiler Agent User Prompt 
+
+The test code is as follows: {code_file_content} The original compilation command is {origin_command}. 
+
+B.4. Debug Agent Prompt 
+
+Debug Agent System Prompt 
+
+## Role Positioning You are a CUDA operator testing expert, specifically responsible for debugging CUDA kernel code and fixing execution result and runtime errors. You only need to provide code fixes to ensure correct execution; you do not need to consider operator optimization or write or execute test code. ## Hardware information {info} ## Core Workflow 1. Code Analysis The user will provide the mathematical description and operator name <operator_name> of the CUDA operator, along with test code for testing the CUDA operator. The operator with errors in this test code is the optimized operator function wrapper <operator_name>_optimized with the definition and calling process of kernel functions and the setting of startup parameters, which contains implementation problems leading to results that do not match the sample, compilation error or CUDA memory error. The rest of the test code is correct. Please carefully read the provided test code, especially the operator with errors, understand the original operator’s functionality, input/output interfaces, and computational logic, and identify any potential errors. 2. Test Result Analysis The user will provide a test log. Possible error types are as follows: - Compilation Error If compilation errors occur, especially within the kernel function, check the syntax correctness of the implementation. Otherwise, compilation errors will appear in the kernel function call, usually because the kernel function implementation does not strictly conform to the interface requirements, leading to errors when integrating with the test program. Please carefully check whether the kernel function implementation conforms to the original operator specification, and strictly maintain consistent function signatures. - CUDA Errors If a CUDA error occurs, the log will show the error log obtained using the memcheck debugging tool. You need to refer to the error log to locate and fix the CUDA error. Mostly you need to carefully check the memory access patterns in the kernel, especially the indexes of shared memory and global memory. - Error in Execution Result If the error is not a CUDA memory error, the error message will be provided in JSON format, with the mismatches field showing the test case size of the first occurrence of the error and a comparison of the output results. The absolute error precision requirement for correct operator execution is 1e-5. When you find a large discrepancy in the output error, you can refer to the test case size for judgment. Consider that the original implementation may have used incorrect shared memory methods or inappropriate startup parameters, making it only suitable for small data sizes and unable to handle large-scale data. If you find that the incorrect output value is close to the original value but the error precision exceeds 1e-5, you need to carefully consider the issue of precision loss. 3. Correction Please carefully read the mathematical description of the CUDA operator and the provided CUDA 
+
+18 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+operator implementation code. Combined with the rest of the test code, find the root cause of the error and pro-vide specific repair solutions, such as adding missing operation steps or modifying the incorrect memory access mode. ## Output Specifications You only need to provide the fix for the <kernel_name>_optimized operator in the output. Do not provide specific code snippets in the optimization plan. No file modification is required. 
+
+Debug Agent User Prompt 
+
+The CUDA operator’s name I provided is {kernel_name}. The function of this operator, size settings and data type are as followed: {description} The test code is as follows: {code_file_content} The current error log for this test code is: {result_log}. 
+
+## C. Detailed content of MSKernelBench 
+
+The detailed content for each task category in MSKernelBench are shown in Table 7.  
+
+> Table 7. Detailed Content of Each Task in MSKernelBench.
+
+ID Task Type Task Name Prompt for Task Description Input Data Size & Complexity 𝑻 (𝑵 )
+
+1Dense Linear Algebra Dot Product For two vectors 𝑋 and 𝑌 , both of length 𝑁 ,compute their dot product dot_product (𝑋, 𝑌 ):dot_product (𝑋, 𝑌 ) = Í𝑁 𝑖 =1 𝑋 [𝑖 ] · 𝑌 [𝑖 ]
+
+𝑁 = {216 , 217 , 218 , 219 , 220 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+2Dense Linear Algebra Vector Add Add two vectors 𝐴 and 𝐵 of length 𝑁 into vector 𝐶 .
+
+𝑁 = {210 , 212 , 214 , 216 , 218 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+3Dense Linear Algebra Square Matrix Mul Given two square matrices 𝐴 and 𝐵 with size 
+
+(𝑀, 𝑀 ), calculate the result of matrix multiplication 𝐴𝐵 and write it into matrix 𝐶 .
+
+𝑀 = {24, 26, 28, 210 , 212 }
+
+𝑇 (𝑀 ) = 𝑂 (𝑀 3)
+
+4Dense Linear Algebra Matrix Scalar Mul Given a matrix 𝐴 and a scalar 𝑠 , calculate the result of matrix and scalar multiplication 𝑠𝐴 
+
+and write it into matrix 𝐵 , where matrix 𝐴 has a shape of (𝑀, 𝑁 ).
+
+𝑀 = {28, 210 , 212 , 214 , 216 }
+
+𝑁 = 2048 
+
+𝑇 (𝑀, 𝑁 ) = 𝑂 (𝑀 𝑁 )
+
+5Dense Linear Algebra Matrix Mul Given two matrices 𝐴 and 𝐵 , calculate the result of matrix multiplication 𝐴𝐵 and write it into matrix 𝐶 , where matrix 𝐴 has a shape of 
+
+(𝑀, 𝐾 ), matrix 𝐵 has a shape of (𝐾, 𝑁 ), and matrix 𝐶 has a shape of (𝑀, 𝑁 ).
+
+𝑀 = {26, 28, 210 , 212 , 214 }
+
+𝑁 = 2048 , 𝐾 = 4096 
+
+𝑇 (𝑀, 𝑁, 𝐾 ) = 𝑂 (𝑀 𝑁𝐾 )
+
+6Dense Linear Algebra Matrix Power Given a square matrix 𝐴 with size (𝑁, 𝑁 ),calculate matrix power of 𝐴 𝑃 .
+
+𝑁 = {28, 29, 210 }
+
+𝑃 = {2, 5, 8, 11 , 16 }
+
+𝑇 (𝑁, 𝑃 ) = 𝑂 (𝑃𝑁 3)
+
+7Dense Linear Algebra Matrix Vector Mul Given a matrix 𝐴 and a vector 𝑥 , calculate the result of matrix and vector multiplication 𝐴𝑥 
+
+and write it into vector 𝑦 , where matrix 𝐴 has a shape of (𝑀, 𝑁 ), vector 𝑥 has a shape of (𝑁 ).
+
+𝑁 = {28, 210 , 212 , 214 , 216 }
+
+𝑀 = 2048 
+
+𝑇 (𝑀, 𝑁 ) = 𝑂 (𝑀 𝑁 )
+
+19 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+Table 7. Detailed Content of Each Task in MSKernelBench. (Continued) 
+
+ID Task Type Task Name Prompt for Task Description Input Data Size & Complexity 𝑻 (𝑵 )
+
+8 Sparse Matrix SpMV COO Given a sparse matrix 𝐴 in Coordinate (COO) format and a dense vector 𝑥 , calculate the result of matrix-vector multiplication 𝑦 = 𝐴𝑥 ,where matrix 𝐴 has a shape of (rows , cols )
+
+with a specified sparsity density like 0.01 , and vector 𝑥 has length cols. The result vector 𝑦 
+
+has length rows. The COO format consists of three arrays: 
+
+values : Non-zero elements of the matrix with length nnz row_indices : Row indices for each non-zero element with length nnz col_indices : Column indices for each non-zero element with length nnz rows = {210 , 211 , 212 , 213 , 214 , 215 }
+
+cols = 2048 
+
+nnz = rows × cols × 0.01 
+
+𝑇 (𝑛𝑛𝑧 ) = 𝑂 (𝑛𝑛𝑧 )
+
+9 Sparse Matrix SpMM COO Given a sparse matrix 𝐴 in Coordinate (COO) format and a dense matrix 𝐵 , calculate the result of matrix multiplication 𝐶 = 𝐴𝐵 , where matrix 𝐴 has a shape of (rows , cols ) with a specified sparsity density like 0.01 , and matrix 
+
+𝐵 has a shape of (cols , 𝐾 ). The result matrix 
+
+𝐶 has a shape of (rows , 𝐾 ). The COO format consists of three arrays: 
+
+values : Non-zero elements of the matrix with length nnz row_indices : Row indices for each non-zero element with length nnz col_indices : Column indices for each non-zero element with length nnz .
+
+rows = {28, 210 , 212 , 214 , 216 }
+
+cols = 2048 
+
+𝐾 = 4096 
+
+nnz = rows × cols × 0.01 
+
+𝑇 (𝑛𝑛𝑧, 𝐾 ) = 𝑂 (𝑛𝑛𝑧 × 𝐾 )
+
+10 Sparse Matrix SpMV CSC Given a sparse matrix 𝐴 in Compressed Sparse Column (CSC) format and a dense vector 𝑥 ,calculate the result of matrix-vector multiplication 𝑦 = 𝐴𝑥 , where matrix 𝐴 has a shape of (rows , cols ) with a specified sparsity density like 0.01 , and vector 𝑥 has length cols .The result vector 𝑦 has length rows . The CSC format consists of three arrays: 
+
+values : Non-zero elements of the matrix with length nnz row_indices : Row indices for each non-zero element with length nnz col_offsets : Starting index of each column in the values array with length cols + 1
+
+cols = {210 , 211 , 212 , 213 , 214 , 215 }
+
+rows = 2048 
+
+nnz = rows × cols × 0.01 
+
+𝑇 (𝑛𝑛𝑧 ) = 𝑂 (𝑛𝑛𝑧 )
+
+20 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+Table 7. Detailed Content of Each Task in MSKernelBench. (Continued) 
+
+ID Task Type Task Name Prompt for Task Description Input Data Size & Complexity 𝑻 (𝑵 )
+
+11 Sparse Matrix SpMM CSC Given a sparse matrix 𝐴 in Compressed Sparse Column (CSC) format and a dense matrix 𝐵 ,calculate the result of matrix multiplication 
+
+𝐶 = 𝐴𝐵 , where matrix 𝐴 has a shape of 
+
+(rows , cols ) with a specified sparsity density like 0.01 , and matrix 𝐵 has a shape of 
+
+(cols , 𝐾 ). The result matrix 𝐶 has a shape of 
+
+(rows , 𝐾 ). The CSC format consists of three arrays: 
+
+values : Non-zero elements of the matrix with length nnz row _indices : Row indices for each non-zero element with length nnz col _offsets : Starting index of each column in the values array with length cols + 1
+
+cols = {210 , 211 , 212 , 213 , 214 }
+
+rows = 2048 
+
+𝐾 = 4096 
+
+nnz = rows × cols × 0.01 
+
+𝑇 (𝑛𝑛𝑧, 𝐾 ) = 𝑂 (𝑛𝑛𝑧 × 𝐾 )
+
+12 Sparse Matrix SpMV CSR Given a sparse matrix 𝐴 in Compressed Sparse Row (CSR) format and a dense vector 𝑥 ,calculate the result of matrix-vector multiplication 𝑦 = 𝐴𝑥 , where matrix 𝐴 has a shape of (rows , cols ) with a specified sparsity density like 0.01 , and vector 𝑥 has length cols .The result vector 𝑦 has length rows . The CSR format consists of three arrays: 
+
+values : Non-zero elements of the matrix with length nnz col _indices : Column indices for each non-zero element with length nnz row _offsets : Starting index of each row in the values array with length rows + 1
+
+rows = {210 , 211 , 212 , 213 , 214 , 215 }
+
+cols = 2048 
+
+nnz = rows × cols × 0.01 
+
+𝑇 (𝑛𝑛𝑧 ) = 𝑂 (𝑛𝑛𝑧 )
+
+13 Sparse Matrix SpMM CSR Given a sparse matrix 𝐴 in Compressed Sparse Row (CSR) format and a dense matrix 𝐵 ,calculate the result of matrix multiplication 
+
+𝐶 = 𝐴𝐵 , where matrix 𝐴 has a shape of 
+
+(rows , cols ) with a specified sparsity density like 0.01 , and matrix 𝐵 has a shape of 
+
+(cols , 𝐾 ). The result matrix 𝐶 has a shape of 
+
+(rows , 𝐾 ). The CSR format consists of three arrays: 
+
+values : Non-zero elements of the matrix with length nnz col _indices : Column indices for each non-zero element with length nnz row _offsets : Starting index of each row in the values array with length rows + 1
+
+rows = {210 , 212 , 214 , 216 , 218 }
+
+cols = 2048 
+
+𝐾 = 4096 
+
+nnz = rows × cols × 0.01 
+
+𝑇 (𝑛𝑛𝑧, 𝐾 ) = 𝑂 (𝑛𝑛𝑧 × 𝐾 )
+
+21 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+Table 7. Detailed Content of Each Task in MSKernelBench. (Continued) 
+
+ID Task Type Task Name Prompt for Task Description Input Data Size & Complexity 𝑻 (𝑵 )
+
+14 Sparse Matrix SpMV ELL Given a sparse matrix 𝐴 in ELL format and a dense vector 𝑥 , calculate the result of matrix-vector multiplication 𝑦 = 𝐴𝑥 , where matrix 𝐴 has a shape of (rows , cols ) with a specified sparsity density of 0.01 , and vector 𝑥 
+
+has length cols . The result vector 𝑦 has length 
+
+rows . The ELL format stores sparse matrices using two arrays: 
+
+values : Non-zero elements of the matrix, padded to a fixed length per row, with total size: rows × max_nnz_per_row . Padding positions are marked with −1
+
+col_ids : Column indices for each corresponding non-zero element, with total size rows × max_nnz_per_row . Padding positions are marked with −1
+
+cols = {210 , 211 , 212 , 213 , 214 , 215 }
+
+rows = 2048 
+
+nnz = rows × cols × 0.01 
+
+𝑇 (𝑛𝑛𝑧 ) = 𝑂 (𝑛𝑛𝑧 )
+
+15 Sparse Matrix SpMM ELL Given a sparse matrix 𝐴 in ELL format and a dense matrix 𝐵 , calculate the result of matrix multiplication 𝐶 = 𝐴𝐵 , where matrix 𝐴 has a shape of (rows , cols ) with a specified sparsity density of 0.01, and matrix 𝐵 has a shape of 
+
+(cols , 𝐾 ). The result matrix 𝐶 has a shape of 
+
+(rows , 𝐾 ). The ELL format stores sparse matrices using two arrays: 
+
+values : Non-zero elements of the matrix, padded to a fixed length per row, with total size: rows × max_nnz_per_row . Padding positions are marked with −1
+
+col_ids : Column indices for each corresponding non-zero element, with total size rows × max_nnz_per_row . Padding positions are marked with −1
+
+cols = {210 , 211 , 212 , 213 , 214 , 215 }
+
+rows = 2048 
+
+𝐾 = 4096 
+
+nnz = rows × cols × 0.01 
+
+𝑇 (𝑛𝑛𝑧, 𝐾 ) = 𝑂 (𝑛𝑛𝑧 × 𝐾 )
+
+16 Normal-ization Batch Norm Implement batch normalization for a tensor of shape [𝑁, 𝐶 ] using scale vector 𝛾 and shift vector 𝛽 parameters of length 𝐶 . The formula is as follows: 𝜇 𝑗 = 1
+
+> 𝑁
+
+Í𝑁 𝑖 =1 𝑥 𝑖, 𝑗 
+
+Var 𝑗 = 1
+
+> 𝑁
+
+Í𝑁 𝑖 =1 (𝑥 𝑖, 𝑗 − 𝜇 𝑗 )2
+
+output 𝑖, 𝑗 = 𝑥 𝑖, 𝑗 −𝜇 𝑗 
+
+√Var 𝑗 +𝜖 𝛾 𝑗 + 𝛽 𝑗 
+
+𝑁 = {24, 26, 28, 210 }
+
+𝐶 = {24, 26, 28, 210 }
+
+𝑇 (𝑁, 𝐶 ) = 𝑂 (𝑁𝐶 )
+
+17 Normal-ization RMS Norm Given an input tensor 𝑋 of dimension (𝑁 ), and additional parameters 𝑤 , 𝑏 , and 𝜖 , compute the RMS normalization of the input sequence: 
+
+RMS (𝑋 ) =√︃ 1
+
+> 𝑁
+
+Í𝑁 𝑖 =1 𝑋 2 
+
+> 𝑖
+
+𝑌 = 𝑋  
+
+> RMS (𝑋 )+ 𝜖
+
+· 𝑤 + 𝑏 𝑁 = {26, 27, 28, 29, 210 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+22 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+Table 7. Detailed Content of Each Task in MSKernelBench. (Continued) 
+
+ID Task Type Task Name Prompt for Task Description Input Data Size & Complexity 𝑻 (𝑵 )
+
+18 Normal-ization Layer Norm Normalize an 𝑛 -dimensional vector 𝑥 , where the vector has a mean 𝜇 (𝑥 ), a standard deviation 𝜎 (𝑥 ), and parameters 𝑛 -dimensional vector 𝑤 , 𝑛 -dimensional vector 𝑏 , and epsilon. The formula is as follows: 
+
+𝜇 (𝑥 ) = 1
+
+> 𝑛
+
+Í𝑛 𝑖 =1 𝑥 𝑖 
+
+Var (𝑥 ) = 1
+
+> 𝑛
+
+Í𝑛 𝑖 =1 (𝑥 𝑖 − 𝜇 (𝑥 )) 2
+
+𝑌 = 𝑥 −𝜇 ( 𝑥 )
+
+√Var ( 𝑥 )+ 𝜖 · 𝑤 + 𝑏 𝑁 = {26, 27, 28, 29, 210 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+19 Normal-ization Softmax The softmax operator is calculated by applying the softmax function to a tensor 𝑥 of shape 
+
+(𝑁, 𝐶 ) of each row with length 𝐶 . For each row 𝑖 where 𝑖 = 0 to 𝑁 − 1, compute: 
+
+row 𝑖 = 𝑥 [𝑖, :] 𝑀 = max (row 𝑖 )
+
+softmax (row i) = exp (row i −M)Í(exp (row i −M) ) 
+
+𝑁 = {24, 25, 26, 27 }
+
+𝐶 = {28, 210 , 212 , 214 }
+
+𝑇 (𝑁, 𝐶 ) = 𝑂 (𝑁𝐶 )
+
+20 Activate Function Sigmoid The sigmoid operator is calculated by applying the sigmoid function to a sequence of length 𝑁 :
+
+sigmoid (𝑥 ) = 11+𝑒 −𝑥 
+
+𝑁 = {210 , 212 , 214 , 216 , 218 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+21 Activate Function Selu The selu operator is calculated by applying the selu function to a sequence of length 𝑁 with a slope 𝛼 and a scale 𝜆 :
+
+selu (𝑥 ) = 𝜆𝑥 if 𝑥 > 0, otherwise 𝜆𝛼 (𝑒 𝑥 − 1)
+
+𝑁 = {210 , 212 , 214 , 216 , 218 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+22 Activate Function Elu The elu operator is calculated by applying the elu function to a sequence of length 𝑁 with a slope 𝛼 :
+
+elu (𝑥 ) = 𝑥 if 𝑥 > 0, otherwise 𝛼 (𝑒 𝑥 − 1)
+
+𝑁 = {210 , 212 , 214 , 216 , 218 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+23 Activate Function Gelu The gelu operator is calculated by applying the gelu function to a sequence of length 𝑁 :
+
+gelu (𝑥 ) = 𝑥 Φ(𝑥 ) Where Φ(𝑥 ) = 1+erf ( 𝑥 /√2)
+
+> 2
+
+𝑁 = {210 , 212 , 214 , 216 , 218 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+24 Activate Function Row Tanh The row tanh operator is calculated by applying the tanh function to a sequence of length 𝑁 : tanh (𝑥 ) = 𝑒 𝑥 −𝑒 −𝑥  
+
+> 𝑒 𝑥 +𝑒 −𝑥
+
+𝑁 = {210 , 212 , 214 , 216 , 218 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+25 Activate Function Relu The Relu operator is calculated by applying the Relu function to a sequence of length 𝑁 :
+
+Relu (𝑥 ) = max (0, 𝑥 )
+
+𝑁 = {210 , 212 , 214 , 216 , 218 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+26 Activate Function Leaky Relu The Leaky Relu operator is calculated by applying the Leaky Relu function to a sequence of length 𝑁 with a small slope 𝛼 :
+
+Leaky_relu (𝑥 ) = 𝑥 if 𝑥 > 0, otherwise 𝑥 · 𝛼 𝑁 = {210 , 212 , 214 , 216 , 218 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+27 Loss Function MSE Loss Given two vectors 𝑋 and 𝑌 , each of length 𝑁 ,calculate their mean squared error MSE (𝑋, 𝑌 ):
+
+MSE (𝑋, 𝑌 ) = 1
+
+> 𝑁
+
+Í𝑁 𝑖 =1 (𝑋 [𝑖 ] − 𝑌 [𝑖 ]) 2
+
+𝑁 = {210 , 212 , 214 , 216 , 218 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+23 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+Table 7. Detailed Content of Each Task in MSKernelBench. (Continued) 
+
+ID Task Type Task Name Prompt for Task Description Input Data Size & Complexity 𝑻 (𝑵 )
+
+28 Loss Function Hinge Loss The hinge loss operator is given a sequence of length 𝑁 , and two input arrays: predictions 
+
+and targets . The predictions array contains the predicted values, and the targets array contains the true binary labels ( 0 or 1). The operator calculates the hinge loss for each sample in the sequence using the formula: if target = 1,
+
+hinge_loss (𝑥 ) = max (0, 1 − pred ) if 
+
+target = 0, hinge_loss (𝑥 ) = max (0, 1 + pred )
+
+𝑁 = {210 , 212 , 214 , 216 , 218 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+29 Loss Function Cross Entropy Loss Given a predicted probability distribution 𝑋 of length 𝑁 , where 𝑁 is the number of classes, and an actual probability distribution 𝑌 of length 𝑁 , compute their cross entropy loss 
+
+cross_entropy_loss (𝑋, 𝑌 ):
+
+cross_entropy_loss (𝑋, 𝑌 ) =
+
+− Í𝑁 𝑖 =1 𝑌 [𝑖 ] · log (𝑋 [𝑖 ]) 
+
+𝑁 = {214 , 216 , 218 , 220 , 222 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+30 LLM Operator Sequence Softmax Attention Given the query matrix 𝑄 of size 
+
+[q_seq_len , dim_qk ], key matrix 𝐾 of size 
+
+[kv_seq_len , dim_qk ], and value matrix 𝑉 of size [kv_seq_len , dim_v ], calculate the softmax attention by the formula: 
+
+𝑌 = softmax ( 𝑄𝐾 𝑇 
+
+√dim_qk )𝑉 where softmax of shape [𝑁, 𝐶 ] is defined as: For each row 𝑖 
+
+(where 𝑖 = 0 to 𝑁 − 1), compute: 
+
+row 𝑖 = 𝑥 [𝑖, :] 𝑀 = max (row 𝑖 )
+
+softmax (row 𝑖 ) = exp (row 𝑖 −𝑀 )Í(exp (row 𝑖 −𝑀 ) ) 
+
+[q_seq_len , kv_seq_len , dim_qk ,
+
+dim_v ] = {[128, 256, 512, 512], [256, 512, 1024, 1024], [512, 1024, 2048, 2048], [1024, 2048, 4096, 4096], [256, 1024, 2048, 1024], [512, 512, 1024, 2048], [1024, 1024, 4096, 2048], [128, 2048, 512, 4096]} 
+
+𝑇 (𝑞 _𝑠𝑒𝑞 _𝑙𝑒𝑛, 𝑘𝑣 _𝑠𝑒𝑞 _𝑙𝑒𝑛, 𝑑𝑖𝑚 _𝑞𝑘 , 𝑑𝑖𝑚 _𝑣 ) = 𝑂 (𝑞 _𝑠𝑒𝑞 _𝑙𝑒𝑛 ×
+
+𝑘𝑣 _𝑠𝑒𝑞 _𝑙𝑒𝑛 × ( 𝑑𝑖𝑚 _𝑞𝑘 + 𝑑𝑖𝑚 _𝑣 )) 
+
+31 LLM Operator Sequence Triangle Attention Given the query, key, value matrix of shape 
+
+[batch_size , head_num , seq_length , head_dim ]
+
+and an upper triangular matrix attention mask of shape [batch_size , seq_length , seq_length ],calculate the triangle attention matrix of shape 
+
+[batch_size , head_num , seq_length , head_dim ].for each 𝑏 in batch_size and ℎ in head_num :
+
+𝑄, 𝐾, 𝑉 = query [𝑏, ℎ, :, :], key [𝑏, ℎ, :, :
+
+], value [𝑏, ℎ, :, :]
+
+𝑀 = mask [𝑏, :, :]
+
+𝑆 = 𝑄𝐾 𝑇 
+
+> √head_dim
+
+𝑆 masked = 𝑆 ⊙ 𝑀 𝑃 = tril_softmax (𝑆 masked )
+
+𝑂 = 𝑃𝑉 
+
+[batch_size , head_num , seq_length ,
+
+head_dim ] = {[1, 32, 512, 128], [1, 96, 256, 128], [1, 48, 1024, 128], [2, 16, 256, 256], [2, 64, 512, 128], [4, 8, 32, 128], [4, 32, 512, 128], [8, 16, 512, 128]} 
+
+𝑇 (𝑏𝑎𝑡𝑐ℎ _𝑠𝑖𝑧𝑒, ℎ𝑒𝑎𝑑 _𝑛𝑢𝑚, 𝑠𝑒𝑞 _𝑙𝑒𝑛𝑔𝑡ℎ, ℎ𝑒𝑎𝑑 _𝑑𝑖𝑚 ) =
+
+𝑂 (𝑏𝑎𝑡𝑐ℎ _𝑠𝑖𝑧𝑒 × ℎ𝑒𝑎𝑑 _𝑛𝑢𝑚 ×
+
+𝑠𝑒𝑞 _𝑙𝑒𝑛𝑔𝑡ℎ 2 × ℎ𝑒𝑎𝑑 _𝑑𝑖𝑚 )
+
+24 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+Table 7. Detailed Content of Each Task in MSKernelBench. (Continued) 
+
+ID Task Type Task Name Prompt for Task Description Input Data Size & Complexity 𝑻 (𝑵 )
+
+32 LLM Operator Sequence Merge Attention States The merge_attn_states operator will accept two tensors 𝑉 𝑎 and 𝑉 𝑏 of the same shape 
+
+[num_tokens , num_heads , head_size ], and two LSE 𝑎 and LSE 𝑏 of the same shape 
+
+[num_heads , num_tokens ], and perform merge exponential normalization: For each head ℎ
+
+and token 𝑡 :
+
+max_lse = max (LSE 𝑎 [ℎ, 𝑡 ], LSE 𝑏 [ℎ, 𝑡 ]) 
+
+𝑤 𝑎 = exp (LSE 𝑎 [ℎ, 𝑡 ] − max_lse )
+
+𝑤 𝑏 = exp (LSE 𝑏 [ℎ, 𝑡 ] − max_lse )
+
+total_w = 𝑤 𝑎 + 𝑤 𝑏 
+
+𝑉 out [𝑡, ℎ, :] = (𝑉 𝑎 [𝑡, ℎ, :] · 𝑤 𝑎 + 𝑉 𝑏 [𝑡, ℎ, :
+
+] · 𝑤 𝑏 )/ total_w LSE out [ℎ, 𝑡 ] = log (total_w ) + max_lse num_tokens = {512, 768, 1024} 
+
+num_heads = {32, 64} 
+
+head_size = {128, 256} 
+
+𝑇 (𝑛𝑢𝑚 _𝑡𝑜𝑘𝑒𝑛𝑠, 𝑛𝑢𝑚 _ℎ𝑒𝑎𝑑𝑠, ℎ𝑒𝑎𝑑 _𝑠𝑖𝑧𝑒 ) = 𝑂 (𝑛𝑢𝑚 _𝑡𝑜𝑘𝑒𝑛𝑠 ×
+
+𝑛𝑢𝑚 _ℎ𝑒𝑎𝑑𝑠 × ℎ𝑒𝑎𝑑 _𝑠𝑖𝑧𝑒 )
+
+33 LLM Operator Sequence SwiGLU The SwiGLU operator is calculated by applying the Swish-Gated Linear Unit function to two sequences gate 𝑔 and value 𝑣 of length 
+
+𝑁 :
+
+Swish (𝑥 ) = 𝑥 · 𝜎 (𝛽𝑥 ) = 𝑥 
+
+> 1+𝑒 −𝛽𝑥
+
+SwiGLU (𝑔, 𝑣 ) = Swish (𝑔 ) · 𝑣 𝑁 = {210 , 212 , 214 , 216 , 218 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+34 LLM Operator Sequence Silu and Mul Given a concatenated input in shape (𝐵, 2𝐷 ),where the first 𝐷 is 𝑥 and the second 𝐷 is 𝑔 .Compute silu of 𝑥 and multiply it with 𝑔 .
+
+𝑥 = 𝑖𝑛𝑝𝑢𝑡 [𝑏, : 𝐷 ]
+
+𝑔 = 𝑖𝑛𝑝𝑢𝑡 [𝑏, 𝐷 :] 𝑜𝑢𝑡 = silu (𝑥 ) · 𝑔 𝐵 = {16 , 32 , 64 }
+
+𝐷 = {4096 , 5120 , 8192 , 12288 }
+
+𝑇 (𝐵, 𝐷 ) = 𝑂 (𝐵𝐷 )
+
+35 LLM Operator Sequence Rope Given an input tensor 𝑥 of shape (𝑀, 𝐷 ),calculate the Rotary Positional Embedding. For each position 𝑚 where 𝑚 = 0 to 𝑀 − 1, its 
+
+𝐷 -dimensional vector 
+
+𝑣 𝑚 = [𝑥 𝑚, 0, 𝑥 𝑚, 1, ..., 𝑥 𝑚,𝐷 −1]. For each two-dimensional pair (𝑥 𝑚, 2𝑘 , 𝑥 𝑚, 2𝑘 +1), where 
+
+𝑘 = 0 to (𝐷 /2) − 1: 𝜃 𝑘 = base −2𝑘 /𝐷 ,
+
+𝜙 (𝑚, 𝑘 ) = 𝑚 · 𝜃 𝑘 
+
+out [𝑚, 2𝑘 ] =
+
+𝑥 𝑚, 2𝑘 · cos (𝜙 (𝑚, 𝑘 )) − 𝑥 𝑚, 2𝑘 +1 · sin (𝜙 (𝑚, 𝑘 )) 
+
+out [𝑚, 2𝑘 + 1] =
+
+𝑥 𝑚, 2𝑘 · sin (𝜙 (𝑚, 𝑘 )) + 𝑥 𝑚, 2𝑘 +1 · cos (𝜙 (𝑚, 𝑘 )) 
+
+𝑀 = {24, 25, 26, 27 }
+
+𝐷 = {28, 210 , 212 , 214 }
+
+𝑇 (𝑀, 𝐷 ) = 𝑂 (𝑀 𝐷 )
+
+36 Tensor Process Reverse Array Reverse an input sequence of length 𝑁 into an output sequence of length 𝑁 .
+
+𝑁 = {210 , 212 , 214 , 216 , 218 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+37 Tensor Process Matrix Copy Given two matrices 𝐴 and 𝐵 , copy 𝐴 into 𝐵 ,where matrix 𝐴 and 𝐵 has the same shape of 
+
+(𝑀, 𝑁 ).
+
+𝑀 = {28, 210 , 212 , 214 , 216 }
+
+𝑁 = 2048 
+
+𝑇 (𝑀, 𝑁 ) = 𝑂 (𝑀 𝑁 )
+
+38 Tensor Process Matrix Transpose Transpose a matrix 𝐴 of dimension (𝑀, 𝑁 )
+
+and output the transposed matrix 𝐴 𝑇 , where 
+
+𝐴 𝑇 has dimensions (𝑁, 𝑀 ).
+
+𝑀 = {210 , 211 , 212 , 213 , 214 }
+
+𝑁 = {210 , 211 , 212 , 213 , 214 }
+
+𝑇 (𝑀, 𝑁 ) = 𝑂 (𝑀 𝑁 )
+
+25 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+Table 7. Detailed Content of Each Task in MSKernelBench. (Continued) 
+
+ID Task Type Task Name Prompt for Task Description Input Data Size & Complexity 𝑻 (𝑵 )
+
+39 Tensor Process High Order Contrac-tion Calculate the high order tensor contraction of tensor 𝐴 of shape [𝑎 dim , 𝑥 dim , 𝑏 dim , 𝑦 dim ] and 𝐵 
+
+of shape [𝑥 dim , 𝑐 dim , 𝑦 dim ]. Write the answer into tensor 𝐶 of shape [𝑎 dim , 𝑏 dim , 𝑐 dim ]
+
+𝐶 [𝑎, 𝑏, 𝑐 ] = Í𝑥,𝑦 𝐴 [𝑎, 𝑥, 𝑏, 𝑦 ] × 𝐵 [𝑥, 𝑐, 𝑦 ][𝑎 dim , 𝑏 dim , 𝑐 dim ] = {[32, 32, 32], [64, 32, 48], [128, 128, 64], [256, 256, 128]} 
+
+[𝑥 dim , 𝑦 dim ] = {[4, 4],[16, 8], [16, 16] } 
+
+𝑇 (𝑎 𝑑𝑖𝑚 , 𝑏 𝑑𝑖𝑚 , 𝑐 𝑑𝑖𝑚 , 𝑥 𝑑𝑖𝑚 , 𝑦 𝑑𝑖𝑚 ) =
+
+𝑂 (𝑎 𝑑𝑖𝑚 𝑏 𝑑𝑖𝑚 𝑐 𝑑𝑖𝑚 𝑥 𝑑𝑖𝑚 𝑦 𝑑𝑖𝑚 )
+
+40 Stencil Computa-tion 2D Max Pooling Given an input signal of shape [𝑁, 𝐶, 𝐻, 𝑊 ].For each output position (𝑛, 𝑐, ℎ out , 𝑤 out ),compute the maximum value over the corresponding input window: 
+
+output [𝑛, 𝑐, ℎ out , 𝑤 out ] = max (input [𝑛, 𝑐, ℎ :
+
+ℎ + kernel_size , 𝑤 : 𝑤 + kernel_size ]) 
+
+where ℎ = ℎout × stride and 𝑤 = 𝑤 out × stride 
+
+The boundary values are filled with padding. 
+
+[𝑁, 𝐶, 𝐻, 𝑊 ] = {[8, 3, 512, 512], [4, 3, 224, 224], [16, 3, 608, 608], [4, 1, 2048, 196]} [kernel_size , stride ] = {[2,1], [3,1], [4,2]}, padding = {0,1} 
+
+𝐻 𝑜𝑢𝑡 = ⌊ (𝐻 +2×padding −kernelsize ) 
+
+> stride
+
++ 1⌋
+
+𝑊 𝑜𝑢𝑡 = ⌊ (𝑊 +2×padding −kernelsize ) 
+
+> stride
+
++1⌋
+
+𝑇 (𝑁, 𝐶, 𝐻 𝑜𝑢𝑡 , 𝑊 𝑜𝑢𝑡 , 𝑘𝑒𝑟𝑛𝑒𝑙 _𝑠𝑖𝑧𝑒 ) =
+
+𝑂 (𝑁𝐶𝐻 𝑜𝑢𝑡 𝑊 𝑜𝑢𝑡 × 𝑘𝑒𝑟𝑛𝑒𝑙 _𝑠𝑖𝑧𝑒 2)
+
+41 Stencil Computa-tion 1D Convo-lution Given an 1d input signal and an 1d kernel, compute the output signal using 1D convolution. 
+
+input_size = {214 , 216 , 218 , 220 , 222 }
+
+kernel_size = {32 , 64 , 128 , 256 }
+
+𝑇 (𝑖𝑛𝑝𝑢𝑡 _𝑠𝑖𝑧𝑒, 𝑘𝑒𝑟𝑛𝑒𝑙 _𝑠𝑖𝑧𝑒 ) =
+
+𝑂 (𝑖𝑛𝑝𝑢𝑡 _𝑠𝑖𝑧𝑒 × 𝑘𝑒𝑟𝑛𝑒𝑙 _𝑠𝑖𝑧𝑒 )
+
+42 Stencil Computa-tion 2D Convo-lution Given an 2d input signal and an 2d kernel, compute the output signal using 2D convolution. 
+
+input_size =
+
+{[ 28, 28], [210 , 210 ], [212 , 212 ]} 
+
+kernel_size =
+
+{[ 8, 8], [16 , 16 ], [32 , 32 ]} 
+
+𝑇 (𝑖𝑛𝑝𝑢𝑡 _𝑠𝑖𝑧𝑒 _𝑥, 𝑖𝑛𝑝𝑢𝑡 _𝑠𝑖𝑧𝑒 _𝑦, 𝑘𝑒𝑟𝑛𝑒𝑙 _𝑠𝑖𝑧𝑒 _𝑥, 𝑘𝑒𝑟𝑛𝑒𝑙 _𝑠𝑖𝑧𝑒 _𝑦 ) =
+
+𝑂 (𝑖𝑛𝑝𝑢𝑡 _𝑠𝑖𝑧𝑒 _𝑥 × 𝑖𝑛𝑝𝑢𝑡 _𝑠𝑖𝑧𝑒 _𝑦 ×
+
+𝑘𝑒𝑟𝑛𝑒𝑙 _𝑠𝑖𝑧𝑒 _𝑥 × 𝑘𝑒𝑟𝑛𝑒𝑙 _𝑠𝑖𝑧𝑒 _𝑦 )
+
+43 Stencil Computa-tion 2D Stencil Given an input 𝑢 old of shape [𝑛 𝑥 , 𝑛 𝑦 ],calculate the 2d 5-point stencil of 𝑢 old and store the result in 𝑢 new : For interior points (𝑖 ∈ [ 1, 𝑛 𝑥 − 2], 𝑗 ∈ [ 1, 𝑛 𝑦 − 2]): 
+
+𝑢 new [𝑖, 𝑗 ] = 𝑢 old [𝑖, 𝑗 ]+ 𝑟 (𝑢 old [𝑖 −1, 𝑗 ]+ 𝑢 old [𝑖 +
+
+1, 𝑗 ] + 𝑢 old [𝑖, 𝑗 −1] + 𝑢 old [𝑖, 𝑗 +1] − 4 𝑢 old [𝑖, 𝑗 ]) 
+
+For boundary points 
+
+(𝑖 ∈ { 0, 𝑛 𝑥 − 1}, 𝑗 ∈ { 0, 𝑛 𝑦 − 1}) :
+
+𝑢 new [𝑖, 𝑗 ] = 𝑢 old [𝑖, 𝑗 ]
+
+𝑛 𝑥 = {210 , 212 , 214 }
+
+𝑛 𝑦 = {210 , 212 , 214 }
+
+𝑇 (𝑛 𝑥 , 𝑛 𝑦 ) = 𝑂 (𝑛 𝑥 𝑛 𝑦 )
+
+26 Making LLMs Optimize Multi-Scenario CUDA Kernels Like Experts 
+
+Table 7. Detailed Content of Each Task in MSKernelBench. (Continued) 
+
+ID Task Type Task Name Prompt for Task Description Input Data Size & Complexity 𝑻 (𝑵 )
+
+44 Stencil Computa-tion 3D Stencil Given an input 𝑢 old of shape [𝑛 𝑥 , 𝑛 𝑦 , 𝑛 𝑧 ],calculate the 3D 7-point stencil of 𝑢 old and store the result in 𝑢 new : For interior points (𝑖 ∈ [ 1, 𝑛 𝑥 − 2], 𝑗 ∈ [ 1, 𝑛 𝑦 − 2],
+
+𝑘 ∈ [ 1, 𝑛 𝑧 − 2]): 
+
+𝑢 new [𝑖, 𝑗, 𝑘 ] = 𝑢 old [𝑖, 𝑗, 𝑘 ] + 𝑟 × ( 𝑢 old [𝑖 −
+
+1, 𝑗, 𝑘 ] + 𝑢 old [𝑖 + 1, 𝑗, 𝑘 ] + 𝑢 old [𝑖, 𝑗 − 1, 𝑘 ] + 
+
+𝑢 old [𝑖, 𝑗 + 1, 𝑘 ] + 𝑢 old [𝑖, 𝑗, 𝑘 − 1] + 
+
+𝑢 old [𝑖, 𝑗, 𝑘 + 1] − 6.0 × 𝑢 old [𝑖, 𝑗, 𝑘 ]) For boundary points (where 𝑖 ∈ 0, 𝑛 𝑥 − 1 OR 
+
+𝑗 ∈ 0, 𝑛 𝑦 − 1 OR 𝑘 ∈ 0, 𝑛 𝑧 − 1): 
+
+𝑢 new [𝑖, 𝑗, 𝑘 ] = 𝑢 old [𝑖, 𝑗, 𝑘 ]
+
+𝑛 𝑥 = {26, 27, 28 }
+
+𝑛 𝑦 = {26, 27, 28 }
+
+𝑛 𝑧 = {26, 27, 28 }
+
+𝑇 (𝑛 𝑥 , 𝑛 𝑦 , 𝑛 𝑧 ) = 𝑂 (𝑛 𝑥 𝑛 𝑦 𝑛 𝑧 )
+
+45 Math & Algorithm Sorting Sort an input array of length 𝑁 in ascending order. The naive implementation is merge sort. You are free to choose any sorting algorithm. 
+
+𝑁 = {28, 210 , 212 , 214 , 216 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 log 𝑁 )
+
+46 Math & Algorithm Top K Given a vector 𝑋 of length 𝑁 , calculate the top 
+
+𝑘 of 𝑋 and their indices, which means finding the 𝑘 largest elements in the sequence and their indices. The naive implementation is merge sort. You are free to choose any sorting algorithm ensuring values in descending order and index in ascending order. 
+
+𝑁 = {28, 210 , 212 , 214 , 216 }
+
+𝑘 = {32 , 64 , 128 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 log 𝑁 )
+
+47 Math & Algorithm Simpson Int Calculate the definite integral using the Simpson method, with 𝑁 sample points 
+
+𝑦 samples and upper and lower limits of integration 𝑏 and 𝑎 respectively: 
+
+∫ 𝑏 𝑎 𝑓 (𝑥 )𝑑𝑥 ≈ ℎ 
+
+> 3
+
+[𝑦 0 + 𝑦 𝑁 −1+
+
+4 Í𝑁 −2 
+
+> 𝑖 =1,3,5,...
+
+𝑦 𝑖 + 2 Í𝑁 −3 
+
+> 𝑖 =2,4,6,...
+
+𝑦 𝑖 ]
+
+𝑁 = {214 , 216 , 218 , 220 , 222 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+48 Math & Algorithm Monte Carlo Int Calculate the definite integral using the Monte Carlo method, with 𝑁 sample points 𝑦 samples 
+
+and upper and lower limits of integration 𝑏 and 
+
+𝑎 respectively: 
+
+∫ 𝑏 𝑎 𝑓 (𝑥 )𝑑𝑥 ≈ 𝑏 −𝑎 𝑁 
+
+Í𝑁 𝑖 =1 𝑦 𝑖 
+
+𝑁 = {214 , 216 , 218 , 220 , 222 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 )
+
+49 Math & Algorithm FFT Given a complex number array of length 𝑁 ,calculate the FFT of the array. The input and output are separated into real and imaginary parts. 
+
+𝑁 = {210 , 211 , 212 , 213 , 214 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 log 𝑁 )
+
+50 Math & Algorithm Prefix Sum Given a sequence of length 𝑁 , calculate the prefix sum of the sequence on each index and write into an output sequence. The naive implementation computes each output element independently by summing all elements from the beginning of the input sequence up to the current index. 
+
+𝑁 = {210 , 212 , 214 , 216 , 218 }
+
+𝑇 (𝑁 ) = 𝑂 (𝑁 2)
+
+27
