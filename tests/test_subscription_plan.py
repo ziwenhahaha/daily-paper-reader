@@ -150,6 +150,108 @@ class SubscriptionPlanTest(unittest.TestCase):
         self.assertIn('A', tags)
         self.assertIn('B', tags)
 
+    def test_paused_profile_skipped(self):
+        cfg = {
+            'subscriptions': {
+                'intent_profiles': [
+                    {
+                        'id': 'p1',
+                        'tag': 'Active',
+                        'enabled': True,
+                        'keywords': [
+                            {'keyword': 'active keyword', 'query': 'active query', 'enabled': True},
+                        ],
+                        'intent_queries': [
+                            {'query': 'active intent', 'enabled': True},
+                        ],
+                    },
+                    {
+                        'id': 'p2',
+                        'tag': 'Paused',
+                        'enabled': True,
+                        'paused': True,
+                        'keywords': [
+                            {'keyword': 'paused keyword', 'query': 'paused query', 'enabled': True},
+                        ],
+                        'intent_queries': [
+                            {'query': 'paused intent', 'enabled': True},
+                        ],
+                    },
+                ],
+            }
+        }
+        plan = build_pipeline_inputs(cfg)
+        self.assertIn('Active', plan['tags'])
+        self.assertNotIn('Paused', plan['tags'])
+
+        bm25_tags = [q.get('tag') for q in plan['bm25_queries']]
+        self.assertIn('Active', bm25_tags)
+        self.assertNotIn('Paused', bm25_tags)
+
+        emb_tags = [q.get('tag') for q in plan['embedding_queries']]
+        self.assertIn('Active', emb_tags)
+        self.assertNotIn('Paused', emb_tags)
+
+    def test_paused_false_profile_not_skipped(self):
+        cfg = {
+            'subscriptions': {
+                'intent_profiles': [
+                    {
+                        'id': 'p1',
+                        'tag': 'NotPaused',
+                        'enabled': True,
+                        'paused': False,
+                        'keywords': [
+                            {'keyword': 'keyword A', 'query': 'query A', 'enabled': True},
+                        ],
+                    },
+                ],
+            }
+        }
+        plan = build_pipeline_inputs(cfg)
+        self.assertIn('NotPaused', plan['tags'])
+        self.assertTrue(plan['bm25_queries'])
+
+    def test_no_paused_field_defaults_to_active(self):
+        cfg = {
+            'subscriptions': {
+                'intent_profiles': [
+                    {
+                        'id': 'p1',
+                        'tag': 'NoPausedField',
+                        'enabled': True,
+                        'keywords': [
+                            {'keyword': 'keyword B', 'query': 'query B', 'enabled': True},
+                        ],
+                    },
+                ],
+            }
+        }
+        plan = build_pipeline_inputs(cfg)
+        self.assertIn('NoPausedField', plan['tags'])
+        self.assertTrue(plan['bm25_queries'])
+
+    def test_paused_profile_preserved_in_profiles_list(self):
+        cfg = {
+            'subscriptions': {
+                'intent_profiles': [
+                    {
+                        'id': 'p1',
+                        'tag': 'PausedButKept',
+                        'enabled': True,
+                        'paused': True,
+                        'keywords': [
+                            {'keyword': 'keyword C', 'query': 'query C', 'enabled': True},
+                        ],
+                    },
+                ],
+            }
+        }
+        plan = build_pipeline_inputs(cfg)
+        self.assertEqual(len(plan['profiles']), 1)
+        self.assertTrue(plan['profiles'][0].get('paused'))
+        self.assertNotIn('PausedButKept', plan['tags'])
+
 
 if __name__ == '__main__':
     unittest.main()

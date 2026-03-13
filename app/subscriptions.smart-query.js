@@ -1491,14 +1491,21 @@ window.SubscriptionsSmartQuery = (function () {
 
     displayListEl.innerHTML = currentProfiles
       .map((p) => {
+        const isPaused = !!p.paused;
+        const pauseLabel = isPaused ? '恢复' : '暂停';
+        const pauseBtnClass = isPaused ? 'dpr-entry-resume-btn' : 'dpr-entry-pause-btn';
+        const cardClass = 'dpr-entry-card' + (isPaused ? ' dpr-entry-card--paused' : '');
+        const pausedBadge = isPaused ? '<span class="dpr-entry-paused-badge">已暂停</span>' : '';
         return `
-          <div class="dpr-entry-card" data-profile-id="${escapeHtml(getProfileKey(p) || '')}">
+          <div class="${cardClass}" data-profile-id="${escapeHtml(getProfileKey(p) || '')}">
             <div class="dpr-entry-top">
               <div class="dpr-entry-headline">
                 <span class="dpr-entry-title">${escapeHtml(p.tag || '')}</span>
+                ${pausedBadge}
                 <span class="dpr-entry-desc-inline">${escapeHtml(p.description || '（无描述）')}</span>
               </div>
               <div class="dpr-entry-actions">
+                <button class="arxiv-tool-btn ${pauseBtnClass}" data-action="pause-profile" data-profile-id="${escapeHtml(getProfileKey(p) || '')}">${pauseLabel}</button>
                 <button class="arxiv-tool-btn dpr-entry-edit-btn" data-action="edit-profile" data-profile-id="${escapeHtml(getProfileKey(p) || '')}">修改</button>
                 <button class="arxiv-tool-btn dpr-entry-delete-btn" data-action="delete-profile" data-profile-id="${escapeHtml(getProfileKey(p) || '')}">删除</button>
               </div>
@@ -2153,6 +2160,32 @@ window.SubscriptionsSmartQuery = (function () {
     const action = actionEl.getAttribute('data-action');
     if (action === 'edit-profile') {
       openEditModal(profileId);
+      return;
+    }
+    if (action === 'pause-profile') {
+      const profile = (currentProfiles || []).find((p) => getProfileKey(p) === getProfileKey(profileId));
+      if (!profile) return;
+      const isPaused = !!profile.paused;
+      const nextPaused = !isPaused;
+      profile.paused = nextPaused;
+      renderMain();
+
+      window.SubscriptionsManager.updateDraftConfig((cfg) => {
+        const next = cfg || {};
+        if (!next.subscriptions) next.subscriptions = {};
+        const subs = next.subscriptions;
+        const profiles = Array.isArray(subs.intent_profiles) ? subs.intent_profiles.slice() : [];
+        const idx = profiles.findIndex((p) => getProfileKey(p) === getProfileKey(profileId));
+        if (idx >= 0 && profiles[idx]) {
+          profiles[idx] = { ...profiles[idx], paused: nextPaused };
+        }
+        subs.intent_profiles = profiles;
+        next.subscriptions = subs;
+        return next;
+      });
+      const tag = normalizeText(profile.tag) || '该词条';
+      const statusText = nextPaused ? '已暂停' : '已恢复';
+      setMessage(`词条「${tag}」${statusText}，请点击「保存」。`, '#666');
       return;
     }
     if (action === 'delete-profile') {

@@ -323,7 +323,7 @@ window.SubscriptionsManager = (function () {
           return null;
         }
 
-        return {
+        const result = {
           tag,
           description,
           enabled,
@@ -331,6 +331,10 @@ window.SubscriptionsManager = (function () {
           intent_queries: normalizedIntentQueries,
           updated_at: normalizeText(p.updated_at) || new Date().toISOString(),
         };
+        if ('paused' in p) {
+          result.paused = !!p.paused;
+        }
+        return result;
       })
       .filter(Boolean);
   };

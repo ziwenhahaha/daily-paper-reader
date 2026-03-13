@@ -240,7 +240,7 @@ def _normalize_profile(profile: Dict[str, Any], idx: int) -> Dict[str, Any]:
   kw_rules: List[Dict[str, Any]] = _normalize_keyword_list(kw_rules_in, profile_index=idx)
   intent_queries: List[Dict[str, Any]] = _normalize_query_list(profile.get("intent_queries"), profile_index=idx)
 
-  return {
+  result = {
     "tag": tag,
     "description": description,
     "enabled": _as_bool(profile.get("enabled"), True),
@@ -248,6 +248,9 @@ def _normalize_profile(profile: Dict[str, Any], idx: int) -> Dict[str, Any]:
     "intent_queries": intent_queries,
     "updated_at": _norm_text(profile.get("updated_at") or _now_iso()),
   }
+  if "paused" in profile:
+    result["paused"] = _as_bool(profile.get("paused"), False)
+  return result
 
 
 def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
@@ -267,6 +270,8 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
 
   for profile in profiles:
     if not profile.get("enabled", True):
+      continue
+    if _as_bool(profile.get("paused"), False):
       continue
     tag = _norm_text(profile.get("tag") or "")
     if not tag:
