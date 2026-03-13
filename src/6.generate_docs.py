@@ -2491,6 +2491,26 @@ def main() -> None:
     quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]] = []
     docs_concurrency = max(1, int(args.docs_concurrency))
 
+    def _dedup_entries(
+        entries: List[Tuple[str, str, List[Tuple[str, str]]]],
+    ) -> List[Tuple[str, str, List[Tuple[str, str]]]]:
+        seen_ids: set = set()
+        seen_titles: set = set()
+        out: List[Tuple[str, str, List[Tuple[str, str]]]] = []
+        for paper_id, title, tags in entries:
+            norm_title = (title or "").strip().lower()
+            pid = (paper_id or "").strip().lower()
+            if pid and pid in seen_ids:
+                continue
+            if norm_title and norm_title in seen_titles:
+                continue
+            if pid:
+                seen_ids.add(pid)
+            if norm_title:
+                seen_titles.add(norm_title)
+            out.append((paper_id, title, tags))
+        return out
+
     def _process_section(
         section: str,
         papers: List[Dict[str, Any]],
@@ -2554,6 +2574,9 @@ def main() -> None:
         log_substep("6.3", "生成速读区文章", "START")
         quick_entries = _process_section("quick", quick_list, sidebar_evidence_by_id)
         log_substep("6.3", "生成速读区文章", "END")
+
+    deep_entries = _dedup_entries(deep_entries)
+    quick_entries = _dedup_entries(quick_entries)
 
     log_substep("6.4", "生成当日日报并同步首页 README", "START")
     run_generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")

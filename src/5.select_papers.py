@@ -55,6 +55,19 @@ SOURCE_CARRYOVER_CACHE = "carryover_cache"
 PRIORITY_DEEP_SCORE = 9.0
 CARRYOVER_MIN_SCORE = 8.0
 
+_ARXIV_ID_RE = re.compile(r"^(\d{4}\.\d{4,5})(?:v\d+)?$")
+
+
+def normalize_arxiv_id(value: Any) -> str:
+    """Strip version suffix from arxiv IDs (e.g. '2501.12345v2' → '2501.12345')."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    matched = _ARXIV_ID_RE.match(text)
+    if matched:
+        return matched.group(1)
+    return text
+
 
 def log(message: str) -> None:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -134,7 +147,7 @@ def collect_seen_ids(archive_root: str, today_str: str) -> set:
                 for item in payload.get(key) or []:
                     pid = str(item.get("id") or item.get("paper_id") or "").strip()
                     if pid:
-                        seen.add(pid)
+                        seen.add(normalize_arxiv_id(pid))
     return seen
 
 
@@ -257,18 +270,27 @@ def build_scored_papers(papers: List[Dict[str, Any]], llm_ranked: List[Dict[str,
         pid = str(p.get("id") or "").strip()
         if not pid:
             continue
-        paper_map[pid] = p
+        norm_pid = normalize_arxiv_id(pid)
+        paper_map[norm_pid] = p
+        # Also store under original ID so llm_ranked items using versioned IDs
+        # (e.g. "2501.12345v1") can still find their paper.
+        if pid != norm_pid:
+            paper_map[pid] = p
 
     merged: Dict[str, Dict[str, Any]] = {}
     for item in llm_ranked:
         pid = str(item.get("paper_id") or item.get("id") or "").strip()
-        if not pid or pid not in paper_map:
+        if not pid:
+            continue
+        norm_pid = normalize_arxiv_id(pid)
+        paper = paper_map.get(norm_pid) or paper_map.get(pid)
+        if paper is None:
             continue
         score = parse_score(item.get("score"))
-        prev = merged.get(pid)
+        prev = merged.get(norm_pid)
         if prev is not None and score <= float(prev.get("llm_score", 0)):
             continue
-        paper = dict(paper_map[pid])
+        paper = dict(paper)
         paper["llm_score"] = score
         evidence_cn = str(item.get("evidence_cn") or "").strip()
         evidence_en = str(item.get("evidence_en") or "").strip()
@@ -292,7 +314,7 @@ def build_scored_papers(papers: List[Dict[str, Any]], llm_ranked: List[Dict[str,
         paper["matched_query_tag"] = matched_query_tag
         paper["matched_query_text"] = str(item.get("matched_query_text") or "").strip()
         paper["matched_requirement_id"] = str(item.get("matched_requirement_id") or "").strip()
-        merged[pid] = paper
+        merged[norm_pid] = paper
 
     return list(merged.values())
 
@@ -302,28 +324,32 @@ def build_candidates(
     carryover_items: List[Dict[str, Any]],
     seen_ids: set,
 ) -> List[Dict[str, Any]]:
+    norm_seen = {normalize_arxiv_id(sid) for sid in seen_ids}
     merged: Dict[str, Dict[str, Any]] = {}
 
     for item in carryover_items:
         pid = str(item.get("id") or item.get("paper_id") or "").strip()
         if float(item.get("llm_score", 0)) < CARRYOVER_MIN_SCORE:
             continue
-        if not pid or pid in seen_ids:
+        norm_pid = normalize_arxiv_id(pid)
+        if not norm_pid or norm_pid in norm_seen:
             continue
         copied = dict(item)
-        copied["id"] = pid
+        copied["id"] = norm_pid
         copied["_source"] = "carryover"
         copied["selection_source"] = SOURCE_CARRYOVER_CACHE
-        merged[pid] = copied
+        merged[norm_pid] = copied
 
     for item in scored_papers:
         pid = str(item.get("id") or "").strip()
-        if not pid or pid in seen_ids:
+        norm_pid = normalize_arxiv_id(pid)
+        if not norm_pid or norm_pid in norm_seen:
             continue
         copied = dict(item)
+        copied["id"] = norm_pid
         copied["_source"] = "new"
         copied["selection_source"] = SOURCE_FRESH_FETCH
-        merged[pid] = copied
+        merged[norm_pid] = copied
 
     return list(merged.values())
 
