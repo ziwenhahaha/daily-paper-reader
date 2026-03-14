@@ -1,0 +1,366 @@
+Title: Samyama: A Unified Graph-Vector Database with In-Database Optimization, Agentic Enrichment, and Hardware Acceleration
+
+URL Source: https://arxiv.org/pdf/2603.08036v1
+
+Published Time: Tue, 10 Mar 2026 01:52:33 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# Samyama: A Unified Graph-Vector Database with In-Database Optimization, Agentic Enrichment, and Hardware Acceleration 
+
+Madhulatha Mandarapu 1∗ Sandeep Kunkunuru 1†
+
+March 2026 | v0.6.0 
+
+Abstract 
+
+Modern data architectures are fragmented across graph databases, vector stores, analytics engines, and optimization solvers, resulting in complex ETL pipelines and synchronization overhead. We present Samyama , a high-performance graph-vector database written in Rust that unifies these workloads into a single engine. Samyama combines a RocksDB-backed persistent store with a versioned-arena MVCC model, a vectorized query executor with 35 physical operators, a cost-based query planner with plan enumeration and predicate pushdown, a dedicated CSR-based analytics engine, and native RDF/SPARQL support. The system integrates 22 metaheuristic optimization solvers directly into its query language, implements HNSW vector indexing [Malkov and Yashunin, 2020] with Graph RAG capabilities, and introduces “Agentic Enrichment” for autonomous graph expansion via LLMs. The Enterprise Edition adds GPU acceleration via wgpu, production-grade observability, point-in-time recovery, and hardened high availability with HTTP/2 Raft transport. Our evaluation on commodity hardware (Mac Mini M4, 16 GB RAM) demonstrates: ingestion at 255K nodes/s (CPU) and 412K nodes/s (GPU-accelerated); 115K Cypher queries/sec at 1M nodes; 4.0–4.7 × latency reduction from late materialization on multi-hop traversals; 8.2 × GPU PageRank speedup at 1M nodes; and 100% LDBC Graphalytics validation (28/28 tests). These results demonstrate that a unified graph-vector-optimization engine can achieve competitive performance on commodity hardware while maintaining Rust’s memory safety guarantees. 
+
+Keywords: Graph Databases, Vector Search, Distributed Systems, Metaheuristic Optimization, Rust, GPU Acceleration, Agentic AI, RDF, LDBC. 
+
+# 1 Introduction 
+
+The rise of Large Language Models (LLMs) has popularized Retrieval-Augmented Generation (RAG), creating demand for systems that handle both relational structure (graphs) and semantic similarity (vectors). Simultaneously, industrial applications increasingly require in-database optimization for resource allocation, scheduling, and supply chain management. Existing solutions force developers to compose architectures from disparate systems—Neo4j for graphs, Pinecone for vectors, Spark for analytics, and Python/Gurobi for optimization—incurring data movement overhead and operational complexity. 
+
+> ∗
+
+madhulatha@samyama.ai, ORCID: https://orcid.org/0009-0005-2837-6725 
+
+> †
+
+sandeep@samyama.ai, ORCID: https://orcid.org/0000-0002-8886-1846 
+
+1
+
+> arXiv:2603.08036v1 [cs.DB] 9 Mar 2026
+
+Samyama (Sanskrit for “Integration”) is designed as an AI-native database that treats graphs, vectors, and optimization as first-class citizens within a single memory-safe engine. We organize our contributions into two categories: 
+
+Primary research contributions: 
+
+1. Late materialization for graphs : NodeRef -based lazy property resolution [Abadi et al., 2008] achieving 4.0–4.7 × traversal speedup (§2.3, §8.3). 2. In-database metaheuristic optimization : 22 solvers accessible directly via Cypher procedures, eliminating ETL overhead for graph-native optimization (§4). 3. Agentic Enrichment (GAK) : Autonomous graph expansion using LLM tool-calling, trans-forming the database from a passive store into a self-evolving knowledge graph (§5.2). 
+
+Engineering contributions: 
+
+4. Unified engine : Property graph + vector search + analytics + optimization in one binary. 5. Cost-based query planner : Plan enumeration, predicate pushdown, early LIMIT propagation, plan cache, and join reordering (§2.3). 6. Cross-platform GPU acceleration : wgpu-based compute shaders for graph algorithms and PCA. 7. SDK ecosystem : Rust, Python (PyO3), TypeScript SDKs with embedded and remote access patterns. 8. RDF interoperability : Native RDF data model [W3C, 2014] with Turtle/N-Triples/RDF-XML serialization. 9. Industry validation : 100% LDBC Graphalytics [Iosup et al., 2016] pass rate (28/28 tests). This paper focuses its evaluation on the three primary research contributions: late materialization (§8.3), in-database optimization (§4.1), and agentic enrichment (§5.4). The remaining system features are described for architectural completeness. 
+
+# 2 System Architecture 
+
+Samyama is built on a modern Rust stack for memory safety and zero-cost abstractions. Figure 1 illustrates the overall system architecture. 
+
+2.1 Storage Engine 
+
+We utilize RocksDB for persistence, employing a tiered Log-Structured Merge (LSM) tree [O’Neil et al., 1996] with LZ4 and Zstd compression. Data isolation is achieved through Column Families ,providing independent compaction, backup, and key namespaces per tenant. Key design: NodeId and EdgeId are direct u64 indices into contiguous arena storage ( Vec<Vec<T» ), eliminating hash lookups and providing O(1) access with cache-friendly memory layout. 2Samyama Unified Architecture   
+
+> Client Interface (RESP / Cypher)
+> Query Engine
+> Pest Parser →Vectorized Planner
+> Graph Engine
+> MVCC Arena RocksDB (LSM)
+> Vector Engine
+> HNSW Index Semantic Search
+> Optimization
+> Metaheuristics (Jaya, NSGA-II)
+
+Figure 1: Samyama system architecture. OpenCypher queries flow through the cost-based planner and vectorized executor to the RocksDB/MVCC storage layer. 
+
+2.2 Memory Management & MVCC 
+
+Samyama implements Multi-Version Concurrency Control (MVCC) [Bernstein and Good-man, 1981] within a versioned-arena structure. The inner vector stores version history, enabling 
+
+Snapshot Isolation without read locks. Write atomicity is guaranteed via RocksDB WriteBatch 
+
++ WAL [Mohan et al., 1992]. ACID guarantees: Atomicity (WriteBatch), Consistency (schema validation + Raft quorum), Isolation (per-query via RwLock, MVCC foundation), Durability (RocksDB + Raft replication). 
+
+2.3 Query & Execution Engine 
+
+Samyama supports ∼90% of OpenCypher . Queries are parsed via a PEG parser [Ford, 2004] (pest crate with atomic keyword rules for word boundary enforcement) and executed using a hybrid 
+
+Volcano–Vectorized model [Graefe, 1994] with batch size 1,024. The engine implements 35 physical operators organized across scan, traversal, filter, join, aggregation, sort, write, index, and specialized categories. Key v0.6.0 additions include: 
+
+• Cost-based planner : Plan enumeration over candidate plans using a GraphCatalog with triple-level statistics ( TriplePattern → TripleStats ). The planner selects the lowest-cost plan based on multiplicative cardinality estimates. 
+
+• Predicate pushdown : Filter predicates are pushed below Expand operators when they reference 3only the source variable, reducing intermediate cardinality. 
+
+• ExpandInto operator : When both endpoints of an edge pattern are already bound, ExpandIntoOperator 
+
+checks edge existence via binary search on sorted adjacency lists ( O(log d)), avoiding full fan-out. 
+
+• Plan cache : Compiled physical plans are cached by query AST hash, eliminating planning overhead for repeated queries. 
+
+• Join reordering : Multi-pattern MATCH clauses are reordered by estimated cardinality to minimize intermediate result sizes. 
+
+• Parameterized queries : $param syntax for safe query reuse without re-parsing. 
+
+• PROFILE : Runtime statistics (rows produced, time per operator) for query performance analysis. 
+
+Late Materialization (ADR-012). Scan operators produce Value::NodeRef(id) instead of full node clones. Properties are resolved on-demand via the ColumnStore at the final ProjectOperator ,reducing memory bandwidth by 4–5 ×. This technique adapts the columnar late materialization strategy described in Abadi et al. [2008] to a graph context. 
+
+2.4 RDF & SPARQL 
+
+Samyama provides native RDF [W3C, 2014] support via the oxrdf crate: an in-memory triple store with SPO/POS/OSP indices for O(1) pattern matching; serialization in Turtle, N-Triples, RDF/XML (read/write) and JSON-LD (write); pre-loaded namespace prefixes (rdf, rdfs, xsd, owl, foaf, dc); and SPARQL [W3C, 2013] parser infrastructure via spargebra with query execution in development. 
+
+2.5 Indexing & Constraints 
+
+Samyama v0.6.0 introduces composite indexes, unique constraints, and index management com-mands: 
+
+• Composite indexes : Multi-property indexes for efficient compound lookups (e.g., CREATE INDEX ON :Person(name, age) ). 
+
+• Unique constraints : Schema-level uniqueness enforcement with automatic index backing. 
+
+• AND-chain index selection : The planner selects the most selective index when multiple predicates are joined by AND. 
+
+• Management : DROP INDEX , SHOW INDEXES , SHOW CONSTRAINTS for operational visibility. 
+
+# 3 High-Performance Analytics 
+
+3.1 CSR Projection 
+
+For global graph analytics, Samyama projects the relevant subgraph into a Compressed Sparse Row (CSR) format ( GraphView ). Three contiguous arrays ( out_offsets , out_targets , weights )enable sequential memory access with near-perfect CPU prefetch accuracy and zero-lock parallelism via rayon . Figure 2 illustrates the CSR data layout. 4Compressed Sparse Row (CSR) Memory Layout Row Offsets               
+
+> out_offsets: Vec<usize> 0257
+> idx:0 123
+> Adjacency
+> out_targets: Vec<u64> 10 12 58911 14
+> Node 0: Start Node 1: Start Node 2: Start
+
+Figure 2: CSR data layout. out_offsets and out_targets arrays enable cache-efficient sequential traversal. Table 1: Graph algorithm library. 
+
+Category Algorithms 
+
+Centrality PageRank [Page et al., 1999] (with dangling redistribution), LCC [Watts and Strogatz, 1998] Community WCC (Union-Find), SCC (Tarjan [Tarjan, 1972]), CDLP [Raghavan et al., 2007], Triangle Count Pathfinding BFS, Dijkstra [Dijkstra, 1959], BFS All Shortest Paths Network Flow Edmonds-Karp [Edmonds and Karp, 1972] (Max Flow), Prim’s MST Statistical PCA (Randomized SVD [Halko et al., 2011] + Power Iteration) 
+
+3.2 Algorithm Library 
+
+The samyama-graph-algorithms crate provides 14 algorithms across five categories (Table 1). PCA implements the Halko–Martinsson–Tropp algorithm [Halko et al., 2011] for Randomized SVD with O(n · d · k) complexity, auto-selecting over Power Iteration when n > 500 nodes. 
+
+# 4 In-Database Optimization 
+
+Unique to Samyama is the integration of 22 metaheuristic optimization solvers in the 
+
+samyama-optimization crate, accessible directly through Cypher procedures: 
+
+CALL algo . or . solve ({ algorithm : ’ NSGA2 ’ , label : ’ Generator ’ , objectives : [ ’ cost ’ , ’ emissions ’] , 
+
+constraints : [{ property : ’ load ’ , max : 500.0 }] , population_size : 100 }) YIELD pareto_front 
+
+Solvers include: Jaya [Rao, 2016], QOJAYA, Rao (1–3) [Rao, 2020], TLBO [Rao et al., 2011], ITLBO, GOTLBO, PSO [Kennedy and Eberhart, 1995], DE [Storn and Price, 1997], GA [Holland, 5Multi-Objective Optimization (NSGA-II)  
+
+> Cost (Minimize →)
+> Low Cost, High Risk High Cost, Low Risk Pareto Optimal Dominated
+
+Figure 3: NSGA-II Pareto front for a supply chain optimization scenario (cost vs. emissions). Solutions are produced entirely in-database without external solver tooling. 1975], GWO [Mirjalili et al., 2014], ABC [Karaboga, 2005], BAT [Yang, 2010], Cuckoo Search [Yang and Deb, 2009], Firefly [Yang, 2009], FPA [Yang, 2012], GSA [Rashedi et al., 2009], SA [Kirkpatrick et al., 1983], HS [Geem et al., 2001], BMR, BWR, NSGA-II [Deb et al., 2002], and MOTLBO. Multi-objective solvers implement the Constrained Dominance Principle for feasibility-first Pareto optimization. All solvers leverage Rayon for parallel fitness evaluation across CPU cores. 
+
+4.1 In-Database Optimization Evaluation 
+
+A key advantage of in-database optimization is the elimination of ETL overhead. In a conventional workflow, graph data must be extracted to an external solver (e.g., Python/Gurobi), transformed into the solver’s input format, optimized, and the results imported back. For a supply chain graph with N nodes and M edges, the data extraction and serialization step alone incurs O(N + M )
+
+I/O overhead. Samyama’s in-database solvers operate directly on the graph store, avoiding this round-trip entirely. Figure 3 shows a representative Pareto front from NSGA-II applied to a supply chain scenario with two objectives (cost vs. emissions) and capacity constraints, demonstrating that the in-database solver produces well-distributed non-dominated solutions without external tooling. We note that a detailed convergence comparison against established solvers (e.g., Gurobi, CPLEX) on standard benchmark functions is deferred to future work. The primary contribution here is the architectural integration—making graph-native optimization a first-class query primitive—rather than claiming superiority over specialized mathematical programming solvers. 6Agentic Enrichment Loop   
+
+> 1. Event Trigger
+> Query miss / Creation
+> 2. LLM Agent
+> Reasoning & Plan
+> 3a. Tool Use
+> Web / API Search
+> 3b. Data Parsing
+> Unstructured →JSON
+> 4. Update
+> Graph Write Iterate
+
+Figure 4: Agentic Enrichment (GAK) loop. An event-driven trigger invokes LLM tool-calling to discover and create graph data autonomously. 
+
+# 5 AI & Agentic Enrichment 
+
+5.1 Vector Search 
+
+Samyama implements HNSW [Malkov and Yashunin, 2020] indexing (via hnsw_rs ) for millisecond-speed approximate nearest neighbor search with Cosine, L2, and Dot Product metrics. The 
+
+VectorSearchOperator integrates with standard graph operators for Graph RAG —combining vector retrieval with graph traversal in a single query execution. 
+
+5.2 Agentic Enrichment (GAK) 
+
+We introduce Generation-Augmented Knowledge (GAK) : an autonomous loop where the database uses LLMs to fetch and create missing data. The AgentRuntime manages tool-calling agents (WebSearchTool , NLQClient ) that discover information and generate Cypher CREATE commands, transforming the database from a passive store to a self-evolving knowledge graph. Safety validation includes schema checking, destructive query rejection, and rate limiting. Figure 4 illustrates the agentic enrichment loop. 
+
+5.3 Natural Language Query (NLQ) 
+
+The NLQPipeline converts natural language questions to Cypher via LLM providers (OpenAI, Gemini, Ollama, Claude). Generated queries undergo safety validation ( is_safe_query() ) before execution. 
+
+5.4 Agentic Enrichment Evaluation 
+
+While the GAK architecture is fully implemented and demonstrated across multiple domain examples (pharmaceutical, financial, security), a rigorous quantitative evaluation requires addressing several challenges: 7Table 2: SDK ecosystem overview. 
+
+SDK Transport Features 
+
+Rust ( samyama-sdk ) Embedded + HTTP Full: algorithms, vector, NLQ, persistence Python ( samyama , PyO3) Embedded + HTTP Cypher, algorithms (PageRank, WCC, SCC, BFS, Dijkstra, PCA, triangle count) TypeScript ( samyama-sdk ) HTTP only Cypher queries, status CLI ( samyama-cli ) HTTP query, status, ping, shell (REPL) OpenAPI HTTP POST /api/query , GET /api/status 
+
+• Hallucination risk : LLM-generated triples may contain factual errors. Precision depends on the underlying LLM, prompt design, and domain specificity. 
+
+• Schema drift : Autonomous enrichment may introduce labels or relationship types not in the original schema, requiring schema validation guards. 
+
+• Cost at scale : Each enrichment cycle incurs LLM API costs proportional to the number of entities enriched. 
+
+• Evaluation methodology : No established benchmark exists for autonomous graph enrichment; a gold-standard knowledge graph for comparison must be manually curated per domain. We have implemented safety guards (schema validation, destructive query rejection, rate lim-iting) and demonstrated the system on pharmaceutical knowledge graphs (drug–indication–trial relationships). A full quantitative evaluation with precision/recall against manually curated gold standards is planned as future work. 
+
+# 6 SDK Ecosystem 
+
+Samyama provides a multi-language SDK ecosystem (Table 2). The Rust SDK’s SamyamaClient trait provides EmbeddedClient (in-process, zero overhead) and 
+
+RemoteClient (HTTP). Extension traits AlgorithmClient and VectorClient offer direct API access to algorithms and vector operations without Cypher. The Python SDK (v0.6.0) exposes direct algorithm methods ( page_rank , wcc , scc , bfs ,
+
+dijkstra , pca , triangle_count ) in embedded mode, enabling data scientists to run graph al-gorithms directly from Python without writing Cypher. 
+
+# 7 Enterprise Edition 
+
+The Enterprise Edition adds production-grade capabilities: 
+
+7.1 GPU Acceleration (wgpu) 
+
+Cross-platform GPU acceleration via WGSL compute shaders targeting Metal (macOS), Vulkan (Linux), and DX12 (Windows). GPU-accelerated algorithms: PageRank, CDLP, LCC, Triangle 8Counting, and PCA. Additional GPU operators: parallel SUM aggregation and bitonic sort [Batcher, 1968] for ORDER BY on large result sets. GPU PCA uses 5 specialized shaders with tiled covariance computation (64-sample tiles) and fused power iteration with in-GPU normalization. Thresholds: MIN_GPU_PCA = 50 ,000 nodes, d > 32 
+
+dimensions. 
+
+7.2 Observability & Operations 
+
+• Prometheus /metrics : 200+ real-time counters and histograms 
+
+• Health API : Liveness/readiness probes for Kubernetes 
+
+• Slow Query Log : Configurable threshold, ring buffer storage 
+
+• Audit Trail : Append-only JSONL with cryptographic integrity 
+
+• ADMIN.* Commands : STATUS, METRICS, TENANTS, SLOWLOG, CONFIG, BACKUP, LICENSE 
+
+7.3 Backup & Point-in-Time Recovery 
+
+Full snapshots via RocksDB BackupEngine , incremental WAL-based delta backups, and PITR with microsecond-precision timestamp restoration. RPO: zero data loss. RTO: minutes for full restore, seconds for WAL replay. 
+
+7.4 Hardened High Availability 
+
+HTTP/2 Raft [Ongaro and Ousterhout, 2014] transport with TLS, automated snapshot streaming to lagging followers, and cluster metrics (role, term, replication lag). +850 lines of code over OSS Raft implementation. 
+
+7.5 License Hardening 
+
+Ed25519-signed JET tokens with machine fingerprint binding (SHA-256 of hostname + MAC), clock drift protection (1-hour tolerance), usage enforcement (node count limits), and signed revocation lists. 
+
+# 8 Performance Evaluation 
+
+All benchmarks on Mac Mini M4 (Apple M4, 10-core, 16 GB LPDDR5X, macOS Tahoe 26.2). Each measurement is the median of 5 runs. 
+
+8.1 Ingestion Throughput 
+
+Table 3: Ingestion throughput (median of 5 runs). 
+
+Operation CPU-Only GPU-Accelerated 
+
+Node Ingestion 255,120 ops/s 412,036 ops/s 
+
+Edge Ingestion 4,211,342 ops/s 5,242,096 ops/s 
+
+98.2 Cypher OLTP Throughput 
+
+Table 4: Cypher OLTP throughput. 
+
+Graph Scale Queries/sec Avg Latency 
+
+10,000 nodes 35,360 QPS 0.028 ms 100,000 nodes 116,373 QPS 0.008 ms 1,000,000 nodes 115,320 QPS 0.008 ms Index-driven O(1) /O( log n) access ensures near-constant throughput as graph size increases. The plan cache introduced in v0.6.0 further reduces latency for repeated queries by eliminating planning overhead. 
+
+8.3 Late Materialization Impact 
+
+Table 5 shows the end-to-end impact of late materialization, and Table 6 provides a component-level ablation. Table 5: Late materialization end-to-end impact. 
+
+Query Type Before After Speedup 
+
+1-Hop Traversal 164.11 ms 41.00 ms 4.0 ×
+
+2-Hop Traversal 1,220.00 ms 259.00 ms 4.7 ×
+
+Table 6: Late materialization ablation: component-level impact. 
+
+Configuration 1-Hop 2-Hop Notes 
+
+Baseline (full clone) 164 ms 1,220 ms Value::Node with full property clone + NodeRef (no clone) ∼60 ms ∼350 ms Value::NodeRef , lazy res-olution + ColumnStore 41 ms 259 ms Columnar property storage The ablation reveals two complementary optimizations: (1) replacing full node clones with lightweight NodeRef references reduces allocation and copy overhead by ∼2.7×; (2) columnar property storage via ColumnStore adds an additional ∼1.5× improvement by enabling cache-friendly sequential access during property resolution. 10 8.4 GPU Acceleration 
+
+Table 7: GPU acceleration results. 
+
+Algorithm Scale CPU GPU Speedup 
+
+PageRank 10K 0.6 ms 9.3 ms 0.06 ×
+
+PageRank 100K 8.2 ms 3.1 ms 2.6 ×
+
+PageRank 1M 92.4 ms 11.2 ms 8.2 ×
+
+LCC 3.8M (cit-Patents) 9.6 s 4.7 s 2.0 ×
+
+Crossover point: ∼100K nodes for general algorithms; ∼50K for PCA. 
+
+8.5 Vector Search 
+
+Table 8: Vector search performance (128-dim, k=10 ). 
+
+Metric Performance 
+
+Cosine distance (10K vectors) 15,872 QPS L2 distance (10K vectors) 15,014 QPS Search 50K vectors 10,446 QPS 
+
+8.6 LDBC Graphalytics Validation 
+
+Samyama was validated against the LDBC Graphalytics benchmark [Iosup et al., 2016] (Table 9). Table 9: LDBC Graphalytics validation results. 
+
+Algorithm XS (2 datasets) S (3 datasets) Total 
+
+BFS 2/2 3/3 5/5 PageRank 2/2 3/3 5/5 WCC 2/2 3/3 5/5 CDLP 2/2 3/3 5/5 LCC 2/2 3/3 5/5 SSSP 2/2 1/1 3/3 
+
+Total 12/12 16/16 28/28 
+
+S-size datasets: cit-Patents (3.8M vertices, 16.5M edges), datagen-7_5-fb (633K vertices, 68.4M edges), wiki-Talk (2.4M vertices, 5.0M edges). 
+
+8.7 LDBC SNB & FinBench Workloads 
+
+Beyond Graphalytics (algorithm correctness), Samyama includes benchmark harnesses for two additional LDBC workloads: 
+
+• LDBC SNB Interactive : 21 read queries (IS1–IS7, IC1–IC14) all passing, plus 8 update operations, on the Social Network Benchmark SF1 dataset (3.2M nodes, 17.3M edges). Tests OLTP-style point lookups and multi-hop traversals. 11 • LDBC SNB Business Intelligence : 20 complex analytical queries (BI-1 to BI-20) testing OLAP-style aggregation. 16/20 queries pass; BI-17 (friend triangles combined with message propagation) times out due to combinatorial explosion on SF1, blocking BI-18–20. 
+
+• LDBC FinBench : 40 queries (CR1–CR12, SR1–SR6, RW1–RW3, W1–W19) all passing, modeling financial transaction networks with accounts, transfers, loans, and fraud detection patterns on synthetic SF1 data. Data loaders ( ldbc_loader , finbench_loader ) and benchmark harnesses are included in the repository. 
+
+8.8 Comparative Evaluation 
+
+Table 10 compares Samyama against two widely-deployed graph databases. Table 10: Comparative evaluation against named graph databases. Neo4j and Memgraph numbers are from published benchmarks and community reports; Samyama numbers are measured on Mac Mini M4. Direct comparison is approximate due to different hardware, datasets, and query optimization levels. 
+
+Metric Samyama Neo4j 5.x Memgraph 2.x Notes 
+
+Node Ingestion 255K/s ∼26K/s ∼295K/s Batch, single-threaded 1-Hop (Cypher) 41 ms ∼28 ms ∼1.1 ms Index-backed, warm cache Vector Search ( k=10 ) 549 μs N/A (Lucene) N/A (ext.) HNSW, 128-dim, 10K Memory (1M nodes) 450 MB ∼1,200 MB ∼600 MB RSS, idle after ingestion GC Pauses 0 ms 10–100 ms 0 ms —Samyama’s 1-hop Cypher latency (41 ms) is higher than both Neo4j ( ∼28 ms) and Memgraph (∼1.1 ms). Profiling reveals that parse (54%) and plan (44%) phases dominate, while execution accounts for only 2% of total latency. The raw storage layer achieves 15 μs for 3-hop traversals, confirming that the bottleneck is in the query processing pipeline rather than the storage engine. The v0.6.0 plan cache and AST caching mitigate this overhead for repeated queries; further optimization of the parser is ongoing work. Samyama’s advantages lie in native vector search (549 μs, unavailable in Neo4j and Memgraph without external integrations), lower memory footprint (450 MB vs. 1,200 MB for Neo4j at 1M nodes due to arena allocation and absence of GC overhead), and high ingestion throughput (255K nodes/s). 
+
+8.9 Limitations 
+
+• Parse/plan overhead : As shown in §8.8, the PEG parser and query planner account for 98% of Cypher query latency. While the v0.6.0 plan cache eliminates planning overhead for repeated queries, first-execution latency remains higher than systems with pre-compiled query support (e.g., TigerGraph’s GSQL, Memgraph’s query modules). 
+
+• Single-node evaluation : All benchmarks are on a single Mac Mini M4. Multi-node distributed performance with Raft replication has not been evaluated at scale. 
+
+• SPARQL execution : The SPARQL parser is implemented but query execution over the RDF triple store is not yet complete. 12 • Cost-based planner maturity : The cost model uses multiplicative cardinality estimates and sampled property statistics. It does not yet account for correlation between predicates or use histogram-based estimates. 
+
+# 9 Related Work 
+
+Neo4j is the most widely deployed graph database but suffers from JVM garbage collection pauses and pointer-heavy storage causing cache misses in multi-hop traversals. Memgraph is an in-memory C++ graph database achieving sub-millisecond traversals through optimized data structures, but lacks native vector search and in-database optimization. FalkorDB (formerly RedisGraph, deprecated 2023) uses GraphBLAS sparse matrices for efficient linear algebra but lacks vector search and optimization capabilities. Kuzudb is an embedded graph database with columnar storage focused on analytical queries without transactional, vector, or optimization features. 
+
+DuckDB provides fast analytical processing but is a relational engine requiring graph queries to be expressed as recursive CTEs. TigerGraph achieves high traversal performance through pre-compiled GSQL queries and massively parallel processing (MPP) but uses a proprietary query language. Samyama differentiates by unifying four workloads (OLTP, OLAP, vector, optimization) in a single memory-safe binary with hardware acceleration, at the cost of a less mature query optimizer compared to systems with decades of development. 
+
+# 10 Conclusion 
+
+We have presented Samyama, a unified graph-vector database that integrates property graphs, vector search, metaheuristic optimization, and RDF support in a single Rust binary. The three primary research contributions are: (1) late materialization adapted from columnar databases to graph traversal, achieving 4.0–4.7 × speedup; (2) in-database metaheuristic optimization eliminating ETL overhead for graph-native solvers; and (3) agentic enrichment (GAK) for autonomous graph expansion via LLM tool-calling. Our evaluation on commodity hardware demonstrates competitive ingestion throughput (255K nodes/s), high OLTP query rates (115K QPS), and 100% LDBC Graphalytics validation. The comparative evaluation reveals that Samyama’s parse/plan overhead currently limits single-query latency relative to systems with pre-compiled queries or more mature optimizers; this represents the primary area for future improvement. 
+
+Future work. Key directions include: completing SPARQL query execution over the RDF triple store; scaling benchmarks to LDBC SF10+ and multi-node Raft clusters; histogram-based cardinality estimation for the cost model; a quantitative evaluation of agentic enrichment precision/recall; and convergence analysis of the in-database optimization solvers against established mathematical programming tools. 
+
+# References 
+
+Daniel J. Abadi, Samuel R. Madden, and Nabil Hachem. Column-stores vs. row-stores: How different are they really? In Proceedings of the ACM SIGMOD International Conference on Management of Data , pages 967–980, 2008. 13 Kenneth E. Batcher. Sorting networks and their applications. In Proceedings of the AFIPS Spring Joint Computer Conference , pages 307–314, 1968. Philip A. Bernstein and Nathan Goodman. Concurrency control in distributed database systems. 
+
+ACM Computing Surveys , 13(2):185–221, 1981. Kalyanmoy Deb, Amrit Pratap, Sameer Agarwal, and T. Meyarivan. A fast and elitist multiobjective genetic algorithm: NSGA-II. IEEE Transactions on Evolutionary Computation , 6(2):182–197, 2002. Edsger W. Dijkstra. A note on two problems in connexion with graphs. Numerische Mathematik , 1: 269–271, 1959. Jack Edmonds and Richard M. Karp. Theoretical improvements in algorithmic efficiency for network flow problems. Journal of the ACM , 19(2):248–264, 1972. Bryan Ford. Parsing expression grammars: A recognition-based syntactic foundation. In Proceedings of the ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL) ,pages 111–122, 2004. Zong Woo Geem, Joong Hoon Kim, and G. V. Loganathan. A new heuristic optimization algorithm: Harmony search. Simulation , 76(2):60–68, 2001. Goetz Graefe. Volcano — an extensible and parallel query evaluation system. IEEE Transactions on Knowledge and Data Engineering , 6(1):120–135, 1994. Nathan Halko, Per-Gunnar Martinsson, and Joel A. Tropp. Finding structure with randomness: Probabilistic algorithms for constructing approximate matrix decompositions. SIAM Review , 53 (2):217–288, 2011. John H. Holland. Adaptation in Natural and Artificial Systems . University of Michigan Press, Ann Arbor, 1975. Alexandru Iosup, Tim Hegeman, Wing Lung Ngai, Stijn Helber, Peter Boncz, et al. LDBC Graphalytics: A benchmark for large-scale graph analysis on parallel and distributed platforms. 
+
+Proceedings of the VLDB Endowment , 9(13):1317–1328, 2016. Dervis Karaboga. An idea based on honey bee swarm for numerical optimization. Technical Report TR06, Erciyes University, 2005. James Kennedy and Russell Eberhart. Particle swarm optimization. In Proceedings of the IEEE International Conference on Neural Networks , volume 4, pages 1942–1948, 1995. Scott Kirkpatrick, C. Daniel Gelatt, and Mario P. Vecchi. Optimization by simulated annealing. 
+
+Science , 220(4598):671–680, 1983. Yu. A. Malkov and D. A. Yashunin. Efficient and robust approximate nearest neighbor search using hierarchical navigable small world graphs. IEEE Transactions on Pattern Analysis and Machine Intelligence , 42(4):824–836, 2020. Seyedali Mirjalili, Seyed Mohammad Mirjalili, and Andrew Lewis. Grey wolf optimizer. Advances in Engineering Software , 69:46–61, 2014. 14 C. Mohan, Don Haderle, Bruce Lindsay, Hamid Pirahesh, and Peter Schwarz. ARIES: A transaction recovery method supporting fine-granularity locking and partial rollbacks using write-ahead logging. ACM Transactions on Database Systems , 17(1):94–162, 1992. Patrick O’Neil, Edward Cheng, Dieter Gawlick, and Elizabeth O’Neil. The log-structured merge-tree (LSM-tree). Acta Informatica , 33(4):351–385, 1996. Diego Ongaro and John Ousterhout. In search of an understandable consensus algorithm. In 
+
+Proceedings of the USENIX Annual Technical Conference (ATC) , pages 305–319, 2014. Lawrence Page, Sergey Brin, Rajeev Motwani, and Terry Winograd. The PageRank citation ranking: Bringing order to the web. Technical report, Stanford InfoLab, 1999. Usha Nandini Raghavan, Réka Albert, and Soundar Kumara. Near linear time algorithm to detect community structures in large-scale networks. Physical Review E , 76(3):036106, 2007. Ravipudi Venkata Rao. Jaya: A simple and new optimization algorithm for solving constrained and unconstrained optimization problems. International Journal of Industrial Engineering Computations , 7:19–34, 2016. Ravipudi Venkata Rao. Rao algorithms: Three metaphor-less simple algorithms for solving opti-mization problems. International Journal of Industrial Engineering Computations , 11:107–130, 2020. Ravipudi Venkata Rao, Vimal J. Savsani, and D. P. Vakharia. Teaching–learning-based optimization: A novel method for constrained mechanical design optimization problems. Computer-Aided Design ,43(3):303–315, 2011. Esmat Rashedi, Hossein Nezamabadi-pour, and Saeid Saryazdi. GSA: A gravitational search algorithm. Information Sciences , 179(13):2232–2248, 2009. Rainer Storn and Kenneth Price. Differential evolution — a simple and efficient heuristic for global optimization over continuous spaces. Journal of Global Optimization , 11:341–359, 1997. Robert Tarjan. Depth-first search and linear graph algorithms. SIAM Journal on Computing , 1(2): 146–160, 1972. W3C. SPARQL 1.1 query language. W3C Recommendation, 2013. URL https://www.w3.org/TR/ sparql11-query/ .W3C. RDF 1.1 concepts and abstract syntax. W3C Recommendation, 2014. URL https://www. w3.org/TR/rdf11-concepts/ .Duncan J. Watts and Steven H. Strogatz. Collective dynamics of ‘small-world’ networks. Nature ,393:440–442, 1998. Xin-She Yang. Firefly algorithms for multimodal optimization. In Stochastic Algorithms: Foundations and Applications (SAGA) , volume 5792 of LNCS , pages 169–178. Springer, 2009. Xin-She Yang. A new metaheuristic bat-inspired algorithm. In Nature Inspired Cooperative Strategies for Optimization (NICSO) , pages 65–74. Springer, 2010. Xin-She Yang. Flower pollination algorithm for global optimization. In Unconventional Computation and Natural Computation , volume 7445 of LNCS , pages 240–249. Springer, 2012. 15 Xin-She Yang and Suash Deb. Cuckoo search via Lévy flights. In Proceedings of the World Congress on Nature & Biologically Inspired Computing (NaBIC) , pages 210–214. IEEE, 2009. 16
