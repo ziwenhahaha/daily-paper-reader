@@ -6,38 +6,73 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-14
-- 运行时间：2026-03-14 20:02:00 UTC
+- 最新运行日期：2026-03-07 ~ 2026-03-16
+- 运行时间：2026-03-16 04:17:29 UTC
 - 运行状态：成功
-- 本次总论文数：5
-- 精读区：0
-- 速读区：5
+- 本次总论文数：17
+- 精读区：5
+- 速读区：12
 
 ### 今日简报（AI）
-今日速览 5 篇 AI 论文，深度解析统一图向量数据库与神经网络剪枝的最新突破。
-重点关注 Samyama 数据库的硬件加速方案，以及通过连续松弛伯努利门高效寻找模型“中奖彩票”的新路径。
-建议关注数据库与智能体融合的架构趋势，并尝试将自动化 Checklist 工具应用于 LLM 评测。
-- 详情：[/202603/14/README](/202603/14/README)
+聚焦大模型驱动的算法进化，本期深度解析了从自适应搜索到科学问题求解的 17 篇前沿进展。
+重点推荐 LLM 驱动的自适应大邻域搜索全组件进化，以及利用进化强化学习攻克开放式科学难题的新框架 Helix。
+建议读者关注大模型在代码空间策略生成及复杂约束下多目标优化问题的落地潜力。
+- 详情：[/20260307-20260316/README](/20260307-20260316/README)
 
 ### 精读区论文标签
-- 本次无精读推荐。
+1. [Large Language Model-Driven Full-Component Evolution of Adaptive Large Neighborhood Search](/20260307-20260316/2603.06996v1-large-language-model-driven-full-component-evolution-of-adaptive-large-neighborhood-search)  
+   标签：评分：10.0/10、query:llm-ec
+   evidence：LLM驱动的ALNS元启发式组件演化
+2. [Helix: Evolutionary Reinforcement Learning for Open-Ended Scientific Problem Solving](/20260307-20260316/2603.07642v1-helix-evolutionary-reinforcement-learning-for-open-ended-scientific-problem-solving)  
+   标签：评分：9.0/10、query:llm-ec
+   evidence：结合LLM的分层演化强化学习框架
+3. [Efficient Policy Learning with Hybrid Evaluation-Based Genetic Programming for Uncertain Agile Earth Observation Satellite Scheduling](/20260307-20260316/2603.08447v1-efficient-policy-learning-with-hybrid-evaluation-based-genetic-programming-for-uncertain-agile-earth-observation-satellite-scheduling)  
+   标签：评分：9.0/10、query:llm-ec
+   evidence：用于组合优化调度问题的遗传编程超启发式算法
+4. [GenePlan: Evolving Better Generalized PDDL Plans using Large Language Models](/20260307-20260316/2603.09481v1-geneplan-evolving-better-generalized-pddl-plans-using-large-language-models)  
+   标签：评分：9.0/10、query:llm-ec
+   evidence：利用大模型演化优化算法
+5. [Resource-Efficient Iterative LLM-Based NAS with Feedback Memory](/20260307-20260316/2603.12091v1-resource-efficient-iterative-llm-based-nas-with-feedback-memory)  
+   标签：评分：9.0/10、query:llm-ec
+   evidence：基于大语言模型和反馈记忆的神经网络架构自动设计
 
 ### 速读区论文标签
-1. [Samyama: A Unified Graph-Vector Database with In-Database Optimization, Agentic Enrichment, and Hardware Acceleration](/202603/14/2603.08036v1-samyama-a-unified-graph-vector-database-with-in-database-optimization-agentic-enrichment-and-hardware-acceleration)  
-   标签：评分：7.0/10、query:ahd
-   evidence：将22种元启发式优化求解器集成到查询语言中
-2. [Uncovering a Winning Lottery Ticket with Continuously Relaxed Bernoulli Gates](/202603/14/2603.08914v1-uncovering-a-winning-lottery-ticket-with-continuously-relaxed-bernoulli-gates)  
-   标签：评分：7.0/10、query:ahd
-   evidence：用于发现稀疏子网络结构的微分优化方法
-3. [AutoChecklist: Composable Pipelines for Checklist Generation and Scoring with LLM-as-a-Judge](/202603/14/2603.07019v1-autochecklist-composable-pipelines-for-checklist-generation-and-scoring-with-llm-as-a-judge)  
+1. [Multi-Objective Evolutionary Optimization of Chance-Constrained Multiple-Choice Knapsack Problems with Implicit Probability Distributions](/20260307-20260316/2603.08209v1-multi-objective-evolutionary-optimization-of-chance-constrained-multiple-choice-knapsack-problems-with-implicit-probability-distributions)  
+   标签：评分：7.0/10、query:llm-ec
+   evidence：针对背包组合问题的多目标演化优化
+2. [Code-Space Response Oracles: Generating Interpretable Multi-Agent Policies with Large Language Models](/20260307-20260316/2603.10098v1-code-space-response-oracles-generating-interpretable-multi-agent-policies-with-large-language-models)  
+   标签：评分：7.0/10、query:llm-ec
+   evidence：基于LLM的多智能体策略代码生成
+3. [Metaheuristic algorithm parameters selection for building an optimal hierarchical structure of a control system: a case study](/20260307-20260316/2603.11091v1-metaheuristic-algorithm-parameters-selection-for-building-an-optimal-hierarchical-structure-of-a-control-system-a-case-study)  
+   标签：评分：7.0/10、query:llm-ec
+   evidence：用于组合优化的元启发式算法
+4. [UniHetCO: A Unified Heterogeneous Representation for Multi-Problem Learning in Unsupervised Neural Combinatorial Optimization](/20260307-20260316/2603.11456v1-unihetco-a-unified-heterogeneous-representation-for-multi-problem-learning-in-unsupervised-neural-combinatorial-optimization)  
+   标签：评分：7.0/10、query:llm-ec
+   evidence：针对图子集选择问题的无监督神经组合优化
+5. [Multi-objective Genetic Programming with Multi-view Multi-level Feature for Enhanced Protein Secondary Structure Prediction](/20260307-20260316/2603.12293v1-multi-objective-genetic-programming-with-multi-view-multi-level-feature-for-enhanced-protein-secondary-structure-prediction)  
+   标签：评分：7.0/10、query:llm-ec
+   evidence：通过遗传规划实现的自动优化任务
+6. [Efficient and Interpretable Multi-Agent LLM Routing via Ant Colony Optimization](/20260307-20260316/2603.12933v1-efficient-and-interpretable-multi-agent-llm-routing-via-ant-colony-optimization)  
+   标签：评分：7.0/10、query:llm-ec
+   evidence：通过蚁群算法进行大模型多智能体路由
+7. [Explainable Innovation Engine: Dual-Tree Agent-RAG with Methods-as-Nodes and Verifiable Write-Back](/20260307-20260316/2603.09192v1-explainable-innovation-engine-dual-tree-agent-rag-with-methods-as-nodes-and-verifiable-write-back)  
    标签：评分：6.0/10、query:ahd
-   evidence：用于自动评估和评分的可组合流水线
-4. [SoK: Agentic Retrieval-Augmented Generation (RAG): Taxonomy, Architectures, Evaluation, and Research Directions](/202603/14/2603.07379v1-sok-agentic-retrieval-augmented-generation-rag-taxonomy-architectures-evaluation-and-research-directions)  
-   标签：评分：6.0/10、query:ahd
-   evidence：自主检索生成决策系统的统一框架
-5. [A Statistically Reliable Optimization Framework for Bandit Experiments in Scientific Discovery](/202603/14/2603.11267v1-a-statistically-reliable-optimization-framework-for-bandit-experiments-in-scientific-discovery)  
-   标签：评分：6.0/10、query:ahd
-   evidence：科学发现中自适应采样的优化框架
+   evidence：策略代理选择显式合成算子来组合新的方法节点
+8. [Quality-Driven Agentic Reasoning for LLM-Assisted Software Design: Questions-of-Thoughts (QoT) as a Time-Series Self-QA Chain](/20260307-20260316/2603.11082v1-quality-driven-agentic-reasoning-for-llm-assisted-software-design-questions-of-thoughts-qot-as-a-time-series-self-qa-chain)  
+   标签：评分：6.0/10、query:llm-ec
+   evidence：大模型辅助软件设计与工程步骤生成
+9. [On the PLS-Completeness of $k$-Opt Local Search for the Traveling Salesman Problem](/20260307-20260316/2603.11270v1-on-the-pls-completeness-of-k-opt-local-search-for-the-traveling-salesman-problem)  
+   标签：评分：6.0/10、query:llm-ec
+   evidence：旅行商问题的局部搜索算法
+10. [Meta-Reinforcement Learning with Self-Reflection for Agentic Search](/20260307-20260316/2603.11327v1-meta-reinforcement-learning-with-self-reflection-for-agentic-search)  
+   标签：评分：6.0/10、query:llm-ec
+   evidence：用于搜索策略自适应和自我反思的上下文元强化学习
+11. [UtilityMax Prompting: A Formal Framework for Multi-Objective Large Language Model Optimization](/20260307-20260316/2603.11583v1-utilitymax-prompting-a-formal-framework-for-multi-objective-large-language-model-optimization)  
+   标签：评分：6.0/10、query:llm-ec
+   evidence：多目标LLM优化的形式化框架
+12. [MobileKernelBench: Can LLMs Write Efficient Kernels for Mobile Devices?](/20260307-20260316/2603.11935v1-mobilekernelbench-can-llms-write-efficient-kernels-for-mobile-devices)  
+   标签：评分：6.0/10、query:llm-ec
+   evidence：使用LLM进行自动内核生成及验证流水线
 
 
 <div class="dpr-home-promo-card">
