@@ -21,8 +21,8 @@ GLOBAL_TOKENS = {
 # 单次实验级别的全局时间统计（秒）
 GLOBAL_TIME_SECONDS: float = 0.0
 
-PRIMARY_LLM_BASE_URL = "https://api.gptbest.vip/v1"
-DEFAULT_BLT_BASE_URL = "https://api.bltcy.ai/v1"
+PRIMARY_LLM_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
+DEFAULT_BLT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 
 
 def reset_global_tokens():
