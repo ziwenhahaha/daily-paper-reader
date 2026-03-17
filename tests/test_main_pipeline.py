@@ -10,6 +10,9 @@ from unittest.mock import patch
 
 def _load_module():
     root = Path(__file__).resolve().parents[1]
+    src_dir = root / "src"
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
     src_path = root / "src" / "main.py"
     spec = importlib.util.spec_from_file_location("main_pipeline_mod", src_path)
     module = importlib.util.module_from_spec(spec)

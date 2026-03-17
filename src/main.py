@@ -9,6 +9,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 try:
+    from source_config import get_source_backend, load_config_with_source_migration
+except Exception:  # pragma: no cover - 兼容 package 导入路径
+    from src.source_config import get_source_backend, load_config_with_source_migration
+
+try:
     import yaml  # type: ignore
 except Exception:  # pragma: no cover
     yaml = None
@@ -29,14 +34,9 @@ def run_step(label: str, args: list[str], env: dict[str, str] | None = None) -> 
 
 
 def _load_full_config() -> dict:
-    if yaml is None or not os.path.exists(CONFIG_FILE):
+    if not os.path.exists(CONFIG_FILE):
         return {}
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
+    return load_config_with_source_migration(CONFIG_FILE)
 
 
 def load_arxiv_paper_setting() -> dict:
@@ -53,7 +53,7 @@ def should_skip_fetch(config: dict | None = None) -> bool:
     """
     if config is None:
         config = _load_full_config()
-    sb = config.get("supabase") or {}
+    sb = get_source_backend(config, "arxiv")
     if not sb.get("enabled", False):
         return False
     paper_setting = config.get("arxiv_paper_setting") or {}

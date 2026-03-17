@@ -186,6 +186,61 @@ window.SubscriptionsSmartQuery = (function () {
     return toStableId(profileOrTag.tag) || '';
   };
 
+  const normalizePaperSources = (values, options = {}) => {
+    const fallbackToArxiv = options.fallbackToArxiv !== false;
+    const rawList = Array.isArray(values)
+      ? values
+      : (typeof values === 'string' && values ? [values] : []);
+    const seen = new Set();
+    const out = [];
+    rawList.forEach((value) => {
+      const key = normalizeText(value).toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(key);
+    });
+    if (!out.length && fallbackToArxiv) {
+      return ['arxiv'];
+    }
+    return out;
+  };
+
+  const getAvailablePaperSources = () => {
+    const cfg = window.SubscriptionsManager.getDraftConfig ? window.SubscriptionsManager.getDraftConfig() : {};
+    const rawBackends = cfg && cfg.source_backends && typeof cfg.source_backends === 'object'
+      ? cfg.source_backends
+      : {};
+    const seen = new Set();
+    const out = [];
+    ['arxiv', ...Object.keys(rawBackends || {})].forEach((value) => {
+      const key = normalizeText(value).toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(key);
+    });
+    return out;
+  };
+
+  const getPaperSourceLabel = (source) => {
+    const key = normalizeText(source).toLowerCase();
+    if (key === 'biorxiv') return 'bioRxiv';
+    if (key === 'arxiv') return 'arXiv';
+    return key || '未知源';
+  };
+
+  const renderPaperSourceChoices = (selectedSources) => {
+    const selected = new Set(normalizePaperSources(selectedSources, { fallbackToArxiv: false }));
+    return getAvailablePaperSources().map((source) => {
+      const checked = selected.has(source) ? 'checked' : '';
+      return `
+        <label class="dpr-paper-source-item">
+          <input type="checkbox" data-action="toggle-paper-source" data-source="${escapeHtml(source)}" ${checked} />
+          <span>${escapeHtml(getPaperSourceLabel(source))}</span>
+        </label>
+      `;
+    }).join('');
+  };
+
   const normalizeProfileKeywords = (profile) => {
     return normalizeKeywordEntries(profile && profile.keywords);
   };
@@ -835,7 +890,7 @@ window.SubscriptionsSmartQuery = (function () {
     return candidates;
   };
 
-  const applyCandidateToProfile = (tag, description, candidates) => {
+  const applyCandidateToProfile = (tag, description, paperSources, candidates) => {
     const selectedKeywords = (candidates.keywords || []).filter((x) => x._selected);
     const selectedIntentQueries = (candidates.intent_queries || []).filter((x) => x._selected);
     if (!selectedKeywords.length && !selectedIntentQueries.length) {
@@ -873,6 +928,7 @@ window.SubscriptionsSmartQuery = (function () {
       });
 
       profile.description = normalizeText(profile.description || description || '');
+      profile.paper_sources = normalizePaperSources(paperSources, { fallbackToArxiv: false });
       profile.keywords = kwList;
       const mergedIntentQueries = [];
       const intentSeen = new Set();
@@ -903,7 +959,7 @@ window.SubscriptionsSmartQuery = (function () {
     return true;
   };
 
-  const replaceProfileFromSelection = (profileId, tag, description, candidates) => {
+  const replaceProfileFromSelection = (profileId, tag, description, paperSources, candidates) => {
     const profileKey = getProfileKey(profileId);
     if (!profileKey) return false;
 
@@ -928,6 +984,7 @@ window.SubscriptionsSmartQuery = (function () {
         ...existedProfile,
         tag: normalizeText(tag || existedProfile.tag || ''),
         description: normalizeText(description || existedProfile.description || ''),
+        paper_sources: normalizePaperSources(paperSources, { fallbackToArxiv: false }),
         keywords:
           selectedKeywords.length > 0
             ? selectedKeywords
@@ -1503,6 +1560,7 @@ window.SubscriptionsSmartQuery = (function () {
                 <span class="dpr-entry-title">${escapeHtml(p.tag || '')}</span>
                 ${pausedBadge}
                 <span class="dpr-entry-desc-inline">${escapeHtml(p.description || '（无描述）')}</span>
+                <span class="dpr-entry-source-inline">${normalizePaperSources(p.paper_sources).map((source) => `<span class="dpr-entry-source-chip">${escapeHtml(getPaperSourceLabel(source))}</span>`).join('')}</span>
               </div>
               <div class="dpr-entry-actions">
                 <button class="arxiv-tool-btn ${pauseBtnClass}" data-action="pause-profile" data-profile-id="${escapeHtml(getProfileKey(p) || '')}">${pauseLabel}</button>
@@ -1531,6 +1589,7 @@ window.SubscriptionsSmartQuery = (function () {
       customKeyword: '',
       customKeywordLogic: '',
       customQuery: '',
+      paper_sources: normalizePaperSources(candidates && candidates.paper_sources, { fallbackToArxiv: true }),
     };
     modalState.keywords = clampSelectionsByLimit(modalState.keywords, 'keyword');
     modalState.intent_queries = clampSelectionsByLimit(modalState.intent_queries, 'intent');
@@ -1558,6 +1617,7 @@ window.SubscriptionsSmartQuery = (function () {
       requestHistory: [],
       inputTag: normalizeText(options.tag || ''),
       inputDesc: normalizeText(options.description || ''),
+      paper_sources: normalizePaperSources(options.paper_sources, { fallbackToArxiv: true }),
       pending: false,
       chatStatus: '',
     };
@@ -1587,6 +1647,7 @@ window.SubscriptionsSmartQuery = (function () {
     const candidateBlocks = `${hasKeywords ? keywordBlock : ''}${hasKeywords && hasIntentQueries ? divider : ''}${
       hasIntentQueries ? intentBlock : ''
     }`;
+    const sourceChoices = renderPaperSourceChoices(modalState.paper_sources || []);
 
     modalPanel.innerHTML = `
       <div class="dpr-modal-head">
@@ -1617,6 +1678,10 @@ window.SubscriptionsSmartQuery = (function () {
           <span class="dpr-modal-field-label">中文描述</span>
           <input id="dpr-add-profile-desc" type="text" value="${escapeHtml(modalState.description || '')}" placeholder="请填写中文描述" />
         </label>
+        <div class="dpr-modal-field dpr-modal-field-sources">
+          <span class="dpr-modal-field-label">论文源</span>
+          <div class="dpr-paper-source-row">${sourceChoices}</div>
+        </div>
         <button class="arxiv-tool-btn" data-action="apply-add" style="background:#2e7d32;color:#fff;">保存查询</button>
       </div>
     `;
@@ -1634,6 +1699,11 @@ window.SubscriptionsSmartQuery = (function () {
 
     modalState.tag = nextTag;
     modalState.description = nextDesc;
+    const nextPaperSources = normalizePaperSources(modalState.paper_sources, { fallbackToArxiv: false });
+    if (!nextPaperSources.length) {
+      setMessage('请至少勾选 1 个论文源。', '#c00');
+      return;
+    }
 
     const selectedKeywords = getSelectedItemsForSave(modalState.keywords || []);
     const selectedIntentQueries = getSelectedItemsForSave(modalState.intent_queries || []);
@@ -1648,13 +1718,14 @@ window.SubscriptionsSmartQuery = (function () {
           modalState.editProfileId,
           modalState.tag,
           modalState.description,
+          nextPaperSources,
           {
             ...modalState,
             keywords: selectedKeywords,
             intent_queries: selectedIntentQueries,
           },
         )
-      : applyCandidateToProfile(modalState.tag, modalState.description, {
+      : applyCandidateToProfile(modalState.tag, modalState.description, nextPaperSources, {
           ...modalState,
           keywords: selectedKeywords,
           intent_queries: selectedIntentQueries,
@@ -1690,6 +1761,7 @@ window.SubscriptionsSmartQuery = (function () {
     const hasIntentQueries =
       hasIntentSection && modalState.intent_queries.some((item) => !isDraftSlot(item));
     const hasCandidates = hasKeywords || hasIntentQueries;
+    const sourceChoices = renderPaperSourceChoices(modalState.paper_sources || []);
     const isFirstRound = !(Array.isArray(modalState.requestHistory) && modalState.requestHistory.length);
     const actionLabel = isFirstRound ? '生成候选' : '新增候选';
     const tipSection = isFirstRound
@@ -1762,6 +1834,10 @@ window.SubscriptionsSmartQuery = (function () {
           <span class="dpr-chat-label-text">中文描述</span>
           <input id="dpr-chat-required-desc" type="text" placeholder="请填写描述" value="${escapeHtml(modalState.inputDesc || '')}" />
         </label>
+        <div class="dpr-chat-label dpr-chat-inline-sources">
+          <span class="dpr-chat-label-text">论文源</span>
+          <div class="dpr-paper-source-row">${sourceChoices}</div>
+        </div>
         <button class="arxiv-tool-btn" data-action="apply-chat" style="background:#2e7d32;color:#fff;" ${hasCandidates ? '' : 'disabled'}>
           保存查询
         </button>
@@ -1795,6 +1871,7 @@ window.SubscriptionsSmartQuery = (function () {
     const validationError = validateProfileSelection(selectedKeywords, selectedIntentQueries);
     const desc = normalizeText(document.getElementById('dpr-chat-required-desc')?.value || '');
     const tag = normalizeText(document.getElementById('dpr-chat-tag-input')?.value || modalState.inputTag || '');
+    const paperSources = normalizePaperSources(modalState.paper_sources, { fallbackToArxiv: false });
 
     if (!tag) {
       setMessage('请先填写标签。', '#c00');
@@ -1802,6 +1879,10 @@ window.SubscriptionsSmartQuery = (function () {
     }
     if (!desc) {
       setMessage('请先填写中文描述。', '#c00');
+      return;
+    }
+    if (!paperSources.length) {
+      setMessage('请至少勾选 1 个论文源。', '#c00');
       return;
     }
     if (validationError) {
@@ -1813,12 +1894,12 @@ window.SubscriptionsSmartQuery = (function () {
     const profileTag = tag || `SR-${new Date().toISOString().slice(0, 10)}`;
     if (hasItems) {
       const ok = modalState.editProfileId
-        ? replaceProfileFromSelection(modalState.editProfileId, profileTag, desc, {
+        ? replaceProfileFromSelection(modalState.editProfileId, profileTag, desc, paperSources, {
             ...modalState,
             keywords: selectedKeywords,
             intent_queries: selectedIntentQueries,
           })
-        : applyCandidateToProfile(profileTag, desc, {
+        : applyCandidateToProfile(profileTag, desc, paperSources, {
             ...modalState,
             keywords: selectedKeywords,
             intent_queries: selectedIntentQueries,
@@ -1946,6 +2027,7 @@ window.SubscriptionsSmartQuery = (function () {
       editProfileId: targetKey,
       tag: profile.tag || '',
       description: profile.description || '',
+      paper_sources: normalizePaperSources(profile.paper_sources, { fallbackToArxiv: true }),
       keywords: existingKeywords,
       intent_queries: existingIntentQueries,
     });
@@ -2068,6 +2150,19 @@ window.SubscriptionsSmartQuery = (function () {
   const handleModalChange = (e) => {
     const target = e.target;
     if (!target || !target.matches) return;
+    if (target.matches('input[type="checkbox"][data-action="toggle-paper-source"]')) {
+      if (!modalState) return;
+      const source = normalizeText(target.getAttribute('data-source') || '').toLowerCase();
+      if (!source) return;
+      const current = new Set(normalizePaperSources(modalState.paper_sources, { fallbackToArxiv: false }));
+      if (target.checked) {
+        current.add(source);
+      } else {
+        current.delete(source);
+      }
+      modalState.paper_sources = Array.from(current);
+      return;
+    }
     if (!target.matches('input[type="checkbox"][data-action="toggle-chat-choice"]')) return;
     if (!modalState || modalState.type !== 'chat') return;
 

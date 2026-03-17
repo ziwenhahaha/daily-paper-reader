@@ -11,6 +11,11 @@ from typing import Any, Dict, List, Tuple
 import re
 
 try:
+  from source_config import list_known_source_keys, validate_profile_paper_sources
+except Exception:  # pragma: no cover - 兼容 package 导入路径
+  from src.source_config import list_known_source_keys, validate_profile_paper_sources
+
+try:
   from query_boolean import clean_expr_for_embedding
 except Exception:  # pragma: no cover - 兼容 package 导入路径
   from src.query_boolean import clean_expr_for_embedding
@@ -230,7 +235,7 @@ def _normalize_keyword_expr(expr: str) -> str:
   return clean_expr_for_embedding(_norm_text(expr)) or _norm_text(expr)
 
 
-def _normalize_profile(profile: Dict[str, Any], idx: int) -> Dict[str, Any]:
+def _normalize_profile(profile: Dict[str, Any], idx: int, known_sources: List[str]) -> Dict[str, Any]:
   tag = _norm_text(profile.get("tag") or "")
   description = _norm_text(profile.get("description") or "")
   if not tag:
@@ -239,11 +244,13 @@ def _normalize_profile(profile: Dict[str, Any], idx: int) -> Dict[str, Any]:
   kw_rules_in = profile.get("keywords") or []
   kw_rules: List[Dict[str, Any]] = _normalize_keyword_list(kw_rules_in, profile_index=idx)
   intent_queries: List[Dict[str, Any]] = _normalize_query_list(profile.get("intent_queries"), profile_index=idx)
+  paper_sources, _ = validate_profile_paper_sources(profile, known_sources=known_sources)
 
   result = {
     "tag": tag,
     "description": description,
     "enabled": _as_bool(profile.get("enabled"), True),
+    "paper_sources": paper_sources,
     "keywords": kw_rules,
     "intent_queries": intent_queries,
     "updated_at": _norm_text(profile.get("updated_at") or _now_iso()),
@@ -253,14 +260,14 @@ def _normalize_profile(profile: Dict[str, Any], idx: int) -> Dict[str, Any]:
   return result
 
 
-def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
+def _build_from_profiles(subs: Dict[str, Any], known_sources: List[str]) -> Dict[str, Any]:
   raw_profiles = subs.get("intent_profiles") or []
   profiles: List[Dict[str, Any]] = []
   if isinstance(raw_profiles, list):
     for idx, p in enumerate(raw_profiles):
       if not isinstance(p, dict):
         continue
-      profiles.append(_normalize_profile(p, idx))
+      profiles.append(_normalize_profile(p, idx, known_sources))
 
   bm25_queries: List[Dict[str, Any]] = []
   embedding_queries: List[Dict[str, Any]] = []
@@ -277,6 +284,7 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
     if not tag:
       continue
     tags.append(tag)
+    paper_sources = profile.get("paper_sources") or []
     paper_tag_keyword = f"keyword:{tag}"
     paper_tag_query = f"query:{tag}"
 
@@ -302,6 +310,7 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
           "type": "keyword",
           "tag": tag,
           "paper_tag": paper_tag_keyword,
+          "paper_sources": copy.deepcopy(paper_sources),
           "query_text": expr,
           "query_terms": [{"text": expr, "weight": MAIN_TERM_WEIGHT}],
           "boolean_expr": "",
@@ -315,6 +324,7 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
           "type": "keyword",
           "tag": tag,
           "paper_tag": paper_tag_keyword,
+          "paper_sources": copy.deepcopy(paper_sources),
           "query_text": raw_query,
           "logic_cn": logic_cn,
           "source": source,
@@ -350,6 +360,7 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
           "type": "intent_query",
           "tag": tag,
           "paper_tag": f"query:{tag}",
+          "paper_sources": copy.deepcopy(paper_sources),
           "query_text": raw_query,
           "query_terms": [{"text": raw_query, "weight": MAIN_TERM_WEIGHT}],
           "boolean_expr": "",
@@ -363,6 +374,7 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
           "type": "intent_query",
           "tag": tag,
           "paper_tag": f"query:{tag}",
+          "paper_sources": copy.deepcopy(paper_sources),
           "query_text": raw_query,
           "logic_cn": "",
           "source": source,
@@ -399,8 +411,9 @@ def build_pipeline_inputs(config: Dict[str, Any]) -> Dict[str, Any]:
   subs = (cfg.get("subscriptions") or {}) if isinstance(cfg, dict) else {}
   stage = get_migration_stage(cfg)
   has_profiles = isinstance(subs.get("intent_profiles"), list) and bool(subs.get("intent_profiles"))
+  known_sources = list_known_source_keys(cfg)
 
-  profile_plan = _build_from_profiles(subs) if has_profiles else {}
+  profile_plan = _build_from_profiles(subs, known_sources) if has_profiles else {}
   plan: Dict[str, Any]
   source = "legacy"
   fallback_used = False

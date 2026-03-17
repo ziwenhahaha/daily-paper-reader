@@ -83,6 +83,7 @@ window.SubscriptionsManager = (function () {
   ];
 
   const normalizeText = (v) => String(v || '').trim();
+  const normalizeSourceKey = (v) => normalizeText(v).toLowerCase();
   const toStableId = (value) => {
     const text = normalizeText(value).toLowerCase();
     const slug = text
@@ -99,6 +100,41 @@ window.SubscriptionsManager = (function () {
     } catch {
       return obj || {};
     }
+  };
+
+  const getAvailablePaperSources = (config) => {
+    const cfg = config && typeof config === 'object' ? config : {};
+    const rawBackends = cfg.source_backends && typeof cfg.source_backends === 'object'
+      ? cfg.source_backends
+      : {};
+    const seen = new Set();
+    const out = [];
+    ['arxiv', ...Object.keys(rawBackends || {})].forEach((key) => {
+      const normalized = normalizeSourceKey(key);
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      out.push(normalized);
+    });
+    return out;
+  };
+
+  const normalizePaperSources = (values, options = {}) => {
+    const fallbackToArxiv = options.fallbackToArxiv !== false;
+    const rawList = Array.isArray(values)
+      ? values
+      : (typeof values === 'string' && values ? [values] : []);
+    const seen = new Set();
+    const out = [];
+    rawList.forEach((value) => {
+      const key = normalizeSourceKey(value);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(key);
+    });
+    if (!out.length && fallbackToArxiv) {
+      return ['arxiv'];
+    }
+    return out;
   };
 
   const normalizeKeywordItem = (item) => {
@@ -308,7 +344,7 @@ window.SubscriptionsManager = (function () {
     }
   };
 
-  const normalizeProfiles = (subs) => {
+  const normalizeProfiles = (subs, availableSources) => {
     const profiles = Array.isArray(subs.intent_profiles) ? subs.intent_profiles : [];
     return profiles
       .map((p, idx) => {
@@ -316,6 +352,8 @@ window.SubscriptionsManager = (function () {
         const tag = normalizeText(p.tag) || toStableId(p.description || `profile-${idx + 1}`);
         const description = normalizeText(p.description || '');
         const enabled = p.enabled !== false;
+        const fallbackToArxiv = !Object.prototype.hasOwnProperty.call(p, 'paper_sources');
+        const paperSources = normalizePaperSources(p.paper_sources, { fallbackToArxiv });
         const keywordRules = (Array.isArray(p.keywords) ? p.keywords : []).map(normalizeKeywordItem).filter(Boolean);
         const normalizedKeywords = dedupeKeywords(keywordRules);
         const normalizedIntentQueries = normalizeIntentQueries(p.intent_queries);
@@ -327,6 +365,7 @@ window.SubscriptionsManager = (function () {
           tag,
           description,
           enabled,
+          paper_sources: paperSources,
           keywords: normalizedKeywords,
           intent_queries: normalizedIntentQueries,
           updated_at: normalizeText(p.updated_at) || new Date().toISOString(),
@@ -342,17 +381,27 @@ window.SubscriptionsManager = (function () {
   const validateIntentProfiles = (config) => {
     const cfg = cloneDeep(config || {});
     const subs = (cfg && cfg.subscriptions) || {};
+    const availableSources = getAvailablePaperSources(cfg);
     const profiles = Array.isArray(subs.intent_profiles) ? subs.intent_profiles : [];
     for (let idx = 0; idx < profiles.length; idx += 1) {
       const profile = profiles[idx];
       if (!profile || typeof profile !== 'object') continue;
       const tag = normalizeText(profile.tag) || `词条${idx + 1}`;
+      const fallbackToArxiv = !Object.prototype.hasOwnProperty.call(profile, 'paper_sources');
+      const paperSources = normalizePaperSources(profile.paper_sources, { fallbackToArxiv });
       const keywords = dedupeKeywords(
         (Array.isArray(profile.keywords) ? profile.keywords : [])
           .map(normalizeKeywordItem)
           .filter(Boolean),
       );
       const intentQueries = normalizeIntentQueries(profile.intent_queries);
+      if (!paperSources.length) {
+        return `词条「${tag}」至少需要 1 个论文源。`;
+      }
+      const unknownSources = paperSources.filter((item) => !availableSources.includes(item));
+      if (unknownSources.length) {
+        return `词条「${tag}」包含未配置的论文源：${unknownSources.join(', ')}。`;
+      }
       if (!keywords.length) {
         return `词条「${tag}」至少需要 1 条关键词。`;
       }
@@ -428,7 +477,7 @@ window.SubscriptionsManager = (function () {
     const subs = next.subscriptions;
 
     migrateLegacyToProfilesIfNeeded(subs);
-      subs.intent_profiles = normalizeProfiles(subs);
+      subs.intent_profiles = normalizeProfiles(subs, getAvailablePaperSources(next));
 
     if (!subs.schema_migration || typeof subs.schema_migration !== 'object') {
       subs.schema_migration = {};

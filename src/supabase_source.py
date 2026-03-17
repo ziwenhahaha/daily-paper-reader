@@ -10,6 +10,11 @@ import re
 import requests
 import time
 
+try:
+    from source_config import get_source_backend
+except Exception:  # pragma: no cover - 兼容 package 导入路径
+    from src.source_config import get_source_backend
+
 
 DEFAULT_TIMEOUT = 20
 _DEFAULT_SUPABASE_RETRY = 3
@@ -125,7 +130,7 @@ def _norm(v: Any) -> str:
 
 def get_supabase_read_config(config: Dict[str, Any]) -> Dict[str, Any]:
     root = config or {}
-    sb = (root.get("supabase") or {}) if isinstance(root, dict) else {}
+    sb = get_source_backend(root, "arxiv")
     setting = (root.get("arxiv_paper_setting") or {}) if isinstance(root, dict) else {}
 
     enabled = bool(sb.get("enabled", False))
@@ -551,7 +556,7 @@ def match_papers_by_embedding(
                     "authors": r.get("authors") if isinstance(r.get("authors"), list) else [],
                     "primary_category": _norm(r.get("primary_category")) or None,
                     "categories": r.get("categories") if isinstance(r.get("categories"), list) else [],
-                    "source": "supabase",
+                    "source": _norm(r.get("source") or "supabase") or "supabase",
                     "similarity": sim_f,
                 }
             )
@@ -636,6 +641,7 @@ def match_papers_by_bm25(
                     "authors": r.get("authors") if isinstance(r.get("authors"), list) else [],
                     "primary_category": _norm(r.get("primary_category")) or None,
                     "categories": r.get("categories") if isinstance(r.get("categories"), list) else [],
+                    "source": _norm(r.get("source") or "supabase") or "supabase",
                     "score": r.get("score"),
                     "similarity": r.get("similarity"),
                 }

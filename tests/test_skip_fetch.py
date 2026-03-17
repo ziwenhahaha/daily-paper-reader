@@ -38,6 +38,21 @@ class ShouldSkipFetchTest(unittest.TestCase):
         """All Supabase retrieval features on → skip fetch."""
         self.assertTrue(should_skip_fetch(self.FULL_SUPABASE_CONFIG))
 
+    def test_skip_when_source_backends_arxiv_fully_configured(self):
+        cfg = {
+            "arxiv_paper_setting": {"prefer_supabase_read": True},
+            "source_backends": {
+                "arxiv": {
+                    "enabled": True,
+                    "url": "https://example.supabase.co",
+                    "anon_key": "test-key",
+                    "use_bm25_rpc": True,
+                    "use_vector_rpc": True,
+                }
+            },
+        }
+        self.assertTrue(should_skip_fetch(cfg))
+
     def test_no_skip_when_supabase_disabled(self):
         cfg = {
             "supabase": {
