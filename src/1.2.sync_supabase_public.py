@@ -12,6 +12,10 @@ from typing import Any, Dict, List
 import requests
 import torch
 from model_loader import load_sentence_transformer
+try:
+    from source_config import get_source_backend
+except Exception:  # pragma: no cover
+    from src.source_config import get_source_backend
 
 try:
     import yaml  # type: ignore
@@ -96,13 +100,28 @@ def resolve_embed_model(args_model: str) -> str:
     return model or DEFAULT_EMBED_MODEL
 
 
-def resolve_supabase_url(args_url: str) -> str:
+def resolve_supabase_url(args_url: str, backend_key: str = "arxiv") -> str:
     direct = _norm(args_url)
     if direct:
         return direct
     cfg = load_config()
+    backend = get_source_backend(cfg, backend_key)
+    if backend:
+        return _norm((backend or {}).get("url") or "")
     sb = (cfg.get("supabase") or {}) if isinstance(cfg, dict) else {}
     return _norm((sb or {}).get("url") or "")
+
+
+def resolve_papers_table(args_table: str, backend_key: str = "arxiv") -> str:
+    direct = _norm(args_table)
+    if direct:
+        return direct
+    cfg = load_config()
+    backend = get_source_backend(cfg, backend_key)
+    if backend:
+        return _norm((backend or {}).get("papers_table") or "")
+    sb = (cfg.get("supabase") or {}) if isinstance(cfg, dict) else {}
+    return _norm((sb or {}).get("papers_table") or "")
 
 
 def build_embedding_text(row: Dict[str, Any]) -> str:
@@ -431,9 +450,10 @@ def main() -> None:
         default="",
         help="可选：直接指定原始 JSON 文件路径；指定后优先于 --date。",
     )
+    parser.add_argument("--backend-key", type=str, default=os.getenv("SUPABASE_BACKEND_KEY", "arxiv"))
     parser.add_argument("--url", type=str, default=os.getenv("SUPABASE_URL", ""))
     parser.add_argument("--service-key", type=str, default=os.getenv("SUPABASE_SERVICE_KEY", ""))
-    parser.add_argument("--papers-table", type=str, default=os.getenv("SUPABASE_PAPERS_TABLE", "arxiv_papers"))
+    parser.add_argument("--papers-table", type=str, default=os.getenv("SUPABASE_PAPERS_TABLE", ""))
     parser.add_argument("--schema", type=str, default=os.getenv("SUPABASE_SCHEMA", "public"))
     parser.add_argument("--embed-model", type=str, default="")
     parser.add_argument("--embed-device", type=str, default="cpu")
@@ -449,8 +469,10 @@ def main() -> None:
     parser.add_argument("--mode", type=str, default="standard")
     args = parser.parse_args()
 
-    url = resolve_supabase_url(args.url)
+    backend_key = _norm(args.backend_key) or "arxiv"
+    url = resolve_supabase_url(args.url, backend_key)
     key = _norm(args.service_key)
+    papers_table = resolve_papers_table(args.papers_table, backend_key) or "arxiv_papers"
     if not url or not key:
         log("[INFO] 缺少 Supabase 连接信息（url 或 service key），跳过同步。")
         return
@@ -496,7 +518,7 @@ def main() -> None:
         upsert_papers(
             url=url,
             service_key=key,
-            table=args.papers_table,
+            table=papers_table,
             schema=_norm(args.schema),
             rows=rows,
             batch_size=max(int(args.upsert_batch_size or 1), 1),
