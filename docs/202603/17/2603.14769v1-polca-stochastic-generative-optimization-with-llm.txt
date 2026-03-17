@@ -1,0 +1,2454 @@
+Title: POLCA: Stochastic Generative Optimization with LLM
+
+URL Source: https://arxiv.org/pdf/2603.14769v1
+
+Published Time: Tue, 17 Mar 2026 03:20:47 GMT
+
+Number of Pages: 55
+
+Markdown Content:
+# POLCA: Stochastic Generative Optimization with LLM 
+
+Xuanfei Ren University of Wisconsin-Madison Madison, WI 
+
+xuanfeiren@cs.wisc.edu 
+
+Allen Nie Google DeepMind Mountain View, CA 
+
+allennie@google.com 
+
+Tengyang Xie ∗
+
+University of Wisconsin-Madison Madison, WI 
+
+tx@cs.wisc.edu 
+
+Ching-An Cheng ∗
+
+Google Research Kirkland, WA 
+
+chingan@google.com 
+
+Abstract 
+
+Optimizing complex systems, ranging from LLM prompts to multi-turn agents, traditionally requires labor-intensive manual iteration. We formalize this challenge as a stochastic generative optimization problem where a generative language model acts as the optimizer, guided by numerical rewards and text feedback to discover the best system. We introduce Prioritized 
+
+Optimization with Local Contextual Aggregation (POLCA), a scalable framework designed to handle stochasticity in optimization—such as noisy feedback, sampling minibatches, and stochastic system behaviors—while effectively managing the unconstrained expansion of solution space. POLCA maintains a priority queue to manage the exploration-exploitation tradeoff, systematically tracking candidate solutions and their evaluation histories. To enhance efficiency, we integrate an ε-Net mechanism to maintain parameter diversity and an LLM Summarizer to perform meta-learning across historical trials. We theoretically prove that POLCA converges to near-optimal candidate solutions under stochasticity. We evaluate our framework on diverse benchmarks, including τ -bench, HotpotQA (agent optimization), VeriBench (code translation) and KernelBench (CUDA kernel generation). Experimental results demonstrate that POLCA achieves robust, sample and time-efficient performance, consistently outperforming state-of-the-art algorithms in both deterministic and stochastic problems. The codebase for this work is publicly available at https://github.com/rlx-lab/POLCA .
+
+# 1 Introduction 
+
+Optimizing complex systems – from large language model (LLM) prompts to code generators to multi-turn agents – traditionally requires manual iteration by domain experts. Recently, generative optimization algorithms have demonstrated successes in automating this process and have been applied to scientific discovery, code revision, and end-to-end system optimization (Cheng et al., 2024; Novikov et al., 2025; Agrawal et al., 2025). The solution to each of these problems can be viewed as a parameterized computer program. 1 Generative optimization is a process in which a 
+
+> ∗
+
+Corresponding authors. 
+
+> 1
+
+The term parameter is used here to distinguish the changeable part of a program, as defined by the programmer. In the most general case, the entire program can be treated as a parameter. 
+
+1    
+
+> arXiv:2603.14769v1 [cs.LG] 16 Mar 2026 θθθLLM
+> Optimizer θ2
+> θ1
+> θ3
+> Reject
+> Memory
+> Summarize
+> F
+> Feedback
+> Eval(θ, x) θ1
+> C
+> F
+> Samper minibatch
+> x
+> accept
+> Filtering
+> Eval(θ 1, x)
+> θθθ
+> θ3θ2
+> Select
+> Parameter Proposal
+> ε-Net
+> Mechanism
+> Dataset Step
+> 0
+> 1
+> Normalized score
+> GEPA
+> OpenEvolve
+> POLCA (Ours)
+
+Figure 1: Left : The POLCA framework for generative optimization. POLCA maintains a memory buffer as an 
+
+ε-Net to ensure diverse program storage. In each iteration, it selects promising parameter candidates from the ε-Net, evaluates them against a sampled minibatch, and generates new candidate parameters based on the feedback. These candidates undergo a semantic Filtering stage; accepted parameters are evaluated on the minibatch and integrated into the ε-Net. Finally, a Summarize step compresses the memory to provide concise global context C for the next optimization cycle. Right : Normalized performance averaged across benchmarks ( τ -Bench, HotpotQA, VeriBench, and KernelBench). The solid curve represents the mean, while the shaded region indicates the standard error across all benchmarks. Results are aggregated by standardizing scores and computational budgets to a scale of [0 , 1] .
+
+generative model, typically an LLM, modifies the parameter(s), validates the modification, and then further revises it using feedback from validation. This process is repeated for many iterations, either sequentially or under the coordination of a search algorithm, and the feedback can take the form of numerical scores, text, or multimodal signals such as images, video, or audio. When provided with the right feedback (Pryzant et al., 2023; Chen et al., 2024; Xu et al., 2025), generative optimization algorithms can significantly speed up the optimization process compared with black-box algorithms that uses reward or preference as the only learning signals (Huang et al., 2023; Wei et al., 2024; Agrawal et al., 2025). Nonetheless, optimization instability and plateaus have also been reported, such as LLM repeating the same mistakes multiple times (Kumar et al., 2024; Chen et al., 2024). The limitation arises when the LLM as the optimizer does not observe sufficient information from feedback to derive an improvement direction of the parameter. This problem is exacerbated when it is costly to obtain a low-variance estimation of the parametrized program’s performance is expensive, either because the environment is stochastic or because feedback from humans or ultra-large LLMs is costly. The former occurs when the program must be evaluated many inputs or tasks to estimate its average performance, or when the program itself exhibits inherent stochastic behaviors. In such cases, obtaining high-quality feedback requires multiple evaluations, which can be too expensive to perform at every optimization step. Therefore, optimization often relies on stochastic estimates from only a few evaluations. On the other hand, language feedback from LLM judges or human users may be noisy and subjective, making optimization difficult when the feedback is inconsistent or highly variable. These challenges become even more severe when an LLM is used as the optimizer (Yang et al., 2023; Nie et al., 2024). Stochastic variation can cause the optimizer to generate many semantically similar parameters, so the search space grows linearly while semantically useful information does not (Shi et al., 2022; Li et al., 2022; Wang et al., 2025a; Lange et al., 2025a). Verifying these redundant programs requires additional evaluations, making generative optimization expensive to scale. Take optimizing an LLM agent as an example, where the parameter may be its system prompt or orchestration code. The agent needs handle a variety of task requests, and yet running the agent with each task takes minutes; therefore, only a subset of tasks can be used at a time for making an update in optimization. The feedback is likely generated by querying another LLM (using privileged task information or execution trace) (Yao et al., 2024; Lin et al., 2024; Wu et al., 2025), which can lead to stochastic evaluation and feedback. Lastly, the agent itself is stochastic as well because of the 2use of LLM inside. Other applications may manifest only a subset of these sources of stochasticity. For example, if the outcome of the program is verifiable by a computer script, then the scoring can be deterministic. If the inputs to the program can be efficiently enumerated (such as a small set of unit tests), then sampling is not necessary. However, not all tasks are verifiable and LLM-as-a-Judge is getting more common (Zheng et al., 2023; Gu et al., 2024; Lee et al., 2025a). In addition, running the program for all inputs is not always practical when problems get more complex, since such full batch update requires linear complexity per optimization step. It is desirable that algorithms can update based on sampled minibatches. In this work, we introduce Prioritized Optimization with Local Contextual Aggregation (POLCA), a scalable framework for stochastic generative optimization with LLMs (Figure 1). Under mild assumptions on LLM capabilities, we show that an embedding-based memory mechanism with an accept/reject rule, which we call the ε-Net criterion, can address two primary limitations of generative optimization: parameter update instability and evaluation stochasticity. This mechanism naturally bounds the total number of parameters that need to be evaluated. Without the ε-Net criterion, an LLM optimizer may continue proposing new parameters indefinitely, resulting in unbounded evaluation costs. Sufficient exploration of the parameter space is controlled by ε, which dictates a coverage-cost tradeoff, specified by the user. The core of our method is a reward-free embedding for each parameter that captures signals about the true underlying reward without overfitting to noisy empirical rewards. We argue that such embeddings are increasingly available in modern LLMs and that they are essential for building robust and scalable generative optimization algorithms (Lee et al., 2025b). Incorporating search into generative optimization is common. However, regardless of the underlying algorithm, such as evolutionary search (Novikov et al., 2025), multi-candidate Pareto frontier search (Agrawal et al., 2025), or beam search (Pryzant et al., 2023), existing methods often assume an effectively unlimited evaluation budget and do not explicitly address evaluation stochasticity. In contrast, POLCA uses embeddings to construct an ε-Net that avoids overfitting to noisy evaluations and decides whether a new parameter is sufficiently novel to evaluate. This mechanism yields a search process that is robust to stochasticity: it avoids discarding candidates too early while naturally bounding the number of distinct programs in the process. Prior work has also used filtering to promote novelty. For example, AlphaCode (Li et al., 2022) uses test-based filters, and ShinkaEvolve (Lange et al., 2025a) uses embedding-based filtering. However, these choices are empirically motivated. We show that an embedding-based mechanism is theoretically necessary for efficient generative optimization under evaluation stochasticity and finite compute. Theoretically, we analyze POLCA with the UCB score as the priority function for ranking candidate parameters, which enables provably systematic exploration. Under the assumption that the optimizer can achieve strict improvement within a certain reward range, we prove that POLCA eventually converges to near-optimal candidates under stochasticity. The convergence rate is primarily influenced by two factors: the efficiency of the optimization oracle, which captures the capability of the optimizer LLM, and the stochasticity of the evaluations, which is determined by the task. The former determines the number of iteration steps required to propose a near-optimal candidate, while the latter determines the number of samples necessary to accurately estimate the reward for each accepted candidate. We conduct experiments to validate our algorithm across various sources of stochasticity. In τ -bench (Yao et al., 2024), we optimize a tool-use LLM agent’s prompts for multi-step problems. POLCA effectively handles stochasticity arising from both mini-batching and the agent’s internal randomness, improving performance over multiple held-out tasks. It also achieves superior results in HotpotQA (Yang et al., 2018) prompt optimization. In formal verification (VeriBench) (Miranda 3et al., 2025), we test POLCA’s ability to learn from compilation signals and stochastic LLM feedback when translating Python programs into Lean 4 code. We also validate POLCA in a deterministic setup using KernelBench (Ouyang et al., 2025) to optimize CUDA kernel code. Across all benchmarks, POLCA consistently outperforms state-of-the-art baselines, GEPA (Agrawal et al., 2025) and OpenEvolve (Sharma, 2025) – an open-source implementation of AlphaEvolve (Novikov et al., 2025), in both convergence speed and final performance. We additionally verify that parametric reward modeling via an ensemble is prone to evaluation stochasticity. This highlights the need to use a persistent memory mechanism such as ε-Net to ensure a robust and principled framework for scaling LLM optimizers in the face of stochasticity. 
+
+# 2 Problem Setup 
+
+The optimization problem of a complex systems using generative models can be formulated as an abstract problem, which we call stochastic generative optimization of a parameterized program Pθ.Our goal is to design a scalable algorithm to automate this pipeline and to address the instability caused by stochasticity in sampling inputs, evaluations, and the program itself. While our primary focus in the experiments will be on prompt and code optimization, as we will show below, this formulation is generic and extends to broader domains including general discrete structures and functional solutions. Traditionally these tasks relied on a manual expert loop where human researchers iteratively refined parameters. By treating these systems as programs with parameters, we take a unified approach to handle stochasticity inherent in trial-and-error cycles. 
+
+Problem Formulation We denote a stochastic generative optimization problem as a tuple 
+
+{P, θ 0, D, Θ, G, O} . The parameterized program Pθ is a mapping that takes input x and returns output y ∼ Pθ(x)2. We aim to change parts of the program θ which we call the parameter . The parameter can include numerical values, text strings, codes, or a mixture of them. We denote 
+
+θ0 as the initial parameter, which can be a placeholder, and let Θ represent all possible program parameters. Our goal is to improve the program’s performance on a data distribution D. Each data (x, ω ) ∼ D contains an input x to the program and some associated side information ω. Given 
+
+(ω, x, y ), there is an oracle G, which we call the guide , to provide a numerical score r ∈ R and feedback f (e.g., error messages, critiques, or gradients) (with stochasticity) to guide the optimization process. In other words, the score r and feedback f implicitly encapsulate the optimization objective, just as gradients in first-order optimization. Lastly, we suppose there is an LLM Optimizer O that can propose new parameters after seeing (θ, x, y, r, f, c ), where c denotes additional context about the optimization problem (which may include with ω). This LLM Optimizer acts as an oracle to propose new candidate parameters θ′ ∈ Θ by interpreting the guide’s feedback, but we do not assume 
+
+θ′ would always be better than θ. Failure to improve may be due to the lack of information in 
+
+(θ, x, y, r, f ) or due to the stochasticity of the LLM Optimizer. 
+
+Evaluation and Objective The performance of a program Pθ parameterized by θ is characterized by its expected reward μ(θ), defined as: μ(θ) = Eω,x ∼D 
+
+Ey∼Pθ (x)[Gr(ω, y, x )]  , where Gr denotes the score r returned by the guide. Given a computational resource budget (e.g., wall-clock time or number of evaluation metric calls), we wish to design an algorithm Alg to maximize the expected reward of the selected agent: max Alg E[μ(θbest )] , where θbest denotes the best parameter Alg returns, and the expectation is taken over the joint stochasticity of the data sampling of D, the program     
+
+> 2The program can be a constant function of the parameter, i.e., Pθ(x)≡θ, provided the entire program structure is subject to modification during the optimization process.
+
+4P and the LLM optimizer O, the noisy evaluations provided by the guide G, and the inherent randomness of the algorithm Alg . The algorithm needs to coordinates the interactions between the dataset D, the guide G, and the LLM optimizer O to balance between exploring novel parameters and accurately identifying high-performing candidates amidst stochastic variations due to them. 
+
+Expansive Search Space One important property is that the parameter space Θ is often exponentially large and discrete without a natural ordering (e.g., the space of all valid Python programs). This property makes this optimization setting differ significantly from standard scenarios such as finite-arm bandits, where a learner either has access to the full action set up front. In contrast, the action space (namely the parameter space) here can only be accessed through querying the LLM optimizer O, and the proposal distribution of the LLM optimizer is highly dependent on the specific information in (θ, x, y, r, f, c ) provided at each iteration. Consequently, to effectively optimize, we also need to select meaningful improving parameter θ and data x, curate good context c
+
+(e.g., by integrating historical evaluations and feedback) in order to steer the LLM optimizer toward generating increasingly superior candidates. 
+
+# 3 Algorithm 
+
+In this paper, we design a generative optimization algorithm, Prioritized Optimization with Local 
+
+Contextual Aggregation (POLCA), which utilizes a continuously updated memory and an ε-Net criterion to handle stochasticity from program evaluations. The optimization procedure is formally presented in Algorithm 1. We maintain a priority queue Q—initialized with the base program 
+
+θ0—which functions as a memory and is continuously updated with empirical results. Each iteration of the optimization loop begins by sampling a minibatch B ⊂ D via SampleMinibatch and selecting a subset of the empirically best-performing programs, Θexplore ⊂ Q , via SelectPrograms . We then collect data S by evaluating each θ ∈ Θexplore on B; these results are used to directly update the performance statistics in Q. Subsequently, we invoke ProposePrograms , in which the optimizer 
+
+O utilizes the newly collected data S, in conjunction with a broader context chistory , to propose a set of raw program parameters Θraw . Here, chistory is provided by another external LLM component called the Summarizer , which processes the entire updated priority queue Q to generate high-level optimization instructions for the optimizer O. To prevent the memory Q from being overwhelmed by semantically similar candidates, Θraw is filtered through an ε-Net-based SemanticFilter operation to obtain Θnew . This filtering mechanism constrains the size of the parameter space within Q while ensuring structural and semantic diversity. Finally, the candidates in Θnew are evaluated on the same minibatch B to obtain initial performance estimates before being added to the memory. In the following sections, we elaborate on the specific mechanics of each component and their contributions to the optimization process. 
+
+Minibatch Evaluation The scale of the dataset D presents a primary bottleneck, when doing a full evaluation of Pθ in every iteration is computationally out of reach. This makes obtaining a precise, reliable score prohibitively expensive for every generated candidate. Instead, minibatch sampling is employed to estimate the performance of proposed programs and provide valuable feedback for further optimization. We implement a SampleMinibatch process in POLCA, where in each iteration, a minibatch of tasks B = {(ωi, x i)}Bi=1 is randomly sampled from the dataset D with replacement. A program Pθ evaluated on B yields stochastic observations {(θ, ω i, x i, y i, r i, f i)}Bi=1 .The stochasticity in the scores of Pθ arises from the minibatch sampling, the program execution, and the guide evaluation, as discussed in Section 2. The same minibatch evaluation is performed for 5both Θexplore and the newly proposed Θnew to ensure a fair comparison, thereby mitigating potential bias arising from task-specific variance. Both evaluation processes are fully parallelized 3, which we elaborate on further in Algorithm 2 in Section B. 
+
+Algorithm 1 POLCA 
+
+Require: Dataset D, base agent θ0, Guide G, Optimizer O
+
+Ensure: Best program θbest identified during search  
+
+> 1:
+
+Initialize: Q ← { θ0} 
+
+> 2:
+
+while Budget not exhausted do  
+
+> 3:
+
+B ← SampleMinibatch (D) 
+
+> 4:
+
+Θexplore ← SelectPrograms (Q) 
+
+> 5:
+
+S ← Evaluate (Θ explore , B, G) 
+
+> 6:
+
+Q ← UpdateStats (Q, S) 
+
+> 7:
+
+Θraw ← ProposePrograms (O, S, Q) 
+
+> 8:
+
+Θnew ← SemanticFilter (Θ raw , Q) 
+
+> 9:
+
+S ← Evaluate (Θ new , B, G) 
+
+> 10:
+
+Q ← UpdateStats (Q, S) 
+
+> 11:
+
+end while  
+
+> 12:
+
+return θbest ∈ Q with the highest empirical mean score 
+
+Priority Queue Memory To handle the stochasticity inherent in program evaluation, we maintain 
+
+Q as a priority queue . For each program θ ∈ Q , we assign an exploration priority derived from its data. Specifically, for a program θ with data {(θ, w n, x n, y n, r n, f n)}Nn=1 , we define the priority as the empirical mean score 4: pexplore (θ) = 1
+
+> N
+
+PNn=1 rn. To identify programs for improvement at the start of each iteration of POLCA, we invoke Θ ← SelectPrograms (Q) to retrieve the candidates with the highest pexplore . During the optimization process, newly collected data S = {(θ, w, x, y, r, f )} is integrated via Q ← UpdateStats (Q, S). This function updates the priorities for all relevant θ ∈ Q 
+
+and reorders the queue to facilitate efficient exploration. This architecture directly addresses the three sources of stochasticity by continuously updating the dynamic priority queue Q. Under this design, program Pθ with superior empirical performance are evaluated consecutively, and pexplore (θ) eventually converges to the true expected reward μ(θ)
+
+as variance is averaged out. This design ensures that promising candidates with temporarily low empirical means can be revisited and refined later, while those with low potential are eventually deprioritized after sufficient sampling. 
+
+Generative Parameter Space Growth We assume our generative optimizer oracle O has a proposal distribution Π( · | C ), where C represents the input context. To enhance the optimization trajectory, we first utilize an external LLM called the Summarizer to aggregate the history of successes and failures from Q into a chistory , providing high-level context for the optimizer. Then, for each program parameter θ ∈ Θexplore , the optimizer is invoked using the minibatch collected in this iteration, Sθ = {(θ, ω i, x i, y i, r i, f i)}Bi=1 , augmented by chistory to synthesize information from previous iterations. In this formulation, utilizing only the current minibatch Sθ is analogous to a 
+
+> 3When program execution or guide evaluation rely heavily on LLM calls, this parallelization becomes significantly more efficient, as the parallelization of LLM API calls can be easily implemented.
+> 4In particular, if the empirical mean is slightly modified to a UCB score, we can obtain a theoretically guaranteed result (Section 4). Other priority functions could be utilized to realize alternative search strategies (Section C).
+
+6standard first-order update in numerical optimization. By incorporating chistory from the Summarizer, the process mirrors Momentum-based methods (Cui et al., 2024), leveraging the trajectory of past evaluations to stabilize the search and escape local optima. In parallel, the optimizer analyzes the local context Sθ and the global summary chistory to propose a candidate θ′ designed to achieve superior performance: θ′ ∼ Π( · | C θ), where Cθ = {(θ, x i, y i, r i, f i, c history )}Bi=1 . We collect the proposed program parameters as Θraw . A more detailed description of the program generation process can be found in Algorithm 3 and Section B. 
+
+Semantic Filtering based on ε-Net While we tackle the stochasticity of individual program evaluations by a continuously updated memory Q, indiscriminately adding all new programs to the memory would cause Q to grow linearly with the number of iterations. This growth can lead to prohibitive sample complexity when attempting to identify the best program. This can be avoided, because the input context to O often exhibits comparatively low variance. This is due to 
+
+1) minibatches may overlap or repeat, and 2) specific programs (or highly similar ones) are repeatedly selected for exploration. Consequently, LLM-based optimizers tend to propose many semantically similar parameters over time, meaning the growth of useful information in Q does not scale at the same rate as the number of programs. To navigate this complexity, we leverage the latent semantic structure of the parameter space to discretize Θ. Let ϕ : Θ → Rd be an embedding function that maps parameters into a dense vector space. We then define a semantic distance metric ˜d(θ, θ ′) = ∥ϕ(θ) − ϕ(θ′)∥2 to measure the semantic similarity between any two parameters θ, θ ′ ∈ Θ. All newly generated program parameters θ′ ∈ Θraw 
+
+are subsequently processed by the SemanticFilter component. This component ensures that the priority queue Q is maintained as an ε-Net, such that any two programs in memory maintain a distance greater than ε. A new program parameter is admitted only if its semantic distance to every existing parameter in Q exceeds ε, thereby pruning redundant proposals and maintaining population diversity. The diversity within Q also facilitates the retrieval of a high-quality historical context chistory , as a more semantically diverse Q provides a more representative set of observations to the Summarizer. Detailed implementation of this filtering process is provided by Algorithm 4 in Section B. 
+
+# 4 Theoretical Analysis 
+
+In this section, we theoretically analyze POLCA (Algorithm 1). For clarity, we analyze a version of the algorithm that, in each iteration, selects only one program to gather observations and proposes only one new program. Unlike the implementation in Section 3, this version selects the program with the highest UCB score rather than the empirical mean; such optimistic exploration is standard in online learning theory. Assume the reward function μ : Θ → [0 , B ]. For any program θ ∈ Θ, we assume the score observation 
+
+r(θ) is sampled from a σ2 sub-Gaussian distribution with mean μ(θ). We analyze the following simplified version of POLCA: The optimization process starts with the original program θ0. Let n
+
+be the time horizon. At each step t, let Tθ(t) denote the number of reward observations for program 
+
+θ, and bμθ,s denote the empirical mean of program θ over the first s observations. The algorithm calculates UCB scores based on (1) for all current programs: 
+
+U CB θ(t) = bμθ,T θ (t) + 2 σ
+
+s
+
+log( n)
+
+Tθ(t) . (1) 7It then selects the program θ with the highest UCB score to obtain a reward observation r(θ). The optimizer proposes a new program θ′ based on the local observation Cθ. If θ′ passes the semantic filtering based on ε-Net, it is evaluated once to obtain a reward observation r(θ′). By the design of the ε-Net filtering mechanism, the total number of distinct programs evaluated during the process is bounded. We use Nε (depending only on the program space Θ and ε) to denote this upper bound, which is used in the subsequent analysis. We introduce Assumption 1, which assumes the optimizer has the ability to make a γ-strict improvement with positive probability, provided the seed program θ satisfies μ(θ) ∈ [0 , B − γ].
+
+Assumption 1 (Strict improvement) . There exist constants γ > 0 and δ0 ∈ (0 , 1) . For any θ ∈ Θ
+
+with μ(θ) ≤ B − γ, we assume the optimization oracle satisfies: 
+
+Pθ′∼Π( ·|C θ )[μ(θ′) > μ (θ) + γ] ≥ δ0.
+
+Based on Assumption 1, in this generative optimization problem, we only have control over improving programs with rewards in [0 , B − γ], whereas we lack a guarantee from the given optimizer for proposing better programs when the seed program has a reward in the range (B − γ, B ].Let Θt ⊂ Θ denote the set of programs accepted during the first t iterations. Theorem 1 demonstrates that POLCA with a UCB priority function converges to near-optimal programs with rewards in 
+
+[B − γ, B ], which the optimizer cannot be guaranteed to improve further. 
+
+Theorem 1. Suppose μ : Θ → [0 , B ]. If we run POLCA with the UCB priority defined in (1) for 
+
+n iterations, then the expected total number of selections for programs with rewards in [0 , B − γ] is bounded by 
+
+E
+
+ X
+
+> θ∈Θn:μ(θ)≤B−γ
+
+Tθ(n)
+
+
+
+≲
+
+ B
+
+2γδ 0
+
++ 64 σ2Nε
+
+γ2
+
+
+
+log( n). (2) 
+
+When the reward observations are deterministic ( σ = 0 ), the bound becomes independent of the program space and depends only on the reward space and the optimization oracle: 
+
+E
+
+ X
+
+> θ∈Θn:μ(θ)≤B−γ
+
+Tθ(n)
+
+
+
+≲ B log( n)2γδ 0
+
+.
+
+We provide the complete proof of Theorem 1 in Section A, but we can intuitively interpret the two terms in the upper bound (2) . The first term, B log (n)/2γδ 0, represents the number of iterations required to generate a near-optimal program with reward in [B − γ, B ] under the uncertainty of the optimizer, as described in Assumption 1. The second term, with order O(σ2Nε log (n)/γ 2), is the number of samples needed to estimate the expected reward of each program given stochastic observations. In the deterministic case, only one sample is needed to determine the reward of each program θ, so the second term vanishes. Theoretical analysis highlights the advantages of POLCA in maintaining a comprehensive historical record of all programs. Specifically, our ε-Net-based semantic filter prevents the memory buffer from growing linearly by rejecting semantically redundant candidates, ensuring the search remains scalable. A naive implementation of generative optimization typically relies on sequential updates, where each iteration evaluates a single program to propose its successor. Below, we compare these algorithms with POLCA under the assumption of deterministic reward observations, where the algorithm 8has access to μ(θ) for each generated θ. Formally, at each step t, a sequential updating algorithm generates a new program proposal based on the most recent observation: 
+
+θ′ 
+
+> t
+
+∼ Π( · | C θt−1 ). (3) In contrast, POLCA updates by improving upon the best program found thus far: 
+
+θ′ 
+
+> t
+
+∼ Π( · | C ˜θt ), where ˜θt := argmax 
+
+> θ∈Θt
+
+μ(θ). (4) Theorem 2 compares the rates at which updating rules (3) and (4) yield a near-optimal program. 
+
+Theorem 2. Suppose μ : Θ → [0 , B ] and the reward observation is deterministic. Under Assumption 1, the expected number of steps for a sequential updating algorithm (3) to propose a program with reward in (B − γ, B ] is O(1 /δ B/γ  
+
+> 0
+
+). In contrast, POLCA with updating rule (4) requires B/ (γδ 0)
+
+expected steps to reach the same threshold. 
+
+The proof of Theorem 2 is provided in Section A.4. By using the historical maximum, POLCA maintains a monotonically non-decreasing reward baseline. This ensures the algorithm is robust to the stochasticity of the optimizer, as poor proposals cannot reset its progress. 
+
+# 5 Experiments 
+
+We implement POLCA within the Trace workflow optimization pipeline (Cheng et al., 2024), utilizing OptoPrime as the optimizer to conduct generative optimization guided by rich feedback and execution traces. We compare POLCA against established baselines (DSPy (Khattab et al., 2023), GEPA (Agrawal et al., 2025), and OpenEvolve (Sharma, 2025)); see Section D.1 for a detailed discussion on baselines. We select representative domains where stochasticity arises from minibatch sampling, program execution (Section 5.1), and evaluation methods (Section 5.2). Finally, we demonstrate the superiority of POLCA in deterministic domains in Section 5.3. 
+
+Comparison criterion Evaluating proposed programs in the search process is computationally expensive and time-consuming. While the total number of metric calls represents the actual computation used, we define an evaluation step as a unit where all constituent metric calls are parallelized, effectively measuring the number of sequential operations required as a surrogate of wall clock time. To ensure a fair comparison, we set a maximum budget of metric calls for all algorithms and report the scores achieved at each step. In Section D.3, we discuss criteria to evaluate and compare algorithms across multiple dimensions of wall-clock time and computational cost. 
+
+5.1 Stochasticity from program execution and minibatch sampling 
+
+One popular application of generative optimization involves training LLM-based agents. Since LLM-based agents are inherently stochastic, multiple trials on the same task may yield diverse outcomes. Furthermore, given the large number of potential tasks, evaluating agents on the entire training set is often inefficient. A widely used alternative is to sample a minibatch from the dataset to estimate agent performance. Consequently, the observed scores during the training process are inherently stochastic. 
+
+τ -bench We first demonstrate such stochasticity using τ -bench (Yao et al., 2024), a benchmark designed to evaluate agents in interacting with human users and executing tools to solve complex 90 50 100 150 200 250 300 
+
+> Evaluation Step
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> Test Score
+
+-bench Test Score 
+
+> GEPA (Most Frequent)
+> GEPA (Sample by Freq)
+> OpenEvolve
+> POLCA (Ours)
+
+(a) τ -bench 0 50 100 150 200 250 
+
+> Evaluation Step
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> 1.00
+> Test Score
+
+HotpotQA Test Score  
+
+> GEPA
+> OpenEvolve
+> POLCA (Ours)
+
+(b) HotpotQA 0 10 20 30 40 50 
+
+> Evaluation Step
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Score
+
+VeriBench (3-step evaluation) Score 
+
+> DSPy
+> GEPA
+> OpenEvolve
+> POLCA (Ours)
+
+(c) VeriBench 0.0 2.5 5.0 7.5 10.0 12.5 15.0 17.5 20.0 
+
+> Evaluation Step
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> fast 1.0  Score
+
+KernelBench fast 1.0 Score  
+
+> DSPy
+> GEPA
+> OpenEvolve
+> POLCA (Ours)
+
+(d) KernelBench 
+
+Figure 2: Search efficiency across four benchmarks. Solid curves represent the average highest score attained at each step, while the shaded regions denote the standard error across multiple independent runs (6 seeds for τ -bench, 3 for HotpotQA and VeriBench (3-step evaluation), and 1 for KernelBench). Higher curves indicate superior efficiency. 
+
+queries. Here we use gemini-2.0-flash 5 as the backbone model, gemini/text-embedding-004 6 as the embedding model for POLCA. The environment provides a sparse, binary reward r ∈ { 0, 1} per execution, indicating whether the user’s request was resolved. We utilize the first 10 tasks from the retail domain of τ -bench for optimization, with the remaining 145 tasks held out to test for generalization. The base agent provided by the benchmark is parameterized via a string variable, 
+
+additional_instructions , which is appended to the system prompt. Details can be found in Section D.2. Figure 2(a) demonstrate the effectiveness of POLCA. While OpenEvolve and GEPA demonstrate improvements over the base agent, they are significantly outperformed by POLCA in this stochastic environment. This discrepancy arises because these methods evaluate each proposed program on 10 tasks once without continuously updating the statistics, making them heavily sensitive to the stochastic evaluation. We also evaluate the best generated prompt on the complete τ -bench retail domain dataset, consisting of 115 tasks. Table 1 shows that the prompt generated by POLCA is not only the most effective on the 10 -task training set but also achieves the best performance on the entire dataset. 
+
+> 5
+
+https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/2-0-flash 
+
+> 6
+
+https://ai.google.dev/gemini-api/docs/embeddings 
+
+10 Table 1: Pass@1 of τ -bench retail domain (115 tasks). Prompts are trained on only the first 10 tasks. Here our POLCA achieves a                 
+
+> 13% improvement compared with the base prompt.
+> Method First 10 tasks Last 105 tasks All 115 tasks
+> Base Prompt 0.348 0.392 0.389 GEPA 0.557 0.417 0.429 OpenEvolve 0.373 0.422 0.418
+> POLCA (Ours) 0.575 0.425 0.439
+
+Table 2: VeriBench compilation pass rates. Each algorithm is allocated a bud-get of 50 metric calls per task.              
+
+> Algorithm Pass Rate
+> DSPy 0.888 ±.023 GEPA 0.695 ±.010 OpenEvolve 0.738 ±.010
+> POLCA (Ours) 0.952 ±.005
+
+HotpotQA HotpotQA (Yang et al., 2018) is a multi-hop question answering dataset where each task requires reasoning across multiple context paragraphs to produce a short answer. Each task consists of a question, 10 context paragraphs (of which 2–3 are relevant and the rest are distractors), and a ground-truth answer. We use gemini-2.5-flash-lite as the backbone model, and gemini-embedding-001 6 as the embedding model for POLCA. Correctness is determined by exact match or substring containment, yielding a binary reward of 0 or 1 per task. We use different algorithms to optimize the prompt for question answering. Details can be found in Section D.2. The result in Figure 2(b) shows the superiority of POLCA. 
+
+5.2 Stochasticity from the evaluator 
+
+In the previous subsection, we discussed the stochasticity arising from program execution and the minibatch sampling tasks. Here we study the case of stochastic evaluator for optimizing deterministic programs on a single task. 
+
+VeriBench (3-step evaluation) We consider the formal verification domain using VeriBench (Miranda et al., 2025), which evaluates the capability of LLMs to translate Python programs into verifiable Lean 4 code, with claude-3.5-sonnet 7 as the backbone and gemini/text-embedding-004 
+
+as the embedding model. LLMs are prompted to translate the Python program into a compilable and semantically correct Lean 4 program. We formalize this problem by treating the entire translated Lean 4 program as the parameter, i.e., Pθ(x) ≡ θ, resulting in a fully deterministic program execution. The provided 3-step evaluation process of VeriBench, which contains compilation, unit tests, and an LLM judge, has stochasticity and provides a [0 , 1] reward for each proposed Lean 4 program. See Section D.2 for details. Figure 2(c) shows that our algorithm outperforms all baselines, suggesting superior performance within the same time budget. In such cases, the evaluator is the only source of stochasticity. POLCA addresses this by continuously updating empirical mean scores, ensuring scalability compared to approaches using static performance values. Algorithms such as DSPy and OpenEvolve typically collect reward and feedback for a program only once, even if that data is used multiple times to generate new programs. In contrast, POLCA repeatedly selects current high-performing programs to collect data; this not only helps for accurate estimation but also gathers diverse, stochastic feedback for these programs. Due to this stochasticity, obtaining feedback multiple times on the same parameter can increases the probability of receiving useful information to propose better programs. While GEPA also collects data multiple times for promising programs, it remains limited because it: 
+
+(1) depends highly on the initial validation and does not update program scores when new data is 
+
+> 7https://www.anthropic.com/news/claude-3-5-sonnet
+
+11 collected; (2) cannot explore multiple programs in parallel; and (3) degenerates into always selecting the single best performer for exploration in single-task optimization problems, as the Pareto frontier collapses. 
+
+5.3 Deterministic Domains 
+
+Many generative optimization problems are nearly deterministic. Examples include code generation with a deterministic verifier and various scientific discovery problems. This class of problems is of equal significance in the field of generative optimization. We show that POLCA can be directly applied to fully deterministic domains without modification. 
+
+VeriBench (Compilation) We utilize VeriBench again and the same LLMs but focusing on the deterministic compilation stage only. This remains a challenging domain given the limited Lean 4 programming knowledge inherent in current LLMs. For this analysis, the reward is a binary indicator of compilation success; all other experimental settings remain unchanged. We provide comprehensive experimental details in Section D.2. The results for VeriBench compilation are presented in Table 2, with extended results available in Section D.4. The results show that DSPy, OpenEvolve, and GEPA are effective but remain less efficient than our methods. Our parallelized POLCA consistently outperforms these baselines, even when compared with the fully sequential DSPy and GEPA algorithm. Our best algorithm reaches a 95.2% compilation pass rate (133/140) using a budget of 50 metric calls per task, significantly exceeding the baseline results. Our work represents the first thorough study applying agentic search algorithms to VeriBench; previous methods relied on simple iterative refinement and achieved considerably lower success rates. Specifically, Miranda et al. (2025) employed the same model and a sequential search with 5 retries on a subset of our tasks (113 tasks), achieving a maximum pass rate of 0.593 (67/113). 
+
+KernelBench CUDA kernel optimization is also a popular problem suitable for generative opti-mization. We pick 16 matrix multiplication tasks from KernelBench (level 1) (Ouyang et al., 2025), which appear simple but remain challenging. As mentioned in Yan et al. (2026), these tasks are already highly optimized in PyTorch, making it difficult to achieve further speedups. We utilize the fast p score (Ouyang et al., 2025) defined as: fast p = 1
+
+> N
+
+PNi=1 1(correct i ∧ { speedup i > p }), where p is the speedup threshold relative to the PyTorch baseline. This metric measures the proportion of tasks for which the algorithm proposes a correct CUDA program with a speedup exceeding p. We utilize the claude-3.7-sonnet 8 model for generation and gemini-embedding-001 as the embedding model. Figure 2(d) illustrates pass 1.0 performance comparisons 9 where POLCA distinctly outperforms the baselines. Implementation details are provided in Section D.2. The success of POLCA in deterministic domains can be attributed to two factors. First, the use of parallel starting points exploits the stochasticity of the optimizer more effectively than sequential baselines. Second, the global history context chistory is summarized from all failed programs of different paths. In contrast, DSPy, GEPA, and OpenEvolve are limited to local knowledge, focusing on a single or small sets of optimization paths. 
+
+5.4 Ablation study 
+
+Ablation on ε-Net and Summarizer In POLCA, we employ an ε-Net to filter programs and a Summarizer to provide a global context summary. We conduct an ablation study on these  
+
+> 8https://www.anthropic.com/news/claude-3-7-sonnet
+> 9We provide a pass 0.5analysis in Section D.5.
+
+12 0 250 500 750 1000 1250 1500 1750 2000 
+
+> Number of Metric Calls
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> Score
+
+-bench Test Score 
+
+> vanilla POLCA
+> vanilla POLCA+ -Net
+> vanilla POLCA+Summarizer
+> vanilla POLCA+ -Net+Summarizer
+
+(a) Ablation of ε-Net and Summarizer 0 100 200 300 400 500 
+
+> Number of Metric Calls
+> 0.30
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> Score
+
+-bench Test Score  
+
+> = 0.0
+> = 0.05
+> = 0.1
+> = 0.15
+> = 0.2
+> = 0.25
+> = 0.3
+
+(b) Ablation on ε sensitivity 0 20 40 60 80 100 
+
+> Number of Metric Calls
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Score
+
+VeriBench (3-step evaluation) Score 
+
+> = 0.0
+> = 0.02
+> = 0.05
+> = 0.07
+> = 0.1
+
+(c) Ablation on ε sensitivity 30% 60% 100%  
+
+> Data Usage
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> Test Score
+> -bench Test Score Comparison
+> Empirical Mean
+> Lowest Prediction
+> Mean Prediction
+> Highest prediction
+
+(d) Why not use regression? 
+
+Figure 3: In (a–c), solid curves show the mean highest score achieved at each step, with shaded areas representing the standard error over independent runs (6 seeds for (a); 3 seeds for (b, c)). In (d), bar heights denote test scores for programs selected via different criteria across varying training data percentages. Results are averaged over 3 runs, with error bars indicating the standard error. See Section D.7 for details. 
+
+components; see Figure 3(a) (further comparisons across different metrics can be found in Figure 10), where vanilla POLCA refers to the version without the ε-Net or Summarizer. Comparing these variants highlights the advantages of our proposed components. Both the ε-Net and the Summarizer significantly improve performance over vanilla POLCA. In this domain, the ε-Net leverages embedding information to filter new candidates that are semantically similar to programs already in memory, thereby conserving a substantial portion of the sampling budget. Consequently, it achieves higher scores with fewer samples. The Summarizer enhances the optimizer by providing a broader context, utilizing the entire memory rather than just local observations to identify success and failure patterns across diverse programs, leading to the discovery of superior candidates. 
+
+Ablation on ε sensitivity We perform an ablation on the ε value to provide intuition on how it affects performance on τ -bench and VeriBench. The results are presented in Figures 3(b) and 3(c) (more ablation over different domains/metrics can be found in Figure 11). By construction, the 
+
+ε value controls the coarseness of the discretization: parameters with a distance less than ε are identified as the same by the algorithm. The ablation results show that POLCA’s performance is not very sensitive to the exact ε value within a certain range. We consistently find that ε = 0 
+
+(no discretization) yields the worst learning performance. For large ε, we observe a degradation in asymptotic performance due to approximation error of coarser discretization, although it improves the initial learning speed as expected. As ε increases, POLCA accepts more diverse programs into memory, thereby encouraging exploration across distinct program structures. When a reasonable ε
+
+13 value is selected, it improves speed while incurring only negligible approximation error. 
+
+Why not use regression? In large-scale experiments, a substantial amount of programs can be generated. If they are treated as independent, evaluating them all (multiple times) to identify optimal candidates would require an impractical sampling budget. We use ε-Net filter with empirical mean to address this issue. We evaluate the feasibility of an alternate approach of training a surrogate reward function that maps program embeddings to predicted scores. We train an ensemble of five logistic regressors with semantic embedding vectors to predict scores of candidates generated by an optimization process in τ -bench. We then select the best candidates based on the ensemble’s 
+
+highest , mean , and lowest predicted scores. As shown in Figure 3(d), these function approximators failed to outperform the simple selection based on the empirical mean used in POLCA. A likely reason for this failure is that predicting a program’s score accurately is difficult without explicit problem-instance information. For further details on this study, refer to Section D.7. 
+
+# 6 Related Work 
+
+Existing algorithms are primarily distinguished by their optimizer design , search strategy , and 
+
+candidate curation . The optimizer design pertains to the specific method of invoking an LLM to generate a program parameter; the search strategy refers to the orchestration of the comprehensive optimization system, which may involve diverse and multiple LLM calls; whereas candidate curation 
+
+addresses the principled filtering and selection mechanisms required to scale the process when the pool of generated programs exceeds computational or context limits. 
+
+Optimizer Design Regarding optimizer design, some works utilize few-shot prompting, while others focus on sequential revision based on local observations such as rewards, textual feedback, and execution traces (Khattab et al., 2023; Cheng et al., 2024; Yuksekgonul et al., 2024). A more robust approach involves leveraging global knowledge by summarizing history to enhance performance (Cui et al., 2024). In large-scale search, context summarization is becoming increasingly popular (Zhang et al., 2025b). For example, in kernel optimization tasks, Lange et al. (2025b); Liao et al. (2025); Zhang et al. (2025a) employ an external LLM as a context summarizer to facilitate learning. POLCA similarly integrates numerical and textual feedback and leverages historical context summarization. 
+
+Search Strategies Our work focuses on search strategies that balance exploration and exploitation. We maintain a program memory, where the exploration-exploitation trade-off involves both proposing improved programs via the optimizer and reducing uncertainty regarding our currently accessible programs. While basic methods rely on repeated generation and N -best selection, more sophisticated frameworks utilize in-context learning from rewards, iterative refinement, or task-merging (Khattab et al., 2023; Cheng et al., 2024). Specialized approaches include Beam Search (Sun et al., 2023; Pryzant et al., 2023; Chen et al., 2024), Monte-Carlo Tree Search (Wang et al., 2023), and Gibbs Sampling (Xu et al., 2023). Among these, Chen et al. (2024) proposes learning a reward model from collected data; while effective in certain domains, this may fail in the presence of highly stochastic reward observations. Some prompt optimization works (Pryzant et al., 2023; Cui et al., 2024) propose a finite-arm bandit selection phase, which is effective for small-scale search. However, this remains an exploitation-heavy method that may prematurely cease generating new programs. Conversely, difficult problems require continuous exploration. GEPA (Agrawal et al., 2025), designed for prompt tuning, maintains a Pareto frontier of undominated programs to preserve diversity. However, it is susceptible to stochastic observations, as it falsely rejects candidates. Furthermore, 14 for single-task optimization with a verifier, GEPA may not be suitable, as Pareto-frontier-based search tends to degenerate, where the frontier merely represents the current best program. In such domains, AlphaEvolve (Novikov et al., 2025) utilizes MAP-Elites and island-based models to guide evolution. Subsequent frameworks like ThetaEvolve (Wang et al., 2025b) integrate evolutionary search with test-time reinforcement learning, while ShinkaEvolve (Lange et al., 2025a) employs rejection sampling and bandit-based ensemble selection. While these evolution-based methods excel at generating complex programs, they primarily address tasks with nearly deterministic verifiers and lack specific mechanisms to handle environments where the evaluation process is stochastic. Unlike prior methods that perform simple validation to reject non-improving candidates (Khattab et al., 2023; Novikov et al., 2025; Agrawal et al., 2025), POLCA manages stochasticity by continuously updating its memory buffer, including the re-evaluation of older candidates, as new information emerges. This allows the algorithm to perpetually learn and revisit candidates that demonstrate potential, mitigating the risk of false rejection due to noise. 
+
+Candidate Curation One of the primary challenges in generative optimization is the tendency of LLMs to propose semantically redundant candidates during long-horizon search processes. Often, 
+
+clustering and filtering mechanisms are used to maintain memory diversity and novelty. For example, AlphaCode (Li et al., 2022) utilizes test-based methods to reject underperforming candidates and clusters programs based on execution behavior to assess novelty and reduce evaluation need. Recent frameworks such as Kim et al. (2025) and Wang et al. (2025a) leverage embedding-based clustering to identify and collapse redundant reasoning states, thereby significantly pruning the search space while maintaining high optimization accuracy. Similarly, ShinkaEvolve (Lange et al., 2025a) employs embedding-based similarity detection coupled with an LLM-based code-novelty judge to accept or reject candidates. POLCA proposes the semantic ε-Net filtering mechanism , where under mild assumptions on the quality of the embedding (i.e., it contains useful information about the reward), we can control ε to trade off between final proposed candidate’s performance and search budget in a principled manner, while all previous works rely on multiple heuristic hyper-parameters without clear implications. 
+
+# 7 Conclusion 
+
+We formalize the problem of stochastic generative optimization , addressing the challenges of stochas-ticity in optimization and the unconstrained growth of the program space. We design POLCA, which introduces two primary contributions to address these challenges: (1) a continuously updated memory buffer that employs mean-based priorities to average out evaluation variance, and (2) a semantic 
+
+ε-Net filtering mechanism that prunes redundant candidates to maintain a diverse and efficient search space. Theoretical analysis shows POLCA with such design could converge to near-optimal candidates efficiently. Empirical evaluations on τ -bench, HotpotQA, VeriBench and KernelBench, covering both stochastic and deterministic domains, demonstrate that our approach significantly outperforms existing baselines, effectively handling stochasticity from minibatch sampling, program execution and evaluation. 
+
+Limitations Despite these advancements, POLCA has limitations. First, while the empirical mean is an efficient priority metric, more sophisticated selection strategies may exist. Although our analysis of POLCA with the UCB score has a good guarantee, it relies on the knowledge of the degree of stochasticity in the reward, and the assumption on the optimizer may not always be realistic. In addition, more advanced function approximation methods than semantic embedding 15 distance for filtering is possible, e.g., by predicting performance across analogous tasks. Lastly, the observations made in the experimental results may be limited to the benchmarks and models tested here, despite our best efforts to make them representative. 
+
+# Acknowledgements 
+
+We acknowledge support of the DARPA AIQ Award and the Gemini Academic Program Award. 
+
+# References 
+
+Lakshya A Agrawal, Shangyin Tan, Dilara Soylu, Noah Ziems, Rishi Khare, Krista Opsahl-Ong, Arnav Singhvi, Herumb Shandilya, Michael J Ryan, Meng Jiang, et al. Gepa: Reflective prompt evolution can outperform reinforcement learning. arXiv preprint arXiv:2507.19457 , 2025. Leni Aniva, Chuyue Sun, Brando Miranda, Clark Barrett, and Sanmi Koyejo. Pantograph: Amachine-to-machine interaction interface for advanced theorem proving, high level reasoning, and data extraction in lean 4. In International Conference on Tools and Algorithms for the Construction and Analysis of Systems , pages 104–123. Springer, 2025. Yongchao Chen, Jacob Arkin, Yilun Hao, Yang Zhang, Nicholas Roy, and Chuchu Fan. Prompt optimization in multi-step tasks (promst): Integrating human feedback and preference alignment. 
+
+CoRR , 2024. Ching-An Cheng, Allen Nie, and Adith Swaminathan. Trace is the next autodiff: Generative optimization with rich feedback, execution traces, and llms. arXiv preprint arXiv:2406.16218 ,2024. Anthony Cui, Pranav Nandyalam, Andrew Rufail, Ethan Cheung, Aiden Lei, Kevin Zhu, and Sean O’Brien. Introducing mapo: Momentum-aided gradient descent prompt optimization. arXiv preprint arXiv:2410.19499 , 2024. Jiawei Gu, Xuhui Jiang, Zhichao Shi, Hexiang Tan, Xuehao Zhai, Chengjin Xu, Wei Li, Yinghan Shen, Shengjie Ma, Honghao Liu, et al. A survey on llm-as-a-judge. arXiv preprint arXiv:2411.15594 ,2024. Jie Huang, Xinyun Chen, Swaroop Mishra, Huaixiu Steven Zheng, Adams Wei Yu, Xinying Song, and Denny Zhou. Large language models cannot self-correct reasoning yet, 2024. arXiv preprint arXiv:2310.01798 , 2023. Omar Khattab, Arnav Singhvi, Paridhi Maheshwari, Zhiyuan Zhang, Keshav Santhanam, Sri Vard-hamanan, Saiful Haq, Ashutosh Sharma, Thomas T Joshi, Hanna Moazam, et al. Dspy: Compiling declarative language model calls into self-improving pipelines. arXiv preprint arXiv:2310.03714 ,2023. Joongho Kim, Xirui Huang, Zarreen Reza, and Gabriel Grand. Chopping trees: Semantic similarity based dynamic pruning for tree-of-thought reasoning. arXiv preprint arXiv:2511.08595 , 2025. Aviral Kumar, Vincent Zhuang, Rishabh Agarwal, Yi Su, John D Co-Reyes, Avi Singh, Kate Baumli, Shariq Iqbal, Colton Bishop, Rebecca Roelofs, et al. Training language models to self-correct via reinforcement learning. arXiv preprint arXiv:2409.12917 , 2024. 16 Robert Tjarko Lange, Yuki Imajuku, and Edoardo Cetin. Shinkaevolve: Towards open-ended and sample-efficient program evolution. arXiv preprint arXiv:2509.19349 , 2025a. Robert Tjarko Lange, Qi Sun, Aaditya Prasad, Maxence Faldor, Yujin Tang, and David Ha. Towards robust agentic cuda kernel benchmarking, verification, and optimization. arXiv preprint arXiv:2509.14279 , 2025b. Chungpa Lee, Thomas Zeng, Jongwon Jeong, Jy-yong Sohn, and Kangwook Lee. How to correctly report llm-as-a-judge evaluations. arXiv preprint arXiv:2511.21140 , 2025a. Jinhyuk Lee, Feiyang Chen, Sahil Dua, Daniel Cer, Madhuri Shanbhogue, Iftekhar Naim, Gus-tavo Hernández Ábrego, Zhe Li, Kaifeng Chen, Henrique Schechter Vera, et al. Gemini embedding: Generalizable embeddings from gemini. arXiv preprint arXiv:2503.07891 , 2025b. Yujia Li, David Choi, Junyoung Chung, Nate Kushman, Julian Schrittwieser, Rémi Leblond, Tom Eccles, James Keeling, Felix Gimeno, Agustin Dal Lago, et al. Competition-level code generation with alphacode. Science , 378(6624):1092–1097, 2022. Gang Liao, Hongsen Qin, Ying Wang, Alicia Golden, Michael Kuchnik, Yavuz Yetim, Jia Jiunn Ang, Chunli Fu, Yihan He, Samuel Hsia, et al. Kernelevolve: Scaling agentic kernel coding for heterogeneous ai accelerators at meta. arXiv preprint arXiv:2512.23236 , 2025. Jessy Lin, Nicholas Tomlin, Jacob Andreas, and Jason Eisner. Decision-oriented dialogue for human-ai collaboration. Transactions of the Association for Computational Linguistics , 12:892–911, 2024. Brando Miranda, Zhanke Zhou, Allen Nie, Elyas Obbad, Leni Aniva, Kai Fronsdal, Weston Kirk, Dilara Soylu, Andrea Yu, Ying Li, et al. Veribench: End-to-end formal verification benchmark for ai code generation in lean 4. In 2nd AI for Math Workshop@ ICML 2025 , 2025. Allen Nie, Ching-An Cheng, Andrey Kolobov, and Adith Swaminathan. The importance of directional feedback for llm-based optimizers. arXiv preprint arXiv:2405.16434 , 2024. Alexander Novikov, Ngân Vu, Marvin Eisenberger, Emilien Dupont, Po-Sen Huang, Adam Zsolt Wagner, Sergey Shirobokov, Borislav Kozlovskii, Francisco JR Ruiz, Abbas Mehrabian, et al. Alphaevolve: A coding agent for scientific and algorithmic discovery, 2025. URL: https://arxiv. org/abs/2506.13131 , 2025. Anne Ouyang, Simon Guo, Simran Arora, Alex L Zhang, William Hu, Christopher Ré, and Azalia Mirhoseini. Kernelbench: Can llms write efficient gpu kernels? arXiv preprint arXiv:2502.10517 ,2025. Reid Pryzant, Dan Iter, Jerry Li, Yin Tat Lee, Chenguang Zhu, and Michael Zeng. Automatic prompt optimization with" gradient descent" and beam search. arXiv preprint arXiv:2305.03495 ,2023. Asankhaya Sharma. Openevolve: an open-source evolutionary coding agent, 2025. URL https: //github.com/algorithmicsuperintelligence/openevolve .Freda Shi, Daniel Fried, Marjan Ghazvininejad, Luke Zettlemoyer, and Sida I Wang. Natural language to code translation with execution. In Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing , pages 3533–3546, 2022. 17 Hao Sun, Xiao Liu, Yeyun Gong, Yan Zhang, Daxin Jiang, Linjun Yang, and Nan Duan. Allies: Prompting large language model with beam search. arXiv preprint arXiv:2305.14766 , 2023. Ante Wang, Linfeng Song, Ye Tian, Dian Yu, Haitao Mi, Xiangyu Duan, Zhaopeng Tu, Jinsong Su, and Dong Yu. Don’t get lost in the trees: Streamlining llm reasoning by overcoming tree search exploration pitfalls. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 23946–23959, 2025a. Xinyuan Wang, Chenxi Li, Zhen Wang, Fan Bai, Haotian Luo, Jiayou Zhang, Nebojsa Jojic, Eric P Xing, and Zhiting Hu. Promptagent: Strategic planning with language models enables expert-level prompt optimization. arXiv preprint arXiv:2310.16427 , 2023. Yiping Wang, Shao-Rong Su, Zhiyuan Zeng, Eva Xu, Liliang Ren, Xinyu Yang, Zeyi Huang, Xuehai He, Luyao Ma, Baolin Peng, et al. Thetaevolve: Test-time learning on open problems. arXiv preprint arXiv:2511.23473 , 2025b. Anjiang Wei, Allen Nie, Thiago SFX Teixeira, Rohan Yadav, Wonchan Lee, Ke Wang, and Alex Aiken. Improving parallel program performance with llm optimizers via agent-system interfaces. 
+
+arXiv preprint arXiv:2410.15625 , 2024. Shirley Wu, Michel Galley, Baolin Peng, Hao Cheng, Gavin Li, Yao Dou, Weixin Cai, James Zou, Jure Leskovec, and Jianfeng Gao. Collabllm: From passive responders to active collaborators. 
+
+arXiv preprint arXiv:2502.00640 , 2025. Wanqiao Xu, Allen Nie, Ruijie Zheng, Aditya Modi, Adith Swaminathan, and Ching-An Cheng. Provably learning from language feedback. arXiv preprint arXiv:2506.10341 , 2025. Weijia Xu, Andrzej Banburski-Fahey, and Nebojsa Jojic. Reprompting: Automated chain-of-thought prompt inference through gibbs sampling. arXiv preprint arXiv:2305.09993 , 2023. Minghao Yan, Bo Peng, Benjamin Coleman, Ziqi Chen, Zhouhang Xie, Zhankui He, Noveen Sachdeva, Isabella Ye, Weili Wang, Chi Wang, et al. Pacevolve: Enabling long-horizon progress-aware consistent evolution. arXiv preprint arXiv:2601.10657 , 2026. Chengrun Yang, Xuezhi Wang, Yifeng Lu, Hanxiao Liu, Quoc V Le, Denny Zhou, and Xinyun Chen. Large language models as optimizers. In The Twelfth International Conference on Learning Representations , 2023. Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio, William Cohen, Ruslan Salakhutdinov, and Christopher D Manning. Hotpotqa: A dataset for diverse, explainable multi-hop question answering. In Proceedings of the 2018 conference on empirical methods in natural language processing , pages 2369–2380, 2018. Shunyu Yao, Noah Shinn, Pedram Razavi, and Karthik Narasimhan. τ -bench: A benchmark for tool-agent-user interaction in real-world domains. arXiv preprint arXiv:2406.12045 , 2024. Mert Yuksekgonul, Federico Bianchi, Joseph Boen, Sheng Liu, Zhi Huang, Carlos Guestrin, and James Zou. Textgrad: Automatic" differentiation" via text. arXiv preprint arXiv:2406.07496 ,2024. Genghan Zhang, Shaowei Zhu, Anjiang Wei, Zhenyu Song, Allen Nie, Zhen Jia, Nandita Vijaykumar, Yida Wang, and Kunle Olukotun. Accelopt: A self-improving llm agentic system for ai accelerator kernel optimization. arXiv preprint arXiv:2511.15915 , 2025a. 18 Qizheng Zhang, Changran Hu, Shubhangi Upasani, Boyuan Ma, Fenglu Hong, Vamsidhar Kamanuru, Jay Rainton, Chen Wu, Mengmeng Ji, Hanchen Li, et al. Agentic context engineering: Evolving contexts for self-improving language models. arXiv preprint arXiv:2510.04618 , 2025b. Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric Xing, et al. Judging llm-as-a-judge with mt-bench and chatbot arena. Advances in neural information processing systems , 36:46595–46623, 2023. 19 A Full Proof of Section 4 
+
+A.1 Notations and the Technical Lemma 
+
+We run POLCA for n steps. Without loss of generality, we assume that B is divisible by γ/ 2.To begin our analysis, we partition the reward range into small intervals of width γ/ 2: [0 , B ] = 
+
+S2B/γ k=1 [( k − 1) γ/ 2, kγ/ 2] = [0 , γ/ 2] ∪ [γ/ 2, γ ] ∪ · · · ∪ [B − γ, B ].Define Ik = {θ ∈ Θ : μ(θ) ∈ [( k − 1) γ/ 2, kγ/ 2] } for any 1 ≤ k ≤ 2B/γ − 2. We define τk to be the stopping time when the total number of selections in Ik reaches uinterval := 2 log( n)/δ 0, i.e., 
+
+τk := min 
+
+(
+
+t : X
+
+> ˜θ∈Ik
+
+T˜θ(t) = uinterval 
+
+)
+
+. (5) Later we will show that this level of interval-level exploration is sufficient to propose a better program. For a single program θ ∈ Ik, we focus on the additional selections occurring after this time ( t ≥ τk), defined as: 
+
+T add  
+
+> θ
+
+(t) := Tθ(t) − Tθ(τk),
+
+which represents the number of selections of an individual program after the interval itself has been sampled uinterval times. Define usingle := 64 σ2 
+
+> γ2
+
+log (n). Our Theorem 3 shows that this additional number of selections can be bounded. 
+
+Lemma 3 (Bounded selection number for each interval) . Let Θn denote the set of programs proposed and accepted in the first n steps. Consider the case where θ ∈ Θn and τk ≤ n, such that T add  
+
+> θ
+
+(n) is well-defined. For any θ ∈ Ik, the expected number of additional selections is bounded by: 
+
+E[T add  
+
+> θ
+
+(n) | θ ∈ Θn, τ k ≤ n] ≤ usingle + 3 = 64 σ2
+
+γ2 log( n) + 3 .
+
+We provide the proof of Theorem 3 in Section A.2. Theorem 3 serves as the most critical component of the entire proof. Intuitively, it demonstrates that POLCA with a UCB priority function will successfully distinguish between two programs with a reward gap of γ after O  σ2 
+
+> γ2
+
+log (n) observations. 
+
+A.2 Proof of Theorem 3 
+
+This lemma analyzes the additional selection number for any fixed θ ∈ Ik. Define τθ to be the time step at which the additional selections of program θ reach usingle , i.e., τθ = min t{T add  
+
+> θ
+
+(t) = usingle }.Let ˜θ be the first proposed program satisfying μ(˜θ) > (k + 1) γ/ 2.Define the "good event" G = G1 ∩ G2 ∩ G3 as: 
+
+• Concentration of program θ: G1 =
+
+n
+
+ˆμθ,T θ (τθ ) + 2 σ
+
+q log( n)   
+
+> Tθ(τθ)
+
+< (k + 1) γ/ 2
+
+o
+
+• Proposal of ˜θ: G2 = {the strictly better program ˜θ is proposed before iteration τk}
+
+• Concentration for program ˜θ: G3 = {U CB ˜θ(t) ≥ μ(˜θ) for all t ∈ [n]}
+
+We first claim that when G occurs, T add  
+
+> θ
+
+(n) ≤ usingle holds. Otherwise, if T add  
+
+> θ
+
+(n) > u single , there must exist τθ < n such that T add  
+
+> θ
+
+(τθ) = usingle . At iteration τθ, T add  
+
+> θ
+
+> 0 implies τk ≤ τθ. By G2, a 20 program ˜θ with μ( ˜θ) > (k + 1) γ/ 2 has already been proposed. By G1 and G3, it follows that for all 
+
+τθ ≤ t ≤ n:
+
+U CB ˜θ(t) ≥ μ(˜θ) > (k + 1) γ/ 2 > ˆμθ,T θ (τθ ) + 2 σ
+
+s
+
+log( n)
+
+Tθ(τθ) = U CB θ(t).
+
+Since the algorithm selects the program with the highest UCB score at each iteration, the fact that 
+
+U CB ˜θ(t) > U CB θ(t) for all t ≥ τθ implies that θ will no longer be selected after time step τθ. This yields a contradiction to the assumption T add  
+
+> θ
+
+(n) > u single .
+
+Bounding P (Gc
+
+> 1
+
+) Consider any fixed s ≥ usingle . Since usingle = 64 σ2 
+
+> γ2
+
+log (n), we have 2σ
+
+q log( n) 
+
+> s
+
+≤
+
+γ/ 4. We first bound P(Gc 
+
+> 1
+
+| Tθ(τθ) = s):
+
+P(Gc 
+
+> 1
+
+| Tθ(τθ) = s) = P
+
+
+
+ˆμθ,T θ (τθ ) + 2 σ
+
+s
+
+log( n)
+
+Tθ(τθ) ≥ (k + 1) γ/ 2 | Tθ(τθ) = s
+
+
+
+(Definition of G1)
+
+= P
+
+
+
+ˆμθ,s + 2 σ
+
+r log( n)
+
+s ≥ (k + 1) γ/ 2
+
+
+
+= P
+
+
+
+ˆμθ,s − μ(θ) ≥ (k + 1) γ/ 2 − 2σ
+
+r log( n)
+
+s − μ(θ)
+
+
+
+≤ P
+
+
+
+ˆμθ,s − μ(θ) ≥ γ
+
+4
+
+
+
+(μ(θ) ≤ kγ/ 2)
+
+≤ exp 
+
+
+
+− sγ 2
+
+32 σ2
+
+
+
+(Hoeffding’s inequality) 
+
+≤ exp 
+
+
+
+− usingle γ2
+
+32 σ2
+
+
+
+(s ≥ usingle )
+
+≤ 1
+
+n2 .
+
+This probability bound has no relationship with the specific value of Tθ(τθ), so generally we have 
+
+P(Gc
+
+> 1
+
+) ≤ 1
+
+n2 .
+
+Bounding P(Gc
+
+> 2
+
+) By the definition of τk in (5) , at iteration τk the interval Ik has been selected 
+
+uinterval times. The event Gc 
+
+> 2
+
+implies that no γ-strictly better program ˜θ has been generated after uinterval selections on Ik. By Assumption 1, when we select a program θ ∈ Ik with reward 
+
+μ(θ) ∈ [( k − 1) γ/ 2, kγ/ 2] , the optimization oracle produces a θ′ with μ(θ′) > (k + 1) γ/ 2 with probability at least δ0. Therefore, P(Gc
+
+> 2
+
+) is the probability of failing to propose such a program for 
+
+uinterval consecutive trials: 
+
+P(Gc
+
+> 2
+
+) ≤ (1 − δ0)uinterval ≤ e−δ0uinterval ≤ e−δ0 1  
+
+> δ0log( n2)
+
+≤ 1
+
+n2 .
+
+Bounding P (Gc
+
+> 3
+
+) G3 describes n concentration bounds hold simultaneously. 
+
+Gc 
+
+> 3
+
+=
+
+> n
+
+[
+
+> t=1
+
+{U CB ˜θ(t) < μ (˜θ)}.
+
+21 For a fixed θ1 ∈ Θ,
+
+P(Gc 
+
+> 3
+
+| ˜θ = θ1) = P
+
+ n[
+
+> t=1
+
+{U CB ˜θ(t) < μ (˜θ)} | ˜θ = θ1)
+
+
+
+= P
+
+ n[
+
+> t=1
+
+{U CB θ1 (t) < μ (θ1)}
+
+
+
+≤
+
+> n
+
+X
+
+> t=1
+
+P(U CB θ1 (t) < μ (θ1)) =
+
+> n
+
+X
+
+> t=1
+
+P
+
+bμθ,T θ1 (t) + 2 σ
+
+s
+
+log( n)
+
+Tθ1 (t) < μ (θ1)
+
+
+
+=
+
+> n
+
+X
+
+> t=1
+
+P
+
+bμθ,T θ1 (t) − μ(θ1) < −2σ
+
+s
+
+log( n)
+
+Tθ1 (t)
+
+
+
+≤
+
+> n
+
+X
+
+> t=1
+
+1
+
+n2 = 1
+
+n . (Hoeffding’s inequality) Since the final bound has no relationship with the value of θ1, we have 
+
+P(Gc
+
+> 3
+
+) ≤ 1
+
+n .
+
+Combining the bound for P(Gc
+
+> 1
+
+), P(Gc
+
+> 2
+
+), P(Gc
+
+> 3
+
+), we have 
+
+P(Gc) ≤ 1
+
+n2 + 1
+
+n2 + 1
+
+n = n + 2 
+
+n2 .
+
+Strictly speaking, to obtain our final result, we should bound the probability given the event 
+
+{θ ∈ Θn, τ k ≤ n}. However, we can calculate the probability P(Gci | Θ = ˜Θ, τ k = s) for fixed ˜Θ, s 
+
+and i ∈ { 1, 2, 3} using identical steps. Because the resulting bounds are independent of the value of 
+
+s, our bound also holds in the conditional version: 
+
+P(Gc | θ ∈ Θn, τ k ≤ n) ≤ n + 2 
+
+n2 .
+
+Bounding the expected additional selection number Since we always have T add  
+
+> θ
+
+(n) ≤ n,
+
+E[T add  
+
+> θ
+
+(n) | θ ∈ Θn, τ k ≤ n] = E[T add  
+
+> θ
+
+(n)1G | θ ∈ Θn, τ k ≤ n] + E[T add  
+
+> θ
+
+(n)1Gc | θ ∈ Θn, τ k ≤ n]
+
+≤ usingle + nP(Gc | θ ∈ Θn, τ k ≤ n)
+
+≤ usingle + n(n + 2) /n 2
+
+≤ 64 σ2
+
+γ2 log( n) + 3 .
+
+So we finish the proof of Theorem 3. 22 A.3 Proof of Theorem 1 
+
+By definition, 
+
+E
+
+ X
+
+> θ∈Θn:μ(θ)≤B−γ
+
+Tθ(n)
+
+
+
+=
+
+> 2B/γ −2
+
+X
+
+> k=1
+
+E
+
+ X 
+
+> θ∈Ik∩Θn
+
+Tθ(n)
+
+
+
+.
+
+For each interval, by definition of τk in (5), 
+
+E
+
+ X 
+
+> θ∈Ik∩Θn
+
+Tθ(n)
+
+
+
+= E
+
+ X 
+
+> θ∈Ik∩Θn
+
+Tθ(n) | τk ≤ n
+
+
+
+P[τk ≤ n] + E
+
+ X 
+
+> θ∈Ik∩Θn
+
+Tθ(n) | τk > n 
+
+
+
+P[τk > n ]
+
+≤ E
+
+
+
+uinterval + X 
+
+> θ∈Ik∩Θn
+
+T add  
+
+> θ
+
+(n) | τk ≤ n
+
+
+
+P[τk ≤ n] + uinterval · P[τk > n ]
+
+≤ uinterval + E
+
+ X 
+
+> θ∈Ik∩Θn
+
+T add  
+
+> θ
+
+(n) | τk ≤ n
+
+
+
+. (6) Since θ / ∈ Θn ⇒ T add  
+
+> θ
+
+(n) = 0 , we have 
+
+E[T add  
+
+> θ
+
+(n) | τk ≤ n] = E[T add  
+
+> θ
+
+(n) | θ ∈ Θn, τ k ≤ n] · P[θ ∈ Θn] + E[T add  
+
+> θ
+
+(n) | θ / ∈ Θn, τ k ≤ n] · P[θ / ∈ Θn]
+
+≤ E[T add  
+
+> θ
+
+(n) | θ ∈ Θn, τ k ≤ n]. (7) Therefore, 
+
+E
+
+ X
+
+> θ∈Θn:μ(θ)≤B−γ
+
+Tθ(n)
+
+
+
+=
+
+> 2B/γ −2
+
+X
+
+> k=1
+
+E
+
+ X 
+
+> θ∈Ik∩Θn
+
+Tθ(n)
+
+
+
+> (6)
+
+≤
+
+> 2B/γ −2
+
+X
+
+> k=1
+
+uinterval + E
+
+ X 
+
+> θ∈Ik∩Θn
+
+T add  
+
+> θ
+
+(n) | τk ≤ n
+
+!
+
+≤ 2B/γ · uinterval + E
+
+ X
+
+> θ∈Θn:μ(θ)≤B−γ
+
+T add  
+
+> θ
+
+(n) | τk ≤ n
+
+
+
+> (7)
+
+≤ 2B/γ · uinterval + E
+
+ X
+
+> θ∈Θn:μ(θ)≤B−γ
+
+T add  
+
+> θ
+
+(n) | θ ∈ Θn, τ k ≤ n
+
+
+
+= 2 B/γ · uinterval + E
+
+" X
+
+> θ∈Θn:μ(θ)≤B−γ
+
+E
+
+
+
+T add  
+
+> θ
+
+(n) | θ ∈ Θn, τ k ≤ n
+
+
+
+| Θn
+
+#
+
+≤ 2B/γ · uinterval + Nε · (usingle + 3) ,
+
+where the last step is from Theorem 3 and the fact that the cardinality of Θn is bounded by Nε.
+
+A.4 Proof of Theorem 2 
+
+For simplicity, we assume that B is divisible by γ. Let Rt denote the reward of the program proposed at step t. This induces a probability measure on the sequence R = ( R1, R 2, . . . , R t, . . . ).
+
+Sequential Updates. Suppose the sequence R = ( R1, R 2, . . . , R t, . . . ) is generated by a sequential updating algorithm following (3). Then, by Assumption 1, we have 
+
+P[Rt+1 > R t + γ] ≥ δ0.
+
+23 Intuitively, in the worst case, a sequential updating algorithm must make N := B/γ consecutive improvements to reach a near-optimal program. We define the stopping time τ as the first step achieving a reward in (B − γ, B ], and τ1 as the first step where an improvement larger than γ has occurred for N consecutive steps: 
+
+τ := min {t : Rt > B − γ},τ1 := min {t : Rt − Rt−1 > γ, . . . , R t−N +1 − Rt−N > γ }.
+
+For any given reward sequence R, the set of indices satisfying the condition for τ1 is a subset of those satisfying the condition for τ ; therefore, τ ≤ τ1.In the worst case, we assume P[Rs − Rs−1 > γ ] = δ0 for all s. Define τ (n)1 = min {t : Rt − Rt−1 >γ, . . . , R t−n+1 − Rt−n > γ } as the first time n consecutive improvements occur, where τ1 = τ (N )1 .By conditioning on the outcome after achieving n − 1 consecutive improvements, we have: 
+
+E[τ (n)1 ] = δ0(E[τ (n−1) 1 ] + 1) + (1 − δ0)( E[τ (n−1) 1 ] + 1 + E[τ (n)1 ]) ,
+
+where the second term accounts for the streak being broken, requiring a full restart. Simplifying this expression yields: 
+
+E[τ (n)1 ] = E[τ (n−1) 1 ] + 1 
+
+δ0
+
+.
+
+Using the base case E[τ (0) 1 ] = 0 , the closed-form solution for this recurrence is: 
+
+E[τ1] = δ−N 
+
+> 0
+
+− 11 − δ0
+
+.
+
+This result establishes the O(δ−N 
+
+> 0
+
+) = O(δ−B/γ  
+
+> 0
+
+) complexity for the sequential updating algorithm. 
+
+POLCA. Suppose the sequence R = ( R1, R 2, . . . , R t, . . . ) is generated by POLCA using the updating rule (4) . Let τ be the first step reaching a reward in (B − γ, B ]. We define τ2 as the first step where 
+
+N total (not necessarily consecutive) improvements of size at least γ have been observed: 
+
+τ = min {t : Rt > B − γ},τ2 = min 
+
+
+
+t :
+
+> t
+
+X
+
+> s=1
+
+I(Rs > max  
+
+> j<s
+
+Rj + γ) ≥ N
+
+
+
+.
+
+Under the POLCA rule, each proposal is conditioned on the best observation found so far. Therefore, reaching N cumulative improvements is sufficient to achieve a near-optimal reward, so τ ≤ τ2.The time between each improvement is an independent geometric random variable with mean 1/δ 0.By the linearity of expectation, we have: 
+
+E[τ2] = 
+
+> N
+
+X
+
+> i=1
+
+1
+
+δ0
+
+= Nδ0
+
+.
+
+Substituting N = B/γ yields E[τ ] ≤ B/ (γδ 0), completing the proof of the efficiency of POLCA. 24 Discussion If we do not assume a lower bound for μ, the complexity of POLCA remains O(N/δ 0),whereas the sequential updating algorithm may fail to converge. In the absence of a lower bound, making N consecutive improvements is no longer sufficient to reach a near-optimal program if a single “bad” proposal at step t results in a reward Rt ≪ R0. Specifically, if μ is not lower-bounded (e.g., R ∈ (−∞ , B ]), a single failure with probability 1 − δ0 could yield an arbitrarily small reward, requiring significantly more than N subsequent improvements to recover. In the worst case, such as a process where a failure results in Rt = −∞ , the expected number of steps for a sequential updating algorithm to reach B − γ becomes infinite. In contrast, POLCA is robust to such “catastrophic” proposals because it always updates from the historical maximum ˜θt, ensuring the baseline reward is non-decreasing. 
+
+# B Implementation Details of POLCA 
+
+In this section we elaborate the detailed logic of components of POLCA. 
+
+Program Execution and Evaluation The Evaluate function serves as a general-purpose utility to execute and evaluate a subset of candidates ˜Θ on task minibatch B and generate the rollout set S. For each task input xi, the program Pθ produces an output yi ∼ Pθ(xi), evaluated by the Guide G to obtain rewards ri and feedback fi. To maximize throughput, the process is executed asynchronously, treating each program-task interaction as an independent parallel task. These are aggregated into rollout tuples s = ( θ, ω, x, y, r, f ), forming the set S = S  
+
+> θ∈˜Θ
+
+Sθ. The asynchronous 
+
+Evaluate procedure is detailed in Algorithm 2. 
+
+Algorithm 2 Evaluate – Asynchronous program execution and evaluation 
+
+Require: Inputs: Candidate agents ˜Θ, Minibatch B, Guide G = ( Gr, Gf )
+
+Ensure: Aggregate rollout set S 
+
+> 1:
+
+S ← ∅  
+
+> 2:
+
+T ← ∅ ▷ Global task queue for concurrent execution  
+
+> 3:
+
+for each program θ ∈ ˜Θ do  
+
+> 4:
+
+for each (ω, x ) ∈ B do  
+
+> 5:
+
+T ← T ∪ { (θ, x, ω )} ▷ Queue program-task pairs for parallel dispatch  
+
+> 6:
+
+end for  
+
+> 7:
+
+end for  
+
+> 8:
+
+for each (θ, x, ω ) ∈ T in parallel do ▷ Fully asynchronous thread execution  
+
+> 9:
+
+y ∼ Pθ(x) ▷ Program execution  
+
+> 10:
+
+r ∼ G r(ω, x, y ) ▷ Numerical reward evaluation  
+
+> 11:
+
+f ∼ G f (ω, x, y ) ▷ Textual feedback generation  
+
+> 12:
+
+s ← (θ, ω, x, y, r, f ) ▷ Construct rollout tuple  
+
+> 13:
+
+lock S ← S ∪ { s} 
+
+> 14:
+
+end for  
+
+> 15:
+
+wait for all threads in T to return  
+
+> 16:
+
+return S
+
+Context Construction and Program Proposal. In the ProposePrograms function, the optimizer O utilizes both the local data S and global context from Q to generate a set of new program parameters Θnew , which are sampled from the proposal distribution Π( · | C ).25 Like the position of gradient in numerical optimization algorithms, our proposal mechanism is mainly based on local revision and improvement. After evaluating the improving programs Θexplore ,POLCA construct local context S = F 
+
+> θ∈Θexplore
+
+Sθ. To inject more information from Q, we also utilize an external LLM, called Summarizer , to construct a population-level context chistory by distilling the aggregate trajectory 10 history H = S 
+
+> θ∈Q
+
+Hθ. The Summarizer partitions this history into performance-based subsets: successes H+ 
+
+> θ
+
+= {(θ, ω, x, y, r, f ) ∈ H θ : r > τ } and failures 
+
+H− 
+
+> θ
+
+= {(θ, ω, x, y, r, f ) ∈ H θ : r ≤ τ } based on a reward threshold τ . By identifying systematic patterns across these partitions—such as instruction formats unique to high-scoring programs— the Summarizer compresses these insights into natural language meta-gradients . To maintain a representative view while adhering to context limits, we employ a Contrastive Sampling strategy, providing the LLM with program parameters alongside paired representative trajectories (one r > τ 
+
+and one r ≤ τ ). This enables the LLM to perform cross-program error correction, providing a stable historical direction analogous to Gradient Descent with Momentum (Cui et al., 2024). The process is governed by a structured prompt template utilizing XML-style tags to separate internal reasoning from actionable guidance, as detailed below. 
+
+Summarizer Prompt Template 
+
+System: You are an expert at analyzing program behavior patterns and providing actionable guidance for parameter optimization. 
+
+User: Analyze the following program rollout trajectories and extract insights for optimization. For each program, a successful and a failed trajectory are provided for contrastive analysis. 
+
+Trajectories: 
+
+{history _trajectories }
+
+Provide your analysis in XML format: 
+
+• <reasoning> Analyze the key patterns and strategies that led to success or failure in these trajectories. </reasoning> 
+
+• <summary> Concrete recommendations for improving output quality based on successful or failed patterns observed. </summary> 
+
+Then we combine local rollouts with chistory summarized from Q to construct the context for O.For each θ ∈ Θexplore , we construct the context as Cθ = {(θ, x i, y i, r i, f i, c history )}Bi=1 and invoke the optimizer O to get θ′ ∼ Π  · |{ (θ, x i, y i, r i, f i, c history )}Bi=1 
+
+. We collect the proposed program in Θraw .The asynchronous ProposePrograms subroutine is detailed in Algorithm 3. 
+
+Semantic Filter based on ε-Net Design To enhance optimization efficiency, the Semantic-Filter subroutine leverages semantic similarity among programs to prune redundant proposals and maintain diversity. Given a set of raw candidates Θraw , we construct a filtered set Θnew using a farthest-first traversal strategy to form an ε-net. Starting with Θnew ← ∅ and a program pool 
+
+Θremaining ← Θraw , we iteratively: (1) for each θ ∈ Θremaining , compute its distance to the current population of validated and newly selected agents, d(θ) = min θ′∈Q∪ Θnew ˜d(θ, θ ′); (2) identify the candidate θ∗ = arg max θ∈Θremaining d(θ) with the maximum distance dmax = d(θ∗); and (3) if dmax > ε ,transfer θ∗ from Θremaining to Θnew , otherwise the process terminates. This greedy selection strategy ensures the expanded agent set maintains a diversity threshold: for any distinct pair θ, θ ′ ∈ Q ∪ Θnew ,the semantic distance satisfies ˜d(θ, θ ′) > ε . Implementation details are provided in Algorithm 4.    
+
+> 10 We also refer to evaluation data of the form (θ, ω, x, y, r, f )as an evaluation trajectory.
+
+26 Algorithm 3 ProposePrograms – Fully asynchronous program generation 
+
+Require: Inputs: Aggregate rollouts S = S 
+
+> θ
+
+Sθ, priority queue Q, optimizer O
+
+Ensure: Set of new program parameters Θraw  
+
+> 1:
+
+Θraw ← ∅  
+
+> 2:
+
+U ← ∅ ▷ Global task queue for parallel execution  
+
+> 3:
+
+Summarize Q to get global history context chistory  
+
+> 4:
+
+for each θ ∈ Θexplore do  
+
+> 5:
+
+Extract the rollouts Sθ = {(θ, ω i, x i, y i, r i, f i)}|B| 
+
+> i=1
+
+to Construct the context Cθ = {(θ, x i, y i, r i, f i, c history )}|B|  
+
+> i=1
+> 6:
+
+U ← U ∪ {C θ} ▷ Queue task for parallel dispatch  
+
+> 7:
+
+end for  
+
+> 8:
+
+for each Cθ ∈ U in parallel do ▷ Massively parallel asynchronous calls  
+
+> 9:
+
+θ′ ∼ Π( · | C θ) 
+
+> 10:
+
+lock Θraw ← Θraw ∪ { θ′} 
+
+> 11:
+
+end for  
+
+> 12:
+
+wait for all threads in U to return  
+
+> 13:
+
+return Θraw 
+
+Algorithm 4 SemanticFilter – Semantic-based pruning for candidate diversity 
+
+Require: Inputs: Raw candidate set Θraw , priority queue Q
+
+Hyperparameters: Diversity threshold ε, semantic distance metric ˜d(·, ·)
+
+Ensure: Filtered set Θnew s.t. ∀ θi, θ j ∈ (Θ new ∪ Q ), i ̸ = j =⇒ ˜d(θi, θ j ) ≥ ε 
+
+> 1: 2:
+
+Θnew ← ∅  
+
+> 3:
+
+Θremaining ← Θraw ▷ Initialize pool of remaining candidates  
+
+> 4: 5:
+
+while Θremaining ̸ = ∅ do  
+
+> 6:
+
+▷ Find candidate with maximum distance to the existing population  
+
+> 7:
+
+θ∗ ← arg max θ∈Θrem 
+
+n
+
+min θ′∈Q∪ Θnew ˜d(θ, θ ′)
+
+o 
+
+> 8:
+
+δmax ← min θ′∈Q∪ Θnew ˜d(θ∗, θ ′) 
+
+> 9: 10:
+
+if δmax ≥ ε then  
+
+> 11:
+
+Θnew ← Θnew ∪ { θ∗} 
+
+> 12:
+
+Θremaining ← Θremaining \ { θ∗} 
+
+> 13:
+
+else  
+
+> 14:
+
+break ▷ Termination: all remaining candidates are semantically redundant  
+
+> 15:
+
+end if  
+
+> 16:
+
+end while  
+
+> 17: 18:
+
+return Θnew 
+
+27 C Instantiating Classical Search Algorithms 
+
+POLCA is universal because modifying the priority function pexplore : Θ → R is sufficient to mimic many classical search paradigms. Changing pexplore (·) leaves the rest of the algorithm untouched, making it easy to implement different designs on the same problem instance. 
+
+Sequential search (Iterative refinement). The simplest strategy follows a depth-first trajectory through the search space. At each iteration, only the most recently proposed program is selected for further evaluation and refinement. This behavior is enforced by setting pexplore (θ) = tθ, where tθ is the creation timestamp of agent θ. By using this Last-In, First-Out (LIFO) ordering and restricting the exploration budget to k = 1 , the algorithm collapses into a sequential refinement process that ignores the broader population in favor of local, iterative improvements. 
+
+Beam search. Sequential search is prone to local traps. Beam search improves robustness by maintaining a population of k active beams ; at each iteration, these beams produce new programs that are validated, with only the top-k candidates surviving based on their initial scores. In our framework, this is realized by allowing O to propose multiple new programs θ′, and assigning 
+
+pexplore (θ′) = ¯r(θ′) for newly proposed programs—where the average is calculated using only the validation data from the current iteration—and setting pexplore (θ) = −∞ for all old programs in memory. This ensures the priority queue retains only the most recent high-performing generation while pruning older branches, effectively emulating the breadth-first expansion of classical beam search. This approach might be efficient in deterministic settings; however, in the presence of stochasticity, discarding historical evaluations and evaluating each program only once may lead to suboptimal results. 
+
+Upper Confidence Bound (UCB) In finite-action best-arm-identification bandit theory, greedy exploration is not provably optimal. To address this, more refined strategies such as the Upper Confidence Bound (UCB) approach can be employed to provide an explicit incentive for collecting data on uncertain candidates. UCB incorporates an uncertainty bonus into the priority calculation, specifically, at iteration t we can calculate the priority score for each program as: 
+
+pexplore (θ) = bμθ,T θ (t) + β
+
+s
+
+log( n)
+
+Tθ(t) ,
+
+where Tθ(t) is the number of reward observations of program θ, bμθ,s is the empirical mean of program 
+
+θ with the first s reward observations, n = P 
+
+> θ′∈Q
+
+Tθ′ (t) is the total rollout budget, and β > 0 controls the exploration-exploitation tradeoff. The bonus increases for programs with small Tθ(t), guiding exploration toward under-sampled regions and preventing premature convergence. In Section 4, we prove if β is selected as a certain number related to the randomness of the system, under some assumptions, a simplified version of POLCA could converges to programs that can not be further improved by the optimizer. While our current framework utilizes the empirical mean as a robust starting point for stochastic generative optimization, integrating such carefully designed priority functions represents a promising direction for future work to further enhance search performance and accelerate the identification of the global optimum. 28 D Detailed Experiments 
+
+D.1 Baselines 
+
+DSPy DSPy (Khattab et al., 2023) is a declarative framework designed for modularizing and optimizing Large Language Model (LLM) pipelines. It provides a structured approach to prompt engineering by treating prompts as learnable parameters within a programmatic workflow. It can also be adapted to optimize general-purpose string-based programs with well-defined rewards and feedback. In our experiments, we use a dspy.ChainOfThought module to implement a sequential revision search algorithm, which always takes the current parameter with its score and feedback to propose a new parameter at each step. In the following we use DSPy to denote such a search algorithm. 
+
+GEPA GEPA (Genetic-Pareto Prompt Optimizer) is a reflective prompt optimization algorithm recently integrated into the DSPy ecosystem (Agrawal et al., 2025). We apply it here to more diverse generative optimization problems beyond prompt tuning by simply treating the optimizable parameter as a string. It maintains a Pareto frontier of parameters to track non-dominated solutions across different training instances, leveraging natural language reflection to iteratively improve parameters through trial and error. 
+
+OpenEvolve OpenEvolve (Sharma, 2025) is an open-source implementation of AlphaEvolve (Novikov et al., 2025), an autonomous evolutionary pipeline for algorithmic discovery. We could also utilize it to handle diverse generative optimization problems beyond code evolution. It utilizes the MAP-Elites algorithm and island-based search to manage a population of diverse, high-performing parameters through iterative evaluation and selection. 
+
+D.2 Task Formulation and Implementation Details 
+
+In this section, we describe the formulation of generative optimization tasks across various domains and specify the configuration for all evaluated search algorithms. 
+
+τ -bench τ -bench is a benchmark designed to evaluate multi-turn agents on their ability to interact with human users, adhere strictly to domain-specific policies, and execute tools to resolve complex queries. The environment provides a sparse, binary reward r ∈ { 0, 1} for each program-task execution, indicating whether the user’s request was successfully resolved. We utilize the first 10 tasks from the retail domain of τ -bench for optimization and the rest 145 tasks held out to test 11 the generalization of the optimized agent. The base agent (program) provided by the benchmark is parameterized via a string variable, additional_instructions , which is appended to the original system prompt. Search algorithms learn optimized versions of additional_instructions through trial and error by reflecting on the accumulated conversation history. For our experiments we use gemini-2.0-flash as the backbone model of agents, simulated users in τ -bench and optimizers in search algorithms, gemini/text-embedding-004 as the embedding model for POLCA. We do external tests to measure the performance of trained agent instances from different search algorithms. The test score for a specific agent instance is computed by running  
+
+> 11 These tasks are exclusively used for the final evaluation presented in Table 1. Other external tests involve evaluating the first 10 tasks multiple times to obtain a nearly deterministic score for the trained agents.
+
+29 10 trials per task and calculating the average pass rate across all tasks and trials 12 . For all the search algorithms, we set the maximum number of parallel evaluation in one evaluation step to be 
+
+10 , meaning that when running the algorithm, at most 10 evaluation could be done in parallel at the same time. For POLCA, we set num_candidates = 5 , batch_size = 2 , and num_batches = 1 . We select the candidates with the highest mean scores for external tests. For OpenEvolve, we construct an evaluator that runs the proposed agent instance on all 10 tasks once and use the pass rate as the score. We set the parallel_evaluations = 10 and max_workers = 1 , which means OpenEvolve could evaluate a agent instance on 10 tasks in parallel but cannot evaluate multiple agent instances in parallel. We choose num_islands = 3 , migration_interval = 20 , and migration_rate = 0 .1 to perform island-based evolution. We set num_top_programs = 3 and num_diverse_programs = 2 as the programs to include in the prompt. We pick the candidate with the highest pass rate for external tests. For GEPA, we also choose batch_size = 2 , and use all 10 tasks as the validation dataset. In the training process it will maintain a pareto-frontier of non-dominated agent instances for 10 tasks. For external test, we implement two ways to pick the best agent instances from the training of GEPA. Specifically, we evaluate two selection methods: 1) GEPA (most freq) , which selects the candidate appearing most frequently in the Pareto frontier—this corresponds to the agent achieving the highest pass rate over 10 tasks —and 2) GEPA (sample freq) 13 , which performs weighted selection based on candidate appearance frequency in the pareto-frontier. Results are averaged over 6 random seeds, showing the mean and standard error for independent runs in Figure 2. 
+
+HotpotQA HotpotQA (Yang et al., 2018) is a multi-hop question answering dataset where each task requires reasoning across multiple context paragraphs to produce a short answer. We use the distractor setting of HotpotQA, taking the first 100 examples from the validation split as our benchmark. Each example consists of a question, 10 context paragraphs (of which 2–3 are relevant and the rest are distractors), and a ground-truth answer. We use gemini-2.5-flash-lite as the backbone model for task execution, and gemini-embedding-001 7 as the embedding model for POLCA. Correctness is determined by case-insensitive exact match or substring containment after stripping trailing punctuation, yielding a binary reward of 0 or 1 per task. Test scores are computed by evaluating each candidate prompt on all 100 tasks with 5 independent repetitions per task, and we report the average accuracy across repetitions. For GEPA, we use a reflection minibatch size of 10 with a budget of 2,000 metric calls per run. For OpenEvolve, we run 50 iterations with cascade evaluation (a 20-sample first stage with a ≥ 50% 
+
+threshold gating a full 100-sample second stage). For POLCA, we set ε = 0 .1, num_candidates = 5 ,
+
+batch_size = 2 , and num_batches = 1 . All algorithms use gemini-2.5-flash-lite for meta-optimization (reflection/proposal generation). We conduct 3 independent runs per algorithm and report the mean and standard error. 
+
+VeriBench (3-step evaluation) VeriBench (Miranda et al., 2025) is a challenging domain for current LLMs due to their limited domain knowledge of Lean 4 programming. It evaluates the capability of LLMs to translate Python programs into verifiable Lean 4 code. Each task contains one Python program and a golden Lean 4 program. LLMs are prompted to translate the Python program into a compilable and semantically correct Lean 4 program. We formalize this problem by treating the entire translated Lean 4 program as the parameter, i.e., Pθ(x) ≡ θ, resulting in a fully deterministic program execution.   
+
+> 12 Here test score of each agent instances is an average of 100 trials, which serves as an accurate measure of performance.
+> 13 This metric is utilized to select the programs for exploration within GEPA.
+
+30 We select the easy_set (41 tasks) from VeriBench and optimize for each individual task, utilizing a sequential three-step evaluation process for each Lean 4 program. For each candidate, the program is first processed by a Lean 4 compiler within a Lean 4 RL environment accessed via PyPantograph (Aniva et al., 2025). The compiler returns a binary score; if compilation fails, the compiler error is captured as textual feedback. A candidate only proceeds to the subsequent stage if it successfully passes the current check. If compilation succeeds, the program is evaluated against several unit tests to determine if the Lean 4 translation is semantically correct and functionally equivalent to the original Python program. Finally, only programs that pass both the compiler and the unit tests are assessed by an LLM judge. The judge compares the translated Lean 4 program with the ground-truth implementation, assigning a score from 0 to 30. Consequently, programs that fail at earlier stages receive a score of zero. This LLM-based score is subsequently normalized to [0 , 1] 
+
+for use in the optimization process. Since this three-step evaluation is progressive, we design a numerical reward signal to determine the final performance of the proposed agent instances. The reward r ∈ [0 , 1] is defined as: 
+
+r = 0 .3 · 1Compilation + 0 .3 · 1Unit tests + 0 .4 · rLLM .
+
+While the first two phases are fully deterministic, the final component introduces stochasticity through the score and feedback provided by the LLM judge. We use claude-3.5-sonnet as the backbone for search algorithms and LLM judge, and 
+
+gemini/text-embedding-004 as the embedding model, evaluating DSPy, GEPA, OpenEvolve, and POLCA. For all the search algorithms, we set the maximum number of parallel evaluation in one evaluation step to be 5, meaning that when running the algorithm, at most 5 evaluation could be done in parallel at the same time. For GEPA, we set batch_size = 1 and use the single task under optimization as the validation dataset. For OpenEvolve, we set num_islands = 1 and 
+
+num_workers = 5 for simplicity. For our POLCA variants, we set the exploration budget k = 5 and the diversity threshold ε = 0 .02 .We compare algorithms by measuring the pass rate achieved over the tasks within a fixed budget. For each algorithm, we perform the search across all 41 tasks independently, with a maximum budget of 50 compiler calls per task. We calculate the average score over all tasks at each step and for each number of metric calls. To ensure statistical reliability, we repeat the experiments three times and report the mean and standard error across these runs. 
+
+VeriBench (Compilation) We utilize the complete Veribench dataset, consisting of all 140 tasks, focusing specifically on the compilation stage. This remains a challenging domain given the limited Lean 4 programming knowledge inherent in current LLMs. For this analysis, we define the reward as a binary indicator of compilation success, r = 1Compilation ∈ { 0, 1}, while all other experimental settings remain unchanged. We run each search algorithm on the 140 tasks independently and repeat the experiments three times. 
+
+KernelBench CUDA kernel optimization is also a popular domain in generative optimization problems. In this part, we pick 16 matrix multiplication tasks from KernelBench (level 1) (Ouyang et al., 2025), which appear simple but remain challenging. As mentioned in Yan et al. (2026), these tasks are already highly optimized in PyTorch, making it difficult to achieve further speedups. We use the claude-3.7-sonnet model and the gemini-embedding-001 embedding model. For GEPA, we set batch_size = 1 and use the single task under optimization as the validation dataset. For OpenEvolve, we set num_islands = 1 and num_workers = 5 for simplicity. For our POLCA 31 variants, we set the exploration budget k = 5 and the diversity threshold ε = 0 .02 . The kernel evaluation is executed on an L40S GPU, with each evaluation result being an average of five repeated executions. We continue to perform per-task optimization; as the programs being optimized are the kernel programs themselves, there is no stochasticity in execution or minibatch sampling. Although minor noise in code execution speed exists, we have confirmed that this variance is negligible for the optimization process. We utilize the fast p score (Ouyang et al., 2025) defined as: fast p = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+1(correct i ∧ { speedup i > p }),
+
+where p is the speedup threshold relative to the PyTorch baseline. This metric measures the proportion of tasks for which the algorithm proposes a correct CUDA program with a speedup exceeding p. Here, N = 16 for our selected tasks. 
+
+D.3 Evaluation Metrics 
+
+The primary bottleneck in generative optimization varies significantly across domains. For most stochastic problems addressed in this paper, evaluating a single program is expensive due to inherent noise and the computational cost of the evaluation function. While the main paper focuses on evaluation steps, we provide a more comprehensive analysis here by considering additional dimensions of complexity. 
+
+Number of metric calls (Computational complexity) Evaluating proposed programs is resource-intensive. By fixing the total number of metric calls, we compare the efficiency of different search algorithms within a strict computational budget. 
+
+Number of evaluation steps (Time complexity) We define an evaluation step as a unit where all constituent metric are executed in parallel. This metric measures the number of sequential operations required, serving as a proxy for wall-clock time. However, in domains where evaluation is relatively inexpensive, the bottleneck shifts to the proposal process. To provide a multidimensional comparison, we introduce: 
+
+Number of proposals (Computational complexity) Generating new candidates requires substantial compute. By fixing the number of proposals, we evaluate how effectively each algorithm utilizes its generative budget. 
+
+Number of proposal steps (Time complexity) In each proposal step , LLM API calls for program generation are parallelized. This metric counts the sequential operations required for generation. To ensure fairness, we impose a maximum number of parallel proposals per step across all algorithms. For all experiments, we complement the evaluation step analysis with plots based on these additional metrics to provide deeper insights into search efficiency. Results are presented in Figures 4 to 7. 
+
+Discussion Due to its parallelized batch update design, POLCA consistently outperforms baselines in terms of proposal and evaluation steps. When considering the total computational budget, such as the number of metric calls and proposals, POLCA maintains strong final performance but may lag behind sequential methods in the early stages of search. 32 On VeriBench, for instance, POLCA outperforms all parallelized baselines in total metric calls, though it remains slightly below sequential DSPy initially. This occurs because batch-oriented algorithms are designed for low latency and utilize less cumulative information per step compared to sequential updates. For example, with a budget of 10 metric calls, DSPy can perform 10 sequential revisions, reaching a search tree depth of 10. Conversely, POLCA may evaluate 5 candidates in parallel over 2 steps. While the computational cost is identical, POLCA significantly reduces the required sequential time. Similarly, on KernelBench, while POLCA consistently surpasses baselines in terms of time budget, it does not consistently outperform sequential GEPA when measured by total metric calls. This underscores the inherent trade-off in batch design; sequential methods can achieve greater search depth for the same computation budget, whereas POLCA prioritizes minimizing wall-clock time through parallel execution and batch-informed optimization. 0 200 400 600 800 1000 1200 
+
+> Number of Metric Calls
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> Test Score
+
+-bench Test Score         
+
+> GEPA (Most Frequent)
+> GEPA (Sample by Freq)
+> OpenEvolve
+> POLCA (Ours) 025 50 75 100 125 150 175 200
+> Proposal Step
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> Test Score
+
+-bench Test Score         
+
+> GEPA (Most Frequent)
+> GEPA (Sample by Freq)
+> OpenEvolve
+> POLCA (Ours) 025 50 75 100 125 150 175 200
+> Number of Proposals
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> Test Score
+
+-bench Test Score 
+
+> GEPA (Most Frequent)
+> GEPA (Sample by Freq)
+> OpenEvolve
+> POLCA (Ours)
+
+Figure 4: τ -bench: performance vs. number of samples (left), proposal steps (middle), and number of proposals (right). Solid curves represent the average highest score attained at each step, while the shaded regions denote the standard error across multiple independent runs (6 seeds). 0 500 1000 1500 2000 2500 
+
+> Number of Metric Calls
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> 1.00
+> Test Score
+
+HotpotQA Test Score     
+
+> GEPA
+> OpenEvolve
+> POLCA (Ours) 020 40 60 80
+> Proposal Step
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> 1.00
+> Test Score
+
+HotpotQA Test Score     
+
+> GEPA
+> OpenEvolve
+> POLCA (Ours) 0100 200 300 400
+> Number of Proposals
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> 1.00
+> Test Score
+
+HotpotQA Test Score 
+
+> GEPA
+> OpenEvolve
+> POLCA (Ours)
+
+Figure 5: HotpotQA: performance vs. number of samples (left), proposal steps (middle), and number of proposals (right). Solid curves represent the average highest score attained at each step, while the shaded regions denote the standard error across multiple independent runs (3 seeds). 0 20 40 60 80 
+
+> Number of Metric Calls
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Score
+
+VeriBench (3-step evaluation) Score      
+
+> DSPy
+> GEPA
+> OpenEvolve
+> POLCA (Ours) 010 20 30 40 50
+> Proposal Step
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Score
+
+VeriBench (3-step evaluation) Score      
+
+> DSPy
+> GEPA
+> OpenEvolve
+> POLCA (Ours) 020 40 60 80 100
+> Number of Proposals
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Score
+
+VeriBench (3-step evaluation) Score 
+
+> DSPy
+> GEPA
+> OpenEvolve
+> POLCA (Ours)
+
+Figure 6: VeriBench: performance vs. number of samples (left), proposal steps (middle), and number of proposals (right). Solid curves represent the average highest score attained at each step, while the shaded regions denote the standard error across multiple independent runs (3 seeds). 
+
+33 0 10 20 30 40 50                 
+
+> Number of Metric Calls
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> fast 1.0  Score
+> KernelBench fast 1.0 Score
+> DSPy
+> GEPA
+> OpenEvolve
+> POLCA (Ours) 0.0 2.5 5.0 7.5 10.0 12.5 15.0 17.5 20.0
+> Proposal Step
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> fast 1.0  Score
+> KernelBench fast 1.0 Score
+> DSPy
+> GEPA
+> OpenEvolve
+> POLCA (Ours) 010 20 30 40 50
+> Number of Proposals
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> fast 1.0  Score
+> KernelBench fast 1.0 Score
+> DSPy
+> GEPA
+> OpenEvolve
+> POLCA (Ours)
+
+Figure 7: KernelBench: performance vs. number of samples (left), proposal steps (middle), and number of proposals (right). Solid curves represent the average highest score attained at each step (1 seed). 
+
+D.4 Compilation Rate Study on VeriBench 
+
+We evaluate algorithms on VeriBench (Compilation). Figure 8 compares compilation rates across different evaluation metrics, where POLCA consistently outperforms all baselines. 0 10 20 30 40 50 
+
+Evaluation Step 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Score
+
+VeriBench (Compilation) Pass Rate 
+
+DSPy 
+
+GEPA 
+
+OpenEvolve 
+
+POLCA (Ours) 0 10 20 30 40 50 
+
+Number of Metric Calls 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Score
+
+VeriBench (Compilation) Pass Rate 
+
+DSPy 
+
+GEPA 
+
+OpenEvolve 
+
+POLCA (Ours) 0 10 20 30 40 50 
+
+Proposal Step 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Score
+
+VeriBench (Compilation) Pass Rate 
+
+DSPy 
+
+GEPA 
+
+OpenEvolve 
+
+POLCA (Ours) 0 10 20 30 40 50 60 
+
+Number of Proposals 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Score
+
+VeriBench (Compilation) Pass Rate 
+
+DSPy 
+
+GEPA 
+
+OpenEvolve 
+
+POLCA (Ours) 
+
+Figure 8: VeriBench (Compilation) results: Plots show the compilation rate over 140 tasks relative to number of evaluation steps, metric calls, proposal steps and proposals, respectively. Solid curves represent the average highest score attained at each step, while the shaded regions denote the standard error across multiple independent runs (3 seeds). 
+
+D.5 Fast 0.5 study on KernelBench 
+
+For KernelBench, we also provide a comparison using the pass 0.5 metric. This metric is significant because PyTorch operators are already highly optimized; therefore, generating custom CUDA kernels from scratch—rather than utilizing pre-wrapped PyTorch functions—that are both correct and reach half the execution speed of the PyTorch implementation represents a meaningful achievement in 34 automated kernel synthesis. Figure 9 shows POLCA consistently outperforms all baselines in terms of evaluation and proposal steps, as well as final performance. While POLCA demonstrates superior efficiency within a fixed time budget, it may not be the most efficient at early stages when compared against computational budgets, such as the total number of metric calls and proposals, particularly against sequential algorithms, for the same reasons discussed in Section D.3. 0.0 2.5 5.0 7.5 10.0 12.5 15.0 17.5 20.0 
+
+Evaluation Step 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> fast 0.5  Score
+
+KernelBench fast 0.5 Score 
+
+DSPy 
+
+GEPA 
+
+OpenEvolve 
+
+POLCA (Ours) 0 10 20 30 40 50 
+
+Number of Metric Calls 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> fast 0.5  Score
+
+KernelBench fast 0.5 Score 
+
+DSPy 
+
+GEPA 
+
+OpenEvolve 
+
+POLCA (Ours) 0.0 2.5 5.0 7.5 10.0 12.5 15.0 17.5 20.0 
+
+Proposal Step 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> fast 0.5  Score
+
+KernelBench fast 0.5 Score 
+
+DSPy 
+
+GEPA 
+
+OpenEvolve 
+
+POLCA (Ours) 0 10 20 30 40 50 
+
+Number of Proposals 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> fast 0.5  Score
+
+KernelBench fast 0.5 Score 
+
+DSPy 
+
+GEPA 
+
+OpenEvolve 
+
+POLCA (Ours) 
+
+Figure 9: Performance comparison across 16 kernel optimization tasks. Plots show the fast 0.5 score relative to number of evaluation steps, metric calls, proposal steps, and proposals, respectively. Solid curves represent the average highest score attained at each step (1 seed). 
+
+D.6 More Ablation Results 
+
+In this section, we provide additional results from our ablation study. Figure 10 shows the ablation on the ε-Net and Summarizer features of POLCA, while Figure 11 presents the ablation study on ε
+
+values. 0 25 50 75 100 125 150 175 200 
+
+> Evaluation Step
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> Score
+
+-bench Test Score      
+
+> vanilla POLCA
+> vanilla POLCA+ -Net
+> vanilla POLCA+Summarizer
+> vanilla POLCA+ -Net+Summarizer 020 40 60 80 100
+> Proposal Step
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> Score
+
+-bench Test Score      
+
+> vanilla POLCA
+> vanilla POLCA+ -Net
+> vanilla POLCA+Summarizer
+> vanilla POLCA+ -Net+Summarizer 0100 200 300 400 500
+> Number of Proposals
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> Score
+
+-bench Test Score 
+
+> vanilla POLCA
+> vanilla POLCA+ -Net
+> vanilla POLCA+Summarizer
+> vanilla POLCA+ -Net+Summarizer
+
+Figure 10: Ablation on ε-Net and Summarizer. Solid curves represent the average highest score attained at each step, while the shaded regions denote the standard error across multiple independent runs (6 seeds). 
+
+35 0 5 10 15 20 25 30         
+
+> Evaluation Step
+> 0.30
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> Score
+> -bench Test Score
+> = 0.0
+> = 0.05
+> = 0.1
+> = 0.15
+> = 0.2
+> = 0.25
+> = 0.3 0.0 2.5 5.0 7.5 10.0 12.5 15.0 17.5 20.0
+> Evaluation Step
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Score
+> VeriBench (3-step evaluation) Score
+> = 0.0
+> = 0.02
+> = 0.05
+> = 0.07
+> = 0.1
+
+Figure 11: Ablation study on ε-values (first two panels for τ -bench; last panel for VeriBench). Solid curves represent the average highest score attained at each step, while shaded regions denote the standard error across 3 independent seeds. 
+
+D.7 Why Not Use Regression? 
+
+In large-scale generative optimization, the search process often yields reward observations for a wide variety of programs. A naive approach is to evaluate each program separately and estimate its reward independently. However, due to the inherent stochasticity of these observations, such an approach can require a prohibitively large evaluation budget to achieve precision. A natural alternative is to use function approximation by training a reward model that maps a program’s embedding to its expected reward: 
+
+ψ ◦ ϕ : Θ → R,
+
+where ϕ maps a program to an embedding vector, and ψ predicts a reward in [0 , 1] . The goal is for such a model to generalize across the program space, leveraging the entire dataset to estimate the reward of any given program. This is particularly appealing because similar programs likely yield similar rewards; thus, a learned predictor might provide more robust estimates than a noisy empirical mean, especially for programs with few observations. To train this model, we collect a dataset of embedding–reward pairs 
+
+{(ϕ(θj ), r j )}Nj=1 ,
+
+where each reward observation rj ∈ { 0, 1} is binary. We instantiate ψ as a logistic regression model parameterized by (w, b ):
+
+ψ(z) = σ(w⊤z + b), z ∈ Rd,
+
+where σ(z) = 1 /(1 + e−z ) is the sigmoid function. The predicted reward for a program θ is then: 
+
+(ψ ◦ ϕ)( θ) = σ(w⊤ϕ(θ) + b).
+
+We optimize the parameters (w, b ) by minimizing the regularized empirical risk: 
+
+L(w, b ) = − 1
+
+N
+
+> N
+
+X
+
+> j=1
+
+h
+
+rj log σ(w⊤ϕ(θj ) + b) + (1 − rj ) log  1 − σ(w⊤ϕ(θj ) + b)i
+
++ λ
+
+2 ∥w∥22,
+
+where λ > 0 is the regularization parameter. 36 To further reduce variance and enhance diversity, we employ an ensemble of five regressors, each trained on a randomly sampled subset of the data. These models predict scores for all programs stored in the priority memory Q. For each program θ ∈ Q , let bpk(θ) be the prediction of the k-th regressor and bμ(θ) be the empirical mean reward based on its existing samples. We then compute four candidate scores: 
+
+Semp (θ) = bμ(θ),Smax (θ) = max  
+
+> 1≤k≤5
+
+bpk(θ),Smean (θ) = 15
+
+> 5
+
+X
+
+> k=1
+
+bpk(θ),Smin (θ) = min  
+
+> 1≤k≤5
+
+bpk(θ).
+
+Across various training set sizes N , we select the program with the highest score for each metric and subject it to additional external testing for a more precise reward estimate. However, our results (Figure 3(d)) show that the naive strategy—selecting programs based solely on the empirical mean—consistently outperforms all regressor-based criteria. This suggests that, in this specific optimization setting, the regression model fails to provide sufficiently reliable generalization to surpass simple empirical estimation. 
+
+D.8 Token Usage Estimation 
+
+We evaluate the token consumption of the generative optimization process by monitoring a single run of POLCA, using the configuration detailed in Section D.2, across the τ -bench, HotpotQA, VeriBench, and KernelBench benchmarks. This estimation is limited to the tokens utilized by the search pipeline and excludes LLM calls invoked within the optimizing programs themselves. For τ -bench, a single run (100 iterations) requires 30,822,470 input tokens and 380,240 output tokens, totaling 31,202,710 tokens. For HotpotQA, a single run (100 iterations) requires 4,739,242 input tokens and 1,801,051 output tokens, totaling 6,540,293 tokens. For VeriBench, a single run (10 iterations) on a single task requires 554,900 input tokens and 79,145 output tokens, totaling 634,045 tokens. For KernelBench, a single run (10 iterations) on a single task requires 477,186 input tokens and 93,432 output tokens, totaling 570,618 tokens. 
+
+# E Optimized Program Case Studies 
+
+In this section, we provide representative examples of programs optimized using POLCA on the 
+
+τ -bench, VeriBench, and KernelBench benchmarks. These cases illustrate the ability of our generative optimization framework to discover high-performing solutions across diverse domains, from multi-turn agentic reasoning to formal verification and hardware-level performance tuning. 
+
+E.1 τ -bench 
+
+In τ -bench, we formalize the search problem by appending a trainable string to the original system prompt of the agent as parameters ; this string is initialized as the original instruction prompt and trained using generative optimization algorithms. 37 Original Instruction Prompt 
+
+Here are the additional instructions to help the agent solve the task: 
+
+Trained Prompt from POLCA 
+
+Here are the additional instructions to help the agent solve the task: 
+
+• IMPORTANT: Only ONE order can be modified or exchanged per conversa-tion. Inform the user of this limit at the beginning of the interaction. If the user mentions modifying items in multiple orders, inform them that only ONE order can be modified. Ask them to choose the order they want to modify. Then proceed with modifying only that order. Remind the user of this limitation before presenting any product options or proceeding with any modifications. Begin the conversation by stating this limitation. 
+
+• Prioritize verifying user identity at the beginning of the conversation, with email as the primary method. If email verification fails, double-check the email address provided with the user , and if it’s incorrect, offer alternative authentication methods (first name, last name, zip code) only after email verification definitively fails . Implement a more robust retry mechanism if the initial attempt fails, retrying up to three times. If email verification persistently fails after multiple attempts, proceed with name/zip code verification but inform the user that email verification is preferred for security purposes. 
+
+Continue verifying identity throughout the conversation. Do not proceed with any order-related actions until the user’s identity is confirmed. If the user is successfully identified by name and zip code, offer to update their user profile with the correct email address, if available, to streamline future interactions. Explicitly offer to save the email address to the user profile to streamline future interactions. If the user provides a new email address, use update_user_email tool to update the user’s profile. ALWAYS update the user profile with the email address if they are authenticated via name/zip. Only attempt user identification by name/zip after email verification has failed. Explicitly state the importance of providing accurate information for successful identification. If the user has privacy concerns, explain that identity verification is for their protection and to prevent unauthorized access to their account. If the email is incorrect or not found, provide a specific error message to the user, such as: “I’m sorry, but I couldn’t find a user with that email address. Could you please double-check the email address you provided? It’s important to provide accurate information for successful identification. Please confirm your email or provide your first name, last name and zip code.” 
+
+• Immediately after user identification, before proceeding with any requests, offer the user a summary of available actions: “Okay, Yusuf, now that I’ve verified your identity, I can help you with the following: modify a pending order, cancel a pending order, return a delivered order, or exchange a delivered order. Which action would you like to take?” 
+
+• When the user asks to modify or exchange an order, especially regarding item character-istics (color, size, material, style, brightness, compatibility), proactively ask for the order ID and the item IDs of the items they want to modify or exchange . Remind the user that only a single exchange or modification call is available per order, so it’s important to include ALL desired changes in one request. Gather ALL the necessary details about the desired options BEFORE attempting to find matching items. Remind the user that 
+
+38 exchange or modify order tools can only be called once per order. Specifically, confirm the item ID, the attributes of the old items, and the attributes of the new items. If the user is unsure which order contains the items, offer to search their order history using their user ID and present the contents of each order to the user to help them identify the correct one. 
+
+• Immediately after the user provides an order ID, call get_order_details to proactively validate the order’s existence, contents, and status. Flag any discrepancies between the user’s request and the actual order details and ask them to verify. Clarify any discrepancies with the user before proceeding. Specifically, confirm that ALL items the user wants to modify, exchange, or return are actually in the identified order. Before confirming the items, ALWAYS check the order status to ensure the requested action (modification, exchange, return) is possible given the current order status. Present the order details (contents, status, shipping address) to the user and ask them to confirm everything is accurate before proceeding. Check if the order status even supports the request (e.g. pending for modifications, delivered for exchanges or returns). 
+
+If the order has already been delivered or cancelled, inform the user that you cannot modify it. If the user doesn’t know the order ID or item IDs, proactively offer to retrieve order details using their user ID. If the user provides an order ID but the items they mention are not in that order, ask the user to double-check the order ID and confirm if the listed items are indeed in that order. Validate the order details and explicitly ask the user to confirm the correctness of item names, quantities, and attributes. Before listing product types for returns or exchanges, confirm the order ID and item IDs related to the return or exchange. 
+
+• If a tool, such as search_items , fails or returns an error, inform the user that the tool is unavailable and offer an alternative approach. DO NOT use search_items as it is currently unreliable. Prioritize using get_product_details to obtain specific item details before resorting to list_all_product_types . If the search_items tool fails, you can try offering an alternative solution, such as connecting the user with a human agent or using different search parameters. However, transfer only after exhausting all available strategies and tool calls. If a tool fails, inform the user that the tool is unavailable and offer an alternative approach. For example, offer to list available options for each attribute (color, size, material, style) individually using get_product_details 
+
+and ask the user to choose from the available options. If get_product_details also fails, suggest that the user browse our online catalog and provide the item ID. Do NOT guess or proceed without confirming the correct item ID. If list_all_product_types 
+
+returns an empty dictionary, inform the user that there are currently no products of that type available and apologize for the inconvenience. 
+
+• When presenting product options for an exchange or modification, always use the information from get_product_details and include the item ID, features, price, and availability. If an item is unavailable, clearly state that and offer alternatives. Do not mention that the product options are unavailable until all product options are displayed. When presenting options, display a maximum of 5 options at a time for better user experience. 
+
+• Always clarify with the user BEFORE using exchange_items or 
+
+modify_pending_order_items . Explicitly state and confirm all identified items and their attributes, and the desired changes, before using the tool. Before calling the 
+
+39 tool, repeat the action being taken: “You are exchanging item A for item B, and your card C will be charged $X. Is this correct?”. Always confirm the exchange/modification details with the user before executing the final tool call. This confirmation should include the items being exchanged/modified, the new items (with all their characteristics), and the payment method for any price difference. Remind the user that exchange and modify order tools can only be called once, so all desired changes must be included in a single request. After the tool call, repeat the confirmation with the user before finalizing. Ensure the agent gathers all necessary information before attempting to call the exchange_items or modify_pending_order_items tool. 
+
+• Be sure to check the order status before taking actions like cancelling, modifying, returning, or exchanging. Actions are generally only possible on pending or delivered orders. Clarify which actions are available for each order status. Implement robust order verification steps to ensure the identified order matches the user’s intended items. 
+
+Specifically, for returns, ensure the order status is ‘delivered’ before attempting to process the return. 
+
+• Before asking for a payment method, process all product options and confirm the user’s selection. A payment method is only required if there is a price difference or if required by the tool itself. Do not ask for a payment method if there is no price difference and the tool doesn’t explicitly require it. 
+
+• Always validate with the user: Validate all details of the identified order before making changes, clarify any ambiguities before acting. 
+
+• When dealing with returns, immediately ask for the order ID and item IDs . Then, confirm all of the information, like order id and items to be returned, before listing all of the product types. 
+
+• Handle multiple requests or orders within a single conversation step-by-step. Complete one action fully before moving on to the next. If the user is indecisive, summarize the current state, options, and consequences to guide them. If the user changes scope often, remind the user of the single-exchange/modification limit to guide them. If the user is indecisive or changes their mind frequently, summarize the confirmed details (order ID, items, requested actions) and require explicit confirmation before proceeding. 
+
+• If the user provides an incorrect order ID, politely inform them of the potential mistake and offer to look up their orders using their user ID to confirm the correct order ID. If the user provides the wrong item IDs, offer the user to find the item IDs on the website and suggest finding them now before moving on. 
+
+• Implement a loop to help the user select and identify the correct item by cross-checking the details provided by the user or other items in the order. 
+
+• When the user asks for the number of available options for a product (e.g., t-shirts), use 
+
+get_product_details to retrieve the product’s variants. Count the number of variants where “available”: true, and then inform the user of the total count of available options. 
+
+Prioritize answering this request before handling other requests from the user. Count the number of variants where “available”: true, and then inform the user of the total count of available options. In the example, there are 10 t-shirt options currently available. There are 12 variants listed, and 2 of them are unavailable. 
+
+After collecting item and order details, create a summary of all confirmed items, attributes, desired changes, and the payment method. Require explicit user confirmation (e.g., “So, 
+
+40 to confirm, you want to exchange item A (size M, blue) for item B (size L, red), and the price difference of $X will be charged to your card ending in 1234. Is that correct?”) before proceeding. 
+
+• If the user mentions modifying items in multiple orders, inform them that only ONE order can be modified. Ask them to choose the order they want to modify. Then proceed with modifying only that order. 
+
+• Before proceeding with modifications, ALWAYS check the order status. If the order status is not ‘pending’, inform the user that the order cannot be modified. 
+
+Before calling any tool, the agent should say, “Just to confirm, I have the following information: ... Is this correct?” If any information is missing, ask the user to provide it before proceeding. 
+
+E.2 HotpotQA 
+
+In HotpotQA, we optimize the prompt for the question-answering task. Below, we present the 
+
+original prompt alongside a trained prompt generated by POLCA. 
+
+Original Prompt 
+
+Answer the question based on the context. 
+
+Trained Prompt from POLCA 
+
+Carefully read the provided context and the question. Systematically break down the question into its constituent parts and identify all required information. For multi-hop reasoning questions, meticulously document the entire reasoning path before providing the final answer. This path must: 1. Deconstruct the question into a series of sub-questions or identify key intermediate facts/entities required. 2. Detail the retrieval of relevant information for each sub-question or intermediate compo-nent. 3. Explicitly demonstrate the logical connections and dependencies between the retrieved pieces of information, forming a coherent reasoning chain. For example, explain how Fact A leads to Fact B, which is then used with Fact C to infer a conclusion. 4. Synthesize these interconnected facts and intermediate conclusions to directly address and answer the main question. 
+
+Answer Formatting Rules: 
+
+1. Direct Retrieval Questions: If a question solely asks for a specific entity name, numerical value, or factual item, provide only that exact, complete identifier or fact as presented in the context. Do not include any preamble, explanation, or supporting details. 2. Entity Identification: For questions asking to identify an entity, the primary answer must be the exact, complete identifier as presented in the context. This primary answer must be stated first and without preamble. If the question implies a need for elaboration beyond the direct identification, supporting details from the context should follow. 3. Concept/Practice/Method Identification: For questions asking to identify a prac-41 tice, method, or concept, the primary answer must be the most appropriate conceptual term or category from the context, stated first and without preamble. Supporting details from the context that elaborate on this concept should follow. Avoid answering with only descriptive details if a specific term exists. 4. Comparative Questions (Locations): Explicitly analyze and differentiate between geographical levels (e.g., city, district, neighborhood). Do not infer ’same’ based solely on a broader shared context. 5. Numerical Data: 
+
+• Prioritize specific, qualified figures. 
+
+• If the question directly asks for a numerical value, present the most specific, qualified figure available in the context upfront as the primary answer, without preamble. 
+
+• If the requested scope (e.g., country population) is not directly available but a relevant sub-unit’s data is (e.g., county population), first state that the requested broad-scope information is not available. Then, provide the qualified sub-unit figure, clearly qualifying it as belonging to that sub-unit. 
+
+• Clearly qualify all numerical data presented. 6. Binary Answers (Yes/No): Provide the direct binary answer clearly and upfront, followed by supporting details that justify the conclusion. 7. Handling Questions with Flawed Premises: If the question’s premise contains a factual inaccuracy (e.g., refers to a song as an album), the agent must address this directly. The response should: 
+
+• State that the requested entity type (e.g., “album”) is not found as described in the context. 
+
+• Identify the correct entity type (e.g., “song”) and provide its relevant details from the context. 
+
+• If applicable, provide information about the containing album (name and release date), clearly distinguishing it from the song. 
+
+• This structured explanation takes precedence over Rule 1 when a flawed premise is detected. 8. Handling Ambiguity and Underspecified Questions: 
+
+• If a question can have multiple valid answers based on the context, first attempt to resolve the ambiguity using the following prioritized strategies: 1. Prioritize Explicit/Unique Links: Select the option most directly or uniquely linked to the question’s criteria. 2. Prioritize Prominence/Emphasis: If the context highlights a specific entity, use this as a tie-breaker. 3. Prioritize Order of Appearance: If no other criteria apply, select the first valid option encountered in the text. 
+
+• If a definitive single choice cannot be made after applying these strategies, state that multiple answers exist and list them clearly, qualifying that the question was underspecified. For example: “There are multiple valid answers fitting this description. One is [Answer A]. Another is [Answer B].” Provide a complete, fully qualified, and verifiable answer that directly addresses all parts of the question, synthesized from the context. Ensure answers are comprehensive and include all necessary qualifiers, especially for location-based queries. 
+
+42 E.3 Veribench 
+
+In VeriBench, the goal is to translate Python programs into verifiable Lean 4 programs. We utilize generative optimization algorithms to optimize for these Lean 4 programs directly, iteratively refining the formal code to satisfy verification requirements. Below, we provide a concrete example (square function) of this process. 
+
+Input Python Program 
+
+"""Return the square of a natural number (non-negative integer). Edge cases: - square(0) = 0 - square(1) = 1 - The function raises ValueError if input is not a natural number. """ def pre(n: int) -> bool: """True iff the input is a non-negative integer.""" return isinstance(n, int) and n >= 0 def prog(n: int) -> int: """ Return n ² for non-negative integer n. Raises ValueError if the precondition is violated. """ if not pre(n): raise ValueError(f"Input must be a non-negative integer (got n={n})") return n * n # -- Tests --from typing import Callable def check(candidate: Callable[[int], int]) -> bool: # Basic unit test assert candidate(3) == 9 # Edge unit test assert candidate(0) == 0 # Negative (pre-violations must raise ValueError) bad_inputs = [-1, 3.14] for n in bad_inputs: try: candidate(n) raise AssertionError("expected pre-violation did not raise") except ValueError: pass return True if __name__ == "__main__": assert check(prog), f"Failed: {__file__}" print("All tests passed.") 
+
+43 Initial Lean 4 Program 
+
+-- Lean 4 translation of the Python program 
+
+Trained Lean 4 Program 
+
+/-! # Square Function This module implements a square function for natural numbers. ## Features: - Returns square of non-negative integers - Edge cases: square(0) = 0, square(1) = 1 - Input validation for natural numbers -/ namespace Square /--**Implementation of ‘square‘.** ‘square n‘ returns the natural number n ².## Examples #eval square 3 -- expected: 9 #eval square 0 -- expected: 0 -/ def square (n : Nat) : Nat := n * n /-! # Tests -/ /-- Basic test: 3^2 = 9 -/ example : square 3 = 9 := by native_decide #eval square 3 -- expected: 9 /-! # Tests: Edge Cases -/ /-- Edge case: 0^2 = 0 -/ example : square 0 = 0 := by native_decide #eval square 0 -- expected: 0 /-- Edge case: 1^2 = 1 -/ example : square 1 = 1 := by native_decide #eval square 1 -- expected: 1 /-! # Positive / Negative Test-Suite -/ /-- positive: 4^2 = 16 -/ example : square 4 = 16 := by native_decide #eval square 4 -- expected: 16 
+
+44 /-- positive: 5^2 = 25 -/ example : square 5 = 25 := by native_decide #eval square 5 -- expected: 25 /-- negative: 2^2 != 5 -/ example : ¬(square 2 = 5) := by native_decide #eval (decide (square 2 = 5)) -- expected: false /-- negative: 3^2 != 8 -/ example : ¬(square 3 = 8) := by native_decide #eval (decide (square 3 = 8)) -- expected: false /-! # Pre-Condition -/ /-- **Pre-condition.** Input is non-negative (always true for Nat). -/ def Pre (n : Nat) : Prop := 0 <= n /-! # Property Theorems -/ /-- **Non-negativity property**: square of any natural number is non-negative. -/ def non_negative_prop (n : Nat) : Prop := 0 <= square n /-- **Non-negativity theorem** -/ theorem non_negative_thm (n : Nat) : non_negative_prop n := sorry /-- **Zero property**: square of zero is zero. -/ def zero_prop : Prop := square 0 = 0 /-- **Zero theorem** -/ theorem zero_thm : zero_prop := sorry /-- **One property**: square of one is one. -/ def one_prop : Prop := square 1 = 1 /-- **One theorem** -/ theorem one_thm : one_prop := sorry /-- **Multiplication property**: square equals number multiplied by itself. -/ def mult_prop (n : Nat) : Prop := square n = n * n /-- **Multiplication theorem** -/ theorem mult_thm (n : Nat) : mult_prop n := sorry /-! # Post-Condition -/ /-- **Post-condition**: conjunction of all desired properties for square. -/ def Post_prop (n : Nat) : Prop := (non_negative_prop n) /\ (mult_prop n) /\ zero_prop /\ one_prop 
+
+45 /-! # Correctness Theorem -/ /-- **Correctness theorem**: the pre-condition implies the post-condition. -/ theorem correctness_thm (n : Nat) (hPre : Pre n) : Post_prop n := sorry /-! # Imperative Implementation -/ /--‘squareImp n‘ computes the same square using accumulation. -/ def squareImp (n : Nat) : Nat := Id.run do let mut acc : Nat := 0 for _ in [:n] do acc := acc + n return acc /-! # Imperative Tests -/ /-- Basic test: imp 3^2 = 9 -/ example : squareImp 3 = 9 := by native_decide #eval squareImp 3 -- expected: 9 /-- Edge case: imp 0^2 = 0 -/ example : squareImp 0 = 0 := by native_decide #eval squareImp 0 -- expected: 0 /-- Edge case: imp 1^2 = 1 -/ example : squareImp 1 = 1 := by native_decide #eval squareImp 1 -- expected: 1 /-! # Implementation Equivalence -/ /-- **Equivalence theorem**: functional and imperative implementations coincide. -/ theorem square_equivalence_thm (n : Nat) : square n = squareImp n := sorry end Square 
+
+E.4 KernelBench 
+
+In KernelBench, the goal is to optimize custom CUDA kernels to outperform baseline PyTorch implementations in terms of execution speed. Here, we provide a concrete example (batched matrix multiplication) of this optimization process. 46 Task Prompt 
+
+You write custom CUDA kernels to replace the pytorch operators in the given architecture to get speedups. You have complete freedom to choose the set of operators you want to replace. You may make the decision to replace some operators with custom CUDA kernels and leave others unchanged. You may replace multiple operators with custom implementations, consider operator fusion opportunities (combining multiple operators into a single kernel, for example, combining matmul+relu), or algorithmic changes (such as online softmax). You are only limited by your imagination. Here’s an example to show you the syntax of inline embedding custom CUDA operators in torch: The example given architecture is: ‘‘‘ import torch import torch.nn as nn import torch.nn.functional as F class Model(nn.Module): def __init__(self) -> None: super().__init__() def forward(self, a, b): return a + b def get_inputs(): # randomly generate input tensors based on the model architecture a = torch.randn(1, 128).cuda() b = torch.randn(1, 128).cuda() return [a, b] def get_init_inputs(): # randomly generate tensors required for initialization based on the model architecture return [] ‘‘‘ The example new arch with custom CUDA kernels looks like this: ‘‘‘ import torch import torch.nn as nn import torch.nn.functional as F from torch.utils.cpp_extension import load_inline # Define the custom CUDA kernel for element-wise addition elementwise_add_source = """ #include <torch/extension.h> #include <cuda_runtime.h> 
+
+47 __global__ void elementwise_add_kernel(const float* a, const float* b, float* out, int size) { int idx = blockIdx.x * blockDim.x + threadIdx.x; if (idx < size) { out[idx] = a[idx] + b[idx]; }}torch::Tensor elementwise_add_cuda(torch::Tensor a, torch::Tensor b) { auto size = a.numel(); auto out = torch::zeros_like(a); const int block_size = 256; const int num_blocks = (size + block_size - 1) / block_size; elementwise_add_kernel<<<num_blocks, block_size>>> (a.data_ptr<float>(), b.data_ptr<float>(), out.data_ptr<float>(), size); return out; }""" elementwise_add_cpp_source = ( "torch::Tensor elementwise_add_cuda(torch::Tensor a, torch::Tensor b);" )# Compile the inline CUDA code for element-wise addition elementwise_add = load_inline( name="elementwise_add", cpp_sources=elementwise_add_cpp_source, cuda_sources=elementwise_add_source, functions=["elementwise_add_cuda"], verbose=True, extra_cflags=[""], extra_ldflags=[""], )class ModelNew(nn.Module): def __init__(self) -> None: super().__init__() self.elementwise_add = elementwise_add def forward(self, a, b): return self.elementwise_add.elementwise_add_cuda(a, b) ‘‘‘ You are given the following architecture: ‘‘‘ import torch import torch.nn as nn class Model(nn.Module): """ 
+
+48 Performs batched matrix multiplication (C = A * B) where A, B, and C have the same batch dimension. """ def __init__(self): super(Model, self).__init__() def forward(self, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor: """ Performs batched matrix multiplication. Args: A: Input tensor of shape (batch_size, m, k). B: Input tensor of shape (batch_size, k, n). Returns: C: Output tensor of shape (batch_size, m, n). """ return torch.bmm(A, B) batch_size = 128 m = 128 * 4 k = 256 * 4 n = 512 * 4 def get_inputs(): A = torch.rand(batch_size, m, k) B = torch.rand(batch_size, k, n) return [A, B] def get_init_inputs(): return [] # No special initialization inputs needed ‘‘‘ Optimize the architecture named Model with custom CUDA operators! Name your optimized output architecture ModelNew. Output the new code in codeblocks. Please generate real code, NOT pseudocode, make sure the code compiles and is fully functional. Just output the new model code, no other text, and NO testing code! 
+
+Initial CUDA Kernel 
+
+# This is a dummy kernel code. You should replace it with your own kernel code based on the task prompt and optimization objectives. 
+
+Trained CUDA Kernel 
+
+import torch import torch.nn as nn from torch.utils.cpp_extension import load_inline # Define the custom CUDA kernel for batched matrix multiplication batched_matmul_source = """ #include <torch/extension.h> #include <cuda_runtime.h> #include <cublas_v2.h> 
+
+49 #define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor") #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous") #define CHECK_CUBLAS(err) { cublasStatus_t status = (err); if (status != CUBLAS_STATUS_SUCCESS) { throw std::runtime_error("cuBLAS error: " + std::to_string(status)); } } // Singleton class to manage cuBLAS handle with TENSOR_OP math mode for automatic Tensor Core usage class CuBLASHandleManager { public: static cublasHandle_t& getHandle() { static CuBLASHandleManager instance; return instance.handle; }private: cublasHandle_t handle; CuBLASHandleManager() { CHECK_CUBLAS(cublasCreate(&handle)); // Enable Tensor Cores if available CHECK_CUBLAS(cublasSetMathMode(handle, CUBLAS_TENSOR_OP_MATH)); // Set stream for better asynchronous execution cudaStream_t stream; cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking); CHECK_CUBLAS(cublasSetStream(handle, stream)); }~CuBLASHandleManager() { cudaStream_t stream; cublasGetStream(handle, &stream); cublasDestroy(handle); if (stream) cudaStreamDestroy(stream); }}; // Optimized batched matrix multiplication with specialized handling for common shapes torch::Tensor batched_matmul_cuda(torch::Tensor A, torch::Tensor B) { // Quick checks before proceeding CHECK_CUDA(A); CHECK_CUDA(B); const int batch_size = A.size(0); const int m = A.size(1); const int k = A.size(2); const int n = B.size(2); // Create output tensor auto C = torch::empty({batch_size, m, n}, A.options()); // Ensure input tensors are contiguous for best performance auto A_cont = A.contiguous(); auto B_cont = B.contiguous(); // Get data pointers float* A_data = A_cont.data_ptr<float>(); float* B_data = B_cont.data_ptr<float>(); 
+
+50 float* C_data = C.data_ptr<float>(); // Get cuBLAS handle cublasHandle_t handle = CuBLASHandleManager::getHandle(); // Constants for cuBLAS call const float alpha = 1.0f; const float beta = 0.0f; // Use strided batch GEMM for maximum performance // cuBLAS uses column-major order while PyTorch uses row-major // To compute C = A * B in row-major, we compute C^T = B^T * A^T in column-major // Use cublasGemmStridedBatchedEx for better performance (supports mixed precision) CHECK_CUBLAS(cublasGemmStridedBatchedEx( handle, CUBLAS_OP_N, CUBLAS_OP_N, n, m, k, // Dimensions for column-major (swapped) &alpha, B_data, CUDA_R_32F, n, k * n, // B, data type, leading dimension, stride A_data, CUDA_R_32F, k, m * k, // A, data type, leading dimension, stride &beta, C_data, CUDA_R_32F, n, m * n, // C, data type, leading dimension, stride batch_size, // Number of matrices CUDA_R_32F, // Computation type CUBLAS_GEMM_DEFAULT_TENSOR_OP // Algorithm selection )); return C; }// Half-precision version for tensor cores torch::Tensor batched_matmul_half_cuda(torch::Tensor A, torch::Tensor B) { CHECK_CUDA(A); CHECK_CUDA(B); const int batch_size = A.size(0); const int m = A.size(1); const int k = A.size(2); const int n = B.size(2); // Convert to half precision if needed auto A_half = A.type().scalarType() == torch::ScalarType::Half ? A.contiguous() : A.contiguous().to(torch::ScalarType::Half); auto B_half = B.type().scalarType() == torch::ScalarType::Half ? B.contiguous() : B.contiguous().to(torch::ScalarType::Half); // Create output tensor in half precision auto C_half = torch::empty({batch_size, m, n}, A_half.options()); // Get data pointers __half* A_data = reinterpret_cast<__half*>(A_half.data_ptr<torch::Half>()); __half* B_data = reinterpret_cast<__half*>(B_half.data_ptr<torch::Half>()); __half* C_data = reinterpret_cast<__half*>(C_half.data_ptr<torch::Half>()); // Get cuBLAS handle 
+
+51 cublasHandle_t handle = CuBLASHandleManager::getHandle(); // Constants for cuBLAS call const __half alpha = __float2half(1.0f); const __half beta = __float2half(0.0f); // Use cublasGemmStridedBatchedEx for better performance and more flexibility with half precision CHECK_CUBLAS(cublasGemmStridedBatchedEx( handle, CUBLAS_OP_N, CUBLAS_OP_N, n, m, k, &alpha, B_data, CUDA_R_16F, n, k * n, A_data, CUDA_R_16F, k, m * k, &beta, C_data, CUDA_R_16F, n, m * n, batch_size, CUDA_R_16F, CUBLAS_GEMM_DEFAULT_TENSOR_OP )); // Convert back to original precision if needed return A.type().scalarType() == torch::ScalarType::Half ? C_half : C_half.to(A.type().scalarType()); }// INT8 quantized version for maximum throughput on compatible hardware torch::Tensor batched_matmul_int8_cuda(torch::Tensor A, torch::Tensor B) { CHECK_CUDA(A); CHECK_CUDA(B); // Original shapes const int batch_size = A.size(0); const int m = A.size(1); const int k = A.size(2); const int n = B.size(2); // Quantize to INT8 (this is a simplified quantization) auto A_float = A.contiguous(); auto B_float = B.contiguous(); // Scale factors for quantization/dequantization float scale_A = 127.0f / A_float.abs().max().item<float>(); float scale_B = 127.0f / B_float.abs().max().item<float>(); float scale_C = 1.0f / (scale_A * scale_B); // Create quantized tensors auto A_int8 = (A_float * scale_A).to(torch::kChar).contiguous(); auto B_int8 = (B_float * scale_B).to(torch::kChar).contiguous(); // Output will be in int32 auto C_int32 = torch::empty({batch_size, m, n}, torch::TensorOptions().dtype(torch::kInt).device(A.device())); // Get data pointers int8_t* A_data = A_int8.data_ptr<int8_t>(); 
+
+52 int8_t* B_data = B_int8.data_ptr<int8_t>(); int* C_data = C_int32.data_ptr<int>(); // Get cuBLAS handle cublasHandle_t handle = CuBLASHandleManager::getHandle(); // Constants for INT8 GEMM const int32_t alpha = 1; const int32_t beta = 0; // Use INT8 GEMM with tensor cores if available // Note: This is a simplified implementation; real-world would need more careful quantization CHECK_CUBLAS(cublasGemmStridedBatchedEx( handle, CUBLAS_OP_N, CUBLAS_OP_N, n, m, k, &alpha, B_data, CUDA_R_8I, n, k * n, A_data, CUDA_R_8I, k, m * k, &beta, C_data, CUDA_R_32I, n, m * n, batch_size, CUDA_R_32I, CUBLAS_GEMM_DEFAULT_TENSOR_OP )); // Dequantize and return auto C_float = C_int32.to(torch::kFloat) * scale_C; return C_float; }""" batched_matmul_cpp_source = """ torch::Tensor batched_matmul_cuda(torch::Tensor A, torch::Tensor B); torch::Tensor batched_matmul_half_cuda(torch::Tensor A, torch::Tensor B); torch::Tensor batched_matmul_int8_cuda(torch::Tensor A, torch::Tensor B); """ # Compile the inline CUDA code for batched matrix multiplication custom_ops = load_inline( name="batched_matmul_ops", cpp_sources=batched_matmul_cpp_source, cuda_sources=batched_matmul_source, functions=[ "batched_matmul_cuda", "batched_matmul_half_cuda", "batched_matmul_int8_cuda", ], verbose=True, extra_ldflags=["-lcublas"], extra_cuda_cflags=[ "--expt-relaxed-constexpr", "-O3", "--use_fast_math", "-Xptxas=-v", ], 
+
+53 )class ModelNew(nn.Module): """ Optimized version of the model that performs batched matrix multiplication using custom CUDA kernels with cuBLAS. The implementation includes options for half-precision and INT8 computation to leverage tensor cores when available. """ def __init__(self): super(ModelNew, self).__init__() self.custom_ops = custom_ops self.use_half_precision = False # Can be toggled based on hardware support self.use_int8_precision = ( False # Can be toggled for hardware with INT8 tensor core support )# Optimized for the given matrix sizes (128, 512, 1024, 2048) # Higher threshold as the custom kernel performs better for larger matrices self.size_threshold = 32768 # Empirical threshold def forward(self, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor: """ Performs batched matrix multiplication with optimized CUDA implementation. Args: A: Input tensor of shape (batch_size, m, k). B: Input tensor of shape (batch_size, k, n). Returns: C: Output tensor of shape (batch_size, m, n). """ # Fall back to PyTorch’s native implementation for CPU tensors if not A.is_cuda or not B.is_cuda: return torch.bmm(A, B) # For small matrices, PyTorch’s native BMM might be more efficient matrix_size = A.size(1) * A.size(2) * B.size(2) if matrix_size < self.size_threshold: return torch.bmm(A, B) try: # Use INT8 precision for maximum throughput on compatible hardware if ( self.use_int8_precision and torch.cuda.get_device_capability(A.device)[0] >= 7 ): return self.custom_ops.batched_matmul_int8_cuda(A, B) # Use half precision for tensor cores if enabled and supported if ( self.use_half_precision and torch.cuda.get_device_capability(A.device)[0] >= 7 ): return self.custom_ops.batched_matmul_half_cuda(A, B) # Use our custom CUDA kernel for standard precision 
+
+54 return self.custom_ops.batched_matmul_cuda(A, B) except Exception as e: # Graceful fallback to PyTorch implementation if custom kernel fails print(f"Custom kernel error: {e}, falling back to PyTorch bmm") return torch.bmm(A, B) 
+
+55
