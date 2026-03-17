@@ -136,7 +136,7 @@ def get_supabase_read_config(config: Dict[str, Any]) -> Dict[str, Any]:
     enabled = bool(sb.get("enabled", False))
     prefer_read = bool(setting.get("prefer_supabase_read", True))
     use_vector_rpc = bool(sb.get("use_vector_rpc", False))
-    vector_rpc_ann = _norm(sb.get("vector_rpc_ann") or sb.get("vector_rpc") or "match_arxiv_papers")
+    vector_rpc = _norm(sb.get("vector_rpc_exact") or sb.get("vector_rpc") or "match_arxiv_papers_exact")
     return {
         "enabled": enabled and prefer_read,
         "use_vector_rpc": use_vector_rpc,
@@ -145,8 +145,7 @@ def get_supabase_read_config(config: Dict[str, Any]) -> Dict[str, Any]:
         "anon_key": _norm(sb.get("anon_key")),
         "papers_table": _norm(sb.get("papers_table") or "arxiv_papers"),
         "schema": _norm(sb.get("schema") or "public"),
-        "vector_rpc": vector_rpc_ann,
-        "vector_rpc_ann": vector_rpc_ann,
+        "vector_rpc": vector_rpc,
         "vector_rpc_exact": _norm(sb.get("vector_rpc_exact")),
         "bm25_rpc": _norm(sb.get("bm25_rpc") or "match_arxiv_papers_bm25"),
     }

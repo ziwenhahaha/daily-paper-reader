@@ -1245,53 +1245,45 @@ def main() -> None:
       )
     group_start(f"Step 2.2 - supabase vector recall ({source_key}:{label})")
     try:
-      exact_rpc = str(backend_conf.get("vector_rpc_exact") or "").strip()
-      ann_rpc = str(
-        backend_conf.get("vector_rpc_ann")
+      exact_rpc = str(
+        backend_conf.get("vector_rpc_exact")
         or backend_conf.get("vector_rpc")
-        or "match_papers"
+        or "match_papers_exact"
       ).strip()
-      rpc_plan: List[tuple[str, str]] = []
-      if exact_rpc:
-        rpc_plan.append(("exact", exact_rpc))
-      if ann_rpc and all(x[1] != ann_rpc for x in rpc_plan):
-        rpc_plan.append(("ann", ann_rpc))
-
-      if not rpc_plan:
+      if not exact_rpc:
         log("[WARN] Supabase 向量召回未配置可用 RPC。")
-        return False
+        return None
 
-      for mode, rpc_name in rpc_plan:
-        log(f"[INFO] Supabase 向量召回尝试：mode={mode} rpc={rpc_name}")
-        result_sb = rank_papers_for_queries_via_supabase(
-          model=None,
-          queries=source_queries,
-          top_k=dynamic_top_k,
-          supabase_conf=backend_conf,
-          start_dt=sb_start_dt,
-          end_dt=sb_end_dt,
-          time_fields=SUPABASE_TIME_FIELDS,
-          rpc_name_override=rpc_name,
-          rpc_mode=mode,
-        )
-        total_hits = int(result_sb.get("total_hits") or 0)
-        non_empty_queries = int(result_sb.get("non_empty_queries") or 0)
-        query_total = len(queries)
-        avg_hits_per_query = (float(total_hits) / float(query_total)) if query_total > 0 else 0.0
+      mode = "exact"
+      rpc_name = exact_rpc
+      log(f"[INFO] Supabase 向量召回尝试：mode={mode} rpc={rpc_name}")
+      result_sb = rank_papers_for_queries_via_supabase(
+        model=None,
+        queries=source_queries,
+        top_k=dynamic_top_k,
+        supabase_conf=backend_conf,
+        start_dt=sb_start_dt,
+        end_dt=sb_end_dt,
+        time_fields=SUPABASE_TIME_FIELDS,
+        rpc_name_override=rpc_name,
+        rpc_mode=mode,
+      )
+      total_hits = int(result_sb.get("total_hits") or 0)
+      non_empty_queries = int(result_sb.get("non_empty_queries") or 0)
+      query_total = len(queries)
+      avg_hits_per_query = (float(total_hits) / float(query_total)) if query_total > 0 else 0.0
 
-        if total_hits <= 0:
-          log(f"[WARN] Supabase 向量召回无命中（mode={mode} rpc={rpc_name}）。")
-          continue
+      if total_hits <= 0:
+        log(f"[WARN] Supabase 向量召回无命中（mode={mode} rpc={rpc_name}）。")
+        return None
 
-        log(
-          f"[INFO] Supabase 向量召回命中 {total_hits} 条。"
-          f" mode={mode} rpc={rpc_name} "
-          f"non_empty_queries={non_empty_queries}/{query_total} "
-          f"avg_hits_per_query={avg_hits_per_query:.1f}"
-        )
-        return result_sb
-
-      log("[WARN] Supabase 向量召回未通过可用性检查。")
+      log(
+        f"[INFO] Supabase 向量召回命中 {total_hits} 条。"
+        f" mode={mode} rpc={rpc_name} "
+        f"non_empty_queries={non_empty_queries}/{query_total} "
+        f"avg_hits_per_query={avg_hits_per_query:.1f}"
+      )
+      return result_sb
     except Exception as e:
       if source_key == ARXIV_SOURCE_KEY:
         log(f"[WARN] Supabase 向量召回异常：{e}")

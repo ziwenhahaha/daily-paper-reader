@@ -42,6 +42,8 @@ def normalize_source_list(value: Any) -> List[str]:
 
 def _normalize_backend_entry(raw: Dict[str, Any], *, default_papers_table: str) -> Dict[str, Any]:
     entry = copy.deepcopy(raw) if isinstance(raw, dict) else {}
+    vector_rpc_exact = _norm(entry.get("vector_rpc_exact") or "")
+    vector_rpc = _norm(entry.get("vector_rpc") or "")
     return {
         "kind": _norm(entry.get("kind") or "supabase") or "supabase",
         "enabled": bool(entry.get("enabled", True)),
@@ -50,9 +52,9 @@ def _normalize_backend_entry(raw: Dict[str, Any], *, default_papers_table: str) 
         "schema": _norm(entry.get("schema") or "public") or "public",
         "papers_table": _norm(entry.get("papers_table") or default_papers_table) or default_papers_table,
         "use_vector_rpc": bool(entry.get("use_vector_rpc", False)),
-        "vector_rpc": _norm(entry.get("vector_rpc") or "match_papers"),
-        "vector_rpc_ann": _norm(entry.get("vector_rpc_ann") or entry.get("vector_rpc") or "match_papers"),
-        "vector_rpc_exact": _norm(entry.get("vector_rpc_exact") or ""),
+        # exact-only：优先使用显式 exact RPC；若缺失则兼容旧字段 vector_rpc
+        "vector_rpc": vector_rpc_exact or vector_rpc or "match_papers_exact",
+        "vector_rpc_exact": vector_rpc_exact or vector_rpc or "match_papers_exact",
         "use_bm25_rpc": bool(entry.get("use_bm25_rpc", False)),
         "bm25_rpc": _norm(entry.get("bm25_rpc") or "match_papers_bm25"),
         "sync_table": _norm(entry.get("sync_table") or ""),
@@ -63,11 +65,9 @@ def _normalize_backend_entry(raw: Dict[str, Any], *, default_papers_table: str) 
 def _normalize_legacy_supabase_entry(raw: Dict[str, Any]) -> Dict[str, Any]:
     entry = _normalize_backend_entry(raw, default_papers_table=_norm(raw.get("papers_table") or "arxiv_papers") or "arxiv_papers")
     if not entry.get("vector_rpc"):
-        entry["vector_rpc"] = "match_arxiv_papers"
-    if not entry.get("vector_rpc_ann"):
-        entry["vector_rpc_ann"] = entry["vector_rpc"] or "match_arxiv_papers"
+        entry["vector_rpc"] = _norm(raw.get("vector_rpc_exact") or raw.get("vector_rpc") or "match_arxiv_papers_exact")
     if not entry.get("vector_rpc_exact"):
-        entry["vector_rpc_exact"] = _norm(raw.get("vector_rpc_exact") or "match_arxiv_papers_exact")
+        entry["vector_rpc_exact"] = entry["vector_rpc"] or "match_arxiv_papers_exact"
     if not entry.get("bm25_rpc"):
         entry["bm25_rpc"] = _norm(raw.get("bm25_rpc") or "match_arxiv_papers_bm25")
     if not entry.get("sync_table"):
