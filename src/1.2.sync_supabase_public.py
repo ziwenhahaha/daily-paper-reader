@@ -124,6 +124,14 @@ def resolve_papers_table(args_table: str, backend_key: str = "arxiv") -> str:
     return _norm((sb or {}).get("papers_table") or "")
 
 
+def resolve_default_raw_path(date_str: str, backend_key: str) -> str:
+    safe_backend = _norm(backend_key).lower() or "arxiv"
+    prefix = "arxiv_papers"
+    if safe_backend == "biorxiv":
+        prefix = "biorxiv_papers"
+    return os.path.join(ROOT_DIR, "archive", date_str, "raw", f"{prefix}_{date_str}.json")
+
+
 def build_embedding_text(row: Dict[str, Any]) -> str:
     title = _norm(row.get("title"))
     abstract = _norm(row.get("abstract"))
@@ -481,7 +489,7 @@ def main() -> None:
     if raw_path and not os.path.isabs(raw_path):
         raw_path = os.path.abspath(os.path.join(ROOT_DIR, raw_path))
     if not raw_path:
-        raw_path = os.path.join(ROOT_DIR, "archive", args.date, "raw", f"arxiv_papers_{args.date}.json")
+        raw_path = resolve_default_raw_path(args.date, backend_key)
     rows_raw = load_raw(raw_path)
     rows = [r for r in (normalize_paper(x) for x in rows_raw) if r]
     rows, dup_cnt = deduplicate_rows_by_id(rows)

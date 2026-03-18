@@ -48,6 +48,10 @@ class SyncBackendKeyTest(unittest.TestCase):
             table = self.mod.resolve_papers_table("", "biorxiv")
         self.assertEqual(table, "papers")
 
+    def test_resolve_default_raw_path_uses_biorxiv_prefix(self):
+        path = self.mod.resolve_default_raw_path("20260318", "biorxiv")
+        self.assertTrue(path.endswith("archive/20260318/raw/biorxiv_papers_20260318.json"))
+
 
 if __name__ == "__main__":
     unittest.main()
