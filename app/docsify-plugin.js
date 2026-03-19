@@ -1294,6 +1294,7 @@ window.$docsify = {
             paper_id: paperId,
             section: normalizeSection(section) || 'quick',
             title_en,
+            source: String(meta.source || meta.Source || '').trim(),
             selection_source: String(meta.selection_source || '').trim(),
             authors,
             date: normalizeDateField(meta.date || ''),
@@ -1997,6 +1998,7 @@ window.$docsify = {
         }
         parts.push('');
         if (safeMeta.authors) parts.push(`- **Authors**: ${String(safeMeta.authors).trim()}`);
+        if (safeMeta.source) parts.push(`- **Source**: ${String(safeMeta.source).trim()}`);
         if (safeMeta.date) parts.push(`- **Date**: ${String(safeMeta.date).trim()}`);
         if (safeMeta.pdf) parts.push(`- **PDF**: ${String(safeMeta.pdf).trim()}`);
         if (tags.length) parts.push(`- **Tags**: ${tags.join(', ')}`);
@@ -3608,6 +3610,9 @@ window.$docsify = {
         // 右侧：基本信息
         lines.push('<div class="paper-meta-right">');
         lines.push(`<p><strong>Authors</strong>: ${escapeHtml(meta.authors || 'Unknown')}</p>`);
+        if (meta.source) {
+          lines.push(`<p><strong>Source</strong>: ${escapeHtml(meta.source)}</p>`);
+        }
         lines.push(`<p><strong>Date</strong>: ${escapeHtml(meta.date || 'Unknown')}</p>`);
         if (meta.pdf) {
           lines.push(`<p><strong>PDF</strong>: <a href="${escapeHtml(meta.pdf)}" target="_blank">${escapeHtml(meta.pdf)}</a></p>`);
