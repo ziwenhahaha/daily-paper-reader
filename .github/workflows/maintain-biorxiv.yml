@@ -1,0 +1,126 @@
+name: maintain-biorxiv
+
+on:
+  schedule:
+    - cron: "45 0 * * *" # 北京时间 08:45（UTC 00:45）
+    - cron: "45 8 * * *" # 北京时间 16:45（UTC 08:45）
+    - cron: "45 16 * * *" # 北京时间 00:45（UTC 16:45）
+  workflow_dispatch:
+    inputs:
+      fetch_days:
+        description: "回溯抓取天数（默认 30）"
+        required: false
+        default: "30"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-paper-reader-maintain-biorxiv
+  cancel-in-progress: false
+
+jobs:
+  maintain_biorxiv:
+    if: github.repository == 'ziwenhahaha/daily-paper-reader'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      SUPABASE_BACKEND_KEY: biorxiv
+      SUPABASE_PAPERS_TABLE: biorxiv_papers
+      SUPABASE_RETENTION_DAYS: "45"
+      DPR_ENABLE_BIORXIV_BACKEND: "1"
+      DPR_BIORXIV_ENABLED: "1"
+      DPR_BIORXIV_PAPERS_TABLE: biorxiv_papers
+      DPR_BIORXIV_VECTOR_RPC_EXACT: match_biorxiv_papers_exact
+      DPR_BIORXIV_BM25_RPC: match_biorxiv_papers_bm25
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip + torch
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/torch
+          key: ${{ runner.os }}-dpr-biorxiv-hf-v1-${{ hashFiles('requirements.txt') }}
+
+      - name: Install deps (skip sqlite3)
+        run: |
+          python - <<'PY'
+          import re
+          lines = open("requirements.txt", "r", encoding="utf-8").read().splitlines()
+          lines = [l for l in lines if l.strip() and not re.match(r"^sqlite3\\b", l)]
+          open("/tmp/req.txt", "w", encoding="utf-8").write("\n".join(lines))
+          PY
+          python -m pip install --upgrade pip
+          python -m pip install uv
+          uv pip install --system -r /tmp/req.txt
+
+      - name: Cleanup old bioRxiv papers
+        run: |
+          set -euo pipefail
+          set -x
+
+          if [ -z "${SUPABASE_SERVICE_KEY}" ]; then
+            echo "[WARN] 未配置 SUPABASE_SERVICE_KEY，已跳过 bioRxiv 历史论文清理。"
+            exit 0
+          fi
+
+          python src/1.4.cleanup_supabase_old_papers.py \
+            --backend-key "${SUPABASE_BACKEND_KEY}" \
+            --retention-days "${SUPABASE_RETENTION_DAYS}"
+
+      - name: Run bioRxiv Maintainer Fetch + Sync
+        run: |
+          set -euo pipefail
+          set -x
+
+          if [ -z "${SUPABASE_SERVICE_KEY}" ]; then
+            echo "[WARN] 未配置 SUPABASE_SERVICE_KEY，已跳过 bioRxiv 维护同步。"
+            exit 0
+          fi
+
+          FETCH_DAYS="${{ github.event.inputs.fetch_days }}"
+          if [ -z "$FETCH_DAYS" ]; then
+            FETCH_DAYS="30"
+          fi
+
+          RUN_DATE="$(date -u +%Y%m%d)"
+          RAW_PATH="${GITHUB_WORKSPACE}/archive/${RUN_DATE}/raw/biorxiv_papers_${RUN_DATE}.json"
+          mkdir -p "$(dirname "$RAW_PATH")"
+
+          echo "[INFO] 开始 bioRxiv 维护抓取预检：SUPABASE_PAPERS_TABLE=${SUPABASE_PAPERS_TABLE}，fetch_days=${FETCH_DAYS}，raw_path=${RAW_PATH}"
+
+          echo "::group::1.fetch_paper_biorxiv (fetch window)"
+          python src/1.fetch_paper_biorxiv.py \
+            --days "$FETCH_DAYS" \
+            --chunk-days 1 \
+            --output "$RAW_PATH"
+          echo "::endgroup::"
+
+          if [ ! -f "$RAW_PATH" ]; then
+            FETCH_COUNT=0
+          else
+            FETCH_COUNT="$(python -c 'import json,sys; path=sys.argv[1]; data=json.load(open(path, "r", encoding="utf-8")); isinstance(data, list) or (_ for _ in ()).throw(SystemExit(f"raw json must be list: {path}")); print(len(data))' "$RAW_PATH")"
+          fi
+
+          echo "[INFO] bioRxiv fetch 预检结果：count=${FETCH_COUNT}，raw_path=${RAW_PATH}"
+          if [ "$FETCH_COUNT" -gt 0 ]; then
+            echo "::group::1.2.sync_supabase_public (sync + embedding + upsert)"
+            python src/1.2.sync_supabase_public.py \
+              --backend-key biorxiv \
+              --date "$RUN_DATE" \
+              --raw-input "$RAW_PATH"
+            echo "::endgroup::"
+          else
+            echo "[INFO] 本次 bioRxiv 抓取无新增论文（count=${FETCH_COUNT}），已跳过 Supabase 同步。"
+          fi
