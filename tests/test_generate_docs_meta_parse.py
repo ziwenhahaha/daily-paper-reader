@@ -70,6 +70,27 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
             self.assertEqual(item["tldr"], "legacy tldr text")
             self.assertEqual(item["selection_source"], "cache_hint")
 
+    def test_parse_source_from_front_matter(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "paper.md"
+            path.write_text(
+                "\n".join(
+                    [
+                        "---",
+                        "title: Test title",
+                        "source: biorxiv",
+                        "selection_source: fresh_fetch",
+                        "---",
+                        "## Abstract",
+                        "abstract body",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            item = self.mod._parse_generated_md_to_meta(str(path), "pid", "quick")
+            self.assertEqual(item["source"], "biorxiv")
+            self.assertEqual(item["selection_source"], "fresh_fetch")
+
     def test_extract_sidebar_tags_hides_composite_suffix(self):
         paper = {
             "llm_score": 8.0,

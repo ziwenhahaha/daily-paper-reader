@@ -1279,6 +1279,7 @@ def build_markdown_content(
     abstract_en = (paper.get("abstract") or "").strip()
     if not abstract_en:
         abstract_en = "arXiv did not provide an abstract for this paper."
+    paper_source = str(paper.get("source") or "").strip()
     selection_source = str(paper.get("selection_source") or "").strip()
 
     # 解析速览内容
@@ -1333,6 +1334,8 @@ def build_markdown_content(
         lines.append(f"evidence: {yaml_escape(evidence)}")
     if display_tldr:
         lines.append(f"tldr: {yaml_escape(display_tldr)}")
+    if paper_source:
+        lines.append(f"source: {yaml_escape(paper_source)}")
     if selection_source:
         lines.append(f"selection_source: {yaml_escape(selection_source)}")
 
@@ -2228,6 +2231,7 @@ def _parse_generated_md_to_meta(
     score_value = _fallback_meta("score", "Score")
     evidence_value = _fallback_meta("evidence", "Evidence")
     tldr_value = _fallback_meta("tldr", "TLDR")
+    paper_source_value = str(fm_meta.get("source") or fm_meta.get("Source") or "").strip()
     src_value = str(selection_source or "").strip()
     if not src_value and "selection_source" in fm_meta:
         src_value = str(fm_meta.get("selection_source") or "").strip()
@@ -2253,6 +2257,7 @@ def _parse_generated_md_to_meta(
         "tldr": str(tldr_value or "").strip(),
         "tags": ", ".join(tags_compact),
         "abstract_en": abstract_en,
+        "source": paper_source_value,
         "selection_source": src_value,
     }
 
