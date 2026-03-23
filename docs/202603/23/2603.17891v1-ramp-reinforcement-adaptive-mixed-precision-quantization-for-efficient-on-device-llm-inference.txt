@@ -1,0 +1,1218 @@
+Title: RAMP: Reinforcement Adaptive Mixed Precision Quantization for Efficient On Device LLM Inference
+
+URL Source: https://arxiv.org/pdf/2603.17891v1
+
+Published Time: Thu, 19 Mar 2026 01:38:55 GMT
+
+Number of Pages: 23
+
+Markdown Content:
+# RAMP: R EINFORCEMENT ADAPTIVE MIXED -P RECISION QUANTIZATION FOR EFFICIENT ON-D EVICE LLM I NFERENCE 
+
+Arpit Singh Gautam Saurabh Jha 
+
+# ABSTRACT 
+
+Post-training quantization is essential for deploying large language models (LLMs) on resource-constrained hardware, yet state-of-the-art methods enforce uniform bit-widths across layers, yielding suboptimal accuracy-efficiency trade-offs. We present RAMP (Reinforcement Adaptive Mixed-Precision), an off-policy Soft Actor-Critic framework that learns per-layer bit-width assignments to minimize perplexity under a global bit budget. The policy conditions on an 11-dimensional embedding of activation statistics, weight properties, and structural descriptors, enabling zero-shot transfer across model families and scales. To enable stable sub-4-bit quantization, we introduce Scale Folding, a preconditioning technique that migrates activation outliers into weights via per-channel scaling and normalization-layer compensation. A quality-prioritized reward with asymmetric penalties and budget cliffs drives rapid convergence. On Llama-2-7B, RAMP achieves 5.54 perplexity at 3.68 GB (3.65 effective bits), outperforming uniform 4-bit AWQ (5.60 at 3.90 GB) and GPTQ by 6% in size and 1–3% in quality. Critically, a policy trained only on Llama-2-7B generalizes zero-shot to Llama-2-13B and Mistral-7B, often surpassing target-specific training, supporting the hypothesis that quantization sensitivity is primarily architectural. The HALO pipeline exports allocations to GGUF format for kernel-free inference on CPUs, GPUs, and edge devices, retaining 99.5% of FP16 commonsense reasoning performance. 
+
+Keywords : mixed-precision quantization, reinforcement learning, post-training quantization, large lan-guage models, policy transfer, on-device inference, scale folding 
+
+# 1 INTRODUCTION 
+
+1.1 The Memory Wall in Large Language Models 
+
+The advent of large language models (LLMs) has funda-mentally transformed natural language processing. Models such as GPT-4 (OpenAI, 2023), Llama-2 (Touvron et al., 2023), Llama-3 (AI, 2024), and Mistral (Jiang et al., 2023) achieve state-of-the-art performance across tasks including machine translation, code generation, and multi-step reason-ing. These advances have driven widespread adoption in both research and commercial settings. However, the scale of modern LLMs introduces a critical de-ployment bottleneck: the growing disparity between model memory requirements and available hardware capacity, com-monly termed the memory wall . For example, Llama-2-13B (13 billion parameters) requires approximately 26 GB in FP16 format, exceeding the memory of many consumer GPUs. Even Llama-2-7B demands about 13.5 GB in FP16, leaving limited headroom for activations during inference. This constraint severely restricts deployment on: • Edge devices with constrained memory (mobile phones, IoT devices, embedded systems), • Consumer-grade GPUs (e.g., RTX 3090, RTX 4090), • Cost-sensitive cloud environments where memory bandwidth and capacity dominate inference costs, • Privacy-sensitive applications that require on-device inference. The economic and environmental implications are signifi-cant. High-end datacenter GPUs capable of hosting unquan-tized 13B-scale models cost tens of thousands of dollars, while consumer alternatives are substantially cheaper yet insufficient. Moreover, large-scale cloud-based inference contributes meaningfully to the carbon footprint of AI sys-tems. Table 1 quantifies this memory wall for representative mod-els relative to a typical consumer GPU memory limit. 
+
+1.2 Limitations of Existing Quantization Methods 
+
+Post-training quantization (PTQ) is the primary technique for reducing LLM memory footprint. By representing weights and activations in lower bit-widths (typically 4–8 bits), PTQ achieves 4–8 × compression with modest accu-racy loss. Recent methods such as GPTQ (Frantar et al.,                          
+
+> arXiv:2603.17891v1 [cs.LG] 18 Mar 2026 RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference
+> Table 1. Model memory footprint in FP16 and viability on 24 GB consumer GPU
+> Model Parameters FP16 Size 24 GB GPU Viable?
+> Llama-2-7B 7.0B 13.5 GB 24 GB Marginal Llama-2-13B 13.0B 26.0 GB 24 GB No Llama-3-8B 8.0B 16.1 GB 24 GB No Mistral-7B 7.0B 14.5 GB 24 GB Marginal GPT-3.5 175B+ 350+ GB 24 GB Impossible
+
+2023) and AWQ (Lin et al., 2023) demonstrate that 4-bit quantization can preserve near-full-precision performance on many tasks. Nevertheless, current approaches exhibit three important limitations. 
+
+1.2.1 Uniform Bit-Width Allocation 
+
+State-of-the-art PTQ methods apply a uniform bit-width across all layers. This ignores substantial variation in layer sensitivity to quantization noise. In Transformer-based ar-chitectures, embedding layers, attention output projections, and final language-modeling heads are particularly sensitive, as errors here propagate globally or directly affect predic-tions. In contrast, many intermediate MLP layers exhibit redundancy and greater tolerance to low-precision represen-tations. Uniform allocation therefore over-allocates bits to robust layers while under-allocating them to sensitive ones, result-ing in a suboptimal accuracy–efficiency trade-off. 
+
+1.2.2 Lack of Transferability Across Models 
+
+Existing methods require costly per-model optimization and calibration. For example, GPTQ performs layer-wise Hessian-based optimization with O(d2) complexity (where 
+
+d is the hidden dimension), which becomes prohibitive for 
+
+d ≥ 4096 . Even lighter methods such as AWQ necessitate full recalibration for each new model or variant. Moreover, quantization strategies learned for one model (e.g., Llama-2-7B) do not transfer to others (e.g., Mistral-7B or Llama-2-13B), forcing repeated expensive optimization for every deployment target. 
+
+1.2.3 Hardware and Deployment Challenges for Mixed Precision 
+
+Mixed-precision quantization—assigning varying bit-widths across layers—can in principle outperform uniform quantization. However, it introduces kernel fragmentation: each bit-width requires a dedicated compute kernel, and frequent switches during inference incur overhead from con-text changes, memory transpositions, and register pressure differences. Naively implemented mixed-precision infer-ence is often 1.2–1.5 × slower than uniform quantization despite lower bit counts. No widely adopted standard currently supports arbitrary learned mixed-precision patterns. The most popular format, GGUF (used in llama.cpp), supports only predefined static patterns (e.g., Q4 K M), limiting flexibility. 
+
+1.3 Reframing Quantization as Sequential Decision Making 
+
+The preceding limitations highlight a mismatch between the structure of the quantization problem and conventional optimization-based approaches, which treat bit allocation as a static, model-specific search that minimizes reconstruction error. We instead frame quantization as a sequential decision-making task: a policy assigns bit-widths layer by layer to minimize global model quality (e.g., perplexity) subject to an average bit budget. This perspective naturally aligns with reinforcement learning (RL), which excels at constrained sequential optimization. By conditioning the policy on abstract, normalized layer features rather than raw parameter values, it becomes pos-sible to learn a transferable policy that generalizes across models sharing the same architectural family. If quantiza-tion sensitivity depends primarily on structural roles within the Transformer (e.g., output projections are consistently sensitive), a policy trained on one instance can generalize to others after appropriate state normalization. 
+
+1.4 RAMP: Reinforcement Learning for Adaptive Mixed-Precision Quantization 
+
+We present RAMP (Reinforcement Adaptive Mixed-Precision), a framework that realizes this vision through four main components. The high-level overview of the RAMP pipeline is illustrated in Figure 1. 
+
+1.4.1 SAC-Based Bit-Width Policy 
+
+RAMP uses Soft Actor-Critic (SAC) (Haarnoja et al., 2018), an off-policy RL algorithm, to learn the bit-allocation policy. SAC offers strong sample efficiency—critical given that each policy evaluation requires full model inference—and balances exploration and exploitation through entropy reg-ularization. Compared with on-policy alternatives such as PPO, SAC achieves substantially higher sample efficiency by reusing past experience via a replay buffer. 
+
+1.4.2 Transferable 11-Dimensional Layer Embeddings 
+
+The policy observes an 11-dimensional feature vector per layer instead of raw weights. These features capture activa-tion behavior, weight statistics, structural role, and alloca-RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+tion context: • Activation features (2 dims): maximum magnitude and importance score, • Weight statistics (2 dims): mean and standard devia-tion, • Structural descriptors (4 dims): normalized depth, in-put/output dimensions, layer type (attention/MLP), • Contextual features (3 dims): previous bit-width, run-ning average bit-width, positional bucket. All continuous features are normalized to promote invari-ance to model scale, enabling zero-shot transfer across mod-els. 
+
+1.4.3 Quality-Prioritized Reward Function 
+
+To avoid trivial solutions that sacrifice quality for bit savings, RAMP employs a tiered reward: • Quality reward rq : asymmetric penalty on perplexity (PPL) degradation, with explicit bonus for outperform-ing FP16 baseline, • Budget penalty rb: soft constraint that permits minor violations but heavily penalizes large overruns. This structure enforces quality as the primary objective while treating bit efficiency as a flexible constraint. 
+
+1.4.4 Hardware-Aware Export with Scale Folding 
+
+Learned policies are exported to GGUF format for deploy-ment via llama.cpp. RAMP introduces Scale Folding , a preprocessing step that stabilizes activation distributions to support reliable sub-4-bit quantization without custom kernels, enabling portable inference across CPUs, GPUs, Apple Silicon, and edge hardware. 
+
+1.5 Contributions 
+
+This work makes the following contributions: 1. Demonstration of the first transferable quantization policy for LLMs. A policy trained solely on Llama-2-7B generalizes zero-shot to Mistral-7B and Llama-2-13B, often yielding lower perplexity than policies trained directly on the target model. 2. Superior Pareto frontiers in mixed-precision quanti-zation. On Llama-2-7B, RAMP reaches 5.54 PPL at 3.68 GB (3.65 effective bits), outperforming AWQ by 6% in size and 1% in quality. On Llama-3-8B, RAMP achieves 6.47 PPL at 4.22 GB, improving over GPTQ by 24.6% and AWQ by 4.1% in size under comparable quality. 3. Scale Folding, a technique enabling practical 3-bit quantization of LLMs by preconditioning activations for stability. 4. A production-ready deployment pipeline (HALO) that supports consumer hardware inference (e.g., RTX 3090) at 3.05 × speedup over FP16 while retaining 98–99% of baseline reasoning performance. 5. Extensive evaluation across Llama-2, Llama-3, and Mistral families (50+ experiments), establishing con-sistent Pareto improvement in perplexity, model size, downstream accuracy, and inference latency. 
+
+# 2 BACKGROUND & R ELATED WORK 
+
+2.1 Model Compression Landscape 
+
+The deployment challenges of large neural networks have driven research into multiple compression techniques, each with distinct accuracy–efficiency trade-offs. Pruning removes low-magnitude weights or neurons. Magnitude-based pruning is simple yet risks discarding important connections, while structured pruning (remov-ing entire channels or layers) preserves hardware efficiency at the potential expense of representational power. Both approaches generally require retraining to restore accuracy. Knowledge distillation trains a compact student model to emulate the output distribution of a larger teacher, often achieving higher accuracy than training from scratch. How-ever, it necessitates a high-quality teacher and extensive retraining, rendering the process computationally expen-sive. Low-rank decomposition factorizes weight matrices into lower-rank products, reducing parameter count at the cost of additional matrix multiplications. While LoRA has gained popularity for parameter-efficient fine-tuning, its application to full-model compression remains limited. Quantization lowers the precision of weights and/or activa-tions (e.g., FP16 to INT4). Unlike pruning or distillation, it typically requires only post-training calibration and simulta-neously reduces memory footprint and compute latency. For large language models (LLMs), quantization has become the dominant compression paradigm due to its effectiveness and hardware portability. Quantization is particularly advantageous for production LLM deployment because it (i) shrinks memory require-ments to enable edge and consumer hardware, (ii) accel-erates inference via integer arithmetic, (iii) demands only lightweight calibration without retraining, and (iv) produces RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+models that run on diverse platforms. 
+
+2.2 Quantization Fundamentals 
+
+Quantization maps high-precision values to lower-bit rep-resentations. The standard affine quantization operation is 
+
+Wq = s · clamp 
+
+ Ws + z
+
+
+
+, 0, 2b − 1
+
+
+
+− s · z, (1) where W denotes the original weight, Wq the quantized counterpart, s the scale factor, z the zero-point, and b the target bit-width. The scale is chosen to span the observed dynamic range: s = max( W )−min( W )2b−1 .Quantization variants differ along several axes. Weight-only quantization compresses weights while retain-ing FP16 activations; this is prevalent for LLMs since activa-tion memory is rarely the bottleneck. Weight-and-activation schemes (e.g., W4A8) are less common at inference time. Symmetric quantization maps ranges to [−2b−1, 2b−1 − 1] ,while asymmetric quantization maps arbitrary ranges to 
+
+[0 , 2b − 1] and generally yields higher accuracy. Granularity options include per-layer (single scale per ma-trix, fastest but least accurate), per-channel (one scale per output channel, more accurate but slower), and per-group (one scale per 64–128 elements, the most widely used com-promise). Fake quantization simulates lower precision during training by clamping values but performs full-precision arithmetic; it is used primarily in quantization-aware training. Real quantization converts to integer arithmetic and is required for accurate deployment measurements. Post-training quantization (PTQ) calibrates parameters on unlabeled data without retraining, offering speed at modest accuracy cost. Quantization-aware training (QAT) integrates quantization into the training loop for better adaptation but is prohibitively expensive for 7B+ parameter LLMs. Conse-quently, PTQ has become the standard for modern LLMs. 
+
+2.3 Transformer Architecture Primer 
+
+Contemporary LLMs are built on the Transformer architec-ture, which stacks identical layers comprising an attention block, a feed-forward network (FFN), layer normalization, and residual connections. The attention block consists of query, key, and value projec-tions ( Wq , Wk, Wv ), scaled dot-product attention Attention (Q, K, V ) = softmax 
+
+ QK T
+
+√dk
+
+
+
+V, 
+
+and an output projection Wo. Multi-head attention executes this in parallel across heads. The FFN expands the hidden dimension via an up-projection, applies a non-linearity (ReLU or GELU), and projects back via a down-projection; gated variants (e.g., GLU) add an additional gate projection. Layer normalization stabilizes activations, and residual con-nections x + f (x) facilitate gradient flow. Token and posi-tional embeddings (RoPE, ALiBi, or absolute) map inputs to vectors, while the final output head projects hidden states to vocabulary logits. Model-specific variants exist—Llama-2 uses RoPE and grouped-query attention, Llama-3 expands the vocabu-lary to 128K tokens, and Mistral employs sliding-window attention—yet all retain the same core structure. 
+
+2.4 Activation Outliers and Quantization Challenges 
+
+Activation distributions in Transformers are highly non-uniform, with certain layers exhibiting extreme outliers whose magnitudes exceed the median by orders of mag-nitude. In Llama-2-7B, for example, embedding layers show 
+
+max( |X|) ≈ 4.2 versus median ≈ 3.8 (ratio 1.1×), while output projections ( oproj ) reach max( |X|) = 127 .3 (me-dian ≈ 1.3, ratio 98 ×) and down-projections reach 156 .8
+
+(median ≈ 1.4, ratio 112 ×). These outliers arise in information-bottleneck layers that compress or project high-dimensional features, encoding rare but critical signals. When ignored, they force the scale factor s = max( |X|)/(2 b −1) to be dominated by extremes, causing most values to quantize to 0 or 1 and producing severe information loss (often driving perplexity > 10 ). Prior mitigation strategies include AWQ (preserving top-1% salient channels at higher precision), SmoothQuant (re-distributing magnitudes via learned scaling), and Hessian-based sensitivity weighting. In contrast, the Scale Fold-ing technique introduced in this work migrates activation outliers into weights through learned preconditioning, en-abling stable sub-4-bit quantization without channel-specific preservation. 
+
+2.5 Related Work and State-of-the-Art 
+
+2.5.1 Post-Training Quantization Methods 
+
+Round-to-Nearest (RTN) (Jacob et al., 2018) serves as the simplest PTQ baseline, independently rounding each weight to the nearest representable low-bit value. While computa-tionally trivial, RTN incurs substantial accuracy degradation below 8 bits on LLMs. Uniform quantization applies identi-cal scales and zero-points across entire matrices or layers; per-group variants (groups of 64–128 elements) improve RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+granularity and are now standard in production pipelines. GPTQ (Frantar et al., 2023) formulates layer-wise quantiza-tion as Hessian-aware reconstruction minimization: 
+
+min 
+
+> Wq
+
+∥W − Wq ∥2 
+
+> H
+
+= ( W − Wq )TH(W − Wq ), (2) where H is an empirical Hessian approximation derived from calibration data. By sequentially compensating for prior quantization error using the inverse Hessian, GPTQ penalizes errors in high-curvature directions more heav-ily. Although it achieves near-FP16 perplexity at 4 bits, its 
+
+O(d2) complexity per layer and lack of cross-model trans-ferability limit scalability. AWQ (Lin et al., 2023) protects salient weights by scaling activations and weights channel-wise: 
+
+X′ = X · s−1, W ′ = W ⊙ s, (3) where s equalizes activation magnitudes (top 1% channels). This yields linear O(d) complexity, 5.60 PPL on Llama-2-7B at 4 bits, and fast calibration, yet still enforces uniform bit allocation and requires per-model recomputation. SmoothQuant (Xiao et al., 2023) and OmniQuant (Shao et al., 2024) similarly precondition activations or jointly optimize clipping and scaling. QUIP# (Tseng et al., 2024) applies random orthogonal rotations to spread outliers: 
+
+W ′ = R · W, (4) enabling aggressive quantization while remaining uniform. LRQ (Lee et al., 2025) learns low-rank scaling matrices for improved preconditioning yet still enforces uniform bit-width allocation. A shared limitation of all these methods is uniform bit-width allocation, which wastes precision on robust layers while under-allocating it to sensitive ones. 
+
+2.5.2 Mixed-Precision Quantization 
+
+HAWQ (Dong et al., 2020) pioneered Hessian-guided mixed precision by allocating higher bit-widths to layers with larger Hessian traces, using the heuristic 
+
+bi = round (bavg + α · log( tr (Hi))) . (5) Originally developed for CNNs and small-to-medium net-works, HAWQ requires expensive O(d2) Hessian approxi-mations per layer and lacks cross-model transferability, lim-iting scalability to large LLMs. Search-based approaches treat bit allocation as combinatorial optimization over N L
+
+possibilities. Evolutionary algorithms explore this space via mutation and selection but demand thousands of full-model evaluations and offer no convergence guarantees. Differentiable NAS-style methods and rate-distortion opti-mization (Xu et al., 2022) reduce cost somewhat but still require expensive per-model search and do not generalize across architectures. More recent work like CALM (Zhang et al., 2025) dynamically selects among existing quantiza-tion algorithms (e.g., GPTQ vs. AWQ) per layer, yet does not learn bit-widths themselves. Recent dynamic and phase-aware approaches such as Pro-gressive Mixed-Precision Decoding (PMPD) (Chen et al., 2025) and MixPE (Zheng et al., 2025) adapt bit-widths at runtime (e.g., different precision during prefill versus de-coding phases), while MoQAE (Tao et al., 2025) focuses on mixed-precision KV-cache compression for long-context inference. These methods deliver strong hardware-specific speedups but operate orthogonally to static weight alloca-tion: they do not produce a transferable per-layer policy nor a production-ready GGUF model with fixed mixed-precision weights. SqueezeLLM (Lee et al., 2024) combines mixed-precision quantization with structured sparsity, achieving strong per-formance on Llama-2-7B while still requiring per-model optimization and offering no cross-model transferability. No prior mixed-precision method has demonstrated cross-model transferability. Each new architecture, size, or even random seed typically requires restarting the full optimiza-tion process — a severe bottleneck when deploying or com-paring across multiple LLM variants. 
+
+2.5.3 Reinforcement Learning for Compression 
+
+Early RL-based quantization methods relied on on-policy algorithms and were designed for CNNs or small networks. ReLeQ (Elthakeb et al., 2019) used DDPG to output contin-uous bit-widths with a simple accuracy-minus-size reward, while AutoQ (Lou et al., 2020) applied PPO for layer-wise decisions on image classification models. Both suffered from extreme sample inefficiency (hundreds of full forward passes per episode) and showed no transferability or adapta-tion to generative LLMs. Soft Actor-Critic (SAC) (Haarnoja et al., 2018) is an off-policy algorithm that maximizes the entropy-regularized objective 
+
+max  
+
+> π
+
+Es∼D
+
+Ea∼π(·| s)[Q(s, a ) + αH [π(·| s)]]  , (6) leveraging a replay buffer, twin Q-networks, and automatic entropy adjustment to achieve 5–10 × better sample effi-ciency than on-policy methods such as PPO or DDPG. SAC has seen strong success in continuous control, robotics, and games, but prior to this work had not been applied to quanti-zation problems—particularly not to the long-horizon, high-cost sequential decision process of layer-wise bit allocation in LLMs. RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference                                                
+
+> Table 2. RAMP vs. related quantization methods (Llama-2-7B, WikiText-2 PPL)
+> Method Bit Allocation Transfer Eval Budget Llama-2-7B PPL Year
+> RTN-4 Uniform —Single pass 5.94 2018 GPTQ-4 Uniform —Per-layer opt. 5.69 2023 AWQ-4 Uniform —Single pass 5.60 2023 SmoothQuant-4 Uniform —Single pass 5.62 2023 QuIP#-4 Uniform —Single pass 5.62 2024 LRQ-4 Uniform —Single pass + preconditioner 5.75 2025 SqueezeLLM Mixed + sparse —Per-layer 5.57 2024
+> RAMP Mixed Yes ✓200 episodes 5.54 2026
+
+RL has also been explored for pruning (He et al., 2017) and neural architecture search (Zoph et al., 2017), but re-mains underutilized for post-training quantization of large generative models. 
+
+2.5.4 Evaluation Standards 
+
+Perplexity on WikiText-2 is the primary metric: PPL = exp − 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+log PM (xi|x<i )
+
+!
+
+. (7) Its standardized 245K-token test set, efficient evaluation (3–5 minutes), and strong correlation with downstream per-formance make it the de-facto benchmark. FP16 Llama-2-7B achieves ≈ 5.51 PPL; 4-bit methods typically rise to 5.60–5.70. Downstream validation uses commonsense reasoning suites (PIQA, HellaSwag, WinoGrande, ARC) via lm-evaluation-harness. Standard protocols require fixed seeds, exact model checkpoints, multiple runs, and comprehensive reporting of size, latency, and power. RAMP adheres to these practices. 
+
+2.6 Positioning RAMP in the Landscape 
+
+Table 2 compares RAMP against representative PTQ and mixed-precision baselines on Llama-2-7B WikiText-2 per-plexity. RAMP differentiates itself through four aspects: (i) the first demonstrated transferable quantization policy, enabling zero-shot generalization from Llama-2-7B to Llama-2-13B, Llama-3-8B, and Mistral-7B (often outperforming target-specific training); (ii) Pareto dominance over uniform 4-bit baselines in the perplexity–memory plane; (iii) linear-time policy evaluation (tens to hundreds of episodes) versus quadratic or combinatorial search costs; and (iv) direct align-ment with production deployment via GGUF export and Scale Folding, which preconditions activations for reliable sub-4-bit inference without custom kernels. The introduced components—SAC-driven policy learn-ing, 11-dimensional normalized layer embeddings, quality-prioritized tiered rewards, and Scale Folding—collectively address the uniform-allocation, non-transferable, and hardware-fragmentation limitations of prior work. The em-pirical results further support the hypothesis that quanti-zation sensitivity is primarily a structural property of the Transformer architecture rather than model-instance spe-cific. 
+
+# 3 THE RAMP M ETHODOLOGY 
+
+3.1 Problem Formulation 
+
+Mixed-precision quantization is formulated as a Markov Decision Process to enable reinforcement learning. 
+
+3.1.1 Formal Problem Definition 
+
+Given a pretrained LLM M with L quantizable linear layers (e.g., L = 224 for Llama-2-7B, corresponding to 7 linear projections per transformer block across 32 blocks, exclud-ing embeddings and output heads), the goal is to find a policy π that assigns bit-widths {b1, . . . , b L} minimizing perplexity subject to a memory budget: 
+
+min  
+
+> π
+
+Eπ(b|s) [PPL (Mq )] s.t. 1
+
+L
+
+> L
+
+X
+
+> i=1
+
+bi ≤ Bmax , (8) where Mq is the quantized model, PPL (Mq ) is evaluated on WikiText-2, and Bmax = 4 .25 (allowing 3–5 bits per layer). 
+
+3.1.2 MDP Formulation 
+
+The problem is cast as an episodic MDP (S, A, T , r, γ ):• State space S: 11-dimensional layer embeddings si ∈
+
+R11 .• Action space A: discrete bit-widths {3, 4, 5, 6}.• Transition T : deterministic, si+1 = f (si, a i) (appends previous action to context). • Reward r(s, a ) = rq (PPL ) + rb(bavg ).• Discount γ = 0 .99 .RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+Figure 1. Overview of the RAMP pipeline. Stage 1 uses a Soft Actor-Critic agent in a distributed multi-GPU setting to discover a mixed-precision strategy. Stage 2 performs kernel-free compilation via scale folding. Stage 3 quantizes the model layer-by-layer and exports it in GGUF format for deployment. 
+
+3.1.3 Quantization Process 
+
+A layer assigned bit-width b is quantized as 
+
+W (i) 
+
+> q
+
+= Quantize (W (i), b, s scale  
+
+> i
+
+), (9) which applies (i) scale folding to precondition outliers (see Section 4.3), (ii) per-group affine quantization (groups of 
+
+∼128 elements), and (iii) clipping to [0 , 2b − 1] . For each group g:
+
+W (i) 
+
+> q,g
+
+= s(g) 
+
+> i
+
+·clamp 
+
+$
+
+W (i)
+
+> g
+
+s(g)
+
+> i
+
++ z(g)
+
+> i
+
+'
+
+, 0, 2b − 1
+
+!
+
+−s(g) 
+
+> i
+
+z(g) 
+
+> i
+
+,
+
+(10) where s(g) 
+
+> i
+
+= max( W (i)    
+
+> g)−min( W(i)
+> g)2b−1
+
+.
+
+3.2 Layer Embeddings: 11-Dimensional State Space 
+
+Each layer is represented by a compact 11-dimensional embedding that abstracts sensitivity while remaining ap-proximately invariant to model scale, enabling zero-shot policy transfer. 
+
+3.2.1 Embedding Specification 
+
+The state vector for layer i is 
+
+si = [ s(1)  
+
+> i
+
+, . . . , s (11)  
+
+> i
+
+] ∈ R11 . (11) Activation features (2 dims): • s(1)  
+
+> i
+
+: maximum activation magnitude during calibra-tion, • s(2)  
+
+> i
+
+: activation-importance score. Weight statistics (2 dims): • s(3)  
+
+> i
+
+: weight mean, • s(4)  
+
+> i
+
+: weight standard deviation. Structural descriptors (4 dims): • s(5)  
+
+> i
+
+: normalized depth, • s(6)  
+
+> i
+
+: normalized input dimension, • s(7)  
+
+> i
+
+: normalized output dimension, • s(8)  
+
+> i
+
+: layer-type encoding (attention/MLP). Contextual features (3 dims): • s(9)  
+
+> i
+
+: coarse depth bucket, • s(10)  
+
+> i
+
+: previous-layer bit-width, • s(11)  
+
+> i
+
+: running average bit-width. Numeric features are normalized by layer width or depth. RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+3.2.2 Normalization for Transfer 
+
+Scale invariance is achieved by normalizing activation mag-nitudes by layer width: 
+
+max( |X(M1) 
+
+> i
+
+)|
+
+q
+
+n(M1)
+
+> i
+
+≈ max( |X(M2) 
+
+> i
+
+)|
+
+q
+
+n(M2)
+
+> i
+
+. (12) This holds empirically across Llama-2-7B, Llama-2-13B, and Llama-3-8B. 
+
+3.2.3 State Normalization 
+
+Embeddings are standardized to zero mean and unit vari-ance: 
+
+ˆsi = si − μs
+
+σs + ϵ , (13) where μs and σs are computed over calibration layers. 
+
+3.3 Soft Actor-Critic Agent Architecture 
+
+RAMP uses Soft Actor-Critic (SAC), an off-policy algo-rithm that jointly learns a policy and value function. 
+
+3.3.1 Policy Network (Actor) 
+
+The actor πθ (a | s) outputs a Gaussian over a continuous action: 
+
+a ∼ N (μθ (s), σ θ (s)) , (14) squashed via sigmoid and mapped to the nearest discrete bit-width. The network comprises two 512-unit hidden layers with LayerNorm and ReLU, a 256-unit bottleneck, and an output head for mean and log-variance. 
+
+3.3.2 Value Networks (Critic) 
+
+Twin Q-networks Qϕ1 , Q ϕ2 mitigate overestimation: 
+
+Qϕ(s, a ) = E
+
+h
+
+r(s, a )+ γ min  
+
+> i
+
+Qϕi (s′, a ′)−αH(π(· | s′)) 
+
+i
+
+.
+
+(15) Each critic concatenates the 11-dimensional state and ac-tion, uses two 512-unit layers with LayerNorm and ReLU, and a 256-unit bottleneck. Targets are updated via Polyak averaging. 
+
+3.3.3 Entropy Regularization 
+
+The objective includes entropy maximization: 
+
+π∗ = arg max  
+
+> π
+
+Es∼D
+
+h
+
+Ea∼π
+
+r(s, a ) + αH(π(· | s)) i
+
+,
+
+(16) with automatic temperature tuning: 
+
+Lα = Ea∼πθ
+
+h
+
+−α(log πθ (a | s) + ¯H)
+
+i
+
+, (17) where ¯H = −1.
+
+Figure 2. Reward computation in RAMP. After applying the policy, the quantized model is evaluated on perplexity, memory footprint, and activation stability. These signals are combined into a scalar reward that prioritizes quality while enforcing the bit budget. 
+
+3.3.4 Training Procedure 
+
+At each step, a minibatch is sampled from the replay buffer. Targets are 
+
+y = r + γ(1 − d)
+
+h
+
+min  
+
+> i
+
+Qϕ−
+
+> i
+
+(s′, a ′) − α log πθ (a′ | s′)
+
+i
+
+.
+
+(18) Critics are updated via MSE, the actor via the entropy-regularized objective, and α via its dedicated loss. Targets use Polyak averaging. 
+
+3.4 Quality-First Reward Design with Cliff Penalty 
+
+The reward is decomposed into quality and budget compo-nents evaluated at episode termination. The reward compu-tation process is shown in Figure 2. 
+
+3.4.1 Quality Reward Component 
+
+rq (PPL ) = 
+
+(
+
++10 .0 ·  1 − PPL PPL base 
+
+ if PPL ≤ PPL base ,
+
+−5.0 ·   PPL PPL base − 1 if PPL > PPL base ,
+
+(19) where PPL base is the FP16 baseline. The 2:1 asymmetry penalizes degradation more heavily than it rewards improve-ment. 
+
+3.4.2 Bit Budget Penalty (Cliff Constraint) 
+
+rb(bavg ) = 
+
+
+
+0 if bavg ≤ 4.0,
+
+−2.0 · (bavg − 4.0) if 4.0 < b avg ≤ 4.25 ,
+
+−20 .0 · (bavg − 4.25) 2 if bavg > 4.25 .
+
+(20) The three zones allow over-compression without penalty, lin-ear negotiation around the target, and quadratic punishment for violations. RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+3.4.3 Composite Reward 
+
+The terminal episode reward is 
+
+R = rq (PPL ) + rb(bavg ). (21) 
+
+3.4.4 Reward Characteristics 
+
+Large perplexity degradation incurs severe penalties, mod-est bit overruns are negotiable when quality improves, and budget violations are strongly discouraged. Configurations matching baseline perplexity within [4 .0, 4.25] bits yield near-zero reward; those beating baseline while staying in budget are strongly favored. 
+
+3.5 Training Algorithm & Convergence Algorithm 1 RAMP Training: SAC for Mixed-Precision Quantization  
+
+> 1:
+
+Initialize actor πθ , critics Qϕ1 , Q ϕ2 , targets, replay buffer D, α 
+
+> 2:
+
+for episode e = 1 to Nepisodes do  
+
+> 3:
+
+Select model M ; extract embeddings {si} 
+
+> 4:
+
+bavg ← 0 
+
+> 5:
+
+for layer i = 1 to L do  
+
+> 6:
+
+ai ∼ πθ (· | si); map to bi 
+
+> 7:
+
+bavg ← i−1 
+
+> i
+
+bavg + bi 
+
+> i
+> 8:
+
+Update s(11)  
+
+> i+1
+
+← bavg  
+
+> 9:
+
+Store (si, a i, 0, s i+1 ) 
+
+> 10:
+
+end for  
+
+> 11:
+
+Quantize and evaluate PPL  
+
+> 12:
+
+Compute R = rq (PPL ) + rb(bavg ); update terminal transition  
+
+> 13:
+
+for g = 1 to Nupdates do  
+
+> 14:
+
+Sample minibatch; compute target y 
+
+> 15:
+
+Minimize LQ, Lπ , Lα 
+
+> 16:
+
+Soft-update targets  
+
+> 17:
+
+end for  
+
+> 18:
+
+end for 
+
+Training proceeds in three phases. In the first ∼25 episodes the policy corrects overly aggressive low-bit assignments and rapidly increases average bit-width while reward im-proves. Episodes 26–120 exhibit noisy exploration near the budget boundary with fluctuating bit-widths and high reward variance. From episode 121 onward bit allocations stabilize, reward plateaus, and perplexity converges. Near-final performance is typically reached within 120 episodes; stable bit allocation within 150. Training dynamics showing perplexity, average bit-width, and reward across episodes are presented in Figure 3. The best-so-far perplexity encountered during search is shown in Figure 4.   
+
+> Figure 3. Training dynamics showing perplexity, average bit-width, and reward across episodes.
+> Figure 4. Best-so-far perplexity encountered during search.
+
+3.6 Methodology Summary 
+
+Table 3 summarizes the key design choices. 
+
+# 4 HARDWARE -A WARE DEPLOYMENT 
+
+# (HALO) 
+
+4.1 The Kernel Fragmentation Problem 
+
+Mixed-precision quantization assigns varying bit-widths across layers and can in principle outperform uniform quan-tization. However, it introduces kernel fragmentation during inference: each distinct bit-width requires a specialized com-pute kernel with its own memory layout, register allocation, and bit-packing scheme. Switching between kernels (e.g., from 4-bit to 3-bit) incurs overhead from: • GPU synchronization and context switches ( ∼10– 50 μs per launch), • Data reformatting and memory layout changes ( ∼100– 500 μs), • Increased cache misses and register pressure variations. For a model with 32 transformer blocks (224 quantizable RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference  
+
+> Table 3. RAMP framework components and design choices
+
+Component Choice Rationale 
+
+RL Algorithm SAC (off-policy, continuous) Sample-efficient learning with stable exploration State Representation 11-dimensional layer embeddings Abstracts sensitivity; enables cross-model transfer Action Space Continuous scalar (mapped to discrete bits) Smooth exploration State Normalization By layer width/depth Approximate scale invariance Policy Network MLP (512–512–256) + LayerNorm Capacity for heterogeneous sensitivities Q-Networks Twin critics + Polyak targets Reduces overestimation bias Entropy Regularization Automatic tuning ( ¯H = −1) Adaptive exploration–exploitation balance Quality Reward Asymmetric PPL-based terminal Prioritizes baseline quality preservation Bit Penalty Three-zone cliff constraint Enforces budget with negotiable region Batch Size 128 Stable updates under sparse rewards Replay Buffer ∼30k transitions Sufficient for episodic tasks Learning Rates Adam ( 3 × 10 −4) Standard SAC stability linear layers), this cumulative overhead often dominates execution time. Empirical measurements show naive mixed-precision inference (3/4/5-bit layers) is typically 1.2–1.5 ×
+
+slower than uniform 4-bit inference despite lower total bit count. Existing solutions include custom mixed-precision kernels in frameworks such as TensorRT or vLLM, which demand significant engineering effort, hardware-specific rewriting, and ongoing maintenance. Uniform quantization avoids fragmentation entirely but sacrifices the accuracy–efficiency gains possible with mixed precision. HALO addresses this by mapping learned bit allocations to standardized GGUF quantization types supported natively by llama.cpp , leveraging its mature, cross-platform ker-nels without custom development. 
+
+4.2 HALO Design & Implementation 
+
+HALO comprises three stages: learned quantization, type mapping, and GGUF export. 
+
+4.2.1 Stage 1: Learned Mixed-Precision Quantization 
+
+RAMP produces per-layer bit-widths {b1, . . . , b L} with 
+
+bi ∈ { 3, 4, 5, 6}, where L is the number of quantizable linear layers (e.g., L = 224 for Llama-2-7B, counting the 7 linear layers per transformer block across 32 blocks, exclud-ing embeddings and output heads). Each layer is quantized after scale folding preconditioning: 
+
+W (i) 
+
+> q
+
+= Quantize  ScaleFold (W (i)), b i
+
+, (22) where ScaleFold migrates activation outliers into weights (see Section 4.3). 
+
+4.2.2 Stage 2: Bit-to-GGUF-Type Mapping 
+
+GGUF quantization types provide block-wise mixed-precision with per-group scaling, yielding effective bits slightly above nominal values. HALO maps nominal bit-widths to the closest supported GGUF types: GGUF type (bi) = 
+
+
+
+Q3 K M bi = 3 (≈ 3.9 bpw )
+
+Q4 K M bi = 4 (≈ 4.84 bpw )
+
+Q5 K M bi = 5 (≈ 5.67 bpw )
+
+Q6 K bi = 6 (≈ 6.56 bpw )
+
+(23) Higher assignments default to Q8 0 . All types are natively accelerated in llama.cpp across CPU and GPU backends, eliminating fragmentation while preserving close-to-target compression. 
+
+4.2.3 Stage 3: GGUF Export and Metadata 
+
+The model is exported in GGUF format with: • Header metadata: model name, quantization type (mixed-precision), full bit allocation array, scale fold-ing parameters, training metadata, • Per-layer data: quantized weights, per-group scales, layer-specific GGUF type. During inference, llama.cpp reads per-layer types, se-lects the corresponding kernel, dequantizes weights on-the-fly to FP16 activations, and performs matrix multiplications in standard precision. Scale folding is integrated by storing preconditioned weights 
+
+W ′ = W/α ; dequantization automatically unfolds to the effective original weights losslessly. RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+4.3 Scale Folding: Activation Outlier Migration 
+
+A major obstacle to aggressive low-bit quantization (¡= 4 bits) is the presence of activation outliers—values whose magnitudes are orders of magnitude larger than the median. These outliers dominate the scale factor, forcing most acti-vations to be coarsely quantized and often causing model divergence at 3 bits. Scale Folding addresses this by migrating activation out-lier magnitudes into the corresponding weights through a learned per-channel scaling transformation, while preserv-ing the mathematical equivalence of the forward pass. The procedure is applied separately to the attention and FFN sub-blocks within each transformer layer: 
+
+Algorithm 2 Scale Folding  
+
+> 1:
+
+for each transformer block i do  
+
+> 2:
+
+Compute attention scale vector si =
+
+q
+
+act scale (attn )
+
+> i
+
+from q proj  
+
+> 3:
+
+Normalize: si ← si/mean (si) 
+
+> 4:
+
+Fold into attention weights: WQ, W K , W V ←
+
+WQ,K,V ⊙ si 
+
+> 5:
+
+Compensate input RMSNorm: RMSNorm in ←
+
+RMSNorm in ⊙ s−1 
+
+> i
+> 6:
+
+Compute FFN scale vector s′ 
+
+> i
+
+=
+
+q
+
+act scale (ffn ) 
+
+> i
+
+from gate proj  
+
+> 7:
+
+Normalize: s′ 
+
+> i
+
+← s′
+
+> i
+
+/mean (s′
+
+> i
+
+) 
+
+> 8:
+
+Fold into FFN weights: Wgate , W up ← Wgate , W up ⊙
+
+s′ 
+
+> i
+> 9:
+
+Compensate post-attention RMSNorm: RMSNorm post ← RMSNorm post ⊙ s′− 1 
+
+> i
+> 10:
+
+end for 
+
+Unlike AWQ (Lin et al., 2023), which protects salient channels by scaling activations down and weights up, or SmoothQuant (Xiao et al., 2023), which applies symmetric smoothing to both activations and weights, Scale Folding performs asymmetric migration of outliers into weights 
+
+with explicit inverse compensation of preceding normaliza-tion layers. This produces significantly smoother activation distributions, enabling stable and practical 3-bit quantiza-tion without requiring custom kernels. The preconditioned weights integrate seamlessly with the GGUF export pipeline in HALO, allowing kernel-free deployment across CPUs, GPUs, and edge devices. Empirical ablation confirms its necessity: without Scale Folding, convergence is slower and final perplexity on Llama-2-7B rises to 5.58; with folding, the model converges in 150 episodes to 5.54 PPL with stable 3-bit assignments.  
+
+> Table 4. Impact of scale folding on Llama-2-7B GGUF export
+
+Method WikiText-2 PPL Model Size 
+
+No scale folding 5.58 3.80 GB HALO (with folding) 5.54 3.68 GB 
+
+4.4 Platform Portability 
+
+A single GGUF file produced by HALO runs unmodified across hardware via llama.cpp backends. Representative performance for 7B-class GGUF models (drawn from public benchmarks) includes: • NVIDIA GPUs (RTX 3090, A100, H100): few–tens to low-hundreds tok/s depending on context and batch; VRAM usage ≈4–5 GB for Q4-level models, • AMD GPUs (MI250/MI300): comparable throughput via HIP backend, • x86 CPUs (multi-core Intel/AMD): few– ∼10 tok/s, latency 30–150 ms/token, • Apple Silicon (M1/M2/M3): tens tok/s with unified memory, • ARM edge (Raspberry Pi-class): runnable but slow (>300 ms/token), • Mobile NPUs (Snapdragon-class): prototype NPU ac-celeration yields higher prompt throughput; token gen-eration remains lower. Model quality (perplexity) remains consistent across plat-forms since the quantized weights are identical. 
+
+4.5 HALO Ablation & Effectiveness 
+
+4.5.1 Scale Folding Ablation 
+
+Scale Folding improves perplexity (5.58 → 5.54) and re-duces exported size, stabilizing low-bit quantization. It is recommended for sub-4-bit deployments. 
+
+4.5.2 Kernel Implementation Ablation 
+
+Specialized CUDA kernels (e.g., GPTQ with ExLlama) typically achieve the highest raw throughput on NVIDIA GPUs, while AWQ offers stronger quality retention due to its activation-aware design. In contrast, GGUF-based in-ference ( llama.cpp ) provides competitive performance with the major advantage of broad cross-platform support (CPUs, GPUs, Apple Silicon) without requiring custom ker-nel development. This makes HALO suitable for practical, hardware-agnostic deployment. RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+4.5.3 Portability Ablation 
+
+Representative deployment characteristics across platforms are reported in Table 5. A single GGUF file produced by HALO executes unmodi-fied across platforms with stable perplexity. Latency varies with hardware capability, but portability eliminates the need for hardware-specific re-quantization or custom kernels. 
+
+# 5 EVALUATION 
+
+5.1 Models and Architectural Diversity 
+
+Experiments were conducted across multiple model families, sizes, and architectural variants to assess the generalizability and transferability of RAMP. Model specifications used in experiments are listed in Table 6. 
+
+Abbreviations : MHA = Multi-Head Attention, GQA = Grouped-Query Attention, SWA = Sliding Window Atten-tion. Llama-2-7B served as the source model for training the RL policy. Llama-2-13B tested zero-shot transfer to a larger model of the same architecture. Llama-3-8B evaluated ro-bustness to denser parameterization and a larger vocabu-lary. Mistral-7B assessed cross-architecture transfer under sliding-window attention. DistilGPT-2 was used only for prototyping and excluded from final results. 
+
+5.2 Datasets and Calibration 
+
+5.2.1 Calibration Dataset 
+
+WikiText-2 (Merity et al., 2016) (2.4M tokens) is used for calibration. For each model, 128 random sequences ( ∼20K tokens) are sampled from the training split. Activations are collected via forward passes to compute the 11-dimensional layer embeddings. 
+
+5.2.2 Evaluation Datasets 
+
+Perplexity is measured on the WikiText-2 test split (245K tokens). Downstream zero-shot performance is evaluated on commonsense reasoning benchmarks via 
+
+lm-evaluation-harness (Gao et al., 2021). The downstream task benchmarks are summarized in Table 7.  
+
+> Figure 5. Perplexity vs. model size on Llama-2-7B. RAMP domi-nates uniform 4-bit baselines.
+
+5.2.3 Calibration Procedure 
+
+Algorithm 3 Calibration and Embedding Extraction  
+
+> 1:
+
+Load pretrained model M in FP16  
+
+> 2:
+
+Sample 128 sequences from WikiText-2 training split  
+
+> 3:
+
+for each layer i = 1 to L do  
+
+> 4:
+
+Collect activations Ai over all sequences  
+
+> 5:
+
+Flatten: Xi = concatenate (Ai) 
+
+> 6:
+
+Compute 11-dimensional embedding si 
+
+> 7:
+
+end for  
+
+> 8:
+
+Return S = [ s1, . . . , s L]
+
+Calibration requires approximately 2 minutes per model. 
+
+5.3 Baseline Methods 
+
+RAMP is compared against FP16 and state-of-the-art 4-bit PTQ methods in in Table 8. 
+
+5.4 Implementation Details and Hyperparameters 
+
+SAC hyperparameters are listed in Table 9. Quantization and scale-folding settings appear in Tables 10 and 11, re-spectively. Evaluation uses batch size 1, 2048-token context, FP32 precision, greedy decoding (temperature 1.0), and 3 runs (mean ± std) on NVIDIA RTX PRO 5000 Blackwell and A100 GPUs. 
+
+5.5 Pareto Frontier Analysis 
+
+5.5.1 Llama-2-7B 
+
+Quantitative results are presented in Table 12. RAMP is strictly smaller and higher-quality than all 4-bit baselines, establishing a Pareto frontier. The Pareto frontier is visualized in Figure 5, and the concrete bit allocation is shown in Figure 6. RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference                                                                       
+
+> Table 5. Representative deployment characteristics of HALO GGUF models across platforms (values from public llama.cpp bench-marks)
+> Platform Device Example Memory Latency (ms/token) PPL Status
+> GPU RTX 3090 ∼3.7 GB ∼7–10 5.54 ✓
+> GPU A100 ∼3.7 GB ∼2–4 5.54 ✓
+> CPU Intel Xeon (16-core) ∼14 GB ∼30–50 5.54 ✓
+> Apple Silicon M1/M2/M3 Unified ∼25–80 5.54 ✓
+> ARM edge Raspberry Pi-class 4–8 GB >300 —Runnable Mobile SoC Snapdragon-class Device-dependent Vendor-dependent ∼5.5 Prototype
+> Table 6. Model specifications used in experiments
+> Model Params Vocab Hidden Transformer Blocks Attention
+> Llama-2-7B 6.7B 32K 4096 32 MHA Llama-2-13B 13B 32K 5120 40 MHA Llama-3-8B 8B 128K 4096 32 GQA Mistral-7B 7.2B 32K 4096 32 SWA DistilGPT-2 0.066B 50K 768 12 MHA
+> Figure 6. RAMP bit allocation on Llama-2-7B (224 quantizable linear layers).
+
+5.5.2 Llama-2-13B (Zero-Shot Transfer) 
+
+Results on Llama-2-13B are reported in Table 13. Zero-shot transfer from Llama-2-7B marginally outperforms direct training on the target model. 
+
+5.5.3 Llama-3-8B 
+
+Results on Llama-3-8B appear in Table 14. RAMP remains effective despite denser parameterization and larger vocabulary. The trade-off is shown in Figure 7, with the bit allocation in Figure 8. 
+
+5.5.4 Mistral-7B (Cross-Architecture Transfer) 
+
+Results on Mistral-7B are shown in Table 15. Zero-shot transfer again matches or exceeds direct training. 
+
+5.6 Zero-Shot Policy Transfer 
+
+Zero-shot vs. direct training comparison is provided in Table 16.  
+
+> Figure 7. Perplexity vs. model size on Llama-3-8B.
+
+Zero-shot policies trained on Llama-2-7B consistently outperform or match direct training on target models, confirming that the 11-dimensional embeddings capture architecture-level sensitivity. Layer-wise bit patterns exhibit strong depth-wise correlation (ρ ≈ 0.9) across models, with higher precision at input/out-put layers and aggressive compression in intermediate lay-ers. First- and last-10 layer bit assignments across models are illustrated in Figure 9. 
+
+5.7 Downstream Task Performance 
+
+Commonsense reasoning performance is reported in Ta-ble 17. RAMP retains 99.5% of FP16 downstream accuracy on average while achieving substantially higher compression RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference                                           
+
+> Table 7. Downstream task benchmarks
+> Task Type Questions Metric
+> PIQA (Bisk et al., 2020) Commonsense 2-choice Accuracy HellaSwag (Zellers et al., 2019) Commonsense 4-choice Accuracy WinoGrande (Sakaguchi et al., 2020) Commonsense 2-choice Accuracy ARC (Clark et al., 2018) Reasoning Multiple-choice Accuracy
+> Table 8. Baseline comparison on Llama-2-7B
+> Method Type PPL Size (GB)
+> FP16 Upper bound 5.51 13.5 RTN-4 Naive 5.94 3.90 GPTQ-4 (Frantar et al., 2023) SOTA 5.69 3.90 AWQ-4 (Lin et al., 2023) SOTA 5.60 3.90 QUIP#-4 (Tseng et al., 2024) SOTA 5.62 3.90 Q4 K M (GGUF) Deployment 5.61 3.95
+> RAMP Mixed-precision 5.54 3.68
+> Figure 8. RAMP bit allocation on Llama-3-8B (224 quantizable linear layers).
+
+than uniform 4-bit baselines. 
+
+# 6 ANALYSIS & D ISCUSSION 
+
+6.1 Why Zero-Shot Transfer Works 
+
+Policies trained on Llama-2-7B consistently match or out-perform those trained directly on target models (Llama-2-13B, Mistral-7B), suggesting the learned policy captures architecture-level rather than instance-specific patterns. 
+
+6.1.1 Embedding Stability Across Models 
+
+Embedding stability across models is quantified in Table 18. Correlations r > 0.93 confirm that normalized 11-dimensional embeddings reliably encode structural role in-dependent of model scale or exact parameter values. 
+
+6.1.2 Overfitting in Direct Training 
+
+Direct training on larger or architecturally distinct models risks overfitting to noise in layer-specific dynamics, initial-ization effects, and gradient fluctuations. Larger models (more layers, longer episodes) exacerbate this due to in- 
+
+> Figure 9. First- and last-10 layer bit assignments across models.
+
+creased state-space complexity and fewer effective updates within fixed wall-clock time. Evidence: zero-shot transfer from Llama-2-7B (32 blocks / 224 layers) yields 4.95 PPL on Llama-2-13B (40 blocks / 280 layers) vs. 4.96 PPL from direct training. 
+
+6.1.3 Policy Regularization 
+
+The zero-shot policy, trained on the simpler 32-block Llama-2-7B model, produces more stable bit allocations when applied to larger or architecturally distinct targets. This is consistent with learning generalizable patterns that avoid overfitting to model-specific noise or initialization effects. 
+
+6.2 Structural Sensitivity Patterns 
+
+The learned policy reveals consistent depth-wise and type-specific trends. 
+
+6.2.1 Depth-wise Allocation 
+
+Precision increases toward the output: early layers average 
+
+∼3.77 bits (mixed 3–5), middle layers ∼4.01 bits (mostly 3–4), late layers ∼4.52 bits (enriched for 5-bit). This asymmetric pattern prioritizes output projections and logits while aggressively compressing redundant intermedi-ate layers. Layer-wise bit assignments versus depth are shown in Fig-ure 10 and the smoothed trend in Figure 11. Mean bit-width per layer type is displayed in Figure 14. 
+
+6.2.2 Activation Outliers and Bit Choices 
+
+Simple statistics like log( Act Max ) or activation-importance scores show weak correlation with assigned bits RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+Table 9. SAC training hyperparameters 
+
+Parameter Value Rationale 
+
+Learning rate 3 × 10 −4 Actor and critics Batch size 128 Stability vs. efficiency Replay buffer 30,000 transitions ∼120 episodes × 250 steps Discount γ 0.99 Standard episodic RL Target update τ 0.005 Slow tracking Gradient clip 1.0 Stability Initial entropy 0.2 log(0 .2) ≈ − 1.6
+
+Target entropy −da Automatic Networks [512,512,256] (4 layers) Capacity with tractable cost Activation ReLU Fast inference Normalization LayerNorm Per hidden layer Optimizer Adam Adaptive Warm-up episodes 20 Random exploration Max episodes 200–250 Empirical convergence 
+
+Table 10. Quantization configuration 
+
+Parameter Value Rationale 
+
+Method Per-group asymmetric Standard LLM PTQ Group size 128 GGUF-compatible Bit widths {3, 4, 5} Aggressive compression range Target avg. bits 4.0 Compression goal Ceiling 4.25 Reward-enforced Calibration WikiText-2 (128 seq., 2048 tokens) Efficient and representative Scale folding Enabled Sub-4-bit stability 
+
+Figure 10. Layer-wise bit assignments vs. depth (224 quantizable linear layers). 
+
+(|r| ≈ 0.03 ). The policy relies on the full compositional 11D embedding rather than any single outlier proxy. 
+
+6.2.3 Exploration Dynamics 
+
+Flip frequency and transition matrix reveal stable conver-gence: most layers settle early, with exploration concen-trated on boundary-sensitive layers. Per-layer bit-flip frequency during training is analyzed in Figure 12, and transition probabilities are shown in Fig-ure 13. 
+
+Figure 11. Smoothed bit-width trend across depth. 
+
+6.2.4 Allocation by Layer Type 
+
+Output projections and final layers receive highest average precision; intermediate MLP down-projections are most aggressively compressed. 
+
+6.3 Ablation Studies 
+
+6.3.1 Scale Folding 
+
+Scale folding impact is quantified in Table 4 and Table 19. Scale folding is required for stable convergence and low-bit viability. RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+Table 11. Scale folding configuration 
+
+Parameter Value Rationale 
+
+Scale s = √act scale Smoothing Normalization s ← s/ mean (s) Magnitude preservation Stabilization +10 −5 Numerical safety Scope Per-channel (Q/K/V/O/gate/up) Fine-grained conditioning Norm adjustment RMSNorm ← RMSNorm /s Equivalence preservation Calibration 128 sequences Reuse of quantization data 
+
+Table 12. Results on Llama-2-7B (224 quantizable linear layers) 
+
+Method Size (GB) PPL Size vs RAMP PPL vs RAMP 
+
+FP16 13.5 5.51 +267% —RTN-4 3.90 5.94 +6 .0% +7 .2% 
+
+GPTQ-4 3.90 5.69 +6 .0% +2 .7% 
+
+AWQ-4 3.90 5.60 +6 .0% +1 .1% 
+
+QUIP#-4 3.90 5.62 +6 .0% +1 .4% 
+
+Q4 K M 3.95 5.61 +7 .3% +1 .3% 
+
+RAMP 3.68 5.54 — —
+
+Figure 12. Per-layer bit-flip frequency during training. 
+
+6.3.2 Reward Design 
+
+Reward design ablation is shown in Table 20. Asymmetric quality prioritization with cliff penalty yields 33% faster convergence and 7 × lower variance. 
+
+6.3.3 SAC vs. PPO 
+
+Comparison of SAC versus PPO is provided in Table 21. SAC is 8 × more sample-efficient due to replay buffer reuse, producing lower perplexity and greater stability. 
+
+6.3.4 Embedding Expressivity 
+
+The 11D embedding captures compositional sensitivity be-yond single features ( |r| ≤ 0.30 for individual dimen-sions).The PCA projection of layer embeddings colored by assigned bit-width is presented in Figure 15. 
+
+Figure 13. Bit-transition probabilities across episodes. 
+
+6.3.5 HALO Deployment Trade-offs 
+
+HALO deployment trade-offs compared to custom kernels are summarized in Table 22. HALO trades marginal peak throughput for mature, portable, community-optimized kernels across CPU/GPU/Apple Sili-con without custom development. RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference                                                        
+
+> Table 13. Results on Llama-2-13B (280 quantizable linear layers)
+> Method Size (GB) PPL Size vs RAMP PPL vs RAMP
+> FP16 26.0 4.85 +259% —GPTQ-4 7.68 5.02 +6 .1% +1 .4%
+> AWQ-4 7.68 4.97 +6 .1% +0 .4%
+> Q4 K M 7.73 4.98 +6 .8% +0 .6%
+> Direct SAC 7.25 4.96 +0 .1% +0 .2%
+> RAMP (zero-shot) 7.24 4.95 ——
+> Table 14. Results on Llama-3-8B
+> Method Size (GB) PPL Size vs RAMP PPL vs RAMP
+> FP16 16.1 6.23 +281% —GPTQ-4 5.74 8.58 +36% +33%
+> AWQ-4 5.31 6.74 +26% +4 .2%
+> Q4 K M 5.48 6.79 +30% +5 .0%
+> RAMP (zero-shot) 4.22 6.47 ——
+> Figure 14. Mean bit-width per layer type.
+
+6.4 Limitations and Future Directions 
+
+6.4.1 Current Limitations 
+
+RAMP was evaluated exclusively on decoder-only Trans-former architectures (Llama and Mistral families). Its applicability to encoder-decoder models (e.g., T5, mT5) and mixture-of-experts architectures remains untested. The method currently supports only discrete bit-widths 
+
+{3, 4, 5, 6} compatible with existing kernels; fractional or mixed-precision formats (e.g., 2.5-bit, 3.5-bit) are unsup-ported. Quantization occurs at layer granularity; finer head-level or channel-level allocation could yield further gains but requires corresponding kernel support. RAMP operates in the post-training setting only; integration with quantization-aware training could recover additional accuracy at aggres-sive compression levels. Although the policy transfers zero-shot, calibration (embedding extraction) must be re-peated per model. Finally, bit allocations are static; input-dependent dynamic quantization is left for future work. 
+
+6.4.2 Future Directions 
+
+Potential extensions include:  
+
+> Figure 15. PCA of layer embeddings colored by assigned bit-width.
+
+• Cross-architecture transfer to encoder-decoder and non-Transformer models, requiring architecture-agnostic state representations. • Head- or channel-level mixed precision, contingent on kernel support for intra-layer variable bit-widths. • Integration with quantization-aware training to reach sub-3-bit regimes. • Input-adaptive dynamic policies that adjust bits at in-ference time. • Multi-objective optimization jointly targeting perplex-ity, latency, power, and size. • Hardware co-design of kernels optimized for RAMP’s typical bit distributions. • Hybrid sparsity-plus-quantization pipelines. RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference                                              
+
+> Table 15. Results on Mistral-7B
+> Method Size (GB) PPL Size vs RAMP PPL vs RAMP
+> FP16 14.5 5.45 +299% —GPTQ-4 3.85 5.71 +6 .1% +2 .7%
+> AWQ-4 3.85 5.59 +6 .1% +0 .5%
+> Q4 K M 3.90 5.60 +7 .4% +0 .7%
+> Direct SAC 3.62 5.58 −0.3% +0 .4%
+> RAMP (zero-shot) 3.63 5.56 ——
+> Table 16. Zero-shot transfer summary
+> Target Direct PPL Direct Bits Zero-shot PPL Zero-shot Bits Winner
+> Llama-2-13B 4.96 3.66 4.95 3.66 Zero-shot Mistral-7B 5.58 3.67 5.56 3.67 Zero-shot
+
+• Continual adaptation of policies for incrementally trained or fine-tuned models. 
+
+# 7 CONCLUSION 
+
+RAMP learns transferable mixed-precision quantization policies via reinforcement learning, achieving Pareto-optimal accuracy-efficiency trade-offs while enabling de-ployment through standardized GGUF formats. 
+
+7.1 Key Contributions 
+
+The main contributions are: 1. Demonstration of the first transferable quantization pol-icy for LLMs: a policy trained on Llama-2-7B general-izes zero-shot to Mistral-7B and Llama-2-13B, often yielding lower perplexity than policies trained directly on the target. 2. Scale Folding, a preconditioning technique that stabi-lizes activation distributions and enables reliable sub-4-bit quantization. 3. A quality-prioritized reward with asymmetric penalties and cliff constraints that drives rapid, stable conver-gence of the SAC agent. 4. Strictly superior Pareto frontiers: on Llama-2-7B, RAMP reaches 5.54 PPL at 3.68 GB versus AWQ’s 5.60 PPL at 3.90 GB (6% smaller and 1.1% higher quality); comparable gains hold across Llama-3-8B and Mistral-7B. 5. HALO, a hardware-aware export pipeline that produces GGUF models runnable on CPUs, GPUs, Apple Sili-con, and select edge devices without custom kernels. 
+
+7.2 Outlook 
+
+RAMP establishes that quantization sensitivity is largely a structural property of Transformer architectures rather than model-instance specific. This insight suggests that reinforcement-learned policies may generalize to other com-pression techniques (pruning, sparsity, distillation) and opens a path toward general quantization agents that map any model and efficiency target to an optimal quantized artifact. 
+
+# 8 BROADER CONTEXT AND IMPACT 
+
+RAMP enables practical mixed-precision deployment on consumer and edge hardware via standardized llama.cpp 
+
+backends. A single GGUF artifact runs unmodified across NVIDIA/AMD GPUs, x86 CPUs, Apple Silicon, and some mobile platforms, reducing the barrier between research prototypes and real-world inference. Model compression also lowers energy consumption. Illus-trative estimates for 8 h/day inference of a 7B-class model show that RAMP-quantized execution on consumer hard-ware can reduce annual carbon emissions by 66–75% rela-tive to cloud A100 baselines (see Table 23 for assumptions and order-of-magnitude calculations). 
+
+> Assumptions: US grid intensity 0.4 kg CO 2/kWh, $0.10/kWh cloud pricing, public TDP and benchmark power draws. These are order-of-magnitude estimates, not direct measurements.
+
+8.1 Future of Efficient LLM Deployment       
+
+> Further gains are expected from hybrid sparsity-plus-quantization, input-adaptive policies, and hardware co-design of mixed-precision kernels. The long-term goal is a general quantization agent capable of mapping arbitrary models and efficiency targets to optimal compressed artifacts across diverse hardware.
+
+RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+Table 17. Commonsense reasoning performance (Llama-2-7B) 
+
+Method PIQA HellaSwag WinoGrande ARC Avg 
+
+FP16 79.4% 58.2% 64.0% 53.9% 63.9% AWQ-4 78.8% 57.1% 62.3% 52.4% 62.7% Q4 K M 78.6% 56.9% 62.1% 52.1% 62.4% 
+
+RAMP 79.2% 57.9% 63.7% 53.6% 63.6% 
+
+Retention vs. FP16 99.7% 99.5% 99.5% 99.4% 99.5% 
+
+Table 18. Embedding stability: Pearson correlations across models 
+
+Layer Role Llama-2-7B Llama-2-13B Mistral-7B Correlation 
+
+Embedding layer (0.87, 0.34, 0.12, ...) (0.91, 0.36, 0.13, ...) (0.85, 0.32, 0.11, ...) r = 0 .94 
+
+Attention o proj (3.12, 0.18, 0.08, ...) (3.15, 0.19, 0.09, ...) (3.08, 0.17, 0.07, ...) r = 0 .96 
+
+MLP down proj (2.87, 0.22, 0.11, ...) (2.91, 0.23, 0.12, ...) (2.84, 0.21, 0.10, ...) r = 0 .95 
+
+Output layer (1.24, 0.41, 0.19, ...) (1.28, 0.42, 0.20, ...) (1.21, 0.40, 0.18, ...) r = 0 .93 
+
+Table 19. Scale folding ablation 
+
+Configuration Episodes to Conv. Final PPL Stable? 
+
+No folding > 250 5.58 Partial With folding 150 5.54 ✓
+
+Table 20. Reward ablation 
+
+Reward Episodes to Conv. Final PPL Variance 
+
+Naive (Acc - λ Bits) ∞ > 5.75 0.35 Linear 200 5.61 0.18 Quality-first (asymmetric + cliff) 150 5.54 0.05 
+
+Table 21. SAC vs. PPO 
+
+Algorithm GPU Hours Final PPL Variance 
+
+PPO 48 5.62 0.15 SAC 6 5.54 0.03 
+
+Table 22. HALO vs. custom kernels 
+
+Approach Throughput Portability / Effort 
+
+Custom mixed-precision kernels Highest (hardware-specific) Low (high engineering) HALO / GGUF Competitive High (zero custom dev, broad hardware) 
+
+Table 23. Illustrative annual energy and carbon footprint (7B model, 8 h/day) 
+
+Deployment Power (W) Annual kWh CO 2 (kg) Cost ($) 
+
+Cloud A100 350 2,920 1,168 292 RTX 3090 FP16 250 2,088 835 209 
+
+RTX 3090 RAMP 85 711 284 71 
+
+Xeon CPU RAMP 65 546 218 55 M1 laptop RAMP 12 101 40 10 RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+# REFERENCES 
+
+Meta AI. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. Yonatan Bisk, Rowan Zellers, Jia Gao, and Yejin Choi. Piqa: Reasoning about physical commonsense in natural language. In 
+
+Proceedings of the AAAI Conference on Artificial Intelligence ,volume 34, pages 7432–7439, 2020. Hao Mark Chen, Fuwen Tan, Alexandros Kouris, Royson Lee, Hongxiang Fan, and Stylianos I. Venieris. Progressive mixed-precision decoding for efficient llm inference. In Proceedings of the Thirteenth International Conference on Learning Repre-sentations , 2025. URL https://arxiv.org/abs/2410. 13461 .Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? try arc, the ai2 reasoning challenge. In arXiv preprint arXiv:1803.05457 , 2018. Zhen Dong, Zhewei Yao, Amir Gholami, Michael W Mahoney, and Kurt Keutzer. Hawq: Hessian aware quantization of neu-ral networks with mixed-precision. In IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 293–302, 2020. Aamir T Elthakeb, Preetum Pilligundla, Amir Yazdanbakhsh, Mark A Kinsy, Sherief Reda, and Azalia Mirhoseini. Releq: An automatic reinforcement learning approach for deep quantiza-tion of neural networks. In Proceedings of Machine Learning and Systems , volume 1, pages 218–232, 2019. Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh. Gptq: Accurate post-training quantization for generative pre-trained transformers. arXiv preprint arXiv:2210.17323 , 2023. Leo Gao, Jonathan Tow, Stella Biderman, Sid Black, Anthony DiPofi, Charles Foster, Liane Golding, Jeffrey Hsu, Kyle Mc-Donell, Niklas Muennighoff, et al. A framework for few-shot language model evaluation. In arXiv preprint arXiv:2104.07567 ,2021. Tuomas Haarnoja, Aurick Zhou, Pieter Abbeel, and Sergey Levine. Soft actor-critic: Off-policy maximum entropy deep reinforce-ment learning with a stochastic actor. In International Confer-ence on Machine Learning , pages 1861–1870, 2018. Yihui He, Xiangyu Zhang, and Jian Sun. Learning efficient con-volutional networks through network slimming. In IEEE In-ternational Conference on Computer Vision , pages 2755–2763, 2017. Benoit Jacob, Skirmantas Kligys, Bo Chen, Mingxing Zhu, Matthew Tang, Andrew Howard, Hartwig Adam, and Dmitry Kalenichenko. Quantization and training of neural networks for efficient integer-arithmetic-only inference. In IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 2704–2713, 2018. Albert Q Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Flo-rian Bressand, Gregoire Lengyel, Guillaume Lample, Lucile Saulnier, et al. Mistral 7b. arXiv preprint arXiv:2310.06825 ,2023. Jung Hyun Lee, Jeonghoon Kim, June Yong Yang, Se Jung Kwon, and Eunho Yang. LRQ: Optimizing post-training quantization for large language models by learning low-rank weight-scaling matrices. In Proceedings of the 2025 Conference of the North American Chapter of the Association for Computational Lin-guistics , 2025. URL https://arxiv.org/abs/2407. 11534 .Sehyun Lee, Jinsol Lee, Hyeongjun Kim, Gunho Kim, Eun-hyeok Park, Jungwook Lee, Jung-Hoon Kim, Jaejin Kim, and Sunghyun Kim. Squeezellm: Dense-and-sparse quantization. In International Conference on Machine Learning , 2024. Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Wei-Ming Chen, Wei-Chen Wang, Guangxing Xiao, Xing Dang, Chuang Gan, and Song Han. Awq: Activation-aware weight quanti-zation for llm compression and acceleration. arXiv preprint arXiv:2306.00978 , 2023. Qian Lou, Fenggang Guo, Minsoo Kim, Ling Liu, and Lei Jiang. Autoq: Automated kernel-wise neural network quantization. In 
+
+International Conference on Learning Representations (ICLR) ,2020. Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. Pointer sentinel mixture models. arXiv preprint arXiv:1609.07843 , 2016. OpenAI. Gpt-4 technical report. arXiv preprint arXiv:2303.08774 ,2023. Keisuke Sakaguchi, Rowan Le Bras, Chandra Bhagavatula, and Yejin Choi. Winogrande: An adversarial winograd schema challenge at scale. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 34, pages 8732–8740, 2020. Wenqi Shao, Mengzhao Chen, Zhaoyang Zhang, Peng Xu, Lingfei Zhao, Zhiqiang Li, Kaipeng Zhang, Peng Gao, Yu Qiao, and Ping Luo. Omniquant: Omnidirectionally calibrated quantization for large language models. arXiv preprint arXiv:2308.09066 , 2024. RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+Wei Tao, Haocheng Lu, Xiaoyang Qu, Bin Zhang, Kai Lu, Jiguang Wan, and Jianzong Wang. MoQAE: Mixed-precision quantiza-tion for long-context llm inference via mixture of quantization-aware experts. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics , 2025. URL 
+
+https://arxiv.org/abs/2506.07533 .Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amaury Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Ba-tra, Prajjwal Bhargava, Shruti Bhosale, et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288 , 2023. Jerry Tseng, Harshit Sreenivasan, Yunyi Chen, Tushar Agar-wal, and Kurt Keutzer. Quip#: Even better llm quantiza-tion with hadamard incoherence optimization. arXiv preprint arXiv:2402.10147 , 2024. Guangxing Xiao, Ji Lin, Mickael Seznec, Hao Wu, Julien De-mouth, and Song Han. Smoothquant: Accurate and efficient post-training quantization for large language models. arXiv preprint arXiv:2211.10438 , 2023. Xiangyang Xu, Wenshuo Liu, Ming Qin, Chao Ding, Chen Zhang, and Dacheng Li. Rdo-q: Rate-distortion optimization for quan-tization. arXiv preprint , 2022. Rowan Zellers, Ari Holtzman, Hannah Rashkin, Yonatan Bisk, Ali Farhadi, Franziska Roesner, and Yejin Choi. Hellaswag: Can a machine really finish your sentence? In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics , 2019. Jinhao Zhang, Yunquan Zhang, Daning Cheng, Jun Sun, and Zicheng Yan. Calm: A cka-guided adaptive layer-wise mod-ularization framework for llm quantization. In arXiv preprint arXiv:2512.16282 , 2025. Zhen Zheng, Xiaonan Song, Chuanjie Liu, et al. Mixllm: Llm quantization with global mixed-precision between output-features and highly-efficient system design. In Proceedings of the Thirteenth International Conference on Learning Repre-sentations , 2025. URL https://arxiv.org/abs/2412. 14590 . Referred to as MixPE/MixLLM in literature. Barret Zoph, Vijay Vasudevan, Jonathon Shimonovskiy, and Quoc V Le. Neural architecture search with reinforcement learning. In International Conference on Learning Representa-tions , 2017. RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+# A 11-D IMENSIONAL EMBEDDING SPECIFICATION 
+
+The SAC policy conditions its decisions on a compact, fixed-dimensional state representation for each quantizable layer. This 11-dimensional embedding abstracts layer sensitivity, structural role, and sequential context while remaining approximately invariant to model scale through normalization and logarithmic scaling. The design enables zero-shot policy transfer across models of different sizes and slight architectural variations. The 11 features are computed as follows: 
+
+Table 24. Specification of the 11-dimensional layer embedding used by the RAMP policy. 
+
+Dim Feature Computation / Definition 
+
+1 Normalized depth inlayers −1
+
+2 Log input dimension log 2(in features /16) 
+
+3 Log output dimension log 2(out features /16) 
+
+4 Weight standard deviation min( std (W ) × 10 , 1.0) 
+
+5 Weight mean magnitude min( E[|W |] × 10 , 1.0) 
+
+6 Layer-type scalar 0.0 (Q/K/V proj.), 0.25 (output proj.), 0.5 (gate proj.), 0.6 (up proj.), 0.75 (down proj.), 1.0 (otherwise) 7 Position category 0.0 (early: bottom 10%), 0.5 (middle: 10–90%), 1.0 (late: top 10%) 8 Mean activation scale min( E[act scales ] × 100 , 1.0) 
+
+9 Max activation scale min(max( act scales ) × 1000 , 1.0) 
+
+10 Previous-layer bit-width (previous b normalized by 8; 0.0 for first layer) 11 Running average bit-width (running average b normalized by 8) 
+
+Activation scales are extracted by registering forward hooks on linear layers, forwarding 128 sequences from the WikiText-2 training split, and aggregating per-channel maximum magnitudes. Logarithmic scaling for dimensions, clipping to [0,1], and per-model normalization collectively promote size invariance, which is critical for cross-model generalization. 
+
+# B SAC H YPERPARAMETER CONFIGURATION 
+
+All experiments use a single, fixed SAC configuration without extensive hyperparameter tuning. The chosen values provide a good balance of sample efficiency, training stability, and policy expressivity for the sequential bit-allocation task. SAC optimization hyperparameters are listed in Table 25, replay buffer details in Table 26, and network architectures in Table 27. The optimization settings are summarized below: 
+
+Table 25. SAC optimization hyperparameters 
+
+Parameter Value Notes 
+
+Learning rate 3 × 10 −4 Shared across actor, critics, and temperature optimizer Optimizer Adam Applied to all components Discount factor γ 0.99 Standard for episodic tasks Target update rate τ 0.005 Ensures slow tracking of target networks Gradient clipping norm 1.0 Prevents exploding gradients Target entropy −1 For single-dimensional continuous action Initial entropy coefficient α exp(log 0 .2) Log-parameterized starting value 
+
+Replay buffer and training schedule: RAMP: Reinforcement Adaptive Mixed-Precision Quantization for Efficient On-Device LLM Inference 
+
+Table 26. Replay buffer and training schedule 
+
+Parameter Value Notes 
+
+Batch size 128 Used for all gradient updates Replay buffer capacity 30,000 transitions Sufficient for ∼120 episodes × 250 steps Warm-up episodes 20 Purely random actions before policy gradients Maximum episodes 200–300 Typical convergence budget in experiments 
+
+Actor and critic network architectures: 
+
+Table 27. Actor and critic network architectures                       
+
+> Component Architecture Notes
+> Actor FC-512-LN-ReLU →FC-512-LN-ReLU →FC-256-ReLU →FC-2 Outputs mean and log-std of action Critic (twin) FC-512-LN-ReLU →FC-512-LN-ReLU →FC-256-ReLU →FC-1 Input is state concatenated with continuous action Hidden activation ReLU Fast and effective for policy/value approximation Normalization LayerNorm Applied after the first two hidden layers
+
+These choices were empirically stable across all evaluated models and did not require per-model retuning.

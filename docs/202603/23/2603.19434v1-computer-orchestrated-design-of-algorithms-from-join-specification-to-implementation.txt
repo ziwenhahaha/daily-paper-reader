@@ -1,0 +1,598 @@
+Title: Computer-Orchestrated Design of Algorithms: From Join Specification to Implementation
+
+URL Source: https://arxiv.org/pdf/2603.19434v1
+
+Published Time: Mon, 23 Mar 2026 00:09:10 GMT
+
+Number of Pages: 9
+
+Markdown Content:
+# Computer-Orchestrated Design of Algorithms: From Join Specification to Implementation 
+
+# Zeyuan Hu 
+
+University of California, Los Angeles Los Angeles, California, USA zeyuanhu@cs.ucla.edu 
+
+## Abstract 
+
+Equipping query processing systems with provable theoretical guar-antees has been a central focus at the intersection of database theory and systems in recent years. However, the inevitable divergence between theoretical abstractions and system assumptions creates a gap between an algorithm’s high-level logical specification and its low-level physical implementation. Ensuring the correctness of this logical-to-physical translation is crucial for realizing theoret-ical optimality as practical performance gains. Existing database testing frameworks struggle to address this need because neces-sary algorithm-specific inputs such as join trees (as opposed to query plans) are absent from standard test case generation, and integrating complex algorithms into these frameworks imposes prohibitive engineering overhead. Fallback solutions, such as using macro-benchmark queries, are inherently too noisy for isolating intricate defects during this translation. In this experience paper, we present a retrospective analysis of 
+
+CODA , a computer-orchestrated testing framework utilized during the physical co-design of TreeTracker Join ( TTJ ), a theoretically optimal yet practical join algorithm recently published in ACM TODS. By synthesizing minimal reproducible examples, CODA 
+
+successfully isolates subtle translation defects, such as state mis-management and intricate mapping conflicts between join trees and bushy plans. We demonstrate that this logical-to-physical transla-tion process is a bidirectional feedback loop: early structural testing not only hardened TTJ ’s physical implementation but also exposed a critical boundary condition that directly refined the formal pre-condition of TTJ itself. Finally, we detail how confronting these structural translation challenges drove the architectural evolution of CODA into a robust, structure-aware test generation pipeline for join-tree-dependent algorithms. 
+
+ACM Reference Format: 
+
+Zeyuan Hu. 2026. Computer-Orchestrated Design of Algorithms: From Join Specification to Implementation. In Proceedings of Make sure to en-ter the correct conference title from your rights confirmation email (Confer-ence acronym ’XX). ACM, New York, NY, USA, 9 pages. https://doi.org/ XXXXXXX.XXXXXXX  
+
+> Permission to make digital or hard copies of all or part of this work for personal or classroom use is granted without fee provided that copies are not made or distributed for profit or commercial advantage and that copies bear this notice and the full citation on the first page. Copyrights for components of this work owned by others than the author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or republish, to post on servers or to redistribute to lists, requires prior specific permission and/or a fee. Request permissions from permissions@acm.org.
+> Conference acronym ’XX, Woodstock, NY
+> ©2026 Copyright held by the owner/author(s). Publication rights licensed to ACM. ACM ISBN 978-1-4503-XXXX-X/2026/06 https://doi.org/XXXXXXX.XXXXXXX
+
+## 1 Introduction 
+
+Query processing remains the cornerstone of any relational data-base management system (DBMS). In recent years, a major research thrust has emerged to equip practical query evaluation with prov-able theoretical guarantees. At the heart of this effort is the evalua-tion of conjunctive queries (CQs), queries involving multiple joins. An important subclass of CQs is acyclic conjunctive queries (ACQs) due to their immense abundance in real-life workloads [ 3, 10 ]. This line of research aims to bridge the gap between theory and practice in ACQ evaluation by introducing algorithms that are efficient in both domains (see survey [ 8]). Notably, this investigation is no longer merely an academic exercise; such theoretical advancements for ACQs have proven their practical viability in production-grade systems, being successfully deployed in DuckDB [ 11 ] and indepen-dently realized within Microsoft SQL Server’s optimization infras-tructure [ 19 ]. The latter shows a promising direction: re-evaluating mature query optimization heuristics through formal lenses, such as ACQ evaluation. One significant challenge in designing practical ACQ evaluation algorithms is that system constraints commonly diverge significantly from theoretical assumptions. Hence, a gap ex-ists between the high-level logical specification of an algorithm and its low-level physical implementation. Ensuring a faithful logical-to-physical translation is therefore crucial to guarantee that theoretical optimality actually translates into practical performance gains. A natural choice to verify the physical translation of such algo-rithms is to leverage conventional database testing frameworks [ 6,7, 9, 12 –15 , 18 , 21 ]. However, incompatibilities exist with the needs of the translation. First, algorithms rely on an input data structure called a join tree 1 that is distinct from a query plan and is not commonly seen in mainstream databases. This fact imposes a sig-nificant challenge to conventional database testing frameworks, as the correctness of query evaluation depends not only on the query plans but also on the topology of join trees. Unfortunately, the ex-isting testing frameworks do not support join trees, and retrofitting them is highly non-trivial. Second, existing frameworks generate SQL queries and database instances with the goal of testing fully-featured DBMSs. Thus, to utilize these tools, researchers would first have to fully integrate their nascent algorithm into an existing DBMS, which imposes an unnecessary engineering burden when the primary goal is simply to verify the correctness of the logical-to-physical translation. Hence, it is natural for researchers to use macro-benchmark queries as a proxy to test their physical trans-lation of an algorithm specification on an experimental prototype that closely mimics system constraints. They have to manually   
+
+> 1It is an unfortunate coincidence that the term “join tree” from database theory [ 1]may also refer to a query plan in DBMS literature. In this paper, we make a distinction between join tree and query plan.
+> arXiv:2603.19434v1 [cs.DB] 19 Mar 2026 Conference acronym ’XX, June 03–05, 2026, Woodstock, NY Zeyuan Hu
+
+craft a join tree for a given query and check the correctness of the translation through evaluation. The issue with this approach is due to the complexity of macro-benchmarks. Since the purpose of macro-benchmark queries is to mimic real-life workloads and benchmark DBMS performance, those queries, along with the asso-ciated database instance, are inherently complex. When a defect is flagged, the sheer size and structural noise of the macro-benchmark query prevent researchers from effectively isolating the root cause. In this paper, we detail the Computer-Orchestrated Design of Algorithms ( CODA )2 framework utilized during the design of Tree-Tracker Join ( TTJ ), an optimal yet practical join algorithm recently published in ACM Transactions on Database Systems (TODS) [ 5 ]. The term “computer-orchestrated” emphasizes the framework’s researcher-centric perspective: instead of black-box bug discovery, 
+
+CODA explicitly orchestrates test generation based on structural properties of join trees to assist researchers in verifying the in-tricate logical-to-physical translation. CODA operates directly on join trees, verifying the correctness of the physical implementation by exploiting the interaction between join trees and query plans. Furthermore, CODA proactively exposes defects via minimal re-producible examples (MREs), allowing us to rapidly identify subtle translation errors easily masked by macro-benchmark proxies. No-tably, the core components of CODA are immediately applicable to a broader class of join-tree-dependent algorithms [8]. Importantly, this retrospective analysis reveals that orchestrating algorithm design creates a bidirectional feedback loop: the defects exposed by CODA did not merely debug TTJ ’s physical implemen-tation; they refined the theoretical precondition of TTJ itself. Simul-taneously, tackling these complex translation challenges drove the evolution of CODA itself, culminating in a robust, structure-aware testing framework. 
+
+## 2 From Logical to Physical 
+
+TTJ evaluates an ACQ such as 𝑄 = 𝑅 (𝑎, 𝑥 ) Z 𝑆 (𝑎, 𝑤 ) Z 𝑇 (𝑎, 𝑧 ) for relations 𝑅 , 𝑆 , and 𝑇 optimally. While its logical specification is a simple 13-line recursive function relying on implicit call-stack state (Figure 2), to ensure an apples-to-apples performance comparison against mature systems like PostgreSQL, TTJ must be implemented as a physical iterator within a standard pipelined execution engine (Algorithm 1, adapted from [ 4]). This logical-to-physical translation is highly non-trivial: it demands explicit mutual recursion, state tracking, and complex backtracking, essentially doubling the length of its recursive counterpart. The key idea of TTJ is to leverage a data structure called a join tree (different from query plan; we will explain in Section 2.2) to avoid redundant computation and guarantee the optimality. Due to space constraints, we defer step-by-step query evaluation examples of Figure 2 to [ 5], and the full formal proofs of TTJ iterator’s properties to [4]. 
+
+## 2.1 Preliminaries 
+
+A TTJ left-deep plan is a binary tree where internal nodes are TTJ 
+
+iterators (Algorithm 1), and every right child Rinner and the left child Router of the leftmost iterator are leaves; all other plans 
+
+> 2In music, a coda is a concluding passage added to the end of a musical piece, providing a sense of finality, closure, or resolution. Similarly, we believe the design of any practical algorithm is truly concluded only when it is rigorously verified and successfully deployed in practice.
+
+Algorithm 1: Physical TTJ implementation featuring ex-plicit stack and state management alongside mutual recur-sion between getNext() and deleteDT(R) .
+
+Purpose: An iterator returns, one at a time, the join result of Router and Rinner .
+
+Output: A tuple from Router Z Rinner  
+
+> 1
+
+TTJOperator  
+
+> 2
+
+void open()  
+
+> 3
+
+Initialize r, MT to None  
+
+> 4
+
+Rinner .open()  
+
+> 5
+
+Build hash table inner from Rinner  
+
+> 6
+
+Router .open()  
+
+> 7
+
+Tuple getNext()  
+
+> 8
+
+if MT is not None and MT is not [] then  
+
+> 9
+
+if m = MT .next() and m is not None then  
+
+> 10
+
+return r ++ m 
+
+> 11
+
+r = Router .getNext()  
+
+> 12
+
+if r is None then return None  
+
+> 13
+
+if r is None || MT = [] then r = Router .getNext()  
+
+> 14
+
+while r is not None do  
+
+> // Find tuples from Rinner joinable with r
+> 15
+
+MT =inner .get(keys(plan[1..num(this)],Rinner))  
+
+> 16
+
+if MT is not None then  
+
+> 17
+
+m = MT .next()  
+
+> 18
+
+return r ++ m 
+
+> 19
+
+else  
+
+> // Backjump to parent(Rinner)
+> 20
+
+r = Router .deleteDT(parent(Rinner))  
+
+> 21
+
+return None  
+
+> 22
+
+Tuple deleteDT( Relation 𝑅 ) 
+
+> 23
+
+if Rinner == 𝑅 then  
+
+> 24
+
+Remove m from MT and inner  
+
+> 25
+
+else   
+
+> // Has not reached 𝑅 ; backjumping continues
+> 26
+
+MT = None  
+
+> 27
+
+r = Router .deleteDT( 𝑅 ) 
+
+> 28
+
+if r is None then return None  
+
+> 29
+
+return this .getNext() 
+
+are bushy . Leaves serve as both nodes and relations, indexed left-to-right as ℓ1, . . . , ℓ |𝑄 | , with |𝑄 | denoting the number of relations and plan[1..i] denoting the prefix sequence (ℓ1, . . . , ℓ 𝑖 ). Function 
+
+keys(plan[1..i],R) computes R’s key : the attributes it shares with ℓ1, . . . , ℓ 𝑖 −1. We define inner as the hash table built on Rinner ,and ++ as schema-resolving tuple concatenation. For an iterator with left child ℓ𝑖 , its label is 𝑖 . Finally, this self-references the iterator, and parent(R) identifies R’s parent in the join tree. We use Z𝑇 to denote a TTJ iterator instance. Computer-Orchestrated Design of Algorithms Conference acronym ’XX, June 03–05, 2026, Woodstock, NY ⑥
+
+21(d) (c) 
+
+⑤
+
+(a) 
+
+③
+
+21(b) 
+
+②
+
+①④
+
+Figure 1: Illustration of how the evaluation correctness of 𝑄 = 𝑅 (𝑎, 𝑥 ) Z 𝑆 (𝑎, 𝑤 ) Z 𝑇 (𝑎, 𝑧 ) depends on the join tree structure. Using a defective TTJ iterator (missing Line 26 in Algorithm 1), 𝑄 evaluates correctly under the join tree in (a), as traced in (b). Conversely, under the join tree in (c), the identical defective iterator yields an incorrect empty result, as traced in (d). We explain the details in Section 2.2. Symbols ①through ⑥mark execution snapshots referenced in the text.                                  
+
+> 1def ttj(t, plan, i):
+> 2if i > plan. len (): print (t)
+> 3else :
+> 4R = plan[i]; k = 𝜋 keys (plan[1..i],R )(𝑡 )
+> 5P = parent(plan[1..i], R)
+> 6if R[k] is None & P is not None:
+> 7return P # backjump to P
+> 8for rin R[k]:
+> 9result = ttj(t ++r, plan, i+1)
+> 10 if result == R: # catch backjump
+> 11 R[k].delete(r)
+> 12 elif result is not None:
+> 13 return result # continue backjump
+
+Figure 2: Logical TTJ specification from [ 5], featuring the simplicity of implicit state management via the call stack. 
+
+## 2.2 A Motivating Example 
+
+Consider the ACQ 𝑄 defined in Section 2 evaluated over the data-base instance in Figure 1, where 𝑥 𝑖 , 𝑤 𝑖 , 𝑧 1 (𝑖 ∈ { 1, 2}) denote distinct constants. 𝑄 is acyclic if it admits a join tree. A join tree is a tree where there is a one-to-one correspondence between nodes in the tree and relations in the query; two nodes are adjacent if and only if their corresponding relations share common attribute(s); and the tree must satisfy the running intersection property (RIP ): for any attribute 𝑎 that appears in 𝑄 , all relations containing 𝑎 form a con-nected subtree in the join tree. Once rooted, the directed join tree dictates that execution must backjump along the tree edges, rather than the query plan, upon a probe failure. Multiple join trees can exist for a given query; for example, Figure 1 (a) and (c) illustrate two valid join trees for 𝑄 , differing in their parent mappings where 
+
+parent(T) is 𝑆 in tree (a), but 𝑅 in tree (c). Consider a defective TTJ iterator missing Line 26, which is re-sponsible for clearing the local state MT during a backjump. Testing this defective iterator under join tree (a) falsely reports success, while tree (c) correctly reports output inconsistency, exposing the flaw. Suppose we evaluate 𝑄 under join tree (a) using the plan from Fig-ure 1 (b). Following the pipelined execution, the iterator Z𝑇  
+
+> 1
+
+fetches 
+
+𝑅 (13 , 𝑥 1), successfully probes 𝑆 , and caches the match 𝑆 (13 , 𝑤 1) in 
+
+MT (①). When the subsequent probe against 𝑇 fails ( ②), Line 20 from Z𝑇  
+
+> 2
+
+is invoked, and the execution backjumps to Z𝑇  
+
+> 1
+
+due to its right child 𝑆 being the parent of 𝑇 . This correctly invokes Line 24, flushing the stale state in MT (③). The iterator Z𝑇  
+
+> 1
+
+then fetches 
+
+𝑅 (14 , 𝑥 2), probes both hash tables successfully ( ④), and yields the correct output. Conversely, evaluating 𝑄 under join tree (c) using the plan from Figure 1 (d) exposes the defect. Upon the same probe failure at 𝑇 
+
+(⑤), iterator Z𝑇  
+
+> 2
+
+calls Z𝑇  
+
+> 1
+
+.deleteDT(R) via Line 20. Because the defective iterator lacks Line 26, it skips clearing the state for the by-passed relation 𝑆 . Instead, Z𝑇  
+
+> 1
+
+directly calls R.deleteDT(R) (which simply invokes getNext() of 𝑅 ) from Line 27 ( ⑥). Consequently, 
+
+MT incorrectly retains the stale tuple 𝑆 (13 , 𝑤 1). When 𝑅 (14 , 𝑥 2)
+
+is fetched, the iterator Z𝑇  
+
+> 1
+
+processes this corrupted state, fails its validity check at Line 9 (since 𝑆 (13 , 𝑤 1) has already been processed), and erroneously terminates with an empty result via Line 12. Comparing these traces reveals a critical pitfall: a flawed physical translation can easily evade detection and produce correct results if the testing benchmark happens to utilize a forgiving topology like the degenerate tree (a). Relying solely on macro-benchmark queries leaves the detection of such state-corruption defects to chance. This demonstrates the absolute necessity of structure-aware testing by manipulating join tree topologies directly during the early translation stage to isolate exact root causes. Conference acronym ’XX, June 03–05, 2026, Woodstock, NY Zeyuan Hu 
+
+## 3 CODA Framework Join Tree Generator    
+
+> Plan Generator
+> Evaluator
+> join tree db instance plan
+> PostgreSQL Oracle
+> Differential Result Comparator Researcher
+> iterator
+> modify db instance SQL join tree db instance plan
+> result difference integrated
+
+Figure 3: Overview of the CODA framework used during the design of the TTJ iterator (Algorithm 1). Test case synthe-sis modules are gray rounded rectangles, while differential evaluation modules are white rounded rectangles. The TTJ 
+
+iterator implementation is depicted as a circle. 
+
+Figure 3 illustrates the architecture of CODA utilized during the design of the TTJ iterator. While implemented for TTJ , CODA is highly modular: its algorithm-agnostic components readily support other join-tree algorithms by simply replacing the TTJ iterator in the figure. CODA operates in two tightly coupled phases: test case synthesis and differential evaluation. To isolate defects efficiently, CODA synthesizes MREs rather than massive benchmark workloads, capping query size at max_size 
+
+= 5 relations and relation size at max_rel_size = 10 tuples. No-tably, this small configuration is sufficient to expose the defects we highlight in Section 4. The synthesis pipeline consists of the join tree generator and the plan generator, either of which can be used to initiate the synthesis process. The plan generator synthe-sizes a collection of relations and applies random permutations and parenthesizations to construct arbitrary left-deep or bushy query plans. Figure 4 illustrates the functionality of the join tree genera-tor when generating a query expressed directly as a join tree. The 
+
+generateRandomTree function first builds a random directed tree. Then, the generate function enforces RIP by utilizing a top-down breadth-first traversal: each child node restricts its attribute pool to a random subset of its parent’s schema (Line 26). This structural inheritance guarantees that the resulting tree inherently satisfies 
+
+RIP and hence is a valid join tree. Relation instances are populated alongside the join tree construction and subsequently ingested into the PostgreSQL oracle. During evaluation, CODA translates the ACQ’s logical seman-tics into a standard SELECT-FROM-WHERE SQL query to obtain the ground truth from PostgreSQL. Enforcing a specific join-tree topol-ogy is unnecessary, as PostgreSQL’s internal execution plan is strictly orthogonal to the logical result. For exact output equiva-lence, synthesized relations exclude NULL s, and the SQL uses bag semantics to match TTJ ’s multiset output. Simultaneously, CODA 
+
+binds TTJ iterators to the query plan. A differential comparator then cross-verifies outputs to flag isolated defects.                                                 
+
+> 1def generateRandomTree(n):
+> 2nodes = [Node() for _in range (n)]
+> 3T = Tree()
+> 4root = random_choice(nodes)
+> 5S = [root]; nodes.remove(root)
+> 6while nodes:
+> 7u = random_choice(nodes)
+> 8v = random_choice(S)
+> 9T.addEdge(v, u); S.append(u); nodes.remove(u)
+> 10 return (T, root)
+> 11 12 def generate(max_size, max_rel_size, attr_pool):
+> 13 T, root = generateRandomTree(random(1, max_size))
+> 14 inherited = {root: attr_pool}
+> 15 x = random(1, len (attr_pool))
+> 16 queue = [root]
+> 17 while queue:
+> 18 next_level = []
+> 19 for node in queue:
+> 20 # sample x attrs from inherited pool, enforcing RIP
+> 21 schema = sample_nonempty(inherited[node], x)
+> 22 tuples = gen_tuples(schema, random(1, max_rel_size))
+> 23 postgres.ingest(Relation(node.name, schema), tuples)
+> 24 for child in T.children(node):
+> 25 # child inherits parent schema
+> 26 inherited[child] = schema
+> 27 next_level.append(child)
+> 28 # narrow pool after each BFS level
+> 29 x = max (x - random(0, x), 1)
+> 30 queue = next_level
+> 31 return T
+
+Figure 4: Synthesizing a join tree and a database instance in 
+
+CODA in the absence of an input query plan. 
+
+Initially, CODA fed plans directly to the evaluator, forcing TTJ to map the plan to a default join tree at runtime. As demonstrated in Sections 4.2 and 4.3, this direct coupling led to semantic collapses. This forced CODA into its current architecture (Figure 3), where the join tree generator acts as a mandatory validation layer (code omitted for brevity). Furthermore, when the generator is tasked with constructing a valid join tree from an arbitrary bushy plan, the structural translation becomes highly non-trivial. We defer the detailed explanation of this complex procedure to Sections 4.2 and 4.3, where we contextualize it alongside the specific logical-to-physical translation defects it resolved. 
+
+## 4 Evaluation 
+
+In this section, we demonstrate the critical role of CODA in the physical translation of TTJ through three postmortem case stud-ies. These defects fundamentally shaped the theoretical boundaries of TTJ , its physical iterator implementation, and the architectural evolution of CODA itself. The CODA suite is released along with the source code of the TTJ query engine (implemented in Java); comprehensive reproducibility instructions, including hardware Computer-Orchestrated Design of Algorithms Conference acronym ’XX, June 03–05, 2026, Woodstock, NY 
+
+Table 1: Diagnostic utility comparison between a standard macro-benchmark (TPC-H) and the CODA framework across critical logical-to-physical translation defects. Note: TPC-H counts represent queries, whereas CODA counts represent MREs. Defect Class TPC-H CODA Suite Limitation of Macro-Benchmarks 1. State Mismanagement Detected (4 queries) Isolated (8 MREs) Requires a specific combination of non-degenerate join tree topologies and adversarial data distributions to trigger. 
+
+2. GYO Reduction Order Violation Missed (0 queries) Isolated (1 MRE) Macro-benchmark query plans are structurally homoge-neous (easily mapped to join trees), failing to stress-test 
+
+TTJ ’s theoretical precondition. 
+
+3. RIP Violation Detected (2 queries) Isolated (1 MRE) Complex bushy plans from macro-benchmark queries intro-duce significant structural noise, severely hindering precise defect isolation. specifications and the PostgreSQL version (v13), can be found in our previous work [ 5]. To illustrate the limitations of relying on macro-benchmarks as a testing proxy, and to demonstrate how CODA 
+
+systematically addresses these blind spots, we benchmark our find-ings against the same 13 standard TPC-H multi-join queries [ 16 ](Q3, Q7–Q12, Q14–Q16, Q18–Q20) as we did in [ 5]. Given the retro-spective nature of this paper, we defer a more rigorous comparison with sophisticated database testing frameworks to future work. Table 1 summarizes the comparison. TPC-H counts represent complex, end-to-end benchmark queries, whereas CODA isolates defects using MREs. Overall, CODA synthesized 28 failing cases across the entire development lifecycle of TTJ . For this evaluation, we distilled these into 10 distinct MREs (categorized into three representative defect classes in Table 1) by filtering out transient defects associated with early prototypes and grouping variants of core translation errors by their underlying root causes. The follow-ing subsections detail three representative MREs. The first defect (Section 4.1) demonstrates that exposing intricate state corruptions requires a precise combination of join tree topology and database instance. While TPC-H occasionally triggers the defect, there is no clean topological categorization between queries that mask the issue and those that expose it. This ambiguity forces researchers to dive into the massive, noisy database instance to isolate the root cause. In contrast, CODA pinpoints the exact failure using merely three relations and five tuples. The second defect (Section 4.2) ex-poses a deeply hidden theoretical limitation of TTJ that TPC-H entirely missed, which ultimately forced us to refine the formal precondition of TTJ . The third defect (Section 4.3) highlights a structural translation hazard. While TPC-H eventually surfaced the defect using sprawling 6- or 8-relation bushy plans, CODA achieved topological isolation by reproducing the identical defect using a minimal structure of just three relations. 
+
+## 4.1 Case Study 1: State Mismanagement 
+
+This case study revisits the state mismanagement introduced in Section 2.2, caused by the omission of Line 26 from Algorithm 1. While TPC-H benchmark queries eventually surface the defect, they offer poor diagnostic utility. The defect was flagged by only four queries (Q3, Q7, Q8, and Q10), all of which possess non-degenerate join trees (i.e., at least one internal node has multiple children, akin to Figure 1 (c)). The defect remained completely dormant in the remaining nine queries. Unsurprisingly, the defective TTJ iterator masked the defect across the seven queries featuring degenerate join trees (akin to Figure 1 (a)). However, the defect also remained hidden in Q9 and Q11 despite their non-degenerate topologies. As a result, there is no clean topological categorization between the TPC-H queries that mask the defect and those that expose it. The above observation suggests that topological structure alone is insufficient to trigger the defect; it requires specific data distri-butions. The inconsistent coverage of TPC-H benchmark queries forces researchers to sift through the massive, noisy database in-stance hoping for coincidental data alignment. By contrast, the value of CODA lies not just in detection, but in immediate isolation: it deterministically synthesizes a minimal MRE consisting of just three relations and five tuples (Section 2.2), bypassing the overhead of macro-benchmark noise. 
+
+## 4.2 Case Study 2: Refining the Theoretical Precondition 
+
+The next two case studies concern the physical translation of the 
+
+parent(Rinner) logic (Line 20 of Algorithm 1). To achieve its theoretical guarantees, the iterator must dynamically recover a valid join tree from the provided plan. Let Σ(𝑅 ) denote the attribute set of relation 𝑅 . The recovery procedure computes the key 𝐾 of 
+
+Rinner and assigns Rinner ’s parent to ℓ𝑗 , where 𝑗 is min {𝑞 ∈{1, . . . , 𝑖 − 1} | 𝐾 ⊆ Σ(ℓ𝑞 )} . This produces the shallowest possible join tree, maximizing backjumping distance on probe failures and pruning redundant intermediate results. Initially, CODA sent left-deep plans directly to the evaluator under the naive assumption that mapping any ACQ left-deep plan to a join tree was trivial and could thus be performed during the evaluation phase. This assumption catastrophically failed when 
+
+CODA synthesized a simple left-deep plan 𝑃 = 𝑅 (𝑎, 𝑏 ) Z 𝑆 (𝑏, 𝑐 ) Z
+
+𝑇 (𝑎, 𝑏, 𝑐 ), instantly triggering a NullPointerException at Line 20. While 𝑃 is undeniably an ACQ (admitting a valid join tree rooted at 
+
+𝑇 ), the recovery failed because the key of 𝑇 is {𝑎, 𝑏, 𝑐 }, yet neither 
+
+Σ(𝑅 ) nor Σ(𝑆 ) contains this set. This defect directly refined our initial theoretical conjectures about TTJ .3 We originally assumed 
+
+TTJ guaranteed linear-time evaluation on arbitrary left-deep plans. Confronted with CODA ’s counterexample (and corroborated by  
+
+> 3Remarkably, this defect was concurrently identified by a referee for our ICDT ’25 submission. Conference acronym ’XX, June 03–05, 2026, Woodstock, NY Zeyuan Hu
+
+formal review), we restricted TTJ ’s optimality guarantee [ 5] strictly to left-deep plans satisfying the reverse of a GYO reduction order. Relying solely on macro-benchmarks would have created the illu-sion that optimality applies to arbitrary left-deep plans, leaving this theoretical flaw permanently undiscovered. A follow-up study [ 10 ]proved that across 10,454 queries in five popular macro-benchmarks (including TPC-H), every single left-deep plan inadvertently satis-fies the reverse of a GYO reduction order. This structural uniformity inherently masks such theoretical boundary conditions. 
+
+## 4.3 Case Study 3: Architectural Evolution and Topological Isolation 
+
+Following the discovery of the GYO reduction order constraint (Section 4.2), we initially attempted a lightweight patch by adding an inline validation check within parent(Rinner) . However, this check consistently raised false alarms when CODA injected valid ACQ bushy plans into the evaluator. To understand the topological mapping failure, consider two bushy plans derived from the same relations: 𝑃 1 = 𝑅 (𝑎, 𝑏 ) Z
+
+(𝑇 (𝑎, 𝑏, 𝑐 ) Z 𝑆 (𝑏, 𝑐 )) and 𝑃 2 = 𝑇 (𝑎, 𝑏, 𝑐 ) Z (𝑅 (𝑎, 𝑏 ) Z 𝑆 (𝑏, 𝑐 )) .For 𝑃 1, recursively applying the runtime recovery method from Section 4.2 operates bottom-up: it first builds a subtree 𝑇 → 𝑆 for the inner subplan 𝑇 Z 𝑆 , and then connects the outer relation 𝑅 
+
+to the subtree root 𝑇 , correctly yielding the degenerate join tree 
+
+𝑅 → 𝑇 → 𝑆 . However, applying the identical logic to 𝑃 2 first builds a subtree 𝑅 → 𝑆 for 𝑅 Z 𝑆 , and then connects the outer relation 
+
+𝑇 to the root 𝑅 , yielding a tree 𝑇 → 𝑅 → 𝑆 . This topology is not a join tree because it violates RIP : 𝑇 and 𝑆 share attribute 𝑐 , but are disconnected by 𝑅 .To maintain a unified execution logic of the evaluator that maps any query plan to a single valid join tree, we introduce the ab-straction of virtual relations to restore RIP in the constructed tree for a bushy plan like 𝑃 2. Instead of directly connecting the outer relation 𝑇 with 𝑅 , we abstract the 𝑅 Z 𝑆 subplan as a virtual re-lation 𝑉 (𝑎, 𝑏, 𝑐 ) where its attribute set Σ(𝑉 ) is the union of Σ(𝑅 )
+
+and Σ(𝑆 ). The resulting valid join tree roots at 𝑇 (𝑎, 𝑏, 𝑐 ), connected to 𝑉 (𝑎, 𝑏, 𝑐 ), which in turn has two children 𝑅 (𝑎, 𝑏 ) and 𝑆 (𝑏, 𝑐 ).This virtual relation abstraction successfully accommodates all 139 bushy plans derived from our macro-benchmark study on TTJ [5 ]. (A formal characterization of when this approach is applicable is available in Appendix A.) Building on the breakdown of the trivial runtime mapping as-sumption (Section 4.2), the complexity of virtual relations proved that in-iterator join tree recovery is architecturally unsustainable. This realization triggered the architectural evolution of CODA to its final state (Figure 3), entirely offloading the responsibilities of GYO validation (Section 4.2) and join tree construction to CODA ’s synthesis pipeline. While TPC-H Q8 (an 8-relation join) and Q9 (a 6-relation join) eventually triggered this RIP violation, their sprawl-ing plans were unnecessarily complicated, requiring significant effort to trace the structural root cause. By contrast, CODA repro-duced the identical defect using a minimal structure of just three relations. 
+
+## 5 Related Work 
+
+Extensive research applies differential and generator-based testing to validate database implementations [ 6, 7 , 12 – 15 , 21 ], typically executing synthesized SQL queries against mature DBMSs. While sharing this differential testing spirit, CODA differentiates itself in three ways. (1) Agility for nascent algorithms: unlike existing tools that assume stable architectures, CODA is lightweight, avoiding the prohibitive overhead of integrating highly volatile algorithm prototypes (e.g., TTJ ) into mature systems. (2) Micro-topological synthesis: instead of operating at the macroscopic SQL interface and relying on query optimizers whose heuristics may miss problem-atic plans and join trees [ 5, 10 , 20 ], CODA directly synthesizes join trees and query plans, allowing it to stress-test both physical imple-mentations and theoretical preconditions. (3) Topological isolation: by focusing on join trees, CODA implicitly categorizes multi-join queries based on acyclicity, enabling minimal-by-construction test cases for precise defect isolation. This focus on minimality reflects a pragmatic design choice: CODA does not aim to completely elim-inate logical-to-physical translation errors; it simply aims to serve as a first-line filter for structure-dependent defects. Hence, unlike earlier work such as QuickCheck [ 2], which grows test cases in-crementally, CODA heuristically imposes an upper bound on their size; any error requiring a test case beyond this bound is left to be discovered during the formal proof stage. 
+
+## 6 Concluding Remarks 
+
+Our retrospective analysis of CODA demonstrates that bridging log-ical specifications and physical implementations is a bidirectional feedback loop: early structural testing hardened TTJ ’s complex iterator and directly refined its theoretical precondition. This high-lights the danger of relying solely on macro-benchmarks, which actively mask translation defects. As a valuable early-stage van-guard to formal verification, CODA isolates non-trivial defects via minimal reproducible examples long before the prohibitive effort of writing formal proofs. Future extensions include integrating state-of-the-art join tree enumeration [ 10 ] to optimize test construction, bridging CODA with mature database testing frameworks to es-tablish a structure-aware testing harness for other join-tree-based algorithms in production-grade systems (e.g., adapting CODA for Yannakakis’s algorithm [ 17 ] simply requires replacing the TTJ it-erator, as core components like the join tree generator remain algorithm-agnostic), and generalizing this structure-aware method-ology to the early conceptualization phase of novel algorithms. 
+
+## Acknowledgments 
+
+The author thanks Daniel Miranker for early guidance on the TTJ 
+
+project, advisor Remy Wang for helpful discussions, and Yixuan Ni and Zhiting Zhu for manuscript feedback. 
+
+## References      
+
+> [1] Serge Abiteboul, Richard Hull, and Victor Vianu. 1995. Foundations of Databases .Vol. 8. Addison-Wesley Reading. [2] Koen Claessen and John Hughes. 2000. QuickCheck: a lightweight tool for random testing of Haskell programs. In Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP ’00), Montreal, Canada, September 18-21, 2000 , Martin Odersky and Philip Wadler (Eds.). ACM, 268–279. doi:10.1145/351240.351266
+
+Computer-Orchestrated Design of Algorithms Conference acronym ’XX, June 03–05, 2026, Woodstock, NY 
+
+[3] Wolfgang Fischl, Georg Gottlob, Davide Mario Longo, and Reinhard Pichler. 2021. HyperBench: A Benchmark and Tool for Hypergraphs and Empirical Findings. 
+
+ACM J. Exp. Algorithmics 26 (2021), 1.6:1–1.6:40. doi:10.1145/3440015 [4] Zeyuan Hu and Daniel P. Miranker. 2024. TreeTracker Join: Turning the Tide When a Tuple Fails to Join. CoRR abs/2403.01631 (2024). arXiv:2403.01631 doi:10.48550/ARXIV.2403.01631 [5] Zeyuan Hu, Yisu Remy Wang, and Daniel P. Miranker. 2026. TreeTracker Join: Simple, Optimal, Fast. ACM Transactions on Database Systems 51, 2 (2026), 1–26. [6] Zu-Ming Jiang and Zhendong Su. 2024. Detecting Logic Bugs in Database Engines via Equivalent Expression Transformation. In 18th USENIX Symposium on Oper-ating Systems Design and Implementation, OSDI 2024, Santa Clara, CA, USA, July 10-12, 2024 , Ada Gavrilovska and Douglas B. Terry (Eds.). USENIX Association, 821–835. https://www.usenix.org/conference/osdi24/presentation/jiang [7] Jinho Jung, Hong Hu, Joy Arulraj, Taesoo Kim, and Woon-Hak Kang. 2019. APOLLO: Automatic Detection and Diagnosis of Performance Regressions in Database Systems. Proc. VLDB Endow. 13, 1 (2019), 57–70. doi:10.14778/3357377. 3357382 [8] Paraschos Koutris, Stijn Vansummeren, Qichen Wang, Yisu Remy Wang, and Xiangyao Yu. 2026. Database Theory in Action: Yannakakis’ Algorithm. In 
+
+Proceedings of 29th International Conference on Database Theory .[9] Jinhui Lai, Chi Zhang, Bingyan Li, Chenglin Liang, Jie Liang, Zhiyong Wu, Jingzhou Fu, Yu Jiang, and Zichen Xu. 2025. SRS: Detecting Logic Bugs of Join Implementation in DBMSs via Set Relation Synthesis. Proc. ACM Manag. Data 3, 6 (2025), 1–24. doi:10.1145/3769828 [10] Zheng Luo, Wim Van den Broeck, Guy Van den Broeck, and Yisu Remy Wang. 2025. Algorithms for Optimizing Acyclic Queries. CoRR abs/2509.14144 (2025). arXiv:2509.14144 doi:10.48550/ARXIV.2509.14144 [11] Yiming Qiao, Peter Boncz, and Huanchen Zhang. 2026. Robust Predicate Transfer with Dynamic Execution. Proc. VLDB Endow. 19, 6 (2026), 1278–1290. DuckDB Merged Pull Request: https://github.com/duckdb/duckdb/pull/20633. [12] Manuel Rigger and Zhendong Su. 2020. Testing Database Engines via Pivoted Query Synthesis. In 14th USENIX Symposium on Operating Systems Design and Im-plementation, OSDI 2020, Virtual Event, November 4-6, 2020 . USENIX Association, 667–682. https://www.usenix.org/conference/osdi20/presentation/rigger [13] Andreas Seltenreich, Bo Tang, and Sjoerd Mullender. [n. d.]. SQLSmith. https: //github.com/anse1/sqlsmith Accessed: March 2026. [14] Jiansen Song, Wensheng Dou, Ziyu Cui, Qianwang Dai, Wei Wang, Jun Wei, Hua Zhong, and Tao Huang. 2023. Testing Database Systems via Differential Query Execution. In 45th IEEE/ACM International Conference on Software Engineering, ICSE 2023, Melbourne, Australia, May 14-20, 2023 . IEEE, 2072–2084. doi:10.1109/ ICSE48619.2023.00175 [15] Xiu Tang, Sai Wu, Dongxiang Zhang, Feifei Li, and Gang Chen. 2023. Detecting Logic Bugs of Join Optimizations in DBMS. Proc. ACM Manag. Data 1, 1 (2023), 55:1–55:26. doi:10.1145/3588909 [16] Transaction Processing Performance Council (TPC). [n. d.]. TPC-H Benchmark. Online. http://tpc.org/tpc_documents_current_versions/pdf/tpc-h_v3.0.0.pdf Accessed: March 2026. [17] Mihalis Yannakakis. 1981. Algorithms for Acyclic Database Schemes. In Very Large Data Bases, 7th International Conference, September 9-11, 1981, Cannes, France, Proceedings . IEEE Computer Society, 82–94. [18] Chi Zhang and Manuel Rigger. 2025. Constant Optimization Driven Database System Testing. Proc. ACM Manag. Data 3, 1 (2025), 24:1–24:24. doi:10.1145/ 3709674 [19] Hangdong Zhao, Yuanyuan Tian, Rana Alotaibi, Bailu Ding, Nicolas Bruno, Jesús Camacho-Rodríguez, Vassilis Papadimos, Ernesto Cervantes Juárez, César A. Galindo-Legaria, and Carlo Curino. 2026. I Can’t Believe It’s Not Yannakakis: Pragmatic Bitmap Filters in Microsoft SQL Server. In 16th Conference on In-novative Data Systems Research, CIDR 2026, Chaminade, CA, USA, January 18-21, 2026 . www.cidrdb.org. https://vldb.org/cidrdb/2026/i-cant-believe-its-not-yannakakis-pragmatic-bitmap-filters-in-microsoft-sql-server.html [20] Junyi Zhao, Kai Su, Yifei Yang, Xiangyao Yu, Paraschos Koutris, and Huanchen Zhang. 2025. Debunking the Myth of Join Ordering: Toward Robust SQL Analytics. 
+
+Proc. ACM Manag. Data 3, 3 (2025), 146:1–146:28. doi:10.1145/3725283 [21] Rui Zhong, Yongheng Chen, Hong Hu, Hangfan Zhang, Wenke Lee, and Dinghao Wu. 2020. SQUIRREL: Testing Database Management Systems with Language Validity and Coverage Feedback. In CCS ’20: 2020 ACM SIGSAC Conference on Computer and Communications Security, Virtual Event, USA, November 9-13, 2020 ,Jay Ligatti, Xinming Ou, Jonathan Katz, and Giovanni Vigna (Eds.). ACM, 955–970. doi:10.1145/3372297.3417260 
+
+## A The Existence of a Join Tree for a Bushy Plan of an ACQ 
+
+We first generalize the TTJ left-deep plan from Section 2.1 to a left-deep plan where an internal node can be any join implementation. 
+
+Definition A.1. A left-deep plan is a binary tree where internal nodes are joins, and every right child Rinner and the left child 
+
+Router of the leftmost iterator are leaves. We assume that for a given plan of a query 𝑄 , the leaves of the plan are labeled from left to right in increasing order ℓ1, . . . , ℓ |𝑄 | .We iterate through the leaves from right to left and find the first 
+
+maximal left-deep subplan. A left-deep subplan is maximal if adding any additional internal node and its associated children from the bushy plan prevents the resulting plan from being left-deep. We call a plan 𝑃 terminal if the first maximal left-deep subplan of 𝑃 is 
+
+𝑃 itself. Thus any left-deep plan is terminal. For any left-deep subplan 𝑞 of 𝑃 , we consider 𝑞 to be a query and hence |𝑞 | is the number of relations in 𝑞 . Let Σ(𝑅 ) produce the attribute set of relation 𝑅 . Abusing a bit of notation, let Σ(𝑃 ) denote the union of attributes of relations that are leaves of plan 𝑃 and let Σ(𝑇 ) denote the union of attributes of all relations associated with nodes in a join tree 𝑇 . Let Par (𝑅, 𝑃 ) take in a relation 𝑅 and a plan 𝑃 and return the parent of the node associated with 𝑅 in plan 
+
+𝑃 ; let Child (𝑅, 𝑃 ) take in a relation 𝑅 and a plan 𝑃 and return the right child of the node associated with 𝑅 in plan 𝑃 ; and let Root (𝑃 )
+
+return the root node of a plan 𝑃 . When we label a leaf with a plan name as the superscript, the subscript of the leaf indicates the rank of the leaf within the plan indicated by the superscript name. 
+
+Definition A.2. Let 𝑇 1 = (𝑋 1, 𝐸 1) (resp., 𝑇 2 = (𝑋 2, 𝐸 2)) be a tree where 𝑋 1 (resp., 𝑋 2) is a set of nodes and 𝐸 1 (resp., 𝐸 2) is a subset of 
+
+𝑋 1 ×𝑋 1 (resp., 𝑋 2 ×𝑋 2). Moreover, 𝑋 1 ∩𝑋 2 = {𝑢 } for some node 𝑢 . We define Mrg (𝑇 1,𝑇 2) for 𝑇 1 and 𝑇 2 as follows. The output of Mrg (𝑇 1,𝑇 2)
+
+is a graph 𝑇 = (𝑋, 𝐸 ) where 𝑋 = 𝑋 1 ∪ 𝑋 2 and 𝐸 = 𝐸 1 ∪ 𝐸 2. It is straightforward to see that 𝑇 is a tree. 
+
+Definition A.3 (the reverse of a GYO reduction order [ 5]). Let 𝑃 be a left-deep plan with leaves ℓ1, . . . , ℓ |𝑄 | . Plan 𝑃 satisfies the reverse of a GYO reduction order if for every ℓ𝑗 (2 ≤ 𝑗 ≤ | 𝑄 |), there exists some ℓ𝑖 (1 ≤ 𝑖 < 𝑗 ) such that 𝐾 ⊆ Σ(ℓ𝑖 ) where 𝐾 is equal to 
+
+Σ(ℓ𝑗 ) ∩   Ð 𝑗 −1  
+
+> 𝑟 =1
+
+Σ(ℓ𝑟 )) .
+
+Definition A.4 (replacement). We define a sequence of replace-ments applied towards a plan 𝑃 as follows. Let 𝑃 𝑖 denote the input to the 𝑖 th replacement ( 𝑖 ≥ 0). Let 𝑃 0 be 𝑃 . Replacement 𝑖 takes in the plan output of replacement 𝑖 − 1 and outputs another plan. (Re-placement 0 takes in 𝑃 0.) Consider the 𝑖 th replacement Repl ∗ (𝑃 𝑖 ).Let 𝑞 𝑖 be the first maximal left-deep subplan of 𝑃 𝑖 . Let 𝑉 denote the virtual relation of 𝑞 𝑖 where Σ(𝑉 ) is Σ(𝑞 𝑖 ). The output plan 𝑃 𝑖 +1 is constructed as follows. We set Child (Par (Root (𝑞 𝑖 ), 𝑃 ), 𝑃 ) to be 𝑉 .Then we discard all the nodes that appear in both 𝑞 𝑖 and 𝑃 from 
+
+𝑃 . The remaining 𝑃 is 𝑃 𝑖 +1. The replacement sequence stops after 
+
+Repl ∗ (𝑃 𝑚 ) (for some 𝑚 > 0) where 𝑃 𝑚 is terminal. From Definition A.4, we have the following observation. 
+
+Proposition A.5. Each replacement produces one virtual relation and the virtual relation is a leaf node that is not the leftmost. 
+
+Hence let Virt (𝑃 𝑖 +1) denote the lone virtual relation that is built from Repl ∗ (𝑃 𝑖 ).
+
+Definition A.6 (nice). A bushy plan 𝑃 is nice if (1) 𝑃 does not have Cartesian products, (2) any left-deep subplan 𝑞 of 𝑃 satisfies the reverse of a GYO reduction order, and (3) for all 𝑖 ≥ 0, let ℓ𝑗 Conference acronym ’XX, June 03–05, 2026, Woodstock, NY Zeyuan Hu 
+
+denote Virt (𝑃 𝑖 +1) for some 𝑗 > 1, there exists 1 ≤ 𝑟 < 𝑗 such that 
+
+𝐾 ⊆ Σ(ℓ𝑟 ) where 𝐾 is the key of ℓ𝑗 .
+
+Lemma A.7. Suppose a sequence of 𝑚 replacements applied to a nice bushy plan 𝑃 : Repl ∗ (𝑃 0), . . . , Repl ∗ (𝑃 𝑚 ). Then for all 0 ≤ 𝑖 ≤ 𝑚 ,the first maximal left-deep subplan 𝑞 𝑖 of 𝑃 𝑖 satisfies the reverse of a GYO reduction order. 
+
+Proof. Let 0 ≤ 𝑟 ≤ 𝑚 and let 𝐺 (𝑟 ) denote the predicate “the first maximal left-deep subplan of 𝑃 𝑟 satisfies the reverse of a GYO reduction order.” We prove by induction that 𝐺 (𝑟 ) holds for all 
+
+𝑟 = 0, . . . , 𝑚 .Base case: By the left-deep plan definition and Definition A.6 (2), the first maximal left-deep subplan 𝑞 0 of 𝑃 0 satisfies the reverse of a GYO reduction order. Induction step: Let 𝑟 belong to {1, . . . , 𝑚 } and assume that 𝐺 (𝑟 ′)
+
+holds for all 𝑟 ′ in {0, . . . , 𝑟 − 1}. We need to prove that 𝐺 (𝑟 ) holds. Let 𝑃 𝑟 be the output of Repl ∗ (𝑃 𝑟 −1). Consider the first maximal left-deep subplan 𝑞 𝑟 of 𝑃 𝑟 and a leaf ℓ𝑞 𝑟  
+
+> 𝑖
+
+. Since 𝑖 = 1 holds vacuously under Definition A.3, we consider two cases where 𝑖 > 1.Case 1: ℓ𝑞 𝑟  
+
+> 𝑖
+
+is a non-virtual relation. Leaf node ℓ𝑞 𝑟  
+
+> 𝑖
+
+is non-virtual in 𝑃 . Suppose ℓ𝑞 𝑟  
+
+> 𝑖
+
+corresponds to ℓ𝑃 𝑖 ′ in 𝑃 . By Definition A.6 (2) and Definition A.3, there exists a leaf ℓ𝑃 𝑗 ′ for some 1 ≤ 𝑗 ′ < 𝑖 ′ such that the key of ℓ𝑃 𝑖 ′ is a subset of Σ(ℓ𝑃 𝑗 ′ ) and ℓ𝑃 𝑖 ′ belongs to the same left-deep subplan as ℓ𝑃 𝑗 ′ . Since ℓ𝑃 𝑖 ′ is not in 𝑞 𝑟 −1, and 1 ≤ 𝑗 ′ < 𝑖 ′, ℓ𝑃 𝑗 ′
+
+is not in 𝑞 𝑟 −1. Furthermore, since all the nodes in the first maximal left-deep subplan of 𝑃 𝑟 ′
+
+for all 𝑟 ′ in {0, . . . , 𝑟 − 1} are discarded per Definition A.4, ℓ𝑃 𝑗 ′ is not in 𝑞 𝑟 ′ . Thus ℓ𝑃 𝑗 ′ corresponds to ℓ𝑞 𝑟  
+
+> 𝑗
+
+for some 
+
+1 ≤ 𝑗 < 𝑖 . Hence Σ(ℓ𝑞 𝑟  
+
+> 𝑗
+
+) = Σ(ℓ𝑃 𝑗 ′ ), which contains the key of ℓ𝑞 𝑟  
+
+> 𝑖
+
+.Case 2: ℓ𝑞 𝑟  
+
+> 𝑖
+
+is a virtual relation. By Proposition A.5, we have 
+
+𝑖 > 1. By Definition A.6 (3), there exists a preceding relation ℓ𝑞 𝑟 
+
+> 𝑗
+
+(1 ≤ 𝑗 < 𝑖 ) whose attributes contain the key of ℓ𝑞 𝑟  
+
+> 𝑖
+
+.Combining the two cases, we conclude that 𝐺 (𝑟 ) holds, as re-quired. □
+
+Lemma A.8. If a left-deep plan 𝑃 satisfies the reverse of a GYO reduction order, then 𝑃 corresponds to a join tree with root ℓ𝑃  
+
+> 1
+
+.
+
+Proof. Immediate from Lemma 4.6 of [5]. □
+
+Lemma A.9. Let 𝑃 be a left-deep plan with leaves ℓ1, . . . , ℓ |𝑃 | and let 𝑉 be a virtual relation where Σ(𝑉 ) = Σ(𝑃 ). Then the sequence 
+
+𝑆 = {𝑉 , ℓ 1, . . . , ℓ |𝑃 | } satisfies the reverse of a GYO reduction order. 
+
+Proof. Since Σ(𝑉 ) is Σ(𝑃 ), the key of ℓ1 is a subset of Σ(𝑉 ). Let 
+
+1 < 𝑖 ≤ | 𝑃 |. Since Σ(𝑉 ) is Σ(𝑃 ), the key of ℓ𝑖 in 𝑆 is Σ(ℓ𝑖 ) ∩  Σ(𝑉 ) ∪ 
+
+Ð𝑖 −1  
+
+> 𝑟 =1
+
+Σ(ℓ𝑟 )) = Σ(ℓ𝑖 ) ∩ Σ(𝑉 ), which is contained in Σ(𝑉 ). Since 𝑖 is chosen arbitrarily, we conclude that 𝑆 satisfies the reverse of a GYO reduction order, as required. □
+
+Definition A.10 (virtual relation method). Let 𝑃 be a nice bushy plan. We enhance a sequence of replacements in Definition A.4 to construct a tree as follows. Let 𝑃 𝑖 denote the input to the 𝑖 th replacement ( 𝑖 ≥ 0). We extend Repl ∗ (𝑃 𝑖 ) with a tree 𝑇 𝑖 as an additional input. The function produces a tree 𝑇 𝑖 +1 as an additional output. Thus we define a new function Repl (𝑃 𝑖 ,𝑇 𝑖 ), which produces a tuple of two elements 𝑃 𝑖 +1 and 𝑇 𝑖 +1. Let 𝑇 0 be an empty set. Consider the 𝑖 th replacement Repl (𝑃 𝑖 ,𝑇 𝑖 ). Let 𝑞 𝑖 be the first max-imal left-deep subplan of 𝑃 𝑖 . Let 𝑉 denote the virtual relation of 
+
+𝑞 𝑖 where Σ(𝑉 ) is Σ(𝑞 𝑖 ). The output plan 𝑃 𝑖 +1 is constructed the same as Definition A.4. Tree 𝑇 𝑖 +1 is constructed as follows. Let 𝑞 𝑖 
+
+be the first maximal left-deep subplan of 𝑃 𝑖 . We define a function 
+
+Choose (𝑞 𝑖 ) = Virt (𝑃 𝑖 +1). By Lemmas A.8 and A.9, we construct a join tree 𝑇 𝑞 𝑖 with root Choose (𝑞 𝑖 ) via the method described in Section 4.2. Then 𝑇 𝑖 +1 is Mrg (𝑇 𝑞 𝑖 ,𝑇 𝑖 ).
+
+Proposition A.11. Let plan 𝑃 𝑖 and tree 𝑇 𝑖 denote the output of 
+
+Repl (𝑃 𝑖 −1,𝑇 𝑖 −1) for some 𝑖 ≥ 1. Let 𝑞 𝑖 −1 denote the first maximal left-deep subplan of 𝑃 𝑖 −1. Then Σ(Virt (𝑃 𝑖 )) is equal to Σ(𝑞 𝑖 −1), which is equal to Σ(𝑇 𝑖 ).
+
+Proof. Immediate from Definition A.10. □
+
+We remark that the virtual relation method does not actually modify 𝑃 . Since the virtual relation method enhances Definition A.4 with tree construction, the following lemma is immediate from Lemma A.7. 
+
+Lemma A.12. Suppose a sequence of 𝑚 replacements applied to a nice bushy plan 𝑃 : Repl (𝑃 0,𝑇 0), . . . , Repl (𝑃 𝑚 ,𝑇 𝑚 ). Then for all 0 ≤
+
+𝑖 ≤ 𝑚 , the first maximal left-deep subplan 𝑞 𝑖 of 𝑃 𝑖 satisfies the reverse of a GYO reduction order. 
+
+For a tree 𝑇 where each node corresponds to a relation, we iden-tify each node with its associated relation. For example, a relation is in 𝑇 if there exists a node in 𝑇 that is associated with the relation. We say an attribute 𝑎 appears in 𝑇 if there exists some relation 𝑅 
+
+in 𝑇 such that 𝑎 ∈ Σ(𝑅 ). We say a relation 𝑅 contains attribute 𝑎 if 
+
+𝑎 ∈ Σ(𝑅 ).
+
+Lemma A.13. Let 𝑇 1 = (𝑋 1, 𝐸 1) (resp., 𝑇 2 = (𝑋 2, 𝐸 2)) be a join tree where 𝑋 1 (resp., 𝑋 2) is a set of nodes and 𝐸 1 (resp., 𝐸 2) is a subset of 𝑋 1 × 𝑋 1 (resp., 𝑋 2 × 𝑋 2). Moreover, 𝑋 1 ∩ 𝑋 2 = {𝑢 } for some node 
+
+𝑢 where the associated relation 𝑅 has Σ(𝑅 ) = Σ(𝑇 2). Let 𝑏 be an attribute that appears in both 𝑇 1 and 𝑇 2. Relations in Mrg (𝑇 1,𝑇 2) that contain 𝑏 form a connected subtree. 
+
+Proof. Let 𝑇 be Mrg (𝑇 1,𝑇 2). Since 𝑇 is a tree, it is sufficient to show that for any two relations in 𝑇 , if the relations contain 𝑏 ,all the relations on the path between the two relations contain attribute 𝑏 . Since Σ(𝑅 ) = Σ(𝑇 2) and 𝑏 appears in 𝑇 2, 𝑏 is in Σ(𝑅 ).Let 𝑆 be a relation in 𝑇 1 that contains 𝑏 . Since 𝑇 1 is a join tree, 𝑆 
+
+and 𝑅 belong to a connected subtree, which indicates that all the relations on the path from 𝑆 to 𝑅 contain 𝑏 . Let 𝑊 be a relation in 
+
+𝑇 2 that contains 𝑏 . By a similar argument as above, all the relations on the path between 𝑅 and 𝑊 contain 𝑏 . Hence we conclude that all the relations on the path between 𝑆 and 𝑊 contain 𝑏 . Since 𝑆 and 
+
+𝑊 are chosen arbitrarily, we conclude that the claim of the lemma holds. □
+
+Lemma A.14 completes Section 4.3 and shows that with the help of the virtual relation method, it is possible to construct a join tree from nice bushy plans. 
+
+Lemma A.14. Let 𝑃 be a nice bushy plan of an ACQ. Then the virtual relation method from Definition A.10 constructs a join tree from 𝑃 .
+
+Proof. Suppose the sequence of replacements stops after the 
+
+𝑚 th replacement (i.e., Repl (𝑃 0,𝑇 0), . . . , Repl (𝑃 𝑚 ,𝑇 𝑚 )). Let 1 ≤ 𝑟 ≤
+
+𝑚 + 1 and let 𝐺 (𝑟 ) denote the predicate “ 𝑇 𝑟 from Repl (𝑃 𝑟 −1,𝑇 𝑟 −1)Computer-Orchestrated Design of Algorithms Conference acronym ’XX, June 03–05, 2026, Woodstock, NY 
+
+is a join tree.” We prove by induction that 𝐺 (𝑟 ) holds for all 𝑟 =
+
+1, . . . , 𝑚 + 1.Base case: By the definition of left-deep plan, Definition A.6 (2), and Lemma A.8, tree 𝑇 1 from the first maximal left-deep subplan 𝑞 0
+
+of 𝑃 0 is a join tree. Induction step: Let 𝑟 belong to {2, . . . , 𝑚 + 1} and assume that 
+
+𝐺 (𝑟 ′) holds for all 𝑟 ′ in {1, . . . , 𝑟 − 1}. We need to prove that 𝐺 (𝑟 )
+
+holds. Let 𝑞 𝑟 −1 be the first maximal left-deep subplan of 𝑃 𝑟 −1. By Lemma A.12, 𝑞 𝑟 −1 satisfies the reverse of a GYO reduction order. By Definition A.10, tree 𝑇 𝑞 𝑟 −1 from 𝑞 𝑟 −1 is a join tree. Next we argue that 𝑇 𝑟 , the output of Mrg (𝑇 𝑞 𝑟 −1 ,𝑇 𝑟 −1), is a join tree by showing it satisfies RIP . By Proposition A.11, we have Σ(Virt (𝑃 𝑟 −1)) = Σ(𝑇 𝑟 −1).Consider an attribute 𝑎 that appears in some relation in 𝑇 𝑟 . If 𝑎 ap-pears in 𝑇 𝑟 −1 but not in 𝑇 𝑞 𝑟 −1 , or appears in 𝑇 𝑞 𝑟 −1 but not in 𝑇 𝑟 −1, RIP 
+
+holds trivially since 𝑇 𝑟 −1 and 𝑇 𝑞 𝑟 −1 are join trees. If 𝑎 appears in both 
+
+𝑇 𝑟 −1 and 𝑇 𝑞 𝑟 −1 , since 𝑇 𝑞 𝑟 −1 and 𝑇 𝑟 −1 are join trees, 𝑇 𝑞 𝑟 −1 and 𝑇 𝑟 −1
+
+share exactly one node Virt (𝑃 𝑟 −1), and Σ(Virt (𝑃 𝑟 −1)) = Σ(𝑇 𝑟 −1),by Lemma A.13, we conclude that relations in Mrg (𝑇 𝑞 𝑟 −1 ,𝑇 𝑟 −1) that contain 𝑎 form a connected subtree. Combining all three cases, we conclude that 𝐺 (𝑟 ) holds, as required. Since 𝑃 𝑚 is terminal and 
+
+𝐺 (𝑟 ) holds, we conclude that the claim of the lemma holds. □
