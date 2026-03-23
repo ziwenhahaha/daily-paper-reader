@@ -21,8 +21,8 @@ GLOBAL_TOKENS = {
 # 单次实验级别的全局时间统计（秒）
 GLOBAL_TIME_SECONDS: float = 0.0
 
-PRIMARY_LLM_BASE_URL = "https://api.gptbest.vip/v1"
-DEFAULT_BLT_BASE_URL = "https://api.bltcy.ai/v1"
+PRIMARY_LLM_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
+DEFAULT_BLT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 
 
 def reset_global_tokens():
@@ -346,6 +346,17 @@ class CSTCloudClient(LLMClient):
         super().__init__(api_key=api_key, model=model, base_url=base_url)
 
 
+class ZhipuGLMClient(LLMClient):
+    """智谱 GLM 提供商，OpenAI Chat Completions 兼容接口。
+
+    默认基址：https://open.bigmodel.cn/api/paas/v4
+    使用示例：model="glm-4-flash" 或 "glm-4"
+    建议环境变量：ZHIPU_API_KEY
+    """
+    def __init__(self, api_key: str, model: str, base_url: str = "https://open.bigmodel.cn/api/paas/v4"):
+        super().__init__(api_key=api_key, model=model, base_url=base_url)
+
+
 SliconflowClient = SiliconflowClient
 
 
@@ -505,7 +516,10 @@ class ClientFactory:
             return BltClient(api_key=api_key or os.getenv('BLT_API_KEY', ''), model=model, base_url=base_url or os.getenv('BLT_API_BASE', 'https://api.bltcy.ai/v1'))
         if provider in ('cstcloud', 'cst', 'cst-cloud', 'keji', 'keji-yun'):
             return CSTCloudClient(api_key=api_key or os.getenv('CSTCLOUD_API_KEY', ''), model=model, base_url=base_url or 'https://uni-api.cstcloud.cn/v1')
-        raise ValueError(f"不支持的提供商: {provider}，请使用 'deepseek'、'siliconflow'、'blt'、'cstcloud' 或 'ollama'")
+        if provider in ('zhipu', 'glm', 'zhipuglm', '智谱'):
+            base_url = base_url or "https://open.bigmodel.cn/api/paas/v4"
+            return ZhipuGLMClient(api_key=api_key or os.getenv('ZHIPU_API_KEY', ''), model=model, base_url=base_url)
+        raise ValueError(f"不支持的提供商: {provider}，请使用 'deepseek'、'siliconflow'、'blt'、'cstcloud'、'ollama' 或 'zhipu/glm'")
 
     @staticmethod
     def from_config(_config: dict | None = None):
