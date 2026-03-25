@@ -6,37 +6,35 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-24
-- 运行时间：2026-03-24 20:10:30 UTC
+- 最新运行日期：2026-03-25
+- 运行时间：2026-03-25 20:18:59 UTC
 - 运行状态：成功
-- 本次总论文数：5
-- 精读区：3
-- 速读区：2
+- 本次总论文数：4
+- 精读区：4
+- 速读区：0
 
 ### 今日简报（AI）
-今日深度复盘世界动作模型（WAM）的突破，重点探讨其相比 VLA 在泛化性与效率上的压制级表现。
-满分论文指出 WAM 具备更强的鲁棒性，且 GigaWorld-Policy 成功构建了高效的动作中心化世界模型。
-推荐关注具身智能从“语言驱动”向“物理世界模拟”转型的技术拐点。
-- 详情：[/202603/24/README](/202603/24/README)
+今日深度解析 4 篇具身智能力作，重点攻克 VLA 模型在移动操作与物理交互中的感知难题。
+满分论文 SG-VLA 强化了空间定位能力，VTAM 则创新性地引入触觉反馈以应对复杂的物理接触任务。
+建议关注多模态感知如何提升机器人的操作精度，这是理解下一代通用机器人的核心。
+- 详情：[/202603/25/README](/202603/25/README)
 
 ### 精读区论文标签
-1. [GigaWorld-Policy: An Efficient Action-Centered World--Action Model](/202603/24/2603.17240v2-gigaworld-policy-an-efficient-action-centered-world--action-model)  
+1. [SG-VLA: Learning Spatially-Grounded Vision-Language-Action Models for Mobile Manipulation](/202603/25/2603.22760v1-sg-vla-learning-spatially-grounded-vision-language-action-models-for-mobile-manipulation)  
    标签：评分：10.0/10、query:wam-vla
-   evidence：用于机器人策略学习的以动作为中心的世界动作模型 (WAM)
-2. [Do World Action Models Generalize Better than VLAs? A Robustness Study](/202603/24/2603.22078v1-do-world-action-models-generalize-better-than-vlas-a-robustness-study)  
-   标签：评分：10.0/10、query:wam-vla
-   evidence：世界动作模型 (WAM) 与 VLA 的鲁棒性对比研究
-3. [ROI-Driven Foveated Attention for Unified Egocentric Representations in Vision-Language-Action Systems](/202603/24/2603.20668v1-roi-driven-foveated-attention-for-unified-egocentric-representations-in-vision-language-action-systems)  
+   evidence：用于移动操作的空间对齐VLA模型
+2. [VTAM: Video-Tactile-Action Models for Complex Physical Interaction Beyond VLAs](/202603/25/2603.23481v1-vtam-video-tactile-action-models-for-complex-physical-interaction-beyond-vlas)  
+   标签：评分：9.0/10、query:wam-vla
+   evidence：超越标准VLA的视频-触觉-动作模型 (VTAM)
+3. [Cortical Policy: A Dual-Stream View Transformer for Robotic Manipulation](/202603/25/2603.21051v1-cortical-policy-a-dual-stream-view-transformer-for-robotic-manipulation)  
    标签：评分：8.0/10、query:wam-vla
-   evidence：视觉语言动作系统中的统一第一视角表示
+   evidence：用于机器人操纵策略的双流视图转换器
+4. [WildWorld: A Large-Scale Dataset for Dynamic World Modeling with Actions and Explicit State toward Generative ARPG](/202603/25/2603.23497v1-wildworld-a-large-scale-dataset-for-dynamic-world-modeling-with-actions-and-explicit-state-toward-generative-arpg)  
+   标签：评分：8.0/10、query:profile-2
+   evidence：世界建模中由动作驱动的潜在状态动力学
 
 ### 速读区论文标签
-1. [KGS-GCN: Enhancing Sparse Skeleton Sensing via Kinematics-Driven Gaussian Splatting and Probabilistic Topology for Action Recognition](/202603/24/2603.16943v1-kgs-gcn-enhancing-sparse-skeleton-sensing-via-kinematics-driven-gaussian-splatting-and-probabilistic-topology-for-action-recognition)  
-   标签：评分：6.0/10、query:q3
-   evidence：基于骨架的动作识别与时空细节
-2. [ContractSkill: Repairable Contract-Based Skills for Multimodal Web Agents](/202603/24/2603.20340v1-contractskill-repairable-contract-based-skills-for-multimodal-web-agents)  
-   标签：评分：6.0/10、query:q3
-   evidence：具有显式动作语义的基于合同的技能表示
+- 本次无速读推荐。
 
 
 <div class="dpr-home-promo-card">
