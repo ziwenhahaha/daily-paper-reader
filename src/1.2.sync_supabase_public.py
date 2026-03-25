@@ -629,10 +629,15 @@ def main() -> None:
     parser.add_argument("--upsert-retry-wait", type=float, default=2.0)
     parser.add_argument("--with-embeddings", dest="with_embeddings", action="store_true", default=True)
     parser.add_argument("--no-embeddings", dest="with_embeddings", action="store_false")
-    parser.add_argument("--stream-upsert", dest="stream_upsert", action="store_true", default=True)
+    parser.add_argument("--stream-upsert", dest="stream_upsert", action="store_true", default=False)
     parser.add_argument("--no-stream-upsert", dest="stream_upsert", action="store_false")
+    parser.add_argument("--local-maintain-mode", action="store_true")
     parser.add_argument("--mode", type=str, default="standard")
     args = parser.parse_args()
+
+    if args.local_maintain_mode:
+        args.embed_local_only = True
+        args.stream_upsert = True
 
     backend_key = _norm(args.backend_key) or "arxiv"
     url = resolve_supabase_url(args.url, backend_key)

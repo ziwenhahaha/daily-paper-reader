@@ -8,10 +8,16 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
+import torch
+
 
 SCRIPT_DIR = os.path.dirname(__file__)
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
 LONG_RANGE_DAYS_THRESHOLD = 7
+DEFAULT_EMBED_BATCH_SIZE = 8
+DEFAULT_EMBED_CHUNK_SIZE = 512
+LOCAL_MAINTAIN_EMBED_BATCH_SIZE = 64
+LOCAL_MAINTAIN_EMBED_CHUNK_SIZE = 1024
 
 
 def run_step(label: str, args: list[str]) -> None:
@@ -43,10 +49,16 @@ def main() -> None:
     parser.add_argument("--raw-input", type=str, default="")
     parser.add_argument("--skip-fetch", action="store_true")
     parser.add_argument("--embed-model", type=str, default="")
-    parser.add_argument("--embed-device", type=str, default="cpu")
+    parser.add_argument("--embed-device", type=str, default="")
     parser.add_argument("--embed-devices", type=str, default="")
-    parser.add_argument("--embed-batch-size", type=int, default=8)
+    parser.add_argument("--embed-batch-size", type=int, default=DEFAULT_EMBED_BATCH_SIZE)
+    parser.add_argument("--embed-chunk-size", type=int, default=DEFAULT_EMBED_CHUNK_SIZE)
     parser.add_argument("--embed-max-length", type=int, default=0)
+    parser.add_argument("--embed-local-only", action="store_true")
+    parser.add_argument("--local-maintain", action="store_true")
+    parser.add_argument("--reserve-upload-cpus", type=int, default=2)
+    parser.add_argument("--upload-workers", type=int, default=2)
+    parser.add_argument("--max-pending-upload-chunks", type=int, default=2)
     parser.add_argument("--schema", type=str, default=os.getenv("SUPABASE_SCHEMA", "public"))
     parser.add_argument("--upsert-batch-size", type=int, default=200)
     parser.add_argument("--upsert-timeout", type=int, default=120)
@@ -60,6 +72,17 @@ def main() -> None:
     date_str = resolve_date_token(args.date, int(args.days or 1))
     os.environ["DPR_RUN_DATE"] = date_str
     print(f"[INFO] DPR_RUN_DATE={date_str}", flush=True)
+    if args.local_maintain and args.embed_batch_size == DEFAULT_EMBED_BATCH_SIZE:
+        args.embed_batch_size = LOCAL_MAINTAIN_EMBED_BATCH_SIZE
+    if args.local_maintain and args.embed_chunk_size == DEFAULT_EMBED_CHUNK_SIZE:
+        args.embed_chunk_size = LOCAL_MAINTAIN_EMBED_CHUNK_SIZE
+    if args.local_maintain:
+        args.embed_local_only = True
+    if not str(args.embed_device or "").strip() and not str(args.embed_devices or "").strip():
+        if args.local_maintain and torch.cuda.is_available() and int(torch.cuda.device_count() or 0) > 0:
+            args.embed_devices = ",".join(f"cuda:{idx}" for idx in range(int(torch.cuda.device_count() or 0)))
+        else:
+            args.embed_device = "cpu"
 
     raw_path = str(args.raw_input or "").strip()
     if raw_path:
@@ -94,8 +117,16 @@ def main() -> None:
         str(args.schema),
         "--embed-batch-size",
         str(max(int(args.embed_batch_size or 1), 1)),
+        "--embed-chunk-size",
+        str(max(int(args.embed_chunk_size or 1), 1)),
         "--embed-max-length",
         str(int(args.embed_max_length or 0)),
+        "--reserve-upload-cpus",
+        str(max(int(args.reserve_upload_cpus or 0), 0)),
+        "--upload-workers",
+        str(max(int(args.upload_workers or 1), 1)),
+        "--max-pending-upload-chunks",
+        str(max(int(args.max_pending_upload_chunks or 1), 1)),
         "--upsert-batch-size",
         str(max(int(args.upsert_batch_size or 1), 1)),
         "--upsert-timeout",
@@ -107,12 +138,16 @@ def main() -> None:
         "--raw-input",
         raw_path,
     ]
+    if args.local_maintain:
+        sync_cmd.append("--local-maintain-mode")
     if args.embed_model:
         sync_cmd += ["--embed-model", str(args.embed_model)]
     if args.embed_devices:
         sync_cmd += ["--embed-devices", str(args.embed_devices)]
     else:
         sync_cmd += ["--embed-device", str(args.embed_device or "cpu")]
+    if args.embed_local_only and not args.local_maintain:
+        sync_cmd.append("--embed-local-only")
     if args.no_embeddings:
         sync_cmd.append("--no-embeddings")
     run_step("Step 2 - sync bioRxiv to Supabase", sync_cmd)

@@ -13,6 +13,10 @@ import torch
 
 SCRIPT_DIR = os.path.dirname(__file__)
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
+DEFAULT_EMBED_BATCH_SIZE = 8
+DEFAULT_EMBED_CHUNK_SIZE = 512
+LOCAL_MAINTAIN_EMBED_BATCH_SIZE = 64
+LOCAL_MAINTAIN_EMBED_CHUNK_SIZE = 1024
 
 
 def run_step(label: str, args: list[str]) -> None:
@@ -32,12 +36,13 @@ def main() -> None:
     parser.add_argument("--embed-model", type=str, default="")
     parser.add_argument("--embed-device", type=str, default="")
     parser.add_argument("--embed-devices", type=str, default="")
-    parser.add_argument("--embed-batch-size", type=int, default=64)
-    parser.add_argument("--embed-chunk-size", type=int, default=1024)
+    parser.add_argument("--embed-batch-size", type=int, default=DEFAULT_EMBED_BATCH_SIZE)
+    parser.add_argument("--embed-chunk-size", type=int, default=DEFAULT_EMBED_CHUNK_SIZE)
     parser.add_argument("--embed-max-length", type=int, default=0)
     parser.add_argument("--embed-local-only", dest="embed_local_only", action="store_true")
     parser.add_argument("--allow-remote-embedding", dest="embed_local_only", action="store_false")
-    parser.set_defaults(embed_local_only=True)
+    parser.set_defaults(embed_local_only=False)
+    parser.add_argument("--local-maintain", action="store_true")
     parser.add_argument("--reserve-upload-cpus", type=int, default=2)
     parser.add_argument("--upload-workers", type=int, default=2)
     parser.add_argument("--max-pending-upload-chunks", type=int, default=2)
@@ -54,7 +59,20 @@ def main() -> None:
     date_str = str(args.date or TODAY_STR).strip() or TODAY_STR
     os.environ["DPR_RUN_DATE"] = date_str
     print(f"[INFO] DPR_RUN_DATE={date_str}", flush=True)
+    if args.local_maintain and args.embed_batch_size == DEFAULT_EMBED_BATCH_SIZE:
+        args.embed_batch_size = LOCAL_MAINTAIN_EMBED_BATCH_SIZE
+    if args.local_maintain and args.embed_chunk_size == DEFAULT_EMBED_CHUNK_SIZE:
+        args.embed_chunk_size = LOCAL_MAINTAIN_EMBED_CHUNK_SIZE
+    if args.local_maintain:
+        args.embed_local_only = True
     if not str(args.embed_device or "").strip() and not str(args.embed_devices or "").strip():
+        if not args.local_maintain:
+            args.embed_device = "cpu"
+        elif torch.cuda.is_available() and int(torch.cuda.device_count() or 0) > 0:
+            args.embed_devices = ",".join(f"cuda:{idx}" for idx in range(int(torch.cuda.device_count() or 0)))
+        else:
+            args.embed_device = "cpu"
+    elif args.local_maintain and not str(args.embed_devices or "").strip() and str(args.embed_device or "").strip().lower() == "auto":
         if torch.cuda.is_available() and int(torch.cuda.device_count() or 0) > 0:
             args.embed_devices = ",".join(f"cuda:{idx}" for idx in range(int(torch.cuda.device_count() or 0)))
         else:
@@ -123,13 +141,15 @@ def main() -> None:
         "--papers-table",
         "neurips_openreview_papers",
     ]
+    if args.local_maintain:
+        sync_cmd.append("--local-maintain-mode")
     if args.embed_model:
         sync_cmd += ["--embed-model", str(args.embed_model)]
     if args.embed_devices:
         sync_cmd += ["--embed-devices", str(args.embed_devices)]
     else:
         sync_cmd += ["--embed-device", str(args.embed_device or "cpu")]
-    if args.embed_local_only:
+    if args.embed_local_only and not args.local_maintain:
         sync_cmd.append("--embed-local-only")
     if args.no_embeddings:
         sync_cmd.append("--no-embeddings")
