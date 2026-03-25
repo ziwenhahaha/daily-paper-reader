@@ -97,6 +97,20 @@ class RemoteSentenceTransformerTest(unittest.TestCase):
             "26932a86d772001af60cbd9d2c162bfda3a90e094f797f3d6806f6077478b27a",
         )
 
+    @patch("src.model_loader._load_local_sentence_transformer")
+    def test_load_sentence_transformer_can_force_local(self, mock_load_local):
+        local_model = MagicMock()
+        mock_load_local.return_value = local_model
+
+        model = load_sentence_transformer(
+            "BAAI/bge-small-en-v1.5",
+            device="cpu",
+            allow_remote=False,
+        )
+
+        mock_load_local.assert_called_once()
+        self.assertIs(model, local_model)
+
 
 if __name__ == "__main__":
     unittest.main()

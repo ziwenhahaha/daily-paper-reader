@@ -285,6 +285,7 @@ def load_sentence_transformer(
   model_name: str,
   *,
   device: str,
+  allow_remote: bool = True,
   retries: int | None = None,
   log: Callable[[str], None] = _log_default,
   providers: tuple[tuple[str, str], ...] = (
@@ -294,7 +295,7 @@ def load_sentence_transformer(
 ):
   remote_endpoint = _DEFAULT_REMOTE_EMBED_ENDPOINT
   remote_api_key = _DEFAULT_REMOTE_EMBED_API_KEY
-  if remote_endpoint:
+  if allow_remote and remote_endpoint:
     remote_timeout_text = os.getenv("DPR_EMBED_API_TIMEOUT", str(_DEFAULT_REMOTE_TIMEOUT_SECONDS))
     try:
       remote_timeout = int(remote_timeout_text)
@@ -318,6 +319,9 @@ def load_sentence_transformer(
       local_providers=providers,
       log=log,
     )
+
+  if remote_endpoint and not allow_remote:
+    log(f"[INFO] 已禁用远程 embedding，强制使用本地模型：{model_name} (device={device})")
 
   return _load_local_sentence_transformer(
     model_name,

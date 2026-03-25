@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import json
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List, Tuple
 import requests
 import torch
 from model_loader import load_sentence_transformer
@@ -148,6 +149,165 @@ def to_pgvector_literal(vec: List[float]) -> str:
     return "[" + ",".join(f"{float(x):.8f}" for x in vec) + "]"
 
 
+def configure_local_embedding_runtime(reserve_upload_cpus: int) -> Tuple[int, int]:
+    total_cpus = max(int(os.cpu_count() or 1), 1)
+    reserved = min(max(int(reserve_upload_cpus or 0), 0), max(total_cpus - 1, 0))
+    embed_cpus = max(total_cpus - reserved, 1)
+    thread_env_keys = (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "BLIS_NUM_THREADS",
+    )
+    for key in thread_env_keys:
+        os.environ[key] = str(embed_cpus)
+    os.environ["TOKENIZERS_PARALLELISM"] = "true"
+    try:
+        torch.set_num_threads(embed_cpus)
+    except Exception:
+        pass
+    try:
+        torch.set_num_interop_threads(max(min(embed_cpus // 4, 8), 1))
+    except Exception:
+        pass
+    return embed_cpus, reserved
+
+
+def _load_embedding_model(
+    *,
+    model_name: str,
+    devices: List[str],
+    max_length: int,
+    allow_remote: bool,
+):
+    use_devices = devices or ["cpu"]
+    single_device = use_devices[0]
+    if len(use_devices) == 1:
+        log(f"[Embedding] 加载模型：{model_name}（device={single_device}）")
+    else:
+        log(f"[Embedding] 加载模型：{model_name}（multi-device={use_devices}）")
+    model = load_sentence_transformer(
+        model_name,
+        device=single_device,
+        allow_remote=allow_remote,
+        log=log,
+    )
+    if max_length > 0 and hasattr(model, "max_seq_length"):
+        try:
+            model.max_seq_length = max_length
+        except Exception:
+            pass
+    return model
+
+
+def iter_embedded_row_chunks(
+    rows: List[Dict[str, Any]],
+    *,
+    model_name: str,
+    devices: List[str],
+    encode_batch_size: int,
+    stream_chunk_size: int,
+    max_length: int,
+    allow_remote: bool,
+) -> Iterator[Tuple[List[Dict[str, Any]], int]]:
+    total_rows = len(rows or [])
+    if total_rows <= 0:
+        return
+
+    use_devices = devices or ["cpu"]
+    safe_encode_batch = max(int(encode_batch_size or 1), 1)
+    safe_chunk_size = max(int(stream_chunk_size or safe_encode_batch), safe_encode_batch)
+    total_chunks = (total_rows + safe_chunk_size - 1) // safe_chunk_size
+    log(
+        f"[Embedding] 开始流式编码：total={total_rows}, "
+        f"stream_chunk={safe_chunk_size}, encode_batch={safe_encode_batch}, devices={use_devices}"
+    )
+
+    model = _load_embedding_model(
+        model_name=model_name,
+        devices=use_devices,
+        max_length=max_length,
+        allow_remote=allow_remote,
+    )
+    now_iso = _now_iso()
+    dim = 0
+
+    if len(use_devices) == 1:
+        for chunk_index in range(total_chunks):
+            chunk_from = chunk_index * safe_chunk_size
+            chunk_to = min((chunk_index + 1) * safe_chunk_size, total_rows)
+            rows_chunk = rows[chunk_from:chunk_to]
+            texts_chunk = [build_embedding_text(row) for row in rows_chunk]
+            log(
+                f"[Embedding] 编码分片 {chunk_index + 1}/{total_chunks} "
+                f"（{chunk_from + 1}-{chunk_to}/{total_rows}，device={use_devices[0]}）"
+            )
+            emb = model.encode(
+                texts_chunk,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+                batch_size=safe_encode_batch,
+                show_progress_bar=False,
+            )
+            chunk_dim = int(emb.shape[1]) if hasattr(emb, "shape") and len(emb.shape) >= 2 else 0
+            if chunk_dim <= 0:
+                raise RuntimeError("embedding 输出维度异常")
+            if len(emb) != len(rows_chunk):
+                raise RuntimeError("embedding 输出长度与输入分片不一致")
+            dim = chunk_dim
+            for local_idx, row in enumerate(rows_chunk):
+                vec = emb[local_idx].tolist()
+                row["embedding"] = to_pgvector_literal(vec)
+                row["embedding_model"] = model_name
+                row["embedding_dim"] = dim
+                row["embedding_updated_at"] = now_iso
+            log(
+                f"[Embedding] 完成分片 {chunk_index + 1}/{total_chunks} "
+                f"（{chunk_from + 1}-{chunk_to}/{total_rows}，dim={dim}）"
+            )
+            yield rows_chunk, dim
+        return
+
+    pool = model.start_multi_process_pool(target_devices=use_devices)
+    try:
+        for chunk_index in range(total_chunks):
+            chunk_from = chunk_index * safe_chunk_size
+            chunk_to = min((chunk_index + 1) * safe_chunk_size, total_rows)
+            rows_chunk = rows[chunk_from:chunk_to]
+            texts_chunk = [build_embedding_text(row) for row in rows_chunk]
+            log(
+                f"[Embedding] 多设备分片 {chunk_index + 1}/{total_chunks} "
+                f"（{chunk_from + 1}-{chunk_to}/{total_rows}，devices={use_devices}）"
+            )
+            emb = model.encode_multi_process(
+                texts_chunk,
+                pool=pool,
+                batch_size=safe_encode_batch,
+                normalize_embeddings=True,
+            )
+            chunk_dim = int(emb.shape[1]) if hasattr(emb, "shape") and len(emb.shape) >= 2 else 0
+            if chunk_dim <= 0:
+                raise RuntimeError("embedding 输出维度异常")
+            if len(emb) != len(rows_chunk):
+                raise RuntimeError("embedding 输出长度与输入分片不一致")
+            dim = chunk_dim
+            for local_idx, row in enumerate(rows_chunk):
+                vec = emb[local_idx].tolist()
+                row["embedding"] = to_pgvector_literal(vec)
+                row["embedding_model"] = model_name
+                row["embedding_dim"] = dim
+                row["embedding_updated_at"] = now_iso
+            log(
+                f"[Embedding] 完成多设备分片 {chunk_index + 1}/{total_chunks} "
+                f"（{chunk_from + 1}-{chunk_to}/{total_rows}，dim={dim}）"
+            )
+            yield rows_chunk, dim
+    finally:
+        model.stop_multi_process_pool(pool)
+
+
 def attach_embeddings(
     rows: List[Dict[str, Any]],
     *,
@@ -155,108 +315,19 @@ def attach_embeddings(
     devices: List[str],
     batch_size: int,
     max_length: int,
+    allow_remote: bool = True,
 ) -> int:
-    if not rows:
-        return 0
-
-    texts = [build_embedding_text(r) for r in rows]
-    total_rows = len(rows)
-    if total_rows == 0:
-        return 0
-    log(f"[Embedding] 开始编码：{total_rows} 条")
-    batch_size = max(int(batch_size or 1), 1)
-    use_devices = devices or ["cpu"]
-    total_batches = (total_rows + batch_size - 1) // batch_size
-    if len(use_devices) == 1:
-        device = use_devices[0]
-        log(f"[Embedding] 加载模型：{model_name}（device={device}）")
-        model = load_sentence_transformer(model_name, device=use_devices[0])
-        if max_length > 0 and hasattr(model, "max_seq_length"):
-            try:
-                model.max_seq_length = max_length
-            except Exception:
-                pass
-
-        now_iso = _now_iso()
-        for batch_index in range(total_batches):
-            batch_from = batch_index * batch_size
-            batch_to = min((batch_index + 1) * batch_size, total_rows)
-            texts_batch = texts[batch_from:batch_to]
-            rows_batch = rows[batch_from:batch_to]
-            log(
-                f"[Embedding] 正在编码第 {batch_index + 1}/{total_batches} 批 "
-                f"（{batch_from + 1}-{batch_to}/{total_rows}，device={device}）"
-            )
-            emb = model.encode(
-                texts_batch,
-                convert_to_numpy=True,
-                normalize_embeddings=True,
-                batch_size=max(batch_size, 1),
-                show_progress_bar=False,
-            )
-            if batch_index == 0:
-                dim = int(emb.shape[1]) if hasattr(emb, "shape") and len(emb.shape) >= 2 else 0
-            if len(emb) != len(rows_batch):
-                raise RuntimeError("embedding 输出长度与输入批次不一致")
-            for local_idx, row in enumerate(rows_batch):
-                vec = emb[local_idx].tolist()
-                row["embedding"] = to_pgvector_literal(vec)
-                row["embedding_model"] = model_name
-                row["embedding_dim"] = dim
-                row["embedding_updated_at"] = now_iso
-            log(
-                f"[Embedding] 完成编码第 {batch_index + 1}/{total_batches} 批 "
-                f"（{batch_from + 1}-{batch_to}/{total_rows}）"
-            )
-        if dim <= 0:
-            raise RuntimeError("embedding 输出维度异常")
-        return dim
-
-    else:
-        log(f"[Embedding] 开始分流编码：total={total_rows}, batch={batch_size}, multi-device={use_devices}")
-        log(f"[Embedding] 加载模型：{model_name}（multi-device={use_devices}）")
-        model = load_sentence_transformer(model_name, device=use_devices[0])
-        if max_length > 0 and hasattr(model, "max_seq_length"):
-            try:
-                model.max_seq_length = max_length
-            except Exception:
-                pass
-        pool = model.start_multi_process_pool(target_devices=use_devices)
-        try:
-            now_iso = _now_iso()
-            for batch_index in range(total_batches):
-                batch_from = batch_index * batch_size
-                batch_to = min((batch_index + 1) * batch_size, total_rows)
-                texts_batch = texts[batch_from:batch_to]
-                rows_batch = rows[batch_from:batch_to]
-                log(
-                    f"[Embedding] 多卡第 {batch_index + 1}/{total_batches} 批编码 "
-                    f"（{batch_from + 1}-{batch_to}/{total_rows}，multi-device={use_devices}）"
-                )
-                emb = model.encode_multi_process(
-                    texts_batch,
-                    pool=pool,
-                    batch_size=max(int(batch_size or 8), 1),
-                    normalize_embeddings=True,
-                )
-                if batch_index == 0:
-                    dim = int(emb.shape[1]) if hasattr(emb, "shape") and len(emb.shape) >= 2 else 0
-                if len(emb) != len(rows_batch):
-                    raise RuntimeError("embedding 输出长度与输入批次不一致")
-                for local_idx, row in enumerate(rows_batch):
-                    vec = emb[local_idx].tolist()
-                    row["embedding"] = to_pgvector_literal(vec)
-                    row["embedding_model"] = model_name
-                    row["embedding_dim"] = dim
-                    row["embedding_updated_at"] = now_iso
-                log(
-                    f"[Embedding] 完成多卡第 {batch_index + 1}/{total_batches} 批 "
-                    f"（{batch_from + 1}-{batch_to}/{total_rows}）"
-                )
-        finally:
-            model.stop_multi_process_pool(pool)
-
-    log(f"[Embedding] 编码完成：dim={dim}")
+    dim = 0
+    for _rows_chunk, chunk_dim in iter_embedded_row_chunks(
+        rows,
+        model_name=model_name,
+        devices=devices,
+        encode_batch_size=batch_size,
+        stream_chunk_size=batch_size,
+        max_length=max_length,
+        allow_remote=allow_remote,
+    ):
+        dim = chunk_dim
     return dim
 
 
@@ -268,15 +339,13 @@ def resolve_embed_devices(embed_devices: str, embed_device: str) -> List[str]:
             return items
 
     single = _norm(embed_device)
-    if single:
+    if single and single.lower() != "auto":
         return [single]
 
     if torch.cuda.is_available():
         count = int(torch.cuda.device_count() or 0)
-        if count >= 2:
-            return ["cuda:0", "cuda:1"]
-        if count == 1:
-            return ["cuda:0"]
+        if count >= 1:
+            return [f"cuda:{idx}" for idx in range(count)]
     return ["cpu"]
 
 
@@ -449,6 +518,87 @@ def upsert_papers(
     cost_sec = max(time.time() - SYNC_START_TS, 0.0)
     log(f"[Supabase] 全量同步结束：成功上报 {uploaded} 条，共耗时 {cost_sec:.1f}s")
 
+
+def _wait_upload_futures(pending: List[Future[None]], *, drain_all: bool = False) -> List[Future[None]]:
+    if not pending:
+        return []
+    done, not_done = wait(
+        pending,
+        return_when=ALL_COMPLETED if drain_all else FIRST_COMPLETED,
+    )
+    for fut in done:
+        fut.result()
+    return list(not_done)
+
+
+def stream_embed_and_upsert(
+    *,
+    rows: List[Dict[str, Any]],
+    url: str,
+    service_key: str,
+    table: str,
+    schema: str,
+    model_name: str,
+    devices: List[str],
+    embed_batch_size: int,
+    embed_chunk_size: int,
+    embed_max_length: int,
+    embed_local_only: bool,
+    upload_workers: int,
+    max_pending_upload_chunks: int,
+    upsert_batch_size: int,
+    upsert_timeout: int,
+    upsert_retries: int,
+    upsert_retry_wait: float,
+) -> int:
+    total_rows = len(rows or [])
+    if total_rows <= 0:
+        return 0
+    worker_count = max(int(upload_workers or 1), 1)
+    pending_limit = max(int(max_pending_upload_chunks or worker_count), worker_count)
+    pending: List[Future[None]] = []
+    dim = 0
+    log(
+        f"[Pipeline] 启动流式 embedding+上传：total={total_rows}, "
+        f"upload_workers={worker_count}, pending_limit={pending_limit}"
+    )
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="supabase-upload") as executor:
+        for rows_chunk, chunk_dim in iter_embedded_row_chunks(
+            rows,
+            model_name=model_name,
+            devices=devices,
+            encode_batch_size=embed_batch_size,
+            stream_chunk_size=embed_chunk_size,
+            max_length=embed_max_length,
+            allow_remote=not embed_local_only,
+        ):
+            dim = chunk_dim
+            while len(pending) >= pending_limit:
+                pending = _wait_upload_futures(pending, drain_all=False)
+            chunk_first_id = _norm((rows_chunk[0] or {}).get("id")) if rows_chunk else ""
+            chunk_last_id = _norm((rows_chunk[-1] or {}).get("id")) if rows_chunk else ""
+            log(
+                f"[Pipeline] 提交上传分片：rows={len(rows_chunk)}, "
+                f"first={chunk_first_id or '<none>'}, last={chunk_last_id or '<none>'}"
+            )
+            pending.append(
+                executor.submit(
+                    upsert_papers,
+                    url=url,
+                    service_key=service_key,
+                    table=table,
+                    schema=schema,
+                    rows=rows_chunk,
+                    batch_size=upsert_batch_size,
+                    timeout=upsert_timeout,
+                    retries=upsert_retries,
+                    retry_wait=upsert_retry_wait,
+                )
+            )
+        pending = _wait_upload_futures(pending, drain_all=True)
+    log(f"[Pipeline] 流式 embedding+上传完成：dim={dim}")
+    return dim
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync raw arXiv papers to Supabase public tables.")
     parser.add_argument("--date", type=str, default=TODAY_STR, help="日期 token（YYYYMMDD 或 YYYYMMDD-YYYYMMDD）")
@@ -467,13 +617,20 @@ def main() -> None:
     parser.add_argument("--embed-device", type=str, default="cpu")
     parser.add_argument("--embed-devices", type=str, default="")
     parser.add_argument("--embed-batch-size", type=int, default=8)
+    parser.add_argument("--embed-chunk-size", type=int, default=512)
     parser.add_argument("--embed-max-length", type=int, default=0)
+    parser.add_argument("--embed-local-only", action="store_true")
+    parser.add_argument("--reserve-upload-cpus", type=int, default=2)
+    parser.add_argument("--upload-workers", type=int, default=2)
+    parser.add_argument("--max-pending-upload-chunks", type=int, default=2)
     parser.add_argument("--upsert-batch-size", type=int, default=200)
     parser.add_argument("--upsert-timeout", type=int, default=120)
     parser.add_argument("--upsert-retries", type=int, default=5)
     parser.add_argument("--upsert-retry-wait", type=float, default=2.0)
     parser.add_argument("--with-embeddings", dest="with_embeddings", action="store_true", default=True)
     parser.add_argument("--no-embeddings", dest="with_embeddings", action="store_false")
+    parser.add_argument("--stream-upsert", dest="stream_upsert", action="store_true", default=True)
+    parser.add_argument("--no-stream-upsert", dest="stream_upsert", action="store_false")
     parser.add_argument("--mode", type=str, default="standard")
     args = parser.parse_args()
 
@@ -501,39 +658,68 @@ def main() -> None:
     try:
         if args.with_embeddings:
             model_name = resolve_embed_model(args.embed_model)
+            if args.embed_local_only:
+                embed_cpus, reserved_cpus = configure_local_embedding_runtime(args.reserve_upload_cpus)
+                log(
+                    f"[Embedding] 已切换为本地优先模式：embed_cpus={embed_cpus}, "
+                    f"reserved_upload_cpus={reserved_cpus}"
+                )
             log(
                 f"[Embedding] 配置：model={model_name}, embed_device={args.embed_device}, "
                 f"embed_devices={args.embed_devices or '<auto>'}, batch={args.embed_batch_size}, "
-                f"max_length={args.embed_max_length}"
+                f"chunk={args.embed_chunk_size}, max_length={args.embed_max_length}, "
+                f"local_only={bool(args.embed_local_only)}, stream_upsert={bool(args.stream_upsert)}"
             )
             log("[Embedding] 开始执行文本向量编码阶段")
             emb_start = time.time()
             embed_devices = resolve_embed_devices(args.embed_devices, args.embed_device)
-            attach_embeddings(
-                rows,
-                model_name=model_name,
-                devices=embed_devices,
-                batch_size=int(args.embed_batch_size or 8),
-                max_length=int(args.embed_max_length or 0),
-            )
+            if args.stream_upsert:
+                stream_embed_and_upsert(
+                    rows=rows,
+                    url=url,
+                    service_key=key,
+                    table=papers_table,
+                    schema=_norm(args.schema),
+                    model_name=model_name,
+                    devices=embed_devices,
+                    embed_batch_size=max(int(args.embed_batch_size or 1), 1),
+                    embed_chunk_size=max(int(args.embed_chunk_size or 1), 1),
+                    embed_max_length=int(args.embed_max_length or 0),
+                    embed_local_only=bool(args.embed_local_only),
+                    upload_workers=max(int(args.upload_workers or 1), 1),
+                    max_pending_upload_chunks=max(int(args.max_pending_upload_chunks or 1), 1),
+                    upsert_batch_size=max(int(args.upsert_batch_size or 1), 1),
+                    upsert_timeout=max(int(args.upsert_timeout or 1), 1),
+                    upsert_retries=max(int(args.upsert_retries or 0), 0),
+                    upsert_retry_wait=max(float(args.upsert_retry_wait or 0.0), 0.0),
+                )
+            else:
+                attach_embeddings(
+                    rows,
+                    model_name=model_name,
+                    devices=embed_devices,
+                    batch_size=int(args.embed_batch_size or 8),
+                    max_length=int(args.embed_max_length or 0),
+                    allow_remote=not bool(args.embed_local_only),
+                )
             log(
                 f"[Embedding] 文本向量编码阶段结束，耗时 "
                 f"{(time.time() - emb_start):.1f}s"
             )
         else:
             log("[Embedding] 已禁用 embedding 同步（--no-embeddings）")
-
-        upsert_papers(
-            url=url,
-            service_key=key,
-            table=papers_table,
-            schema=_norm(args.schema),
-            rows=rows,
-            batch_size=max(int(args.upsert_batch_size or 1), 1),
-            timeout=max(int(args.upsert_timeout or 1), 1),
-            retries=max(int(args.upsert_retries or 0), 0),
-            retry_wait=max(float(args.upsert_retry_wait or 0.0), 0.0),
-        )
+        if (not args.with_embeddings) or (not args.stream_upsert):
+            upsert_papers(
+                url=url,
+                service_key=key,
+                table=papers_table,
+                schema=_norm(args.schema),
+                rows=rows,
+                batch_size=max(int(args.upsert_batch_size or 1), 1),
+                timeout=max(int(args.upsert_timeout or 1), 1),
+                retries=max(int(args.upsert_retries or 0), 0),
+                retry_wait=max(float(args.upsert_retry_wait or 0.0), 0.0),
+            )
         log(f"[OK] Supabase 同步完成：{len(rows)} 篇")
     except Exception as e:
         log(f"[ERROR] Supabase 同步失败：{e}")
