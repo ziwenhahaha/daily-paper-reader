@@ -48,6 +48,8 @@ def main() -> None:
     parser.add_argument("--date", type=str, default="")
     parser.add_argument("--raw-input", type=str, default="")
     parser.add_argument("--skip-fetch", action="store_true")
+    parser.add_argument("--ignore-seen", action="store_true", default=False)
+    parser.add_argument("--use-seen", dest="ignore_seen", action="store_false")
     parser.add_argument("--embed-model", type=str, default="")
     parser.add_argument("--embed-device", type=str, default="")
     parser.add_argument("--embed-devices", type=str, default="")
@@ -102,6 +104,8 @@ def main() -> None:
             "--output",
             raw_path,
         ]
+        if args.ignore_seen:
+            fetch_cmd.append("--ignore-seen")
         run_step("Step 1 - fetch bioRxiv", fetch_cmd)
     else:
         print(f"[INFO] Step 1 已跳过，复用原始文件：{raw_path}", flush=True)
