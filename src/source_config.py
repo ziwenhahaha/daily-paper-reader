@@ -11,7 +11,7 @@ except Exception:  # pragma: no cover
 
 
 ARXIV_SOURCE_KEY = "arxiv"
-DEFAULT_SUPPORTED_SOURCES = (ARXIV_SOURCE_KEY, "biorxiv", "medrxiv", "chemrxiv", "neurips", "aaai")
+DEFAULT_SUPPORTED_SOURCES = (ARXIV_SOURCE_KEY, "biorxiv", "medrxiv", "chemrxiv", "neurips", "iclr", "icml", "aaai")
 
 
 def _norm(value: Any) -> str:
@@ -137,6 +137,42 @@ def build_env_source_backend_overrides() -> Dict[str, Dict[str, Any]]:
         if _norm(os.getenv("DPR_NEURIPS_SCHEMA")):
             backend["schema"] = _norm(os.getenv("DPR_NEURIPS_SCHEMA"))
         out["neurips"] = backend
+
+    if _env_bool("DPR_ENABLE_ICLR_BACKEND", False):
+        backend = {
+            "enabled": _env_bool("DPR_ICLR_ENABLED", True),
+            "papers_table": _norm(os.getenv("DPR_ICLR_PAPERS_TABLE") or "iclr_openreview_papers"),
+            "use_vector_rpc": _env_bool("DPR_ICLR_USE_VECTOR_RPC", True),
+            "vector_rpc": _norm(os.getenv("DPR_ICLR_VECTOR_RPC") or "match_iclr_openreview_papers_exact"),
+            "vector_rpc_exact": _norm(os.getenv("DPR_ICLR_VECTOR_RPC_EXACT") or "match_iclr_openreview_papers_exact"),
+            "use_bm25_rpc": _env_bool("DPR_ICLR_USE_BM25_RPC", True),
+            "bm25_rpc": _norm(os.getenv("DPR_ICLR_BM25_RPC") or "match_iclr_openreview_papers_bm25"),
+        }
+        if _norm(os.getenv("DPR_ICLR_URL")):
+            backend["url"] = _norm(os.getenv("DPR_ICLR_URL"))
+        if _norm(os.getenv("DPR_ICLR_ANON_KEY")):
+            backend["anon_key"] = _norm(os.getenv("DPR_ICLR_ANON_KEY"))
+        if _norm(os.getenv("DPR_ICLR_SCHEMA")):
+            backend["schema"] = _norm(os.getenv("DPR_ICLR_SCHEMA"))
+        out["iclr"] = backend
+
+    if _env_bool("DPR_ENABLE_ICML_BACKEND", False):
+        backend = {
+            "enabled": _env_bool("DPR_ICML_ENABLED", True),
+            "papers_table": _norm(os.getenv("DPR_ICML_PAPERS_TABLE") or "icml_openreview_papers"),
+            "use_vector_rpc": _env_bool("DPR_ICML_USE_VECTOR_RPC", True),
+            "vector_rpc": _norm(os.getenv("DPR_ICML_VECTOR_RPC") or "match_icml_openreview_papers_exact"),
+            "vector_rpc_exact": _norm(os.getenv("DPR_ICML_VECTOR_RPC_EXACT") or "match_icml_openreview_papers_exact"),
+            "use_bm25_rpc": _env_bool("DPR_ICML_USE_BM25_RPC", True),
+            "bm25_rpc": _norm(os.getenv("DPR_ICML_BM25_RPC") or "match_icml_openreview_papers_bm25"),
+        }
+        if _norm(os.getenv("DPR_ICML_URL")):
+            backend["url"] = _norm(os.getenv("DPR_ICML_URL"))
+        if _norm(os.getenv("DPR_ICML_ANON_KEY")):
+            backend["anon_key"] = _norm(os.getenv("DPR_ICML_ANON_KEY"))
+        if _norm(os.getenv("DPR_ICML_SCHEMA")):
+            backend["schema"] = _norm(os.getenv("DPR_ICML_SCHEMA"))
+        out["icml"] = backend
 
     if _env_bool("DPR_ENABLE_AAAI_BACKEND", False):
         backend = {

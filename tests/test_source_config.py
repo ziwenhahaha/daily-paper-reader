@@ -203,6 +203,54 @@ class SourceConfigMigrationTest(unittest.TestCase):
         self.assertEqual(backend["papers_table"], "neurips_openreview_papers")
         self.assertEqual(backend["vector_rpc_exact"], "match_neurips_openreview_papers_exact")
 
+    def test_resolve_source_backends_supports_env_iclr_backend(self):
+        cfg = {
+            "supabase_shared": {
+                "url": "https://shared.supabase.co",
+                "anon_key": "shared-key",
+                "schema": "public",
+            }
+        }
+        with patch.dict(
+            "os.environ",
+            {
+                "DPR_ENABLE_ICLR_BACKEND": "1",
+                "DPR_ICLR_ENABLED": "1",
+                "DPR_ICLR_PAPERS_TABLE": "iclr_openreview_papers",
+                "DPR_ICLR_VECTOR_RPC_EXACT": "match_iclr_openreview_papers_exact",
+                "DPR_ICLR_BM25_RPC": "match_iclr_openreview_papers_bm25",
+            },
+            clear=False,
+        ):
+            backend = get_source_backend(cfg, "iclr")
+        self.assertEqual(backend["url"], "https://shared.supabase.co")
+        self.assertEqual(backend["papers_table"], "iclr_openreview_papers")
+        self.assertEqual(backend["vector_rpc_exact"], "match_iclr_openreview_papers_exact")
+
+    def test_resolve_source_backends_supports_env_icml_backend(self):
+        cfg = {
+            "supabase_shared": {
+                "url": "https://shared.supabase.co",
+                "anon_key": "shared-key",
+                "schema": "public",
+            }
+        }
+        with patch.dict(
+            "os.environ",
+            {
+                "DPR_ENABLE_ICML_BACKEND": "1",
+                "DPR_ICML_ENABLED": "1",
+                "DPR_ICML_PAPERS_TABLE": "icml_openreview_papers",
+                "DPR_ICML_VECTOR_RPC_EXACT": "match_icml_openreview_papers_exact",
+                "DPR_ICML_BM25_RPC": "match_icml_openreview_papers_bm25",
+            },
+            clear=False,
+        ):
+            backend = get_source_backend(cfg, "icml")
+        self.assertEqual(backend["url"], "https://shared.supabase.co")
+        self.assertEqual(backend["papers_table"], "icml_openreview_papers")
+        self.assertEqual(backend["vector_rpc_exact"], "match_icml_openreview_papers_exact")
+
     def test_resolve_source_backends_supports_env_aaai_backend(self):
         cfg = {
             "supabase_shared": {
