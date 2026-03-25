@@ -6,61 +6,67 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-24
-- 运行时间：2026-03-24 20:30:15 UTC
+- 最新运行日期：2026-03-25
+- 运行时间：2026-03-25 20:03:47 UTC
 - 运行状态：成功
-- 本次总论文数：13
-- 精读区：1
+- 本次总论文数：15
+- 精读区：3
 - 速读区：12
 
 ### 今日简报（AI）
-今日精选 13 篇论文深度解析多层公共交通网络建模，并涵盖电动车充电与 O-RAN 切换等智能调度前沿。
-重点关注多层网络对提升交通系统韧性的价值，以及两阶段优化算法在解决大规模充电分配中的高效表现。
-建议优先研读高分交通网络论文以掌握复杂系统建模，并关注 AI 优化技术在基础设施管理中的落地潜力。
-- 详情：[/202603/24/README](/202603/24/README)
+今日深度解析 15 篇前沿成果，聚焦 Transformer 架构革新与兼顾公平性的动态定价策略。
+FISformer 凭借模糊推理系统重塑时间序列预测，而鲁棒定价模型则在收益与公平间找到了新平衡。
+推荐关注模糊逻辑在时序建模中的潜力，并尝试在决策算法中引入公平性约束。
+- 详情：[/202603/25/README](/202603/25/README)
 
 ### 精读区论文标签
-1. [Multilayer public transport networks](/202603/24/2603.21130v1-multilayer-public-transport-networks)  
+1. [FISformer: Replacing Self-Attention with a Fuzzy Inference System in Transformer Models for Time Series Forecasting](/202603/25/2603.21724v1-fisformer-replacing-self-attention-with-a-fuzzy-inference-system-in-transformer-models-for-time-series-forecasting)  
+   标签：评分：9.0/10、query:urt-pf
+   evidence：在Transformer中引入模糊推理系统进行时间序列预测
+2. [Robust Dynamic Pricing and Admission Control with Fairness Guarantees](/202603/25/2603.17764v1-robust-dynamic-pricing-and-admission-control-with-fairness-guarantees)  
    标签：评分：8.0/10、query:urt-c
-   evidence：多层公共交通网络建模
+   evidence：共享系统中的准入控制与拥堵调节
+3. [Fast and Interpretable Autoregressive Estimation with Neural Network Backpropagation](/202603/25/2603.19041v1-fast-and-interpretable-autoregressive-estimation-with-neural-network-backpropagation)  
+   标签：评分：8.0/10、query:urt-pf
+   evidence：时间序列自回归估计的神经网络公式化
 
 ### 速读区论文标签
-1. [Efficient Electric Vehicle Charging Allocation: A Two-Stage Optimization and Participation Analysis](/202603/24/2603.16202v1-efficient-electric-vehicle-charging-allocation-a-two-stage-optimization-and-participation-analysis)  
-   标签：评分：7.0/10、query:urt-c
-   evidence：用于容量分配和拥堵控制的两阶段优化
-2. [Domain-Independent Dynamic Programming with Constraint Propagation](/202603/24/2603.16648v1-domain-independent-dynamic-programming-with-constraint-propagation)  
-   标签：评分：7.0/10、query:urt-c
-   evidence：用于调度的动态规划和约束传播
-3. [AI-Driven Multi-Modal Adaptive Handover Control Optimization for O-RAN](/202603/24/2603.17158v1-ai-driven-multi-modal-adaptive-handover-control-optimization-for-o-ran)  
-   标签：评分：7.0/10、query:urt-c
-   evidence：用于移动感知控制的PPO Actor-Critic策略
-4. [Baguan-TS: A Sequence-Native In-Context Learning Model for Time Series Forecasting with Covariates](/202603/24/2603.17439v1-baguan-ts-a-sequence-native-in-context-learning-model-for-time-series-forecasting-with-covariates)  
+1. [RHYME-XT: A Neural Operator for Spatiotemporal Control Systems](/202603/25/2603.17867v1-rhyme-xt-a-neural-operator-for-spatiotemporal-control-systems)  
    标签：评分：7.0/10、query:urt-pf
-   evidence：时间序列预测的上下文学习
-5. [Efficient Soft Actor-Critic with LLM-Based Action-Level Guidance for Continuous Control](/202603/24/2603.17468v1-efficient-soft-actor-critic-with-llm-based-action-level-guidance-for-continuous-control)  
-   标签：评分：7.0/10、query:urt-c
-   evidence：用于连续控制的软演员-评论家强化学习算法
-6. [AirDDE: Multifactor Neural Delay Differential Equations for Air Quality Forecasting](/202603/24/2603.17529v1-airdde-multifactor-neural-delay-differential-equations-for-air-quality-forecasting)  
+   evidence：用于时空控制系统代理建模的神经算子
+2. [Enactor: From Traffic Simulators to Surrogate World Models](/202603/25/2603.18266v1-enactor-from-traffic-simulators-to-surrogate-world-models)  
    标签：评分：7.0/10、query:urt-pf
-   evidence：用于时空预测的神延时微分方程
-7. [PerlAD: Towards Enhanced Closed-loop End-to-end Autonomous Driving with Pseudo-simulation-based Reinforcement Learning](/202603/24/2603.14908v1-perlad-towards-enhanced-closed-loop-end-to-end-autonomous-driving-with-pseudo-simulation-based-reinforcement-learning)  
-   标签：评分：6.0/10、query:urt-c
-   evidence：用于自动驾驶策略的强化学习
-8. [NavThinker: Action-Conditioned World Models for Coupled Prediction and Planning in Social Navigation](/202603/24/2603.15359v2-navthinker-action-conditioned-world-models-for-coupled-prediction-and-planning-in-social-navigation)  
+   evidence：城市网络中参与者交互的深度学习
+3. [Accurate and Efficient Multi-Channel Time Series Forecasting via Sparse Attention Mechanism](/202603/25/2603.18712v1-accurate-and-efficient-multi-channel-time-series-forecasting-via-sparse-attention-mechanism)  
+   标签：评分：7.0/10、query:urt-pf
+   evidence：捕获线性和非线性依赖的多通道时间序列预测
+4. [cuGenOpt: A GPU-Accelerated General-Purpose Metaheuristic Framework for Combinatorial Optimization](/202603/25/2603.19163v1-cugenopt-a-gpu-accelerated-general-purpose-metaheuristic-framework-for-combinatorial-optimization)  
+   标签：评分：7.0/10、query:urt-c
+   evidence：用于调度和组合优化的GPU加速元启发式框架
+5. [Stochastic Sequential Decision Making over Expanding Networks with Graph Filtering](/202603/25/2603.19501v1-stochastic-sequential-decision-making-over-expanding-networks-with-graph-filtering)  
+   标签：评分：7.0/10、query:urt-c
+   evidence：扩展网络上的随机序贯决策与多智能体强化学习
+6. [Centrality-Based Pruning for Efficient Echo State Networks](/202603/25/2603.20684v1-centrality-based-pruning-for-efficient-echo-state-networks)  
+   标签：评分：7.0/10、query:urt-pf
+   evidence：用于非线性时间序列预测的回声状态网络
+7. [PanguMotion: Continuous Driving Motion Forecasting with Pangu Transformers](/202603/25/2603.16196v1-pangumotion-continuous-driving-motion-forecasting-with-pangu-transformers)  
    标签：评分：6.0/10、query:urt-pf
-   evidence：动态环境中未来场景几何与人体运动预测
-9. [ExpressMind: A Multimodal Pretrained Large Language Model for Expressway Operation](/202603/24/2603.16495v1-expressmind-a-multimodal-pretrained-large-language-model-for-expressway-operation)  
-   标签：评分：6.0/10、query:urt-c
-   evidence：用于高速公路运营和交通智能的多模态大语言模型
-10. [Bridging the High-Frequency Data Gap: A Millisecond-Resolution Network Dataset for Advancing Time Series Foundation Models](/202603/24/2603.16497v1-bridging-the-high-frequency-data-gap-a-millisecond-resolution-network-dataset-for-advancing-time-series-foundation-models)  
+   evidence：驾驶场景中的运动预测与轨迹预测
+8. [Fine-Grained Network Traffic Classification with Contextual QoS Profiling](/202603/25/2603.16748v1-fine-grained-network-traffic-classification-with-contextual-qos-profiling)  
    标签：评分：6.0/10、query:urt-pf
-   evidence：高频交通状况时间序列数据集
-11. [ASCENT: Transformer-Based Aircraft Trajectory Prediction in Non-Towered Terminal Airspace](/202603/24/2603.16550v1-ascent-transformer-based-aircraft-trajectory-prediction-in-non-towered-terminal-airspace)  
-   标签：评分：6.0/10、query:urt-pf
-   evidence：基于Transformer的交通模式轨迹预测
-12. [Scalable Inspection Planning via Flow-based Mixed Integer Linear Programming](/202603/24/2603.16593v1-scalable-inspection-planning-via-flow-based-mixed-integer-linear-programming)  
+   evidence：用于捕获流量中多尺度时间模式的分层图神经网络
+9. [Physics-informed offline reinforcement learning eliminates catastrophic fuel waste in maritime routing](/202603/25/2603.17319v1-physics-informed-offline-reinforcement-learning-eliminates-catastrophic-fuel-waste-in-maritime-routing)  
    标签：评分：6.0/10、query:urt-c
-   evidence：用于路径规划的混合整数线性规划
+   evidence：用于路径策略的离线强化学习
+10. [Per-Domain Generalizing Policies: On Learning Efficient and Robust Q-Value Functions (Extended Version with Technical Appendix)](/202603/25/2603.17544v1-per-domain-generalizing-policies-on-learning-efficient-and-robust-q-value-functions-extended-version-with-technical-appendix)  
+   标签：评分：6.0/10、query:urt-c
+   evidence：学习用于规划和决策的高效Q值函数
+11. [Flow Matching Policy with Entropy Regularization](/202603/25/2603.17685v1-flow-matching-policy-with-entropy-regularization)  
+   标签：评分：6.0/10、query:urt-c
+   evidence：带有熵正则化的强化学习流量匹配策略
+12. [Robust Dynamic Pricing and Admission Control with Fairness Guarantees](/202603/25/2603.17764v2-robust-dynamic-pricing-and-admission-control-with-fairness-guarantees)  
+   标签：评分：6.0/10、query:urt-c
+   evidence：共享服务系统中的准入控制与拥堵调节
 
 
 <div class="dpr-home-promo-card">
