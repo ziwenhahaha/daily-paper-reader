@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import bz2
 import json
 import os
 import re
@@ -32,10 +31,7 @@ CRAWL_STATE_FILE = os.path.join(ROOT_DIR, "archive", "chemrxiv_crawl_state.json"
 SEEN_IDS_FILE = os.path.join(ROOT_DIR, "archive", "chemrxiv_seen.json")
 DATE_TOKEN_RE = re.compile(r"^\d{8}$")
 RANGE_TOKEN_RE = re.compile(r"^\d{8}-\d{8}$")
-CHEMRXIV_DASHBOARD_DATA_URL = (
-    "https://raw.githubusercontent.com/chemrxiv-dashboard/"
-    "chemrxiv-dashboard.github.io/master/data/allchemrxiv_data.json.bz2"
-)
+CHEMRXIV_OFFICIAL_API_URL = "https://chemrxiv.org/engage/api-gateway/chemrxiv/assets/orp/resource/item"
 
 
 def log(message: str) -> None:
@@ -256,25 +252,87 @@ def normalize_chemrxiv_record(raw: Dict[str, Any]) -> Dict[str, Any] | None:
     }
 
 
+def _extract_api_items(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+
+    candidates = [
+        payload.get("items"),
+        payload.get("results"),
+        payload.get("data"),
+        payload.get("content"),
+        payload.get("entries"),
+        payload.get("itemHits"),
+    ]
+    for value in candidates:
+        if isinstance(value, list):
+            out: List[Dict[str, Any]] = []
+            for item in value:
+                if isinstance(item, dict):
+                    if isinstance(item.get("item"), dict):
+                        out.append(item["item"])
+                    else:
+                        out.append(item)
+            if out:
+                return out
+
+    # 兼容“顶层是 id -> object”的极端形态
+    if payload and all(isinstance(v, dict) for v in payload.values()):
+        return [v for v in payload.values() if isinstance(v, dict)]
+    return []
+
+
 def fetch_chemrxiv_dataset(*, timeout: int = 120, retries: int = 3) -> Dict[str, Dict[str, Any]]:
     last_error: Exception | None = None
-    for attempt in range(1, max(int(retries or 1), 1) + 1):
-        try:
-            resp = requests.get(CHEMRXIV_DASHBOARD_DATA_URL, timeout=max(int(timeout or 1), 1))
-            resp.raise_for_status()
-            payload = json.loads(bz2.decompress(resp.content))
-            if not isinstance(payload, dict):
-                raise RuntimeError("ChemRxiv dashboard payload 不是 dict")
-            return payload
-        except Exception as exc:
-            last_error = exc
-            if attempt >= max(int(retries or 1), 1):
+    collected: Dict[str, Dict[str, Any]] = {}
+    page_size = 100
+    offset = 0
+    max_pages = 200
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json, text/plain, */*"}
+
+    for page in range(max_pages):
+        page_items: List[Dict[str, Any]] = []
+        for attempt in range(1, max(int(retries or 1), 1) + 1):
+            try:
+                resp = requests.get(
+                    CHEMRXIV_OFFICIAL_API_URL,
+                    params={
+                        "limit": page_size,
+                        "skip": offset,
+                        "sort": "publishedDate:desc",
+                    },
+                    headers=headers,
+                    timeout=max(int(timeout or 1), 1),
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                page_items = _extract_api_items(payload)
                 break
-            log(f"[ChemRxiv] dataset retry {attempt}/{retries} error={exc}")
-            time.sleep(float(attempt))
+            except Exception as exc:
+                last_error = exc
+                if attempt >= max(int(retries or 1), 1):
+                    break
+                log(f"[ChemRxiv] api retry {attempt}/{retries} offset={offset} error={exc}")
+                time.sleep(float(attempt))
+        if not page_items:
+            break
+        for item in page_items:
+            item_id = _norm(item.get("id"))
+            if not item_id or item_id in collected:
+                continue
+            collected[item_id] = item
+        offset += page_size
+        if len(page_items) < page_size:
+            break
     if last_error is not None:
-        raise last_error
-    raise RuntimeError("ChemRxiv dataset 下载失败")
+        # 若拿到过有效数据，则忽略最后一次翻页异常；否则抛出
+        if not collected:
+            raise last_error
+    if not collected:
+        raise RuntimeError("ChemRxiv 官方 API 未返回可用数据")
+    return collected
 
 
 def fetch_chemrxiv_metadata(

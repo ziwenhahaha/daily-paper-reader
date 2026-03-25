@@ -10,7 +10,7 @@ from common import TODAY_STR, cleanup_backend, default_raw_path, ensure_parent_d
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="维护入口：ChemRxiv 抓取 + Supabase 同步。")
+    parser = argparse.ArgumentParser(description="维护入口：ChemRxiv 官方源抓取 + Supabase 同步。")
     parser.add_argument("--fetch-days", type=int, default=30)
     parser.add_argument("--run-date", type=str, default=TODAY_STR)
     parser.add_argument("--retention-days", type=int, default=45)

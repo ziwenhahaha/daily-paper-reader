@@ -42,7 +42,7 @@ def resolve_date_token(date_arg: str, days: int) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="抓取近 N 天 ChemRxiv 并同步到 Supabase。")
+    parser = argparse.ArgumentParser(description="抓取近 N 天 ChemRxiv 并同步到 Supabase（官方源）。")
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--date", type=str, default="")
     parser.add_argument("--raw-input", type=str, default="")
