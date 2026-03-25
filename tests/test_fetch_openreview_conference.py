@@ -21,7 +21,7 @@ class FetchOpenReviewConferenceTest(unittest.TestCase):
             sys.path.insert(0, str(src_dir))
         cls.mod = _load_module(
             "fetch_openreview_mod",
-            src_dir / "1.1.fetch_paper_openreview_conference.py",
+            src_dir / "maintain" / "fetchers" / "fetch_openreview.py",
         )
 
     def test_build_source_label(self):

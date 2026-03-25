@@ -21,7 +21,7 @@ class InitSupabaseFromNeuripsOpenReviewTest(unittest.TestCase):
             sys.path.insert(0, str(src_dir))
         cls.mod = _load_module(
             "init_neurips_openreview_mod",
-            src_dir / "1.3.init_supabase_from_neurips_openreview.py",
+            src_dir / "maintain" / "init_neurips.py",
         )
 
     def test_default_date_token_uses_today(self):

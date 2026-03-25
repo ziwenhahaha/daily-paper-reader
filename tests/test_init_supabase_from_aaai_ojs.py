@@ -21,7 +21,7 @@ class InitSupabaseFromAAAIOJSTest(unittest.TestCase):
             sys.path.insert(0, str(src_dir))
         cls.mod = _load_module(
             "init_aaai_ojs_mod",
-            src_dir / "1.3.init_supabase_from_aaai_ojs.py",
+            src_dir / "maintain" / "init_aaai.py",
         )
 
     def test_default_date_token_uses_today(self):

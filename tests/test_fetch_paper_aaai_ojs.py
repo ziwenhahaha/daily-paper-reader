@@ -21,7 +21,7 @@ class FetchPaperAAAIOJSTest(unittest.TestCase):
             sys.path.insert(0, str(src_dir))
         cls.mod = _load_module(
             "fetch_aaai_ojs_mod",
-            src_dir / "1.1.fetch_paper_aaai_ojs.py",
+            src_dir / "maintain" / "fetchers" / "fetch_aaai_ojs.py",
         )
 
     def test_extract_issue_year(self):

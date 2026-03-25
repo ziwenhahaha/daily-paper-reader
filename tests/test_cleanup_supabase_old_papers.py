@@ -22,7 +22,7 @@ class CleanupSupabaseOldPapersTest(unittest.TestCase):
             sys.path.insert(0, str(src_dir))
         cls.mod = _load_module(
             "cleanup_supabase_mod",
-            src_dir / "1.4.cleanup_supabase_old_papers.py",
+            src_dir / "maintain" / "cleanup.py",
         )
 
     def test_cleanup_old_papers_batches_until_empty(self):

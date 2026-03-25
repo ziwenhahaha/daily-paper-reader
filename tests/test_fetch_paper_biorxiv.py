@@ -19,7 +19,7 @@ class FetchBioRxivTest(unittest.TestCase):
         src_dir = root / "src"
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
-        cls.mod = _load_module("fetch_biorxiv_mod", src_dir / "1.1.fetch_paper_biorxiv.py")
+        cls.mod = _load_module("fetch_biorxiv_mod", src_dir / "maintain" / "fetchers" / "fetch_biorxiv.py")
 
     def test_build_biorxiv_paper_id_is_path_safe(self):
         paper_id = self.mod.build_biorxiv_paper_id("10.1101/2024.01.11.575298", "3")

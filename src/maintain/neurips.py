@@ -37,7 +37,7 @@ def main() -> None:
 
     init_cmd = [
         sys.executable,
-        os.path.join(os.path.dirname(__file__), "..", "1.3.init_supabase_from_neurips_openreview.py"),
+        os.path.join(os.path.dirname(__file__), "init_neurips.py"),
         "--year-end",
         str(int(args.year_end)),
         "--year-count",

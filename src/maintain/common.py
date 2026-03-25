@@ -63,7 +63,7 @@ def cleanup_backend(*, backend_key: str, retention_days: int, skip_cleanup: bool
         "Cleanup old papers",
         [
             sys.executable,
-            os.path.join(SRC_DIR, "1.4.cleanup_supabase_old_papers.py"),
+            os.path.join(MAINTAIN_DIR, "cleanup.py"),
             "--backend-key",
             _norm(backend_key),
             "--retention-days",

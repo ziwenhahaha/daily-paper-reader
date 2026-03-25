@@ -34,7 +34,7 @@ def main() -> None:
 
     init_cmd = [
         sys.executable,
-        os.path.join(os.path.dirname(__file__), "..", "1.3.init_supabase_from_biorxiv.py"),
+        os.path.join(os.path.dirname(__file__), "init_biorxiv.py"),
         "--days",
         str(max(int(args.fetch_days or 1), 1)),
         "--chunk-days",

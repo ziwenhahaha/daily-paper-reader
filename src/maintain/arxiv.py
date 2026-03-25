@@ -35,7 +35,7 @@ def main() -> None:
 
     init_cmd = [
         sys.executable,
-        os.path.join(os.path.dirname(__file__), "..", "1.3.init_supabase_from_arxiv.py"),
+        os.path.join(os.path.dirname(__file__), "init_arxiv.py"),
         "--date",
         run_date,
         "--chunk-days",

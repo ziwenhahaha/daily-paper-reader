@@ -20,7 +20,7 @@ class SyncStreamingPipelineTest(unittest.TestCase):
         src_dir = root / "src"
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
-        cls.mod = _load_module("sync_stream_mod", src_dir / "1.2.sync_supabase_public.py")
+        cls.mod = _load_module("sync_stream_mod", src_dir / "maintain" / "sync.py")
 
     def test_configure_local_embedding_runtime_reserves_upload_cpus(self):
         with patch.object(self.mod.os, "cpu_count", return_value=64):
