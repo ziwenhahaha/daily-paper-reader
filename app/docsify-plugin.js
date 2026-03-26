@@ -3606,7 +3606,7 @@ window.$docsify = {
       const renderFigureCarousel = (figures) => {
         if (!figures || !figures.length) return '';
         const slides = figures.map((figure, index) => {
-          const pageText = figure.page ? `第 ${figure.page} 页` : '';
+          const pageText = figure.page ? `PDF 第 ${figure.page} 页` : '';
           const caption = figure.caption ? `<div class="paper-figure-caption">${escapePaperHtml(figure.caption)}</div>` : '';
           return [
             `<div class="paper-figure-slide${index === 0 ? ' is-active' : ''}" data-figure-slide="${index}">`,
@@ -3619,9 +3619,15 @@ window.$docsify = {
           ].join('');
         }).join('');
 
-        const dots = figures.map((_, index) => (
-          `<button class="paper-figure-dot${index === 0 ? ' is-active' : ''}" type="button" data-figure-dot="${index}" aria-label="切换到第 ${index + 1} 张插图"></button>`
-        )).join('');
+        const thumbs = figures.map((figure, index) => {
+          const thumbPageText = figure.page ? ` · PDF 第 ${figure.page} 页` : '';
+          return [
+            `<button class="paper-figure-thumb${index === 0 ? ' is-active' : ''}" type="button" data-figure-thumb="${index}" aria-label="切换到第 ${index + 1} 张插图">`,
+            `<img class="paper-figure-thumb-image" src="${escapePaperHtml(resolveDocsAssetUrl(figure.url))}" alt="Thumbnail ${index + 1}" loading="lazy">`,
+            `<span class="paper-figure-thumb-label">Figure ${index + 1}${thumbPageText ? escapePaperHtml(thumbPageText) : ''}</span>`,
+            '</button>',
+          ].join('');
+        }).join('');
 
         return [
           '<div class="paper-figure-section" data-paper-figure-carousel>',
@@ -3634,7 +3640,7 @@ window.$docsify = {
           `<div class="paper-figure-viewport">${slides}</div>`,
           figures.length > 1 ? '<button class="paper-figure-nav paper-figure-nav-next" type="button" data-figure-next aria-label="下一张">›</button>' : '',
           '</div>',
-          figures.length > 1 ? `<div class="paper-figure-dots">${dots}</div>` : '',
+          figures.length > 1 ? `<div class="paper-figure-thumbs">${thumbs}</div>` : '',
           '</div>',
           '',
         ].join('');
@@ -3646,7 +3652,7 @@ window.$docsify = {
           root.dataset.bound = '1';
 
           const slides = Array.from(root.querySelectorAll('[data-figure-slide]'));
-          const dots = Array.from(root.querySelectorAll('[data-figure-dot]'));
+          const thumbs = Array.from(root.querySelectorAll('[data-figure-thumb]'));
           const prevBtn = root.querySelector('[data-figure-prev]');
           const nextBtn = root.querySelector('[data-figure-next]');
           const counter = root.querySelector('[data-figure-current]');
@@ -3657,8 +3663,8 @@ window.$docsify = {
             slides.forEach((slide, index) => {
               slide.classList.toggle('is-active', index === current);
             });
-            dots.forEach((dot, index) => {
-              dot.classList.toggle('is-active', index === current);
+            thumbs.forEach((thumb, index) => {
+              thumb.classList.toggle('is-active', index === current);
             });
             if (counter) {
               counter.textContent = String(current + 1);
@@ -3679,8 +3685,8 @@ window.$docsify = {
               render();
             });
           }
-          dots.forEach((dot, index) => {
-            dot.addEventListener('click', () => {
+          thumbs.forEach((thumb, index) => {
+            thumb.addEventListener('click', () => {
               current = index;
               render();
             });
