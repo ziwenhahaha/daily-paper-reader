@@ -28,6 +28,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="抓取近三年 ACL Anthology 论文并同步到 Supabase。")
     parser.add_argument("--year-end", type=int, default=datetime.now(timezone.utc).year)
     parser.add_argument("--year-count", type=int, default=3)
+    parser.add_argument("--workers", type=int, default=32)
     parser.add_argument("--date", type=str, default=TODAY_STR)
     parser.add_argument("--raw-input", type=str, default="")
     parser.add_argument("--skip-fetch", action="store_true")
@@ -89,6 +90,8 @@ def main() -> None:
             str(int(args.year_end)),
             "--year-count",
             str(max(int(args.year_count or 1), 1)),
+            "--workers",
+            str(max(int(args.workers or 1), 1)),
             "--output",
             raw_path,
         ]

@@ -13,6 +13,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="维护入口：ACL 抓取 + Supabase 同步。")
     parser.add_argument("--year-end", type=int, default=2025)
     parser.add_argument("--year-count", type=int, default=3)
+    parser.add_argument("--workers", type=int, default=32)
     parser.add_argument("--run-date", type=str, default=TODAY_STR)
     parser.add_argument("--retention-days", type=int, default=3650)
     parser.add_argument("--raw-input", type=str, default="")
@@ -42,6 +43,8 @@ def main() -> None:
         str(int(args.year_end)),
         "--year-count",
         str(max(int(args.year_count or 1), 1)),
+        "--workers",
+        str(max(int(args.workers or 1), 1)),
         "--date",
         run_date,
         "--raw-input",

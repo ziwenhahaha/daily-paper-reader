@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
@@ -182,6 +183,7 @@ def fetch_anthology_conference(
     year_count: int,
     volume_specs: Sequence[Tuple[str, str]],
     output: str,
+    workers: int = 32,
 ) -> None:
     years = iter_target_years(year_end, year_count)
     all_papers: List[Dict[str, Any]] = []
@@ -195,21 +197,27 @@ def fetch_anthology_conference(
             log(f"[Anthology] volume papers={len(paper_urls)}")
             source_label = f"{conference}-{year}-{label}"
             primary_category = f"{conference}-{year}-{label}"
-            for idx, paper_url in enumerate(paper_urls, start=1):
-                paper = fetch_anthology_paper(
-                    paper_url,
-                    source_label=source_label,
-                    primary_category=primary_category,
-                )
-                if not paper:
-                    continue
-                pid = _norm(paper.get("id"))
-                if not pid or pid in seen_ids:
-                    continue
-                seen_ids.add(pid)
-                all_papers.append(paper)
-                if idx == 1 or idx % 200 == 0 or idx == len(paper_urls):
-                    log(f"[Anthology] {conference} {year} {label} progress={idx}/{len(paper_urls)}")
+            completed = 0
+            with ThreadPoolExecutor(max_workers=max(int(workers or 1), 1)) as executor:
+                futures = {
+                    executor.submit(
+                        fetch_anthology_paper,
+                        paper_url,
+                        source_label=source_label,
+                        primary_category=primary_category,
+                    ): paper_url
+                    for paper_url in paper_urls
+                }
+                for future in as_completed(futures):
+                    completed += 1
+                    paper = future.result()
+                    if paper:
+                        pid = _norm(paper.get("id"))
+                        if pid and pid not in seen_ids:
+                            seen_ids.add(pid)
+                            all_papers.append(paper)
+                    if completed == 1 or completed % 200 == 0 or completed == len(paper_urls):
+                        log(f"[Anthology] {conference} {year} {label} progress={completed}/{len(paper_urls)}")
 
     out_path = _norm(output)
     if not out_path:
@@ -228,6 +236,7 @@ def main() -> None:
     parser.add_argument("--conference", type=str, choices=["ACL", "EMNLP"], default="ACL")
     parser.add_argument("--year-end", type=int, default=datetime.now(timezone.utc).year)
     parser.add_argument("--year-count", type=int, default=3)
+    parser.add_argument("--workers", type=int, default=32)
     parser.add_argument("--output", type=str, default="")
     args = parser.parse_args()
 
@@ -242,6 +251,7 @@ def main() -> None:
         year_count=args.year_count,
         volume_specs=volume_specs,
         output=args.output,
+        workers=args.workers,
     )
 
 
