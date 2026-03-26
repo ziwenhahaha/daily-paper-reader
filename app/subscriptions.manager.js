@@ -102,6 +102,19 @@ window.SubscriptionsManager = (function () {
     }
   };
 
+  const PAPER_SOURCE_ORDER = [
+    'arxiv',
+    'biorxiv',
+    'medrxiv',
+    'chemrxiv',
+    'neurips',
+    'iclr',
+    'icml',
+    'acl',
+    'emnlp',
+    'aaai',
+  ];
+
   const getAvailablePaperSources = (config) => {
     const cfg = config && typeof config === 'object' ? config : {};
     const rawBackends = cfg.source_backends && typeof cfg.source_backends === 'object'
@@ -118,6 +131,14 @@ window.SubscriptionsManager = (function () {
       if (!normalized || seen.has(normalized)) return;
       seen.add(normalized);
       out.push(normalized);
+    });
+    out.sort((a, b) => {
+      const idxA = PAPER_SOURCE_ORDER.indexOf(a);
+      const idxB = PAPER_SOURCE_ORDER.indexOf(b);
+      const rankA = idxA >= 0 ? idxA : Number.MAX_SAFE_INTEGER;
+      const rankB = idxB >= 0 ? idxB : Number.MAX_SAFE_INTEGER;
+      if (rankA !== rankB) return rankA - rankB;
+      return a.localeCompare(b);
     });
     return out;
   };
