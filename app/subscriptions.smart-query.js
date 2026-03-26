@@ -75,6 +75,7 @@ window.SubscriptionsSmartQuery = (function () {
     'emnlp',
     'aaai',
   ];
+  const VISIBLE_PAPER_SOURCES = ['arxiv', 'biorxiv'];
   const PAPER_SOURCE_LABELS = {
     arxiv: 'arXiv',
     biorxiv: 'bioRxiv',
@@ -210,6 +211,11 @@ window.SubscriptionsSmartQuery = (function () {
     return toStableId(profileOrTag.tag) || '';
   };
 
+  const filterVisiblePaperSources = (values) => {
+    const visible = new Set(VISIBLE_PAPER_SOURCES);
+    return (Array.isArray(values) ? values : []).filter((value) => visible.has(normalizeText(value).toLowerCase()));
+  };
+
   const normalizePaperSources = (values, options = {}) => {
     const fallbackToArxiv = options.fallbackToArxiv !== false;
     const fallbackToAll = options.fallbackToAll === true;
@@ -224,13 +230,14 @@ window.SubscriptionsSmartQuery = (function () {
       seen.add(key);
       out.push(key);
     });
-    if (!out.length && fallbackToArxiv) {
+    const visibleOut = filterVisiblePaperSources(out);
+    if (!visibleOut.length && fallbackToArxiv) {
       return ['arxiv'];
     }
-    if (!out.length && fallbackToAll) {
+    if (!visibleOut.length && fallbackToAll) {
       return getAvailablePaperSources();
     }
-    return out;
+    return visibleOut;
   };
 
   const getAvailablePaperSources = () => {
@@ -250,7 +257,8 @@ window.SubscriptionsSmartQuery = (function () {
       seen.add(key);
       out.push(key);
     });
-    out.sort((a, b) => {
+    const visibleOut = filterVisiblePaperSources(out);
+    visibleOut.sort((a, b) => {
       const idxA = PAPER_SOURCE_ORDER.indexOf(a);
       const idxB = PAPER_SOURCE_ORDER.indexOf(b);
       const rankA = idxA >= 0 ? idxA : Number.MAX_SAFE_INTEGER;
@@ -258,7 +266,7 @@ window.SubscriptionsSmartQuery = (function () {
       if (rankA !== rankB) return rankA - rankB;
       return a.localeCompare(b);
     });
-    return out;
+    return visibleOut;
   };
 
   const getPaperSourceLabel = (source) => {

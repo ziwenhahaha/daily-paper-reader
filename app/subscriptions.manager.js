@@ -114,6 +114,12 @@ window.SubscriptionsManager = (function () {
     'emnlp',
     'aaai',
   ];
+  const VISIBLE_PAPER_SOURCES = ['arxiv', 'biorxiv'];
+
+  const filterVisiblePaperSources = (values) => {
+    const visible = new Set(VISIBLE_PAPER_SOURCES);
+    return (Array.isArray(values) ? values : []).filter((value) => visible.has(normalizeSourceKey(value)));
+  };
 
   const getAvailablePaperSources = (config) => {
     const cfg = config && typeof config === 'object' ? config : {};
@@ -132,7 +138,8 @@ window.SubscriptionsManager = (function () {
       seen.add(normalized);
       out.push(normalized);
     });
-    out.sort((a, b) => {
+    const visibleOut = filterVisiblePaperSources(out);
+    visibleOut.sort((a, b) => {
       const idxA = PAPER_SOURCE_ORDER.indexOf(a);
       const idxB = PAPER_SOURCE_ORDER.indexOf(b);
       const rankA = idxA >= 0 ? idxA : Number.MAX_SAFE_INTEGER;
@@ -140,7 +147,7 @@ window.SubscriptionsManager = (function () {
       if (rankA !== rankB) return rankA - rankB;
       return a.localeCompare(b);
     });
-    return out;
+    return visibleOut;
   };
 
   const normalizePaperSources = (values, options = {}) => {
@@ -156,10 +163,11 @@ window.SubscriptionsManager = (function () {
       seen.add(key);
       out.push(key);
     });
-    if (!out.length && fallbackToArxiv) {
+    const visibleOut = filterVisiblePaperSources(out);
+    if (!visibleOut.length && fallbackToArxiv) {
       return ['arxiv'];
     }
-    return out;
+    return visibleOut;
   };
 
   const normalizeKeywordItem = (item) => {
