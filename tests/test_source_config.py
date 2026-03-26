@@ -251,6 +251,54 @@ class SourceConfigMigrationTest(unittest.TestCase):
         self.assertEqual(backend["papers_table"], "icml_openreview_papers")
         self.assertEqual(backend["vector_rpc_exact"], "match_icml_openreview_papers_exact")
 
+    def test_resolve_source_backends_supports_env_acl_backend(self):
+        cfg = {
+            "supabase_shared": {
+                "url": "https://shared.supabase.co",
+                "anon_key": "shared-key",
+                "schema": "public",
+            }
+        }
+        with patch.dict(
+            "os.environ",
+            {
+                "DPR_ENABLE_ACL_BACKEND": "1",
+                "DPR_ACL_ENABLED": "1",
+                "DPR_ACL_PAPERS_TABLE": "acl_papers",
+                "DPR_ACL_VECTOR_RPC_EXACT": "match_acl_papers_exact",
+                "DPR_ACL_BM25_RPC": "match_acl_papers_bm25",
+            },
+            clear=False,
+        ):
+            backend = get_source_backend(cfg, "acl")
+        self.assertEqual(backend["url"], "https://shared.supabase.co")
+        self.assertEqual(backend["papers_table"], "acl_papers")
+        self.assertEqual(backend["vector_rpc_exact"], "match_acl_papers_exact")
+
+    def test_resolve_source_backends_supports_env_emnlp_backend(self):
+        cfg = {
+            "supabase_shared": {
+                "url": "https://shared.supabase.co",
+                "anon_key": "shared-key",
+                "schema": "public",
+            }
+        }
+        with patch.dict(
+            "os.environ",
+            {
+                "DPR_ENABLE_EMNLP_BACKEND": "1",
+                "DPR_EMNLP_ENABLED": "1",
+                "DPR_EMNLP_PAPERS_TABLE": "emnlp_papers",
+                "DPR_EMNLP_VECTOR_RPC_EXACT": "match_emnlp_papers_exact",
+                "DPR_EMNLP_BM25_RPC": "match_emnlp_papers_bm25",
+            },
+            clear=False,
+        ):
+            backend = get_source_backend(cfg, "emnlp")
+        self.assertEqual(backend["url"], "https://shared.supabase.co")
+        self.assertEqual(backend["papers_table"], "emnlp_papers")
+        self.assertEqual(backend["vector_rpc_exact"], "match_emnlp_papers_exact")
+
     def test_resolve_source_backends_supports_env_aaai_backend(self):
         cfg = {
             "supabase_shared": {

@@ -11,7 +11,7 @@ except Exception:  # pragma: no cover
 
 
 ARXIV_SOURCE_KEY = "arxiv"
-DEFAULT_SUPPORTED_SOURCES = (ARXIV_SOURCE_KEY, "biorxiv", "medrxiv", "chemrxiv", "neurips", "iclr", "icml", "aaai")
+DEFAULT_SUPPORTED_SOURCES = (ARXIV_SOURCE_KEY, "biorxiv", "medrxiv", "chemrxiv", "neurips", "iclr", "icml", "acl", "emnlp", "aaai")
 
 
 def _norm(value: Any) -> str:
@@ -173,6 +173,42 @@ def build_env_source_backend_overrides() -> Dict[str, Dict[str, Any]]:
         if _norm(os.getenv("DPR_ICML_SCHEMA")):
             backend["schema"] = _norm(os.getenv("DPR_ICML_SCHEMA"))
         out["icml"] = backend
+
+    if _env_bool("DPR_ENABLE_ACL_BACKEND", False):
+        backend = {
+            "enabled": _env_bool("DPR_ACL_ENABLED", True),
+            "papers_table": _norm(os.getenv("DPR_ACL_PAPERS_TABLE") or "acl_papers"),
+            "use_vector_rpc": _env_bool("DPR_ACL_USE_VECTOR_RPC", True),
+            "vector_rpc": _norm(os.getenv("DPR_ACL_VECTOR_RPC") or "match_acl_papers_exact"),
+            "vector_rpc_exact": _norm(os.getenv("DPR_ACL_VECTOR_RPC_EXACT") or "match_acl_papers_exact"),
+            "use_bm25_rpc": _env_bool("DPR_ACL_USE_BM25_RPC", True),
+            "bm25_rpc": _norm(os.getenv("DPR_ACL_BM25_RPC") or "match_acl_papers_bm25"),
+        }
+        if _norm(os.getenv("DPR_ACL_URL")):
+            backend["url"] = _norm(os.getenv("DPR_ACL_URL"))
+        if _norm(os.getenv("DPR_ACL_ANON_KEY")):
+            backend["anon_key"] = _norm(os.getenv("DPR_ACL_ANON_KEY"))
+        if _norm(os.getenv("DPR_ACL_SCHEMA")):
+            backend["schema"] = _norm(os.getenv("DPR_ACL_SCHEMA"))
+        out["acl"] = backend
+
+    if _env_bool("DPR_ENABLE_EMNLP_BACKEND", False):
+        backend = {
+            "enabled": _env_bool("DPR_EMNLP_ENABLED", True),
+            "papers_table": _norm(os.getenv("DPR_EMNLP_PAPERS_TABLE") or "emnlp_papers"),
+            "use_vector_rpc": _env_bool("DPR_EMNLP_USE_VECTOR_RPC", True),
+            "vector_rpc": _norm(os.getenv("DPR_EMNLP_VECTOR_RPC") or "match_emnlp_papers_exact"),
+            "vector_rpc_exact": _norm(os.getenv("DPR_EMNLP_VECTOR_RPC_EXACT") or "match_emnlp_papers_exact"),
+            "use_bm25_rpc": _env_bool("DPR_EMNLP_USE_BM25_RPC", True),
+            "bm25_rpc": _norm(os.getenv("DPR_EMNLP_BM25_RPC") or "match_emnlp_papers_bm25"),
+        }
+        if _norm(os.getenv("DPR_EMNLP_URL")):
+            backend["url"] = _norm(os.getenv("DPR_EMNLP_URL"))
+        if _norm(os.getenv("DPR_EMNLP_ANON_KEY")):
+            backend["anon_key"] = _norm(os.getenv("DPR_EMNLP_ANON_KEY"))
+        if _norm(os.getenv("DPR_EMNLP_SCHEMA")):
+            backend["schema"] = _norm(os.getenv("DPR_EMNLP_SCHEMA"))
+        out["emnlp"] = backend
 
     if _env_bool("DPR_ENABLE_AAAI_BACKEND", False):
         backend = {
