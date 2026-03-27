@@ -6,34 +6,34 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-26
-- 运行时间：2026-03-26 20:28:48 UTC
+- 最新运行日期：2026-03-27
+- 运行时间：2026-03-27 19:50:56 UTC
 - 运行状态：成功
 - 本次总论文数：4
 - 精读区：1
 - 速读区：3
 
 ### 今日简报（AI）
-今日深度解析端到端自动驾驶的潜空间建模，并速览开放词汇动作检测与长程智能体环境表示。
-重点推荐 9.0 分佳作 Latent-WAM，其通过潜空间动作建模为自动驾驶决策提供了更具预见性的世界模型。
-建议优先研读 Latent
-- 详情：[/202603/26/README](/202603/26/README)
+今日聚焦具身智能长程规划与技能习得，深入解析了结构化环境表征及体育动作模拟的前沿进展。
+重点推荐 Environment Maps 带来的长程任务处理新思路，以及从体育教学视频中直接提取物理技能的创新方法。
+建议关注如何通过结构化地图与多模态引导，提升智能体在复杂场景下的导航精度与交互自然度。
+- 详情：[/202603/27/README](/202603/27/README)
 
 ### 精读区论文标签
-1. [Latent-WAM: Latent World Action Modeling for End-to-End Autonomous Driving](/202603/26/2603.24581v1-latent-wam-latent-world-action-modeling-for-end-to-end-autonomous-driving)  
-   标签：评分：9.0/10、query:wam-vla
-   evidence：展示了用于端到端自动驾驶的 Latent-WAM 世界动作模型。
+1. [Environment Maps: Structured Environmental Representations for Long-Horizon Agents](/202603/27/2603.23610v2-environment-maps-structured-environmental-representations-for-long-horizon-agents)  
+   标签：评分：8.0/10、query:q3
+   evidence：参数化动作赋能的结构化图表示
 
 ### 速读区论文标签
-1. [Decompose and Transfer: CoT-Prompting Enhanced Alignment for Open-Vocabulary Temporal Action Detection](/202603/26/2603.24030v1-decompose-and-transfer-cot-prompting-enhanced-alignment-for-open-vocabulary-temporal-action-detection)  
+1. [SportSkills: Physical Skill Learning from Sports Instructional Videos](/202603/27/2603.25163v1-sportskills-physical-skill-learning-from-sports-instructional-videos)  
    标签：评分：7.0/10、query:q3
-   evidence：将动作标签分解为细粒度的语义模式，以实现更好的动作表示和检测。
-2. [Environment Maps: Structured Environmental Representations for Long-Horizon Agents](/202603/26/2603.23610v1-environment-maps-structured-environmental-representations-for-long-horizon-agents)  
-   标签：评分：6.0/10、query:q3
-   evidence：在结构化表示中将动作定义为参数化的可操作性 (affordances)。
-3. [Spectral Scalpel: Amplifying Adjacent Action Discrepancy via Frequency-Selective Filtering for Skeleton-Based Action Segmentation](/202603/26/2603.24134v1-spectral-scalpel-amplifying-adjacent-action-discrepancy-via-frequency-selective-filtering-for-skeleton-based-action-segmentation)  
-   标签：评分：6.0/10、query:q3
-   evidence：基于骨架的动作分割与时空模式区分
+   evidence：细粒度物理动作的表示
+2. [Modernising Reinforcement Learning-Based Navigation for Embodied Semantic Scene Graph Generation](/202603/27/2603.25415v1-modernising-reinforcement-learning-based-navigation-for-embodied-semantic-scene-graph-generation)  
+   标签：评分：7.0/10、query:wam-vla
+   evidence：具身智能体与语义世界模型
+3. [Unleashing Guidance Without Classifiers for Human-Object Interaction Animation](/202603/27/2603.25734v1-unleashing-guidance-without-classifiers-for-human-object-interaction-animation)  
+   标签：评分：6.0/10、query:q2
+   evidence：对动态人类动作和物体几何进行建模
 
 
 <div class="dpr-home-promo-card">
