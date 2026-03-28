@@ -1,6 +1,9 @@
 * <a class="dpr-sidebar-root-link" href="#/">首页</a>
 * <a class="dpr-sidebar-root-link dpr-sidebar-noactive-link" href="javascript:void(0)" data-dpr-hash="#/tutorial/README">使用教程</a>
 * Daily Papers
+  * 2026-03-28 <!--dpr-date:20260328-->
+    * 精读区
+      * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/202603/28/2603.25399v1-lamp-learning-vision-language-action-policies-with-3d-scene-flow-as-latent-motion-prior" data-sidebar-item="{&quot;title&quot;: &quot;LaMP: Learning Vision-Language-Action Policies with 3D Scene Flow as Latent Motion Prior&quot;, &quot;link&quot;: &quot;https://arxiv.org/abs/2603.25399v1-lamp-learning-vision-language-action-policies-with-3d-scene-flow-as-latent-motion-prior&quot;, &quot;score&quot;: &quot;9.0&quot;, &quot;tags&quot;: [{&quot;kind&quot;: &quot;query&quot;, &quot;label&quot;: &quot;wam-vla&quot;}], &quot;evidence&quot;: &quot;具有潜在运动先验的视觉-语言-动作策略&quot;}">LaMP: Learning Vision-Language-Action Policies with 3D Scene Flow as Latent Motion Prior</a>
   * 2026-03-27 <!--dpr-date:20260327-->
     * 精读区
       * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/202603/27/2603.23610v2-environment-maps-structured-environmental-representations-for-long-horizon-agents" data-sidebar-item="{&quot;title&quot;: &quot;Environment Maps: Structured Environmental Representations for Long-Horizon Agents&quot;, &quot;link&quot;: &quot;https://arxiv.org/abs/2603.23610v2-environment-maps-structured-environmental-representations-for-long-horizon-agents&quot;, &quot;score&quot;: &quot;8.0&quot;, &quot;tags&quot;: [{&quot;kind&quot;: &quot;query&quot;, &quot;label&quot;: &quot;q3&quot;}], &quot;evidence&quot;: &quot;参数化动作赋能的结构化图表示&quot;}">Environment Maps: Structured Environmental Representations for Long-Horizon Agents</a>
