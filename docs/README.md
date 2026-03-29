@@ -6,26 +6,27 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-28
-- 运行时间：2026-03-28 19:23:39 UTC
+- 最新运行日期：2026-03-29
+- 运行时间：2026-03-29 19:28:44 UTC
 - 运行状态：成功
-- 本次总论文数：1
+- 本次总论文数：2
 - 精读区：1
-- 速读区：0
+- 速读区：1
 
 ### 今日简报（AI）
-1) 今日深度解析 9.0 分力作 LaMP，揭秘 3D 场景流如何作为潜在运动先验赋能视觉-语言-动作（VLA）策略。
-2) 该研究证明了引入 3D 空间动态信息能显著增强机器人复杂任务的执行精度与泛化能力。
-3) 推荐具身智能开发者重点关注 3D 感知与动作生成深度融合的技术路径。
-- 详情：[/202603/28/README](/202603/28/README)
+今日深度解析满分神作 MMaDA-VLA，见证扩散模型如何通过统一多模态指令与生成重塑具身智能。
+核心结论指出，VLA 模型的指令生成一体化已成前沿趋势，而拉格朗日动力学
+- 详情：[/202603/29/README](/202603/29/README)
 
 ### 精读区论文标签
-1. [LaMP: Learning Vision-Language-Action Policies with 3D Scene Flow as Latent Motion Prior](/202603/28/2603.25399v1-lamp-learning-vision-language-action-policies-with-3d-scene-flow-as-latent-motion-prior)  
-   标签：评分：9.0/10、query:wam-vla
-   evidence：具有潜在运动先验的视觉-语言-动作策略
+1. [MMaDA-VLA: Large Diffusion Vision-Language-Action Model with Unified Multi-Modal Instruction and Generation](/202603/29/2603.25406v1-mmada-vla-large-diffusion-vision-language-action-model-with-unified-multi-modal-instruction-and-generation)  
+   标签：评分：10.0/10、query:wam-vla
+   evidence：用于机器人操作的大型扩散视觉-语言-动作模型
 
 ### 速读区论文标签
-- 本次无速读推荐。
+1. [LaDy: Lagrangian-Dynamic Informed Network for Skeleton-based Action Segmentation via Spatial-Temporal Modulation](/202603/29/2603.24097v1-lady-lagrangian-dynamic-informed-network-for-skeleton-based-action-segmentation-via-spatial-temporal-modulation)  
+   标签：评分：7.0/10、query:profile-2
+   evidence：用于动作分割与意图表示的拉格朗日动力学
 
 
 <div class="dpr-home-promo-card">
