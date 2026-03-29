@@ -293,13 +293,30 @@ def fetch_category_in_windows(
     seen_ids: set[str],
     unique_papers: dict,
     split_on_error_depth: int = 1,
+    max_window_retries: int = 3,
+    base_backoff_seconds: float = 5.0,
+    max_backoff_seconds: float = 60.0,
+    min_split_window: timedelta = timedelta(hours=6),
 ) -> datetime | None:
     """
     按时间窗口抓取单个大类。
     - 失败粒度降为“单窗口失败”，不会丢掉整个分类；
     - 若窗口仍然过大导致 500，可继续在上层按更小窗口重试（可选）。
+    - 默认仅在窗口 >= 6 小时时才二分（min_split_window），避免分钟级窗口继续递归切分。
     """
     max_published_new: datetime | None = None
+
+    safe_max_retries = max(int(max_window_retries), 0)
+
+    transient_markers = (
+        "HTTP 429",
+        "HTTP 500",
+        "HTTP 502",
+        "HTTP 503",
+        "HTTP 504",
+        "Too Many Requests",
+        "Service Unavailable",
+    )
 
     for idx, (win_start, win_end) in enumerate(windows, start=1):
         start_str = win_start.strftime("%Y%m%d%H%M")
@@ -316,77 +333,107 @@ def fetch_category_in_windows(
         )
 
         count = 0
+        retry_count = 0
         try:
-            for r in client.results(search):
-                pid = r.get_short_id()
-                if pid in seen_ids:
-                    continue
-                if pid in unique_papers:
-                    continue
+            while True:
+                try:
+                    for r in client.results(search):
+                        pid = r.get_short_id()
+                        if pid in seen_ids:
+                            continue
+                        if pid in unique_papers:
+                            continue
 
-                pdf_link = getattr(r, "pdf_url", None) or r.entry_id
-                paper_dict = {
-                    "id": pid,
-                    "source": "arxiv",
-                    "title": r.title.replace("\n", " "),
-                    "abstract": r.summary.replace("\n", " "),
-                    "authors": [a.name for a in r.authors],
-                    "primary_category": r.primary_category,
-                    "categories": r.categories,
-                    "published": str(r.published),
-                    "link": pdf_link,
-                }
-                unique_papers[pid] = paper_dict
-                count += 1
+                        pdf_link = getattr(r, "pdf_url", None) or r.entry_id
+                        paper_dict = {
+                            "id": pid,
+                            "source": "arxiv",
+                            "title": r.title.replace("\n", " "),
+                            "abstract": r.summary.replace("\n", " "),
+                            "authors": [a.name for a in r.authors],
+                            "primary_category": r.primary_category,
+                            "categories": r.categories,
+                            "published": str(r.published),
+                            "link": pdf_link,
+                        }
+                        unique_papers[pid] = paper_dict
+                        count += 1
 
-                seen_ids.add(pid)
-                published_dt = r.published
-                if isinstance(published_dt, datetime):
-                    if published_dt.tzinfo is None:
-                        published_dt = published_dt.replace(tzinfo=timezone.utc)
-                    published_dt = published_dt.astimezone(timezone.utc)
-                    if max_published_new is None or published_dt > max_published_new:
-                        max_published_new = published_dt
+                        seen_ids.add(pid)
+                        published_dt = r.published
+                        if isinstance(published_dt, datetime):
+                            if published_dt.tzinfo is None:
+                                published_dt = published_dt.replace(tzinfo=timezone.utc)
+                            published_dt = published_dt.astimezone(timezone.utc)
+                            if max_published_new is None or published_dt > max_published_new:
+                                max_published_new = published_dt
 
-                if count % 200 == 0:
-                    log(f"   Category {category} (win {idx}/{len(windows)}): {count} papers fetched...")
+                        if count % 200 == 0:
+                            log(f"   Category {category} (win {idx}/{len(windows)}): {count} papers fetched...")
 
-            log(f"   ✅ Finished {category} (win {idx}/{len(windows)}): Got {count} new papers.")
-        except Exception as e:
-            # 单个窗口失败不影响其他窗口/分类
-            log(f"   ❌ Error fetching category {category} (win {idx}/{len(windows)}): {e}")
-            # 回退：如果窗口仍然很大，尝试把该窗口再二分（仅一层，避免过度递归）
-            if split_on_error_depth > 0 and (win_end - win_start) >= timedelta(days=2):
-                mid = win_start + (win_end - win_start) / 2
-                mid = mid.replace(second=0, microsecond=0)
-                minute = timedelta(minutes=1)
-                left = (win_start, max(minute + win_start, mid - minute))
-                right = (mid, win_end)
-                log(
-                    f"   🔁 Retry by splitting window: "
-                    f"{left[0].strftime('%Y%m%d%H%M')}..{left[1].strftime('%Y%m%d%H%M')} | "
-                    f"{right[0].strftime('%Y%m%d%H%M')}..{right[1].strftime('%Y%m%d%H%M')}",
-                )
-                cat_max_left = fetch_category_in_windows(
-                    client=client,
-                    category=category,
-                    windows=[left],
-                    seen_ids=seen_ids,
-                    unique_papers=unique_papers,
-                    split_on_error_depth=split_on_error_depth - 1,
-                )
-                cat_max_right = fetch_category_in_windows(
-                    client=client,
-                    category=category,
-                    windows=[right],
-                    seen_ids=seen_ids,
-                    unique_papers=unique_papers,
-                    split_on_error_depth=split_on_error_depth - 1,
-                )
-                for candidate in (cat_max_left, cat_max_right):
-                    if candidate and (max_published_new is None or candidate > max_published_new):
-                        max_published_new = candidate
-            time.sleep(5)
+                    log(f"   ✅ Finished {category} (win {idx}/{len(windows)}): Got {count} new papers.")
+                    break
+                except Exception as e:
+                    err_text = str(e)
+                    is_transient = any(marker in err_text for marker in transient_markers)
+                    retry_count += 1
+
+                    if is_transient and retry_count <= safe_max_retries:
+                        backoff = min(
+                            float(base_backoff_seconds) * (2 ** (retry_count - 1)),
+                            float(max_backoff_seconds),
+                        )
+                        log(
+                            f"   ⚠️ Transient error fetching category {category} "
+                            f"(win {idx}/{len(windows)}, retry {retry_count}/{safe_max_retries}) after {backoff:.1f}s: {e}",
+                        )
+                        time.sleep(backoff)
+                        continue
+
+                    # 单个窗口失败不影响其他窗口/分类
+                    log(f"   ❌ Error fetching category {category} (win {idx}/{len(windows)}): {e}")
+                    if split_on_error_depth > 0 and (win_end - win_start) >= min_split_window:
+                        mid = win_start + (win_end - win_start) / 2
+                        mid = mid.replace(second=0, microsecond=0)
+                        minute = timedelta(minutes=1)
+                        left = (win_start, max(minute + win_start, mid - minute))
+                        right = (mid, win_end)
+                        log(
+                            f"   🔁 Retry by splitting window: "
+                            f"{left[0].strftime('%Y%m%d%H%M')}..{left[1].strftime('%Y%m%d%H%M')} | "
+                            f"{right[0].strftime('%Y%m%d%H%M')}..{right[1].strftime('%Y%m%d%H%M')}",
+                        )
+                        cat_max_left = fetch_category_in_windows(
+                            client=client,
+                            category=category,
+                            windows=[left],
+                            seen_ids=seen_ids,
+                            unique_papers=unique_papers,
+                            split_on_error_depth=split_on_error_depth - 1,
+                            max_window_retries=max_window_retries,
+                            base_backoff_seconds=base_backoff_seconds,
+                            max_backoff_seconds=max_backoff_seconds,
+                            min_split_window=min_split_window,
+                        )
+                        cat_max_right = fetch_category_in_windows(
+                            client=client,
+                            category=category,
+                            windows=[right],
+                            seen_ids=seen_ids,
+                            unique_papers=unique_papers,
+                            split_on_error_depth=split_on_error_depth - 1,
+                            max_window_retries=max_window_retries,
+                            base_backoff_seconds=base_backoff_seconds,
+                            max_backoff_seconds=max_backoff_seconds,
+                            min_split_window=min_split_window,
+                        )
+                        for candidate in (cat_max_left, cat_max_right):
+                            if candidate and (max_published_new is None or candidate > max_published_new):
+                                max_published_new = candidate
+
+                    cooldown = float(base_backoff_seconds)
+                    time.sleep(cooldown)
+                    break
         finally:
             group_end()
 
@@ -516,8 +563,8 @@ def fetch_all_domains_metadata_robust(
     
     client = arxiv.Client(
         page_size=200,    # 降级：从 1000 降到 200，避免单次响应过大导致 500
-        delay_seconds=3.0,
-        num_retries=5
+        delay_seconds=5.0,
+        num_retries=7
     )
 
     # 2. 遍历分类进行抓取
