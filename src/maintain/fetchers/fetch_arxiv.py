@@ -302,8 +302,11 @@ def fetch_category_in_windows(
     按时间窗口抓取单个大类。
     - 失败粒度降为“单窗口失败”，不会丢掉整个分类；
     - 若窗口仍然过大导致 500，可继续在上层按更小窗口重试（可选）。
+    - 默认仅在窗口 >= 6 小时时才二分（min_split_window），避免分钟级窗口继续递归切分。
     """
     max_published_new: datetime | None = None
+
+    safe_max_retries = max(int(max_window_retries), 0)
 
     transient_markers = (
         "HTTP 429",
@@ -330,7 +333,7 @@ def fetch_category_in_windows(
         )
 
         count = 0
-        attempt = 0
+        retry_count = 0
         try:
             while True:
                 try:
@@ -373,16 +376,16 @@ def fetch_category_in_windows(
                 except Exception as e:
                     err_text = str(e)
                     is_transient = any(marker in err_text for marker in transient_markers)
-                    attempt += 1
+                    retry_count += 1
 
-                    if is_transient and attempt <= max(int(max_window_retries or 0), 0):
+                    if is_transient and retry_count <= safe_max_retries:
                         backoff = min(
-                            float(base_backoff_seconds) * (2 ** (attempt - 1)),
+                            float(base_backoff_seconds) * (2 ** (retry_count - 1)),
                             float(max_backoff_seconds),
                         )
                         log(
                             f"   ⚠️ Transient error fetching category {category} "
-                            f"(win {idx}/{len(windows)}, retry {attempt}/{max_window_retries}) after {backoff:.1f}s: {e}",
+                            f"(win {idx}/{len(windows)}, retry {retry_count}/{safe_max_retries}) after {backoff:.1f}s: {e}",
                         )
                         time.sleep(backoff)
                         continue
@@ -428,7 +431,7 @@ def fetch_category_in_windows(
                             if candidate and (max_published_new is None or candidate > max_published_new):
                                 max_published_new = candidate
 
-                    cooldown = min(float(base_backoff_seconds), float(max_backoff_seconds))
+                    cooldown = float(base_backoff_seconds)
                     time.sleep(cooldown)
                     break
         finally:
