@@ -1,0 +1,259 @@
+Title: vla-eval: A Unified Evaluation Harness for Vision-Language-Action Models
+
+URL Source: https://arxiv.org/pdf/2603.13966v1
+
+Published Time: Tue, 17 Mar 2026 01:13:09 GMT
+
+Number of Pages: 5
+
+Markdown Content:
+# vla-eval: A Unified Evaluation Harness for Vision-Language-Action Models 
+
+Suhwan Choi 1* , Yunsung Lee 1, Yubeen Park 1, Chris Dongjoo Kim 2, Ranjay Krishna 2, Dieter Fox 2, Youngjae Yu 3
+
+> 1
+
+MAUM.AI 2Allen Institute for AI (AI2) 3Seoul National University 
+
+> *
+
+Primary author 
+
+Abstract —Vision-Language-Action (VLA) models are typically evaluated using per-benchmark scripts maintained independently by each model repository, leading to duplicated code, dependency conflicts, and underspecified protocols. We present vla-eval ,an open-source evaluation harness that decouples model infer-ence from benchmark execution through a WebSocket+msgpack protocol with Docker-based environment isolation. Models in-tegrate once by implementing a single predict() method; benchmarks integrate once via a four-method interface; the full cross-evaluation matrix works automatically. A complete evaluation requires only two commands: vla-eval serve 
+
+and vla-eval run . The framework supports 13 simulation benchmarks and six model servers. Parallel evaluation via episode sharding and batch inference achieves a 47 × throughput im-provement, completing 2,000 LIBERO episodes in ∼18 minutes. Using this infrastructure, we conduct a reproducibility audit of a published VLA model across three benchmarks, finding that all three closely reproduce published values while uncovering undocumented requirements (ambiguous termination semantics, hidden normalization statistics) that can silently distort results. We additionally release a VLA leaderboard aggregating 657 published results across 17 benchmarks. Framework, evaluation configs, and all reproduction results are publicly available. 1,2
+
+Index Terms —VLA evaluation, robot manipulation, bench-mark, reproducibility 
+
+I. I NTRODUCTION 
+
+The rapid development of Vision-Language-Action (VLA) models [1]–[4] has produced a growing set of simulation benchmarks, yet the evaluation ecosystem remains fragmented: each model repository independently implements evaluation code for every benchmark it targets, creating four problems. 
+
+(1) Duplicated effort —several model repositories maintain separate copies of benchmark-specific scripts that diverge silently when upstream interfaces change. (2) Dependency and asset conflicts —LIBERO [5] requires Python 3.8 with robosuite, ManiSkill2 [6] requires Python 3.10 with SAPIEN, and CALVIN [7] depends on PyBullet; no single environment satisfies all constraints, and each benchmark requires its own asset setup (scene files, textures, robot descriptions) with ad-hoc installation procedures. (3) Underspecified protocols —papers routinely omit seeds, episode counts, normalization statistics, and physics-settling steps, creating barriers to repro-duction (Section III). (4) Slow evaluation —a single LIBERO evaluation (2,000 episodes) takes ∼14 hours sequentially; evaluating multiple model variants and ablations across N
+
+> 1
+
+https://github.com/allenai/vla-evaluation-harness 
+
+> 2
+
+https://allenai.github.io/vla-evaluation-harness/leaderboard         
+
+> Host (GPU) Docker (optional GPU)
+> ModelServer (ABC) Benchmark (ABC)
+> PredictModelServer Connection
+> WebSocket client
+> OpenVLA / CogACT / π0/ . . .
+> SyncEpisodeRunner StepBenchmark
+> LIBERO / CALVIN / SimplerEnv / . . .
+> obs / action
+> WebSocket + msgpack
+> act()
+> step
+
+Fig. 1. System architecture. The model server runs on the host; each benchmark runs in an isolated Docker container with optional GPU access for rendering. A SyncEpisodeRunner orchestrates the observe →act →step loop via a Connection (WebSocket + msgpack client). 
+
+benchmarks multiplies this cost, making routine comparative studies impractical without parallelism. We address these problems with vla-eval , a uni-fied evaluation harness following the design philosophy of 
+
+lm-evaluation-harness [8] for language models. Mod-els integrate once, benchmarks integrate once, and the full cross-evaluation matrix works automatically. Our contribu-tions are:  
+
+> •
+
+An open-source evaluation harness supporting 13 bench-marks and six model servers with Docker-based isolation and a WebSocket+msgpack protocol;  
+
+> •
+
+A reproducibility audit of a published VLA model across three benchmarks, identifying undocumented require-ments that prevent independent reproduction;  
+
+> •
+
+A parallel evaluation methodology (episode sharding + batch inference) achieving 47 × speedup: 2,000 LIBERO episodes in ∼18 minutes;  
+
+> •
+
+A VLA leaderboard aggregating 657 published results across 17 benchmarks. II. F RAMEWORK DESIGN 
+
+A. Architecture 
+
+vla-eval separates model inference from benchmark exe-cution via a client-server architecture (Fig. 1) using WebSocket with msgpack binary serialization. Each message carries a type ( observation , action , episode_start/end ), a benchmark-specific payload, a sequence number, and atimestamp. 
+
+Model servers follow a layered hierarchy. The base 
+
+ModelServer ABC defines a fully asynchronous in-terface for advanced use cases; most integrations ex-tend PredictModelServer , which provides a blocking 
+
+> arXiv:2603.13966v1 [cs.AI] 14 Mar 2026
+
+Listing 1. OpenVLA model server (simplified).                                         
+
+> class OpenVLAServer(PredictModelServer):
+> def __init__(self, model_path, **kw):
+> super ().__init__(**kw) self.model_path = model_path self._model =self._proc =None
+> def _load_model(self):
+> if self._model is not None:
+> return
+> self._proc =AutoProcessor.from_pretrained( self.model_path, trust_remote_code=True) self._model =AutoModelForVision2Seq \.from_pretrained(self.model_path, torch_dtype=torch.bfloat16, trust_remote_code=True).to("cuda")
+> def predict(self, obs, ctx): self._load_model() img =Image.fromarray(
+> next (iter (obs["images"].values()))) prompt =f"In: What action should the robot" \f" take to {obs[’task_description’]}?\nOut:" inp =self._proc(prompt, img) .to("cuda", dtype=torch.bfloat16) act =self._model.predict_action(**inp)
+> return {"actions": act}
+
+predict(obs, ctx) method ( ∼50 lines typical), auto-matic action chunking with configurable ensemble strategies (newest, average, EMA), and optional batched inference via 
+
+max_batch_size . Listing 1 shows the complete OpenVLA integration. 
+
+Dependency isolation. Each model server declares depen-dencies via PEP 723 inline metadata; vla-eval serve 
+
+launches it through uv run , creating an isolated environ-ment automatically. Conflicting dependencies (e.g., CogACT pinning transformers==4.40.1 vs. X-VLA requiring 
+
+transformers>=4.44 ) coexist without interference, mir-roring the Docker-based isolation used for benchmarks. 
+
+Benchmarks follow the same two-level pattern. The base Benchmark ABC defines an async interface; 
+
+StepBenchmark provides a synchronous wrapper where integrators implement four methods (reset , step ,
+
+make_obs , get_step_result ) that auto-bridge to the async API. Each benchmark runs inside a dedicated Docker image with pinned dependencies. No fixed observation schema is imposed; a recommended convention uses 
+
+images , states , and task_description .
+
+Episode execution and error isolation. A
+
+SyncEpisodeRunner orchestrates the blocking observe →act →step loop between benchmark and model server. Failures (environment crash, timeout, protocol error) are isolated at the episode level with a structured 
+
+failure_reason field; the runner re-initializes the environment automatically for the next episode. 
+
+Declarative configs. Two YAML configs (benchmark + model server) drive each evaluation. We publish all Docker im-ages to ghcr.io with versioned tags and bundle all required assets (scene files, textures, robot descriptions), eliminating the ad-hoc asset installation that each benchmark otherwise requires. A complete evaluation requires only two commands: 
+
+TABLE I SUPPORTED BENCHMARKS . D OCKER = IMAGE SIZE ; A CT . = ACTION DIMENSIONALITY ; S TATUS : COMPLETE (REPRODUCTION VERIFIED ), 
+
+INTEGRATED (ADAPTER + D OCKER WORKING ). Benchmark Docker Act. St. LIBERO [5] 6.0 GB 7D CCALVIN [7] 9.5 GB 7D CSimplerEnv [9] 4.9 GB 7D CManiSkill2 [6] 9.8 GB 7D ILIBERO-Mem [10] 11.3 GB 7D IKinetix [11] 9.5 GB 6D IRoboCasa [12] 35.6 GB 7D IVLABench [13] 17.7 GB 7D IMIKASA-Robo [14] 10.1 GB 8D IRoboTwin 2.0 [15] 28.6 GB 14D IRLBench [16] 4.7 GB 8D IRoboCerebra [17] 6.3 GB 7D ILIBERO-Pro [18] 6.2 GB 7D I0 20 40 60 80 100 
+
+Episode workers N  
+
+> 0
+> 100
+> 200
+> 300
+> 400
+> 500
+> Throughput (obs/s)
+> B=1
+> B=2
+> B=4
+> B=8
+> B=16
+> Demand (N)
+> Supply (B) ceilings
+> Operating point
+
+N * =50 
+
+Fig. 2. Demand/supply throughput for LIBERO + CogACT on H100. Dashed lines show supply ceilings μ(B) at each batch size. The operating point 
+
+N ∗ = 50 uses 78% of the supply capacity at B = 16 , leaving headroom to absorb burst arrivals and prevent queue buildup; beyond N = 80 , environment overhead causes throughput to drop.       
+
+> vla-eval serve --config model_server.yaml vla-eval run --config benchmark.yaml
+
+B. Supported Benchmarks and Models 
+
+Table I lists all 13 supported benchmarks with action spaces from 6D to 14D and Docker images from 4.7 to 35.6 GB. Model servers are implemented for six models: CogACT [3], OpenVLA [1], OpenVLA-OFT [19], π0 [2]/ π0-FAST [20], GR00T N1 [4], and X-VLA [21]. 
+
+C. Parallel Evaluation 
+
+Environment parallelism uses episode sharding across N
+
+Docker containers; inference parallelism uses batched forward passes. We tune parallelism via a demand/supply methodology (Fig. 2): λ(N ) measures environment throughput as a function of shards, μ(B) measures model throughput as a function of batch size, and the operating point satisfies λ(N ) < 0.8·μ(B∗)
+
+to prevent queue buildup. LIBERO CALVIN SimplerEnv   
+
+> 0
+> 4
+> 8
+> 12
+> 16
+> Wall-clock time (hours)
+> 14 h
+> 8.6 h
+> 1.7 h
+> 18 min 33 min 8.5 min
+
+47× 
+
+16× 
+
+12×                                  
+
+> Sequential
+> Batch Parallel Fig. 3. Wall-clock evaluation time: sequential vs. batch parallel. LIBERO: 2,000 episodes, 50 shards, B= 16 . CALVIN: 1,000 sequences, 16 shards. SimplerEnv: 288 episodes (3 seeds), 16 shards. TABLE II REPRODUCTION RESULTS VS .PUBLISHED REFERENCE VALUES .∆=OURS
+> −REFERENCE . S UCCESS RATES IN %. Benchmark Suite / Metric Ours Ref. ∆
+> LIBERO Spatial 95.2 93.8 +1.4 Object 98.6 97.8 +0.8 Goal 95.2 96.2 −1.0 Long-Horizon 89.6 91.8 −2.2 CALVIN Avg Len (ABC →D) 4.051 4.063 −0.012 SimplerEnv Avg SR 72.22 69.45 +2.77
+
+On LIBERO with CogACT-7B (H100 model server, separate benchmark host), episode sharding from N = 1 to N = 50 in-creases environment throughput by 32.6 × (λ: 11.2 →364.6 ob-s/s), and batch inference from B = 1 to B = 16 increases model server throughput by 2.8 × (μ: 165.2 →468.2 obs/s). Combined, 2,000 episodes complete in ∼18 minutes versus 
+
+∼14 hours sequentially, a 47 × wall-clock speedup .The same methodology applies to CALVIN: 1,000 chained sequences with 16 shards complete in ∼33 minutes (16 ×
+
+speedup), where PyBullet’s CPU-bound rendering is the bot-tleneck, limiting the benefit of additional shards. SimplerEnv (288 episodes across 3 seeds) completes in ∼8.5 minutes with 16 shards (12 × speedup), where SAPIEN GPU rendering is the per-container bottleneck. Fig. 3 shows the wall-clock reduction for all three benchmarks. III. R EPRODUCIBILITY AUDIT 
+
+We evaluate DB-CogACT [22] (a CogACT [3] re-implementation with a modern base model) across three benchmarks using published scores as baselines. All exper-iments use fixed seeds and versioned Docker images from 
+
+ghcr.io . LIBERO: 4 suites, 10 tasks × 50 episodes (2,000 total), 50 shards. CALVIN: ABC →D, 1,000 chained se-quences, 16 shards. SimplerEnv: 4 WidowX tasks, 24 episodes 
+
+× 3 seeds (288 total), 16 shards. 
+
+A. Results 
+
+Table II summarizes the results. LIBERO (4 suites, 2,000 episodes) and SimplerEnv (288 episodes, 3-seed average) reproduce within ±3 percentage points of published success rates. CALVIN (1,000 chained sequences) reproduces within 0.3% of the published average chain length. 
+
+B. Sources of Discrepancy 
+
+During reproduction, we identified two classes of undocu-mented requirements that can silently distort evaluation results. 
+
+Ambiguous termination semantics. In SimplerEnv, the Gymnasium terminated flag signals a transient success event (e.g., a block momentarily stacked) rather than episode termination. Stopping early on this flag inflates scores be-cause the robot may disturb the object after a momen-tary success—the correct protocol runs until truncated at 
+
+max_episode_steps . This semantic overloading is undoc-umented and typically requires reading simulator source code to discover. 
+
+Hidden normalization. CALVIN requires hardcoded obser-vation normalization statistics (mean and standard deviation for 15 robot-state and 24 scene-state dimensions) derived from the training dataset. These statistics are absent from the official evaluation documentation and require tracing the training codebase to recover. Without these exact values, observation preprocessing produces incorrect inputs, degrading model performance. IV. VLA L EADERBOARD 
+
+We release a VLA leaderboard 2 aggregating 657 results 
+
+across 17 benchmarks and 509+ configurations from 2,685 papers. 
+
+A. Curation 
+
+Evaluation protocols vary across papers: SimplerEnv spans three incomparable robot configurations; CALVIN ABC →Dand ABCD →D splits are not comparable; LIBERO papers report 4 or 5 suites. We established canonical protocol def-initions for each benchmark (task subsets, metrics, splits, and comparability constraints) as contribution guidelines. An AI agent (Claude Code with Opus 4.6) reviewed 2,685 papers via MCP tool integrations (arXiv, Semantic Scholar, PDF reader) to extract and normalize results against canon-ical protocols. A human operator then reviewed every entry, resolving anomalies and ambiguous cases. We acknowledge that the leaderboard may contain errors despite these efforts. Each entry records its provenance ( curated_by field) and the site displays all protocol caveats transparently. We accept community contributions (corrections, missing results, and protocol clarifications) via pull request with automated schema validation. 
+
+B. Cross-Benchmark Analysis 
+
+Fig. 5 shows the distribution of benchmark coverage across 509+ models and the 17 benchmarks tracked in the leader-board: 81% are evaluated on a single benchmark, and only 6% on three or more. Cross-benchmark comparison is therefore rare, limiting our ability to assess general model capability Fig. 4. VLA leaderboard (17 benchmarks, https://allenai.github.io/vla-evaluation-harness/leaderboard). Shown: models with >10 citations. Filterable by benchmark and model; contributions via pull request. 1 2 3 4 5 6 7 8    
+
+> Number of benchmarks evaluated
+> 0
+> 100
+> 200
+> 300
+> 400
+> Number of models
+> 410
+> 67
+> 23 6111
+> 81%
+
+Fig. 5. Distribution of benchmark coverage per model. 81% of the 509+ models in the leaderboard are evaluated on only one benchmark. Only 3 models (0.6%) are evaluated on 5 or more. Counts are lower bounds, as models may evaluate on benchmarks not tracked in the leaderboard. A unified evaluation framework is essential to make systematic cross-benchmark comparison feasible. 
+
+across diverse environments and embodiments. This under-scores the need for a unified evaluation framework that makes cross-benchmark evaluation practical. V. D ISCUSSION 
+
+Our audit shows that even well-documented benchmarks leave critical details implicit—overloaded termination flags (SimplerEnv), hidden normalization statistics (CALVIN)— each a potential source of silent score distortion. vla-eval 
+
+mitigates these risks by saving the full evaluation configuration (Docker image tag, seeds, episode counts, action space pa-rameters) alongside every result, making any run reproducible from a single config file. 
+
+Limitations. Our audit covers one model across three benchmarks; a broader cross-model analysis is planned. The framework currently targets simulation; real-robot evaluation is out of scope. Leaderboard results are extracted from pub-lished papers, not independently verified through re-evaluation. Finally, supported metrics are limited to task success rate; richer evaluation dimensions such as motion quality, efficiency, and safety remain future work. REFERENCES [1] M. J. Kim, K. Pertsch, S. Karamcheti, T. Xiao, A. Balakrishna, S. Nair 
+
+et al. , “OpenVLA: An open-source vision-language-action model,” in 
+
+CoRL , 2024. [2] K. Black, N. Brown, D. Driess, A. Esmail, M. Equi, C. Finn et al. , “ π0:A vision-language-action flow model for general robot control,” arXiv preprint arXiv:2410.24164 , 2024. [3] Q. Li, Y. Liang, Z. Wang, L. Luo, X. Chen, M. Liao et al. , “CogACT: A foundational vision-language-action model for synergizing cognition and action in robotic manipulation,” arXiv preprint arXiv:2411.19650 ,2024. [4] J. Bjorck, F. Casta˜ neda, N. Cherniadev, X. Da, R. Ding, L. Fan et al. ,“GR00T N1: An open foundation model for generalist humanoid robots,” 
+
+arXiv preprint arXiv:2503.14734 , 2025. [5] B. Liu, Y. Zhu, C. Gao, Y. Feng, Q. Liu, Y. Zhu et al. , “LIBERO: Bench-marking knowledge transfer for lifelong robot learning,” in NeurIPS Datasets and Benchmarks , 2023. [6] J. Gu, F. Xiang, X. Li, Z. Ling, X. Liu, T. Mu et al. , “ManiSkill2: A unified benchmark for generalizable manipulation skills,” in ICLR , 2023. [7] O. Mees, L. Hermann, E. Rosete-Beas, and W. Burgard, “CALVIN: A benchmark for language-conditioned policy learning for long-horizon robot manipulation tasks,” IEEE Robotics and Automation Letters , 2022. [8] L. Gao, J. Tow, B. Abbasi, S. Biderman, S. Black, A. DiPofi et al. , “The language model evaluation harness,” 2024. [9] X. Li, K. Hsu, J. Gu, O. Mees, K. Pertsch, H. R. Walke et al. ,“Evaluating real-world robot manipulation policies in simulation,” in 
+
+CoRL , 2024. [10] N. Chung, T. Hanyu, T. Nguyen, H. Le, F. Bumgarner, D. M. H. Nguyen 
+
+et al. , “Rethinking progression of memory state in robotic manipulation: An object-centric perspective,” arXiv preprint arXiv:2511.11478 , 2025. [11] M. Matthews, M. Beukman, C. Lu, and J. Foerster, “Kinetix: Investi-gating the training of general agents through open-ended physics-based control tasks,” in ICLR , 2025. [12] S. Nasiriany, A. Maddukuri, L. Zhang, A. Parikh, A. Lo, A. Joshi et al. ,“RoboCasa: Large-scale simulation of household tasks for generalist robots,” in RSS , 2024. [13] S. Zhang, Z. Xu, P. Liu, X. Yu, Y. Li, Q. Gao et al. , “VLABench: A large-scale benchmark for language-conditioned robotics manipulation with long-horizon reasoning tasks,” arXiv preprint arXiv:2412.18194 ,2024. [14] E. Cherepanov, N. Kachaev, A. K. Kovalev, and A. I. Panov, “Memory, benchmark & robots: A benchmark for solving complex tasks with reinforcement learning,” arXiv preprint arXiv:2502.10550 , 2025. [15] T. Chen, Z. Chen, B. Chen, Z. Cai, Y. Liu, Z. Li et al. , “RoboTwin 2.0: A scalable data generator and benchmark with strong domain randomization for robust bimanual robotic manipulation,” arXiv preprint arXiv:2506.18088 , 2025. [16] S. James, Z. Ma, D. R. Arrojo, and A. J. Davison, “RLBench: The robot learning benchmark & learning environment,” IEEE Robotics and Automation Letters , 2020. [17] S. Han, B. Qiu, Y. Liao, S. Huang, C. Gao, S. Yan et al. , “RoboCerebra: A large-scale benchmark for long-horizon robotic manipulation evalua-tion,” in NeurIPS Datasets and Benchmarks , 2025. [18] X. Zhou, Y. Xu, G. Tie, Y. Chen, G. Zhang, D. Chu et al. , “LIBERO-PRO: Towards robust and fair evaluation of vision-language-action models beyond memorization,” arXiv preprint arXiv:2510.03827 , 2025. [19] M. J. Kim, C. Finn, and P. Liang, “Fine-tuning vision-language-action models: Optimizing speed and success,” arXiv preprint arXiv:2502.19645 , 2025. [20] K. Pertsch, K. Stachowicz, B. Ichter, D. Driess, S. Nair, Q. Vuong et al. ,“FAST: Efficient action tokenization for vision-language-action models,” 
+
+arXiv preprint arXiv:2501.09747 , 2025. [21] J. Zheng, J. Li, Z. Wang, D. Liu, X. Kang, Y. Feng et al. , “X-VLA: Soft-prompted transformer as scalable cross-embodiment vision-language-action model,” arXiv preprint arXiv:2510.10274 , 2025. [22] B. Xie, E. Zhou, F. Jia, H. Shi, H. Fan, H. Zhang et al. ,“Dexbotic: Open-source vision-language-action toolbox,” arXiv preprint arXiv:2510.23511 , 2025.

@@ -1,0 +1,687 @@
+Title: OxyGen: Unified KV Cache Management for Vision-Language-Action Models under Multi-Task Parallelism
+
+URL Source: https://arxiv.org/pdf/2603.14371v1
+
+Published Time: Tue, 17 Mar 2026 04:45:00 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# OxyGen : Unified KV Cache Management for Vision-Language-Action Models under Multi-Task Parallelism 
+
+Xiangyu Li 1 Huaizhi Tang 2∗ Xin Ding 3∗ Weijun Wang 1
+
+Ting Cao 1† Yunxin Liu 1 
+
+> 1
+
+Institute for AI Industry Research (AIR), Tsinghua University  
+
+> 2
+
+Department of Electronic Engineering, Tsinghua University  
+
+> 3
+
+University of Science and Technology of China Code: https://github.com/air-embodied-brain/OxyGen 
+
+Abstract. Embodied AI agents increasingly require parallel execution of multiple tasks—such as manipulation, conversation, and memory con-struction—from shared observations under distinct time constraints. Re-cent Mixture-of-Transformers (MoT) Vision-Language-Action Models (VLAs) architecturally support such heterogeneous outputs, yet existing infer-ence systems fail to achieve efficient multi-task parallelism for on-device deployment due to redundant computation and resource contention. We identify isolated KV cache management as the root cause. To address this, we propose unified KV cache management , an inference paradigm that treats KV cache as a first-class shared resource across tasks and over time. This abstraction enables two key optimizations: cross-task KV sharing eliminates redundant prefill of shared observations, while cross-frame continuous batching decouples variable-length language decoding from fixed-rate action generation across control cycles. We implement this paradigm for π0.5, the most popular MoT VLA, and evaluate un-der representative robotic configurations. OxyGen achieves up to 3.7×
+
+speedup over isolated execution, delivering over 200 tokens/s language throughput and 70 Hz action frequency simultaneously without action quality degradation. 
+
+## 1 Introduction 
+
+A long-standing aspiration in embodied AI is to develop agents that, much like humans, can seamlessly coordinate multiple tasks in parallel: conversing while manipulating objects [1,10,21,35], or memorizing surroundings while navigating [2, 12, 19, 32]. These tasks share the same context as input, but produce diverse outputs in different modalities, without depending on each other. For example, consider an autonomous and self-evolving home robot like in Fig. 1 [1, 10, 38]:  
+
+> ∗
+
+Work done during internship at AIR, Tsinghua University.  
+
+> †
+
+Corresponding author. Email: tingcao@mail.tsinghua.edu.cn. 
+
+> arXiv:2603.14371v1 [cs.RO] 15 Mar 2026
+
+2 X. Li et al. VLM  Act.  Lang. VLM  VLM  Act.  Lang. VLM                            
+
+> Act. KV Lang. KV
+> VLM Act. VLM Act.
+> Unified KV cache manager
+> Act. KV Lang. KV
+> Recompute Recompute
+> Resource contention Resource contention
+> Isolated KV (existing): low throughput & action frequency
+> Unified KV (ours): high throughput & action frequency
+> Cross -task
+> KV shar ing
+> Cross -frame
+> continuous batching
+> Actions[t -2]
+> Language[t -2]: I placed the lid on the countertop …
+> Language[t -1]: I placed the pot in the sink …
+> Language[t]: I placed the yellow bag of potatoes …
+> Actions[t -1] Actions[t]
+> Frame[t -2] Frame[t -1] Frame[t]
+> Timeline
+> Language tasks: e.g., textual long -term memory
+> Robot control cycles (frames)
+> MoT VLA Inference: Actions + Language
+> Lang. Lang.
+> Action frequency:
+> 19.1 Hz →70.5 Hz
+> Lang. Throughput:
+> 57.2 tok /s →212.9 tok /s
+> Up to 3.7
+> ×speedup
+
+Fig. 1: Left: An example of deploying a Mixture-of-Transformers (MoT) Vision-Language-Action (VLA) model for parallel multi-task inference: based on per-frame input observations, the VLA generates robot actions within each frame, while contin-uously generating language-based memories during multiple frames [38]. Right: Com-parison between two paradigms of MoT VLA inference: existing systems manages KV cache in isolation, slowing down inference due to redundant computation and resource contention; Our method adopts a unified KV cache management , achieving up to 3.7 ×
+
+speedup via cross-task KV sharing and cross-frame continuous batching. 
+
+while manipulating, it must concurrently memorize environmental changes for future reference, narrate its progress to the user, and occasionally plan ahead to update its schedule. We refer to this setting as multi-task parallelism : concurrent execution of temporally independent tasks from shared input, each under its own time constraints. Such parallel multi-task capabilities are crucial for embodied agents to interact fluently and naturally in dynamic, real-world environments. Recent progress in robot learning, represented by Mixture-of-Transformers (MoT) [24] Vision-Language-Action Models (VLAs), has made strides toward this goal. VLAs [4, 5, 7, 8, 13, 14, 18, 22, 34, 40, 49, 54] are a class of multimodal foundation models that integrate vision, language, and action. Conventional VLAs [7, 18, 30, 54] are restricted to the action modality, and require multi-model inference for multiple tasks ( e.g ., running VLA and VLM concurrently), challenging on-device deployment within limited hardware resource. In contrast, recent MoT-VLAs [13,34,49] route different outputs to modality-specific experts (i.e ., separate Transformer parameters), enabling a single model to perform both language-based tasks ( e.g ., planning), action-based tasks ( e.g ., manipulation), and even video generation tasks ( e.g ., as a world model [3,8]). Yet this architec-tural multitasking capability does not automatically translate to inference speedup over the naive multi-model inference solution. 
+
+We find that existing systems [28, 31, 41, 42] fall back to the performance of naive multi-model inference, due to an inefficient inference paradigm that we term as isolated execution . They execute each task through a separate forward pass of the same model, even when tasks share the same input observations, as shown in Fig. 1. This leads to two inefficiencies. (1) Redundant computation: the OxyGen: Unified KV Cache Management for Multi-Task VLA 3
+
+shared observation is encoded repeatedly, producing identical KV cache entries for each task (1.4 × slowdown in Sec. 4.3). (2) Resource contention: even if KV cache is shared, different tasks compete for the limited hardware resource (usu-ally a single GPU on robots) and block each other, regardless of the different time constraints between tasks (2.6 × slowdown in Sec. 4.3). For example, action denoising must complete within each frame ( i.e ., robot control cycle), while lan-guage decoding may span multiple frames to finish. Underlying both issues, we identify a common root cause: existing systems treat each task’s KV cache in isolation, missing opportunities for sharing and coordinated scheduling. This observation points to our key insight: KV cache should be abstracted as a unified resource to manage across tasks and over time . In MoT VLAs, the KV cache is precisely where computation can be reused and execution can be coordinated. Based on this insight, we propose unified KV cache management , an inference paradigm that exposes KV cache as a first-class, shared abstraction for multi-task parallelism, opening novel optimization spaces with unique challenges. To realize this new paradigm, we introduce OxyGen, an efficient multi-task inference system for MoT VLAs on robotic platforms, with two optimizations enabled by unified KV cache management. (1) cross-task KV sharing . When multiple tasks operate on shared observation, we encode the observation once and reuse its KV cache entries across concurrent tasks. (2) cross-frame continu-ous batching . To meet different time constraints across tasks, we decouple their inference flow from the conventional per-frame control loop: real-time tasks ( e.g ., action) completes within frames to meet a hard deadline, while streaming tasks (e.g ., language) are continuously batched across frames to meet a soft deadline. Although KV cache management has been extensively studied in conventional LLM serving systems, they lack awareness of these asymmetric deadlines be-tween tasks, and thus cannot directly apply to robotic platforms. We implement OxyGen for π0.5 [13] atop openpi [31], the most popular MoT VLA model and inference system (10k stars on GitHub) to date. We evaluate on a single NVIDIA RTX 4090 GPU, a representative platform for on-device VLA inference [5, 16, 27]. Results across 3 benchmarks show that OxyGen con-sistently accelerates parallel multi-task inference by up to 3.7×, achieving over 200 tokens/s language decoding throughput and 70 Hz action frequency simul-taneously. In summary, our contributions are threefold: 
+
+– We formulate multi-task parallelism as a target inference scenario for MoT-VLAs, and identify isolated KV cache as the root cause of inefficiency in existing systems. 
+
+– We propose unified KV cache management, an inference paradigm that treats KV cache as a shared resource across tasks and over time, enabling optimiza-tions such as cross-task KV sharing and cross-frame continuous batching. 
+
+– We implement this paradigm for π0.5 and evaluate on common robotic setup, demonstrating up to 3.7× speedup of action frequency and throughput. 4 X. Li et al. 
+
+## 2 Related Works 
+
+2.1 VLA Architectures 
+
+Vision-Language-Action Models (VLAs) [4,5,7,8,13,14,18,22,34,40,49,54] refer to robotic foundation models built atop pre-trained Vision-Language Models (VLMs), which primarily generate robot actions based on vision and language inputs. The development of VLA architectures has gone through 3 paradigms. 
+
+Discrete VLA (e.g ., RT-2 [54] and OpenVLA [18]) represents robot actions as a special form of language, and generates them autoregressively. Continuous VLA 
+
+(e.g ., CogACT [22], π0 [5], and GR00T N1 [4]) enables high-frequency control by integrating a lightweight diffusion or flow-matching action module to the VLM backbone. Both of these two paradigms are restricted to action-only inference, and require combination of multiple models in multi-task scenarios. In this paper, we target MoT VLA (e.g ., π0.5 [13], WALL-OSS [49], and Xiaomi-Robotics-0 [34]), which enables simultaneous multi-task generation at the architectural level. Specifically, they adopt a Mixture-of-Transformers (MoT) [24] architecture, which routes different output modalities to separate expert param-eters while sharing a common backbone. They demonstrate that a single MoT VLA is capable of generating both actions and language ( e.g ., Chain-of-Thought planning), enabling a robot to complete long-horizon and dexterous manipula-tion tasks end-to-end. Despite this architectural multitasking capability, exist-ing MoT inference systems still execute each task through independent forward passes, leading to no acceleration against naive multi-model inference. 
+
+2.2 Inference Optimizations 
+
+VLA model efficiency. Since VLAs are built atop VLM backbones, they inherit many well-studied optimizations for VLMs at model-level, including model com-pression [9, 29, 39, 46], token pruning [15, 23, 37, 46], layer skipping [33, 36, 48, 50], action token reuse [37,43], KV cache pruning [44] and computing graph optimiza-tion [27]. Most optimizations are orthogonal to and compatible with our method, which operates as a scheduling layer above the model. Specifically, KV-Efficient VLA [44] selectively activates KV cache for attention computation at operator-level, while our method manages KV cache at model-level without modifications. 
+
+VLA execution pipeline. Orthogonal to model-level optimizations above, some works improve application-level efficiency by optimizing the execution pipeline involving VLA inference. To enable high-frequency robot control, a widely adopted practice is to group multi-timestep actions for simultaneous generation, i.e ., Ac-tion Chunking [51]. However, naive interleaved inference and execution causes jerky robot motion, while methods like Temporal Ensemble multiply inference costs [51]. To achieve efficient inference and smooth execution simultaneously, recent works have explored asynchronous inference pipelines ( e.g ., RTC [6], SmolVLA [36], and VLA-RAIL [52]), with a focus on action-only inference. While compatible with these action-specific optimizations, our method targets multi-task inference, without degrading action control quality or frequency. OxyGen: Unified KV Cache Management for Multi-Task VLA 5
+
+KV cache sharing for LLMs. Although few have explored KV cache share or reuse in embodied scenarios, many works use it for traditional LLM inference. Prefix caching is widely adopted in LLM serving systems ( e.g ., vLLM [20] and SGLang [53]) to avoid recomputation of KV cache, when new requests share the same prefix tokens with previously cached ones. While basic prefix caching assumes exactly matched prefix for the same model, recent works have explored KV cache reuse for non-prefix scenarios [45, 47] and across models [11, 26]. How-ever, these works are focused on either memory efficiency, or accuracy recovery, all for single-task and single-modality generation. In contrast, this paper for-mulates multi-task parallelism with asymmetric deadlines as a new problem, and solves it through a non-trivial KV cache management design different from existing works. 
+
+## 3 Method 
+
+We propose OxyGen, an inference system for MoT VLA that achieves efficient multi-task parallelism through unified KV cache management . The key insight is that the KV cache, produced by the shared VLM backbone from a common observation, is a natural locus for both computation reuse and execution coor-dination. 
+
+3.1 Preliminaries and Problem Formulation 
+
+MoT VLA inference. We consider a generic multi-task embodied agent based on MoT VLA, such as π0.5 [13]. At frame ( i.e ., control cycle) t, the agent observes ot,which contains visual inputs for this frame and a language instruction. MoT VLA factorizes inference into prefill of the modality-agnostic backbone, and generation with modality-specific experts. The prefill phase is formulated as: 
+
+(ht,l , Kt,l , Vt,l ) Ll=1 = ΘVLM (ot), Kt = (Kt,l , Vt,l ) Ll=1 , (1) where ΘVLM denotes parameters of the VLM backbone, L is the number of transformer layers in VLM, ht,l , Kt,l , Vt,l are hidden states, keys, and values of VLM layer l, and Kt is the KV cache produced from ot. Crucially, Kt is modality-agnostic: it encodes the observation and could be consumed by multiple experts, without committing to a specific output modality. Given the shared Kt, MoT VLA runs multiple experts independently. In this paper, we focus on two representative experts: action expert that generates an action chunk At = {at,i }Hi=1 (i.e ., low-level control commands for a horizon of H), and language expert that generates text tokens yt = {yt,j }Nj=1 (e.g ., memory or QA with a maximum token budget of N ). Since Kt encapsulates the visual-language information from ot, both experts can generate their outputs conditioned on Kt instead of directly on ot:
+
+pΘAct (At | K t), pΘLang (yt | K t), (2) 6 X. Li et al. 
+
+where ΘAct and ΘLang (usually the language backbone in VLM) parameterize the action and language distributions respectively. Concretely, the language ex-pert generates text tokens yt autoregressively, where each token depends on all previous tokens: 
+
+pΘLang (yt | K t) = 
+
+> N
+
+Y
+
+> j=1
+
+pΘLang (yt,j | yt, 1: j−1, Kt), (3) while the action expert generates the entire action chunk At = {at,i }Hi=1 jointly through an iterative denoising process over S steps: 
+
+At = Denoise (S) 
+
+> ΘAct
+
+(ϵ, Kt), ϵ ∼ N (0, I), (4) where each denoising step conditions on the shared KV cache Kt. This process can be implemented via diffusion or flow matching. 
+
+Multi-task parallelism with asymmetric deadlines. At each frame t, the agent serves multiple concurrent tasks. We consider action and language tasks for models like π0.5, with asymmetric deadlines for different tasks. (1) Action At
+
+must be generated by a hard deadline within the current frame, and must achieve a minimum control frequency (denoted as fmin ) for smooth robot control ( e.g ., 50Hz for dexterous manipulation). (2) Language yt could be generated by a soft deadline across frames, and we aim to maximize the token throughput while satisfying the hard deadline for actions. Let f and τ denote the actual action frequency and language throughput at steady state, then our objective is: 
+
+max τ s.t. f ≥ fmin  (5) While f and τ are application-level objectives, they could be derived from model-level metrics. Given the action horizon H, average batch size B, decoding steps per frame k, and end-to-end inference latency T , the objective is translated to: 
+
+max B × k/T s.t. H/T ≥ fmin , (6) which naturally leads to two optimization directions: reducing end-to-end la-tency, and increasing tokens decoded per frame. Due to the isolated execution of multi-task inference, existing systems must trade one for the other. In contrast, our method achieves both optimizations by treating the KV cache as a unified resource managed across tasks and frames. 
+
+3.2 Unified KV Cache Manager 
+
+OxyGen abstracts the KV cache as a shared resource across tasks and frames, managed by a unified KV cache manager M. It enables two key capabilities: 
+
+(1) sharing a single Kt across multiple experts within frame t, and (2) batching language decoding conditioned on {K t} from different frames {t}. To support these, the manager maintains generation states for each in-flight request, tracking their KV caches and decoded tokens. OxyGen: Unified KV Cache Management for Multi-Task VLA 7Vision & Lang.  Lang. (History)  Lang. (Current)  Lang. (Future)  Action Token Type:      
+
+> VLM
+> (Prefill)
+> Observation[t]
+> & Instruction
+> New KV:
+> KV[t]
+> Historical KV:
+> KV[t -1], KV[t -2]
+> Prefilled KV Historical
+> Decode d
+> Store:
+> KV[t]
+> Batched
+> Decode
+> Retrieve & Batch:
+> KV[t], KV[t -1], KV[t -2]
+> Action Expert
+> (Diffusion/Flow)
+> Retrieve:
+> KV[t]
+> Actions[t]
+> Language
+> Backbone
+> Language
+> Backbone VLM
+> (Autoregressive)
+> Δ Language[t]
+> Δ Language[t -1]
+> Δ Language[t -2]
+> Un -Batch:
+> KV[t], KV[t -1], KV[t -2]
+> Update / Remove :
+> KV[t], KV[t -1], KV[t -2]
+> Unified KV
+> Manager
+> KV Type: Vision & Lang. Lang. (History) Lang. (Current)
+
+Current Frame: t  
+
+> KV[t] : prefilled KV cache at frame t
+
+Fig. 2: KV-centric dataflow at frame t with unified KV cache manager. KV[t] repre-sents KV cache prefilled at frame t (i.e ., Kt defined in Eq. (1)); ∆Language[t] represents incremental language tokens in yt, generated with Kt.
+
+Resumable generation state. Given the shared Kt from Eq. (1), cross-task KV sharing is straightforward: all experts at frame t consume the same prefill cache 
+
+Kt. However, interrupting and resuming language generation across frames re-quires representing each request by an incremental state :
+
+σt =  Kt, yt, δ t
+
+, (7) where Kt is the KV cache for the request initiated at frame t (initially the prefill cache from Eq. (1), then extended with decoded token KVs as generation progresses), yt is the token buffer storing generated tokens, and δt ∈ { 0, 1} is a termination flag (set to 1 when EOS is emitted or maximum length N is reached). Crucially, σt contains all necessary context to resume autoregressive language generation (Eq. (3)) without recomputation. 
+
+Manager interface for state persistence. The manager M exposes four core op-erations to persist and retrieve generation states: 
+
+M.Store (σt) → rt persists state σt and returns request ID rt
+
+M.Retrieve (rt) → σt fetches state by ID rt
+
+M.Update (rt, σ ′
+
+t) → ∅ replaces existing state of ID rt with σ′
+
+t
+
+M.Remove (rt) → ∅ evicts finished request state by ID rt
+
+Request IDs are assigned sequentially: rt is the total number of requests created so far. In simple scenarios with one new request per frame (as in Fig. 3), we have rt = t. The updated state σ′
+
+t = ( K′
+
+t, y′
+
+t, δ ′
+
+t) reflects incremental progress after decoding k tokens: K′
+
+t extends Kt with KVs from newly decoded tokens, 
+
+y′
+
+t appends these k tokens to yt, and δ′
+
+t is set to 1 if generation terminates (EOS emitted or length N reached). These operations enable functionally correct resumable generation: requests can be interrupted and resumed across frames without recomputation. 8 X. Li et al. 
+
+Manager interface for batched decoding. At any given time, the manager main-tains a set of active requests R = {rt1 , r t2 , . . . , r tm }, where each rti is the request ID of a request initiated at frame ti that has not yet terminated ( δti = 0 ). When a new request rt is created at frame t, it is immediately added to R and par-ticipates in batched decoding. To enable efficient parallel decoding across all 
+
+m = |R| active requests (including the newly created one), the manager defines a batched state :
+
+ˆσ =   ˆK, ˆy, ˆδ, (8) where ˆK = {( ˆKl, ˆVl)}Ll=1 stacks KV caches from {K ti }mi=1 along the batch di-mension at each layer l, ˆy = [ yt1 ; yt2 ; . . . ; ytm ] concatenates token buffers, and 
+
+ˆδ = [ δt1 , δ t2 , . . . , δ tm ] collects termination flags. For newly created requests at the current frame, their token buffers are initially empty. The manager provides two operations to convert between individual and batched states: 
+
+M.Batch ({σti }mi=1 ) → ˆσ concatenates states into batched state ˆσ
+
+M.UnBatch (ˆ σ′) → { σ′ 
+
+> ti
+
+}mi=1 splits batched state into individual states 
+
+The batched state ˆσ enables the VLM to perform autoregressive decoding (Eq. (3)) on all m requests in parallel: at each decoding step, the VLM consumes ˆK as the attention context and ˆy as the token buffer for history tokens, generating the next token for each request simultaneously in a single forward pass. This amortizes the decode cost over multiple requests, achieving significant speedup on modern accelerators (Algorithm 1, lines 7–8). 
+
+3.3 Multi-Task Parallel Inference Flow 
+
+The unified KV cache manager enables efficient multi-task parallelism through two key optimizations: cross-task KV sharing eliminates redundant prefill by reusing K across text and action tasks within each frame, while cross-frame continuous batching decouples language generation from per-frame loop by batching language requests across frames. Algorithm 1 presents the per-frame ex-ecution flow that integrates both optimizations, for a representative scenario: at each frame, the system processes one new observation (spawning a language gen-eration request and producing actions) while continuing m − 1 in-flight language requests from previous frames, resulting in m total active requests processed in parallel. The algorithm proceeds in two stages. First, the system runs prefill once on the new observation ot to produce the shared KV cache Kt (Eq. (1)). The manager M duplicates Kt: one copy is immediately consumed by the action expert to generate actions At (ActionDenoise , Eq. (4)); the other copy is initialized to a generation state σt, stored to the manager, and assigned ID rt
+
+(lines 1–4). This eliminates the redundant prefill computation required in isolated execution. Second, the system performs continuous batched language generation across all m active requests (lines 5–13). The newly initialized request rt is added OxyGen: Unified KV Cache Management for Multi-Task VLA 9
+
+Algorithm 1: Per-Frame Execution Flow 
+
+Input: Frame index t, new observation ot, active request IDs R = {rti }m−1 
+
+> i=1
+
+,manager M, per-frame decoding step k, action denoising steps S
+
+Output: Actions At, updated language tokens {yti }mi=1 .
+
+// New request: generate actions and initialize language  
+
+> 1
+
+Kt ← Prefill (ot); 
+
+> 2
+
+At ← ActionDenoise (Kt, S ); 
+
+> 3
+
+σt ← InitState (Kt); 
+
+> 4
+
+rt ← M .Store (σt);
+
+// Batched decode: advance all m requests by k tokens  
+
+> 5
+
+R ← R ∪ { rt} ; // Add new request to active set, now |R| = m 
+
+> 6
+
+{σti }mi=1 ← {M .Retrieve (rti ) | rti ∈ R} ; 
+
+> 7
+
+ˆσ ← Batch ({σti }mi=1 ); 
+
+> 8
+
+ˆσ′ ← BatchedLanguageDecode (ˆ σ, k ); 
+
+> 9
+
+{σ′ 
+
+> ti
+
+}mi=1 ← UnBatch (ˆ σ′);
+
+// Extract language outputs and update or evict requests  
+
+> 10
+
+foreach i = 1 to m do  
+
+> 11
+
+yti ← σ′ 
+
+> ti
+
+.y ; // Get updated tokens per request  
+
+> 12
+
+if σ′ 
+
+> ti
+
+.δ = 1 then M.Remove (rti ) ; 
+
+> 13
+
+else M.Update (rti , σ ′ 
+
+> ti
+
+);
+
+to the active set R, and the manager retrieves all states {σti }mi=1 , aggregates them into a batched state ˆσ (Eq. (8)), and performs k steps of autoregressive decoding (Eq. (3)) in parallel via BatchedLanguageDecode . This temporal batching amortizes decode cost across multiple requests: on modern accelera-tors like GPUs, batched decode achieves significantly higher hardware utiliza-tion than single-request decoding, improving token throughput with negligible latency overhead. After decoding, the system unbatches the updated state ˆσ′
+
+and updates the manager: finished requests (flagged by δ′ 
+
+> ti
+
+= 1 ) are removed, while active requests are persisted with their incremental progress yti for the next frame. Fig. 3 illustrates the combined effect: cross-task KV sharing provides the initial speedup by eliminating redundant prefill (the bottleneck for long contexts or short decoding), while cross-frame continuous batching further reduces per-frame latency as decoding length increases. 
+
+## 4 Experiments 
+
+4.1 Experimental Setup Models, benchmarks, and hardware. We evaluate OxyGen with the most popular MoT VLA π0.5 [13] on a single NVIDIA RTX 4090 GPU, which is a representative hardware for on-device VLA inference [5,16,27]. We evaluate on 3 representative benchmarks: LIBERO [25], DROID [17], and ALOHA [51], focus-ing on the inference speed (agnostic to model weights and input distributions) 10 X. Li et al. KV Prefill                                   
+
+> Action Gen.
+> Language Decoding
+> New Request
+> Resumed
+> Requests
+> Req. 0
+> Req. 1
+> Req. 2
+> Req. 3
+> Req. 4
+> Req. 5
+> Requests
+> Time
+> T2T 3T 4T 5T
+> 3*4 = 12 tokens per Frame
+> Throughput: 12/T
+> Request wall latency :3T
+> Req. 0
+> Req. 1
+> Req. 2
+> Requests
+> Inference
+> latency: T
+> T+ΔT 2(T+ΔT) 3(T+ΔT)
+> Time
+> 6T
+> Delta
+> latency: ΔT
+> Inference latency : T+ΔT
+> 12 tokens per frame
+> Throughput: 12/(T+ΔT)
+> 4tokens per
+> request &frame
+
+Isolated  execution : redundant  computation  & resource contention 
+
+Unified KV  management : shared  computation  & parallel  decoding 
+
+> Inference Stages
+> 0
+> 0
+> Speedup:
+> 1+ΔT/T
+
+Fig. 3: Timeline comparison of OxyGen vs. isolated execution (baseline), with an ex-ample workload of N = 12 total tokens per request. After the initial warmup, OxyGen steadily advances B = 3 parallel requests to produce k = 4 tokens per request per frame, significantly reducing the end-to-end inference latency per frame, and increas-ing both action frequency and language throughput, all by a factor of 1 + ∆T /T .
+
+in most experiments. Specifically, we evaluate task success rate on LIBERO with the officially released π0.5-LIBERO checkpoint, demonstrating that Oxy-Gen doesn’t degrade action quality while accelerating inference. 
+
+Baselines. We compare OxyGen against openpi [31], the official inference frame-work for π0.5 (10k stars on GitHub), running in 2 representative configurations: 
+
+Sequential isolated execution (the main baseline, denoted as “Baseline”), is the standard inference paradigm of existing systems [28,31,41,42]: each task (action and language generation) runs independently and sequentially within each frame. Since openpi doesn’t release code for language generation described in the π0.5
+
+paper, we implement this in reference to a community reproduction 4.
+
+Parallel isolated execution (an additional baseline, denoted as “Parallel”) is a straightforward way to parallelize multi-task inference: each task runs on an individual process in parallel, sharing one GPU. We implement this for openpi via CUDA Multi-Process Service (MPS). Results show that this naive parallelization provides very limited speedup from the main baseline. 
+
+Metrics. We measure the following metrics to capture both inference speed and deployment efficiency. Action frequency (Hz): number of actions gener-ated per second, determining the smoothness of robot control. Following de-fault configurations in openpi, we set the action horizon H = 10 and denoising  
+
+> 4
+
+https://github.com/BrunoFANG1/openpi_subtask_generation .OxyGen: Unified KV Cache Management for Multi-Task VLA 11 5 10 15 20 30 
+
+> 0
+> 14
+> 28
+> 42
+> 56
+> 70
+> Action Frequency (Hz)
+
+ALOHA     
+
+> 510 15 20 30
+> Language Decoding Steps (Total)
+
+DROID     
+
+> 510 15 20 30
+
+LIBERO         
+
+> 3.0× 3.0×
+> 0
+> 40
+> 80
+> 120
+> 160
+> 200
+> Throughput (tok/s)
+> 3.0×
+> Ours Action Freq.
+> Ours Throughput
+> Parallel Action Freq.
+> Parallel Throughput
+> Baseline Action Freq.
+> Baseline Throughput
+> (a) Varying total decoding steps (steps per frame k= 5 ). 123510
+> 0
+> 16
+> 32
+> 48
+> 64
+> 80
+> Action Frequency (Hz)
+
+ALOHA     
+
+> 123510
+> Language Decoding Steps (per Frame)
+
+DROID     
+
+> 123510
+
+LIBERO     
+
+> 3.7× 3.7×
+> 0
+> 50
+> 100
+> 150
+> 200
+> 250
+> Throughput (tok/s)
+> 3.7×
+> Ours Action Freq.
+> Ours Throughput
+> Parallel Action Freq.
+> Parallel Throughput
+> Baseline Action Freq.
+> Baseline Throughput
+> (b) Varying steps per frame (total decoding steps N= 30 ).
+
+Fig. 4: Comparison of action frequency and language throughput under different con-figurations. OxyGen consistently outperforms baselines by up to 3.7×, achieving up to 200 tokens/s language throughput and 70 Hz action frequency simultaneously. 
+
+steps S = 10 during evaluation, unless otherwise specified. Language through-put (tokens/s): number of language tokens generated per second, reflecting the speed of language generation. Average Batch size : average number of concur-rent requests during language decoding, reflecting the parallelism of language generation. Memory (GB), Power (W), and Energy/Request (mJ): metrics reflecting the system’s memory and energy efficiency for on-device deployment. 
+
+4.2 End-to-End Results 
+
+We compare OxyGen against both sequential and parallel isolated execution (denoted as “Baseline” and “Parallel”) on 3 benchmarks, across combinations of action denoising steps and language decoding steps. One new observation and request arrives each frame. Results are shown in Fig. 4 and Fig. 5. 
+
+Key observations. (1) OxyGen consistently achieves 1.2–3.7 × speedup for ac-tion frequency and language throughput across all configurations, demonstrat-ing that our method effectively coordinates the heterogeneous generation tasks, rather than trading one for the other. (2) OxyGen achieves higher speedup with larger total decoding steps N and smaller decoding steps per frame k, which in-dicates a larger average batch size B = N/k . With a large batch size, cross-frame continuous batching fully utilizes the parallel processing capability of hardware, 12 X. Li et al. 5 10 15 20 30                 
+
+> 5
+> 10
+> 15
+> 20
+> Action Denoising Steps
+> 1.25 1.62 1.96 2.33 3.00
+> 1.24 1.61 1.94 2.29 2.97
+> 1.22 1.55 1.93 2.25 2.90
+> 1.20 1.54 1.85 2.17 2.83
+
+ALOHA                     
+
+> 510 15 20 30
+> Language Decoding Steps (Total)
+> 1.28 1.63 1.98 2.32 3.05
+> 1.25 1.62 1.97 2.32 2.97
+> 1.24 1.59 1.89 2.26 2.87
+> 1.22 1.53 1.87 2.20 2.80
+
+DROID                     
+
+> 510 15 20 30
+> 1.28 1.63 1.99 2.36 3.04
+> 1.27 1.60 1.97 2.35 2.98
+> 1.24 1.60 1.92 2.29 2.89
+> 1.23 1.55 1.88 2.18 2.79
+
+LIBERO                         
+
+> 1.5
+> 2.0
+> 2.5
+> 3.0 Speedup
+> (a) Varying total decoding steps (steps per frame k= 5 ). 123510
+> 5
+> 10
+> 15
+> 20
+> Action Denoising Steps
+> 3.46 3.57 3.43 3.00 2.22
+> 3.71 3.70 3.43 2.97 2.18
+> 3.53 3.47 3.29 2.90 2.16
+> 3.35 3.65 3.48 2.83 2.10
+
+ALOHA                     
+
+> 123510
+> Language Decoding Steps (per Frame)
+> 3.47 3.60 3.42 3.05 2.23
+> 3.74 3.65 3.47 2.97 2.21
+> 3.55 3.53 3.26 2.87 2.17
+> 3.43 3.37 3.13 2.80 2.12
+
+DROID                     
+
+> 123510
+> 3.42 3.60 3.42 3.04 2.22
+> 3.72 3.72 3.46 2.98 2.22
+> 3.54 3.54 3.32 2.89 2.16
+> 3.32 3.31 3.14 2.79 2.13
+
+LIBERO     
+
+> 2.5
+> 3.0
+> 3.5 Speedup
+> (b) Varying steps per frame (total decoding steps N= 30 ).
+
+Fig. 5: Speedup ratio for action frequency of OxyGen vs. baseline under different configurations. Action denoising steps have modest impact on the speedup ratio. 
+
+and achieves significant speedup. (3) Naive MPS parallelization provides modest improvement over the sequential baseline, demonstrating that simply running tasks in parallel without eliminating redundant computation is insufficient. 
+
+4.3 Ablation Study 
+
+We ablate the two core optimizations to understand their individual contribu-tions. Starting from sequential isolated execution (“Baseline”), we incrementally enable (A) cross-task KV sharing (“Ours w/o Batching”) and (B) cross-frame continuous batching (“Ours”), measuring their action frequency. For a more com-prehensive view, we also measure OxyGen with truncated language output ( i.e ., always single-batch, denoted as “Batching Upper Bound”), indicating the theo-retical upper bound of action frequency with batching. Fig. 6 shows the action frequency across language decoding steps (5 steps per frame). 
+
+Key observations. (1) Cross-task KV sharing provides the initial speedup (1.4 ×
+
+for short decoding steps without batching), by eliminating redundant prefill of the same observation for different tasks. (2) Cross-frame continuous batching is crucial for scenarios with long decoding steps ( ≥ 10 ), where it maintains nearly constant action frequency around 60 Hz. In contrast, other settings without batching degrade significantly as decoding steps increase (baseline drops from 49.9 Hz to 19.1 Hz by 2.6 ×). The gap between ours and the theoretical upper bound indicates the overhead for cross-frame scheduling. OxyGen: Unified KV Cache Management for Multi-Task VLA 13 0 20 40 60 80 
+
+> 5
+> 10
+> 15
+> 20
+> 30
+> Lang. Decoding
+> Steps (Total)
+
+LIBERO 
+
+> Ours
+> Ours w/o Batching
+> Parallel
+> Baseline
+> Batching Upper Bound
+> Action Frequency (Hz)
+
+Fig. 6: Ablation of action frequency on LIBERO across language decoding steps. Cross-task KV sharing provides the initial speedup for short decoding steps, while cross-frame continuous batching maintains high action frequency as decoding steps increase. 1/4 1/2 1 2 4
+
+> Arrivals per Frame
+> 0
+> 30
+> 60
+> 90
+> 120
+> 150
+> Action Frequency (Hz)
+
+Uniform     
+
+> 0.5 1.0 1.5 2.0
+> Mean Arrivals per Frame ( λ)
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+
+Poisson     
+
+> 1/9 3/7 5/5 7/3 9/1
+> Long / Short Ratio
+> 0
+> 14
+> 28
+> 42
+> 56
+> 70
+
+Random Length (5 or 20)   
+
+> 0
+> 6
+> 12
+> 18
+> 24
+> 30
+> 0
+> 3
+> 6
+> 9
+> 12
+> 15
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> Avg. Batch Size
+> Ours Action Freq. Baseline Action Freq. Ours Avg. Batch Size
+
+Fig. 7: Action frequency (per request) and average batch size of OxyGen under differ-ent request arrival patterns. 
+
+4.4 Workload Generalization 
+
+Besides the common workload of one new observation per frame, we demon-strate OxyGen’s capability of generalizing to more workloads, including uniform arrivals with varying requests per frame, Poisson arrivals with varying intensity 
+
+λ (mean arrivals per frame), and random-length requests with different ratios of short and long decoding lengths. Fig. 7 shows frame latency and average batch size across all patterns. The baseline is for reference only as it always executes requests sequentially without batching. 
+
+Key observations. (1) Across all workloads, OxyGen maintains higher action frequency than the baseline. (2) Under uniform and Poisson arrivals, higher ar-rival rate increases the average batch size and thus language throughput, but reduces action frequency per request. It is natural because when more than one observation require prefill in a single frame, their prefill cost dominates model inference, degrading the action frequency of each request. However, the total actions per second still increases ( e.g ., by 4.4 × in “Uniform”), indicating higher hardware utilization. (3) Under random request lengths, OxyGen maintains a constant action frequency per request, while handling different number of con-current requests flexibly. 14 X. Li et al.                                     
+
+> Table 1: Task success rate (%) on LIBERO test suites. Our results match reported performance in openpi within statistical noise. Setting LIBERO-Spatial LIBERO-Long LIBERO-Goal LIBERO-10 Reported (openpi) 98.8% 98.2% 98.0% 92.4% Tested (ours) 98.0% 98.6% 97.4% 93.2%
+> Table 2: Comparison of memory and energy cost. OxyGen adds modest memory overhead while achieving substantial energy savings. Setting Peak Mem. (GB) Avg. Power (W) Energy /Req. (mJ)
+> ∆Energy /Req. (%) Baseline 6.43 293.5 117.4 0Parallel 12.49 324.4 120.9 +3.0 Ours w/o batch 6.43 287.9 97.7 −16.8 Ours (batch: 2) 7.35 173.3 39.1 −66.7 Ours (batch: 4) 7.41 154.4 25.8 −78.0
+
+4.5 Action Quality Verification 
+
+To verify that OxyGen optimizes the VLA inference pipeline without degrading output action quality, we evaluate the task success rate on LIBERO with the 
+
+π0.5-LIBERO checkpoint released by Physical Intelligence. Results in Tab. 1 show that OxyGen reproduces reported task success rate of π0.5-LIBERO within statistical error, confirming that our method does not degrade action quality. 
+
+4.6 Memory and Energy Efficiency 
+
+We measure memory and energy cost of OxyGen and baselines, as shown in Tab. 2. OxyGen adds modest memory overhead (15%) compared to baseline, while naive parallelization almost doubles the memory cost. OxyGen also reduces average power consumption by up to 47% and energy per request by up to 78%, due to less memory access to VLM weights during batched decoding. In contrast, naive parallelization increases average power by 11% and energy by 3% due to redundant computation and memory bandwidth contention. 
+
+## 5 Conclusion 
+
+We present OxyGen, an efficient inference system for MoT VLA under multi-task parallelism. By proposing unified KV cache management, a novel inference paradigm that treats KV cache as a shared resource across tasks and over time, we enable cross-task KV sharing and cross-frame continuous batching. We im-plement OxyGen for π0.5 and achieve up to 3.7× speedup on common robotic GPUs, demonstrating that unified KV cache management is critical for efficient embodied agents with multi-task capabilities. OxyGen: Unified KV Cache Management for Multi-Task VLA 15 
+
+## References 
+
+1. 1X Technologies: NEO Home Robot: The World’s First Consumer-Ready Hu-manoid Robot. https://www.1x.tech/neo (2026), accessed: 2026-02-14 2. Anwar, A., Welsh, J., Biswas, J., Pouya, S., Chang, Y.: Remembr: Building and reasoning over long-horizon spatio-temporal memory for robot navigation. In: 2025 IEEE International Conference on Robotics and Automation (ICRA). pp. 2838– 2845. IEEE (2025) 3. Bi, H., Tan, H., Xie, S., Wang, Z., Huang, S., Liu, H., Zhao, R., Feng, Y., Xiang, C., Rong, Y., et al.: Motus: A unified latent action world model. arXiv preprint arXiv:2512.13030 (2025) 4. Bjorck, J., Castañeda, F., Cherniadev, N., Da, X., Ding, R., Fan, L., Fang, Y., Fox, D., Hu, F., Huang, S., et al.: Gr00t n1: An open foundation model for generalist humanoid robots. arXiv preprint arXiv:2503.14734 (2025) 5. Black, K., Brown, N., Driess, D., Esmail, A., Equi, M., Finn, C., Fusai, N., Groom, L., Hausman, K., Ichter, B., et al.: π0: A vision-language-action flow model for general robot control. arXiv preprint arXiv:2410.24164 (2024) 6. Black, K., Galliker, M.Y., Levine, S.: Real-time execution of action chunking flow policies. arXiv preprint arXiv:2506.07339 (2025) 7. Bu, Q., Yang, Y., Cai, J., Gao, S., Ren, G., Yao, M., Luo, P., Li, H.: Uni-vla: Learning to act anywhere with task-centric latent actions. arXiv preprint arXiv:2505.06111 (2025) 8. Cen, J., Huang, S., Yuan, Y., Li, K., Yuan, H., Yu, C., Jiang, Y., Guo, J., Li, X., Luo, H., et al.: Rynnvla-002: A unified vision-language-action and world model. arXiv preprint arXiv:2511.17502 (2025) 9. Fang, H., Liu, Y., Du, Y., Du, L., Yang, H.: Sqap-vla: A synergistic quantization-aware pruning framework for high-performance vision-language-action models. arXiv preprint arXiv:2509.09090 (2025) 10. Figure AI: Introducing Figure 03: Third Generation Humanoid Robot. https: //www.figure.ai/news/introducing-figure-03 (Oct 2025), accessed: 2026-02-14 11. Fu, T., Min, Z., Zhang, H., Yan, J., Dai, G., Ouyang, W., Wang, Y.: Cache-to-cache: Direct semantic communication between large language models. arXiv preprint arXiv:2510.03215 (2025) 12. Gu, Q., Kuwajerwala, A., Morin, S., Jatavallabhula, K.M., Sen, B., Agarwal, A., Rivera, C., Paul, W., Ellis, K., Chellappa, R., et al.: Conceptgraphs: Open-vocabulary 3d scene graphs for perception and planning. In: 2024 IEEE Inter-national Conference on Robotics and Automation (ICRA). pp. 5021–5028. IEEE (2024) 13. Intelligence, P., Black, K., Brown, N., Darpinian, J., Dhabalia, K., Driess, D., Esmail, A., Equi, M., Finn, C., Fusai, N., et al.: π0.5: a vision-language-action model with open-world generalization. arXiv preprint arXiv:2504.16054 (2025) 14. Jiang, T., Yuan, T., Liu, Y., Lu, C., Cui, J., Liu, X., Cheng, S., Gao, J., Xu, H., Zhao, H.: Galaxea open-world dataset and g0 dual-system vla model. arXiv preprint arXiv:2509.00576 (2025) 15. Jiang, T., Jiang, X., Ma, Y., Wen, X., Li, B., Zhan, K., Jia, P., Liu, Y., Sun, S., Lang, X.: The better you learn, the smarter you prune: Towards efficient vision-language-action models via differentiable token pruning. arXiv preprint arXiv:2509.12594 (2025) 16 X. Li et al. 16. Jiang, W., Clemons, J., Sankaralingam, K., Kozyrakis, C.: How fast can i run my vla? demystifying vla inference performance with vla-perf. arXiv preprint arXiv:2602.18397 (2026) 17. Khazatsky, A., Pertsch, K., Nair, S., Balakrishna, A., Dasari, S., Karamcheti, S., Nasiriany, S., Srirama, M.K., Chen, L.Y., Ellis, K., et al.: Droid: A large-scale in-the-wild robot manipulation dataset. arXiv preprint arXiv:2403.12945 (2024) 18. Kim, M.J., Pertsch, K., Karamcheti, S., Xiao, T., Balakrishna, A., Nair, S., Rafailov, R., Foster, E., Lam, G., Sanketi, P., et al.: Openvla: An open-source vision-language-action model. arXiv preprint arXiv:2406.09246 (2024) 19. Kim, N., Kwon, O., Yoo, H., Choi, Y., Park, J., Oh, S.: Topological semantic graph memory for image-goal navigation. In: Conference on Robot Learning. pp. 393–402. PMLR (2023) 20. Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu, C.H., Gonzalez, J., Zhang, H., Stoica, I.: Efficient memory management for large language model serving with pagedattention. In: Proceedings of the 29th symposium on operating systems prin-ciples. pp. 611–626 (2023) 21. Lee, D.W., Gillet, S., Morency, L.P., Breazeal, C., Park, H.W.: A modern system recipe for situated embodied human-robot conversation with real-time multimodal llms and tool-calling. arXiv preprint arXiv:2602.04157 (2026) 22. Li, Q., Liang, Y., Wang, Z., Luo, L., Chen, X., Liao, M., Wei, F., Deng, Y., Xu, S., Zhang, Y., et al.: Cogact: A foundational vision-language-action model for synergiz-ing cognition and action in robotic manipulation. arXiv preprint arXiv:2411.19650 (2024) 23. Li, Y., Meng, Y., Sun, Z., Ji, K., Tang, C., Fan, J., Ma, X., Xia, S., Wang, Z., Zhu, W.: Sp-vla: A joint model scheduling and token pruning approach for vla model acceleration. arXiv preprint arXiv:2506.12723 (2025) 24. Liang, W., Yu, L., Luo, L., Iyer, S., Dong, N., Zhou, C., Ghosh, G., Lewis, M., Yih, W.t., Zettlemoyer, L., et al.: Mixture-of-transformers: A sparse and scalable architecture for multi-modal foundation models. arXiv preprint arXiv:2411.04996 (2024) 25. Liu, B., Zhu, Y., Gao, C., Feng, Y., Liu, Q., Zhu, Y., Stone, P.: Libero: Benchmark-ing knowledge transfer for lifelong robot learning. Advances in Neural Information Processing Systems 36 , 44776–44791 (2023) 26. Liu, Y., Huang, Y., Yao, J., Feng, S., Gu, Z., Du, K., Li, H., Cheng, Y., Jiang, J., Lu, S., et al.: Droidspeak: Kv cache sharing for cross-llm communication and multi-llm serving. arXiv preprint arXiv:2411.02820 (2024) 27. Ma, Y., Zhou, Y., Yang, Y., Wang, T., Fan, H.: Running vlas at real-time speed. arXiv preprint arXiv:2510.26742 (2025) 28. OpenGalaxea: Galaxeavla: Galaxea’s open-source vla repository (2025), https: //github.com/OpenGalaxea/GalaxeaVLA , g0 PLUS Community License (Non-Commercial) 29. Park, S., Kim, H., Jeon, W., Yang, J., Jeon, B., Oh, Y., Choi, J.: Quantization-aware imitation-learning for resource-efficient robotic control. arXiv preprint arXiv:2412.01034 (2024) 30. Pertsch, K., Stachowicz, K., Ichter, B., Driess, D., Nair, S., Vuong, Q., Mees, O., Finn, C., Levine, S.: Fast: Efficient action tokenization for vision-language-action models. arXiv preprint arXiv:2501.09747 (2025) 31. Physical Intelligence: openpi (2025), https : / / github . com / Physical -Intelligence/openpi , apache-2.0 license OxyGen: Unified KV Cache Management for Multi-Task VLA 17 32. Rajvanshi, A., Sikka, K., Lin, X., Lee, B., Chiu, H.P., Velasquez, A.: Saynav: Grounding large language models for dynamic planning to navigation in new envi-ronments. In: Proceedings of the International Conference on Automated Planning and Scheduling. vol. 34, pp. 464–474 (2024) 33. Reuss, M., Zhou, H., Rühle, M., Yağmurlu, Ö.E., Otto, F., Lioutikov, R.: Flower: Democratizing generalist robot policies with efficient vision-language-action flow policies. arXiv preprint arXiv:2509.04996 (2025) 34. Robotics, X.: Xiaomi-robotics-0: An open-sourced vision-language-action model with real-time execution. arXiv preprint (2026) 35. Shi, L.X., Ichter, B., Equi, M., Ke, L., Pertsch, K., Vuong, Q., Tanner, J., Walling, A., Wang, H., Fusai, N., et al.: Hi robot: Open-ended instruction following with hierarchical vision-language-action models. arXiv preprint arXiv:2502.19417 (2025) 36. Shukor, M., Aubakirova, D., Capuano, F., Kooijmans, P., Palma, S., Zoui-tine, A., Aractingi, M., Pascal, C., Russi, M., Marafioti, A., et al.: Smolvla: A vision-language-action model for affordable and efficient robotics. arXiv preprint arXiv:2506.01844 (2025) 37. Tan, X., Yang, Y., Ye, P., Zheng, J., Bai, B., Wang, X., Hao, J., Chen, T.: Think twice, act once: Token-aware compression and action reuse for efficient inference in vision-language-action models. arXiv preprint arXiv:2505.21200 (2025) 38. Torne, M., Pertsch, K., Walke, H., Vedder, K., Nair, S., Ichter, B., Ren, A.Z., Wang, H., Tang, J., Stachowicz, K., Dhabalia, K., Equi, M., Vuong, Q., Springenberg, J.T., Levine, S., Finn, C., Driess, D.: Mem: Multi-scale embodied memory for vision language action models (2025), https://www.pi.website/download/Mem. pdf , technical report, Physical Intelligence 39. Wang, H., Xiong, C., Wang, R., Chen, X.: Bitvla: 1-bit vision-language-action models for robotics manipulation. arXiv preprint arXiv:2506.07530 (2025) 40. Wen, J., Zhu, Y., Li, J., Tang, Z., Shen, C., Feng, F.: Dexvla: Vision-language model with plug-in diffusion expert for general robot control. arXiv preprint arXiv:2502.05855 (2025) 41. X-Square-Robot: wall-x: Building general-purpose robots based on embodied foun-dation model (2025), https://github.com/X-Square-Robot/wall-x 
+
+42. Xiaomi Robotics: Xiaomi-robotics-0: An open-sourced vision-language-action model with real-time inference (2026), https://github.com/XiaomiRobotics/ Xiaomi-Robotics-0 , apache-2.0 license 43. Xu, S., Wang, Y., Xia, C., Zhu, D., Huang, T., Xu, C.: Vla-cache: Efficient vision-language-action manipulation via adaptive token caching. arXiv preprint arXiv:2502.02175 (2025) 44. Xu, W., Zhuang, L., Shan, L.: Kv-efficient vla: A method to speed up vision lan-guage models with rnn-gated chunked kv cache. arXiv preprint arXiv:2509.21354 (2025) 45. Yang, H., Zhang, R., Huang, M., Wang, W., Tang, Y., Li, Y., Liu, Y., Zhang, D.: Kvshare: An llm service system with efficient and effective multi-tenant kv cache reuse. arXiv preprint arXiv:2503.16525 (2025) 46. Yang, Y., Wang, Y., Wen, Z., Zhongwei, L., Zou, C., Zhang, Z., Wen, C., Zhang, L.: Efficientvla: Training-free acceleration and compression for vision-language-action models. arXiv preprint arXiv:2506.10100 (2025) 47. Yao, J., Li, H., Liu, Y., Ray, S., Cheng, Y., Zhang, Q., Du, K., Lu, S., Jiang, J.: Cacheblend: Fast large language model serving for rag with cached knowledge fusion. In: Proceedings of the twentieth European conference on computer systems. pp. 94–109 (2025) 18 X. Li et al. 48. Yue, Y., Wang, Y., Kang, B., Han, Y., Wang, S., Song, S., Feng, J., Huang, G.: Deer-vla: Dynamic inference of multimodal large language models for efficient robot execution. Advances in Neural Information Processing Systems 37 , 56619–56643 (2024) 49. Zhai, A., Liu, B., Fang, B., Cai, C., Ma, E., Yin, E., Wang, H., Zhou, H., Wang, J., Shi, L., et al.: Igniting vlms toward the embodied space. arXiv preprint arXiv:2509.11766 (2025) 50. Zhang, R., Dong, M., Zhang, Y., Heng, L., Chi, X., Dai, G., Du, L., Du, Y., Zhang, S.: Mole-vla: Dynamic layer-skipping vision language action model via mixture-of-layers for efficient robot manipulation. arXiv preprint arXiv:2503.20384 (2025) 51. Zhao, T.Z., Kumar, V., Levine, S., Finn, C.: Learning fine-grained bimanual ma-nipulation with low-cost hardware. arXiv preprint arXiv:2304.13705 (2023) 52. Zhao, Y., Zhao, L., Cheng, B., Yao, G., Wen, X., Gao, H.: Vla-rail: A real-time asynchronous inference linker for vla models and robots. arXiv preprint arXiv:2512.24673 (2025) 53. Zheng, L., Yin, L., Xie, Z., Sun, C.L., Huang, J., Yu, C.H., Cao, S., Kozyrakis, C., Stoica, I., Gonzalez, J.E., et al.: Sglang: Efficient execution of structured language model programs. Advances in neural information processing systems 37 , 62557– 62583 (2024) 54. Zitkovich, B., Yu, T., Xu, S., Xu, P., Xiao, T., Xia, F., Wu, J., Wohlhart, P., Welker, S., Wahid, A., et al.: Rt-2: Vision-language-action models transfer web knowledge to robotic control. In: Conference on Robot Learning. pp. 2165–2183. PMLR (2023)
