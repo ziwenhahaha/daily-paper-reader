@@ -6,107 +6,102 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-02
-- 运行时间：2026-04-02 20:17:27 UTC
+- 最新运行日期：2026-03-26 ~ 2026-04-04
+- 运行时间：2026-04-04 03:04:21 UTC
 - 运行状态：成功
-- 本次总论文数：28
-- 精读区：16
+- 本次总论文数：27
+- 精读区：15
 - 速读区：12
 
 ### 今日简报（AI）
-- 今日共生成 28 篇推荐（精读 16 篇，速读 12 篇）
-- 精读：《$π$, But Make It Fly: Physics-Guided Transfer of VLA Models to Aerial Manipulation》（10.0/10）, 《StreamingVLA: Streaming Vision-Language-Action Model with Action Flow Matching and Adaptive Early Observation》（10.0/10）
-- 速读：《SIMART: Decomposing Monolithic Meshes into Sim-ready Articulated Assets via MLLM》（8.0/10）, 《SpecEyes: Accelerating Agentic Multimodal LLMs via Speculative Perception and Planning》（8.0/10）, 《Safe Reinforcement Learning with Preference-based Constraint Inference》（8.0/10）
-- 这些结果覆盖了当下较热的方向，建议先看精读区论文的关键问题与方法。
-- 详情：[/202604/02/README](/202604/02/README)
+今日深度复盘 27 篇具身智能论文，聚焦全身交互控制、VLA 模型优化及 3D 数字孪生等前沿突破。
+重点推荐 MorphoGuard 的形态学全身控制方案，以及利用动作邻域先验大幅提升 VLA 微调性能的创新
+- 详情：[/20260326-20260404/README](/20260326-20260404/README)
 
 ### 精读区论文标签
-1. [$π$, But Make It Fly: Physics-Guided Transfer of VLA Models to Aerial Manipulation](/202604/02/2603.25038v1--but-make-it-fly-physics-guided-transfer-of-vla-models-to-aerial-manipulation)  
+1. [MorphoGuard: A Morphology-Based Whole-Body Interactive Motion Controller](/20260326-20260404/2604.01517v1-morphoguard-a-morphology-based-whole-body-interactive-motion-controller)  
    标签：评分：10.0/10、query:wam-vla
-   evidence：VLA模型向空中操作任务的迁移
-2. [StreamingVLA: Streaming Vision-Language-Action Model with Action Flow Matching and Adaptive Early Observation](/202604/02/2603.28565v1-streamingvla-streaming-vision-language-action-model-with-action-flow-matching-and-adaptive-early-observation)  
+   evidence：基于形态学的全身交互运动控制器
+2. [Boosting Vision-Language-Action Finetuning with Feasible Action Neighborhood Prior](/20260326-20260404/2604.01570v1-boosting-vision-language-action-finetuning-with-feasible-action-neighborhood-prior)  
    标签：评分：10.0/10、query:wam-vla
-   evidence：用于高效机器人控制的流式视觉-语言-动作模型
-3. [Addressing Ambiguity in Imitation Learning through Product of Experts based Negative Feedback](/202604/02/2603.26467v1-addressing-ambiguity-in-imitation-learning-through-product-of-experts-based-negative-feedback)  
+   evidence：机器人操作的视觉-语言-动作模型微调
+3. [DriveDreamer-Policy: A Geometry-Grounded World-Action Model for Unified Generation and Planning](/20260326-20260404/2604.01765v1-drivedreamer-policy-a-geometry-grounded-world-action-model-for-unified-generation-and-planning)  
+   标签：评分：10.0/10、query:wam-vla
+   evidence：连接 VLA 和世界模型的几何接地世界动作模型
+4. [UAV-Track VLA: Embodied Aerial Tracking via Vision-Language-Action Models](/20260326-20260404/2604.02241v1-uav-track-vla-embodied-aerial-tracking-via-vision-language-action-models)  
+   标签：评分：10.0/10、query:wam-vla
+   evidence：通过视觉-语言-动作模型进行具身空中追踪
+5. [Where-to-Learn: Analytical Policy Gradient Directed Exploration for On-Policy Robotic Reinforcement Learning](/20260326-20260404/2603.27317v2-where-to-learn-analytical-policy-gradient-directed-exploration-for-on-policy-robotic-reinforcement-learning)  
    标签：评分：9.0/10、query:wam-vla
-   evidence：利用人类专业知识和负反馈
-4. [SpatialStack: Layered Geometry-Language Fusion for 3D VLM Spatial Reasoning](/202604/02/2603.27437v1-spatialstack-layered-geometry-language-fusion-for-3d-vlm-spatial-reasoning)  
+   evidence：机器人强化学习的定向探索
+6. [D-SPEAR: Dual-Stream Prioritized Experience Adaptive Replay for Stable Reinforcement Learninging Robotic Manipulation](/20260326-20260404/2603.27346v1-d-spear-dual-stream-prioritized-experience-adaptive-replay-for-stable-reinforcement-learninging-robotic-manipulation)  
    标签：评分：9.0/10、query:wam-vla
-   evidence：具身智能中的3D视觉语言模型空间推理
-5. [Heracles: Bridging Precise Tracking and Generative Synthesis for General Humanoid Control](/202604/02/2603.27756v2-heracles-bridging-precise-tracking-and-generative-synthesis-for-general-humanoid-control)  
+   evidence：机器人操作的强化学习
+7. [Reducing Mental Workload through On-Demand Human Assistance for Physical Action Failures in LLM-based Multi-Robot Coordination](/20260326-20260404/2603.28156v1-reducing-mental-workload-through-on-demand-human-assistance-for-physical-action-failures-in-llm-based-multi-robot-coordination)  
+   标签：评分：9.0/10、query:wam-vla
+   evidence：基于大语言模型的多机器人协作与人类辅助
+8. [Advancing Multi-Robot Networks via MLLM-Driven Sensing, Communication, and Computation: A Comprehensive Survey](/20260326-20260404/2604.00061v1-advancing-multi-robot-networks-via-mllm-driven-sensing-communication-and-computation-a-comprehensive-survey)  
+   标签：评分：9.0/10、query:q14
+   evidence：关于多模态大模型驱动的人形机器人和多机器人网络的综述
+9. [Benchmarking Interaction, Beyond Policy: a Reproducible Benchmark for Collaborative Instance Object Navigation](/20260326-20260404/2604.00265v1-benchmarking-interaction-beyond-policy-a-reproducible-benchmark-for-collaborative-instance-object-navigation)  
    标签：评分：9.0/10、query:profile-2
-   evidence：通用人形机器人控制与生成式综合
-6. [LatentPilot: Scene-Aware Vision-and-Language Navigation by Dreaming Ahead with Latent Visual Reasoning](/202604/02/2603.29165v1-latentpilot-scene-aware-vision-and-language-navigation-by-dreaming-ahead-with-latent-visual-reasoning)  
-   标签：评分：9.0/10、query:wam-vla
-   evidence：利用潜视觉推理和动作动力学因果关系的视觉语言导航
-7. [Efficient Camera Pose Augmentation for View Generalization in Robotic Policy Learning](/202604/02/2603.29192v1-efficient-camera-pose-augmentation-for-view-generalization-in-robotic-policy-learning)  
-   标签：评分：9.0/10、query:wam-vla
-   evidence：机器人策略学习中的视角泛化
-8. [SceneTeract: Agentic Functional Affordances and VLM Grounding in 3D Scenes](/202604/02/2603.29798v1-sceneteract-agentic-functional-affordances-and-vlm-grounding-in-3d-scenes)  
+   evidence：具身导航与交互式自然语言对话
+10. [EgoSim: Egocentric World Simulator for Embodied Interaction Generation](/20260326-20260404/2604.01001v1-egosim-egocentric-world-simulator-for-embodied-interaction-generation)  
    标签：评分：9.0/10、query:profile-2
-   evidence：具身智能中3D场景的VLM接地
-9. [Generalizable Dense Reward for Long-Horizon Robotic Tasks](/202604/02/2604.00055v1-generalizable-dense-reward-for-long-horizon-robotic-tasks)  
+   evidence：用于具身交互和3D场景更新的第一人称世界模拟器
+11. [Low-Burden LLM-Based Preference Learning: Personalizing Assistive Robots from Natural Language Feedback for Users with Paralysis](/20260326-20260404/2604.01463v1-low-burden-llm-based-preference-learning-personalizing-assistive-robots-from-natural-language-feedback-for-users-with-paralysis)  
    标签：评分：9.0/10、query:wam-vla
-   evidence：使用VLM进行机器人任务进度识别的稠密奖励框架
-10. [DreamControl-v2: Simpler and Scalable Autonomous Humanoid Skills via Trainable Guided Diffusion Priors](/202604/02/2604.00202v1-dreamcontrol-v2-simpler-and-scalable-autonomous-humanoid-skills-via-trainable-guided-diffusion-priors)  
+   evidence：通过自然语言反馈实现辅助机器人的个性化
+12. [Tex3D: Objects as Attack Surfaces via Adversarial 3D Textures for Vision-Language-Action Models](/20260326-20260404/2604.01618v1-tex3d-objects-as-attack-surfaces-via-adversarial-3d-textures-for-vision-language-action-models)  
    标签：评分：9.0/10、query:wam-vla
-   evidence：利用扩散先验实现类人机器人的自主移动操作技能
-11. [Learning Humanoid Navigation from Human Data](/202604/02/2604.00416v1-learning-humanoid-navigation-from-human-data)  
+   evidence：视觉-语言-动作模型的对抗性3D纹理
+13. [AURA: Multimodal Shared Autonomy for Real-World Urban Navigation](/20260326-20260404/2604.01659v1-aura-multimodal-shared-autonomy-for-real-world-urban-navigation)  
+   标签：评分：9.0/10、query:wam-vla
+   evidence：用于城市机器人导航的视觉语言AI智能体
+14. [Bridging Large-Model Reasoning and Real-Time Control via Agentic Fast-Slow Planning](/20260326-20260404/2604.01681v1-bridging-large-model-reasoning-and-real-time-control-via-agentic-fast-slow-planning)  
+   标签：评分：9.0/10、query:q11
+   evidence：桥接大模型推理与实时控制
+15. [OpenGo: An OpenClaw-Based Robotic Dog with Real-Time Skill Switching](/20260326-20260404/2604.01708v1-opengo-an-openclaw-based-robotic-dog-with-real-time-skill-switching)  
    标签：评分：9.0/10、query:profile-2
-   evidence：基于人类数据和视觉记忆的人形机器人导航
-12. [Multi-Camera View Scaling for Data-Efficient Robot Imitation Learning](/202604/02/2604.00557v1-multi-camera-view-scaling-for-data-efficient-robot-imitation-learning)  
-   标签：评分：9.0/10、query:wam-vla
-   evidence：用于机器人操作的高效数据模仿学习
-13. [BAT: Balancing Agility and Stability via Online Policy Switching for Long-Horizon Whole-Body Humanoid Control](/202604/02/2604.01064v1-bat-balancing-agility-and-stability-via-online-policy-switching-for-long-horizon-whole-body-humanoid-control)  
-   标签：评分：9.0/10、query:wam-vla
-   evidence：全身类人机器人控制与运动规划
-14. [Deep Reinforcement Learning for Robotic Manipulation under Distribution Shift with Bounded Extremum Seeking](/202604/02/2604.01142v1-deep-reinforcement-learning-for-robotic-manipulation-under-distribution-shift-with-bounded-extremum-seeking)  
-   标签：评分：9.0/10、query:wam-vla
-   evidence：用于机器人操纵任务的深度强化学习
-15. [SMASH: Mastering Scalable Whole-Body Skills for Humanoid Ping-Pong with Egocentric Vision](/202604/02/2604.01158v1-smash-mastering-scalable-whole-body-skills-for-humanoid-ping-pong-with-egocentric-vision)  
-   标签：评分：9.0/10、query:wam-vla
-   evidence：类人机器人的可扩展全身技能学习
-16. [Functional Force-Aware Retargeting from Virtual Human Demos to Soft Robot Policies](/202604/02/2604.01224v1-functional-force-aware-retargeting-from-virtual-human-demos-to-soft-robot-policies)  
-   标签：评分：9.0/10、query:wam-vla
-   evidence：从人类演示中学习操作技能
+   evidence：具有实时技能切换能力的具身机器人狗
 
 ### 速读区论文标签
-1. [SIMART: Decomposing Monolithic Meshes into Sim-ready Articulated Assets via MLLM](/202604/02/2603.23386v1-simart-decomposing-monolithic-meshes-into-sim-ready-articulated-assets-via-mllm)  
-   标签：评分：8.0/10、query:wam-vla
-   evidence：用于具身智能仿真资产的多模态大模型
-2. [SpecEyes: Accelerating Agentic Multimodal LLMs via Speculative Perception and Planning](/202604/02/2603.23483v1-speceyes-accelerating-agentic-multimodal-llms-via-speculative-perception-and-planning)  
+1. [DUPLEX: Agentic Dual-System Planning via LLM-Driven Information Extraction](/20260326-20260404/2603.23909v1-duplex-agentic-dual-system-planning-via-llm-driven-information-extraction)  
    标签：评分：8.0/10、query:q11
-   evidence：通过投机性感知和规划加速智能体多模态大模型
-3. [Safe Reinforcement Learning with Preference-based Constraint Inference](/202604/02/2603.23565v1-safe-reinforcement-learning-with-preference-based-constraint-inference)  
+   evidence：大语言模型驱动的机器人任务规划信息提取
+2. [PCHC: Enabling Preference Conditioned Humanoid Control via Multi-Objective Reinforcement Learning](/20260326-20260404/2603.24047v1-pchc-enabling-preference-conditioned-humanoid-control-via-multi-objective-reinforcement-learning)  
    标签：评分：8.0/10、query:wam-vla
-   evidence：从人类偏好中学习安全约束
-4. [StateLinFormer: Stateful Training Enhancing Long-term Memory in Navigation](/202604/02/2603.23571v1-statelinformer-stateful-training-enhancing-long-term-memory-in-navigation)  
-   标签：评分：8.0/10、query:profile-2
-   evidence：具身环境导航中的长期记忆
-5. [Off-Policy Safe Reinforcement Learning with Constrained Optimistic Exploration](/202604/02/2603.23889v1-off-policy-safe-reinforcement-learning-with-constrained-optimistic-exploration)  
-   标签：评分：7.0/10、query:wam-vla
-   evidence：用于策略学习的离策安全强化学习
-6. [C-STEP: Continuous Space-Time Empowerment for Physics-informed Safe Reinforcement Learning of Mobile Agents](/202604/02/2603.24241v1-c-step-continuous-space-time-empowerment-for-physics-informed-safe-reinforcement-learning-of-mobile-agents)  
+   evidence：通过多目标强化学习进行人形机器人控制
+3. [KitchenTwin: Semantically and Geometrically Grounded 3D Kitchen Digital Twins](/20260326-20260404/2603.24684v1-kitchentwin-semantically-and-geometrically-grounded-3d-kitchen-digital-twins)  
+   标签：评分：8.0/10、query:wam-vla
+   evidence：具身智能中具有语义和几何基元的数字孪生
+4. [FODMP: Fast One-Step Diffusion of Movement Primitives Generation for Time-Dependent Robot Actions](/20260326-20260404/2603.24806v1-fodmp-fast-one-step-diffusion-of-movement-primitives-generation-for-time-dependent-robot-actions)  
+   标签：评分：8.0/10、query:wam-vla
+   evidence：用于机器人运动基元的扩散模型
+5. [Bridging Perception and Reasoning: Token Reweighting for RLVR in Multimodal LLMs](/20260326-20260404/2603.25077v1-bridging-perception-and-reasoning-token-reweighting-for-rlvr-in-multimodal-llms)  
+   标签：评分：7.0/10、query:q13
+   evidence：多模态大模型连接感知与推理标记
+6. [Integrating Deep RL and Bayesian Inference for ObjectNav in Mobile Robotics](/20260326-20260404/2603.25366v1-integrating-deep-rl-and-bayesian-inference-for-objectnav-in-mobile-robotics)  
    标签：评分：7.0/10、query:q9
-   evidence：移动智能体的安全强化学习
-7. [Evidence of an Emergent "Self" in Continual Robot Learning](/202604/02/2603.24350v1-evidence-of-an-emergent-self-in-continual-robot-learning)  
-   标签：评分：7.0/10、query:q16
-   evidence：持续机器人学习中自我意识的理论基础
-8. [Experiential Reflective Learning for Self-Improving LLM Agents](/202604/02/2603.24639v1-experiential-reflective-learning-for-self-improving-llm-agents)  
-   标签：评分：7.0/10、query:q12
-   evidence：能够进行复杂推理和多步问题解决的自主智能体
-9. [Environment-Grounded Multi-Agent Workflow for Autonomous Penetration Testing](/202604/02/2603.24221v1-environment-grounded-multi-agent-workflow-for-autonomous-penetration-testing)  
-   标签：评分：6.0/10、query:q15
-   evidence：机器人环境中的自动化渗透测试
-10. [Context-Mediated Domain Adaptation in Multi-Agent Sensemaking Systems](/202604/02/2603.24858v1-context-mediated-domain-adaptation-in-multi-agent-sensemaking-systems)  
-   标签：评分：6.0/10、query:wam-vla
-   evidence：通过用户对系统生成内容的修改进行领域自适应
-11. [Trace2Skill: Distill Trajectory-Local Lessons into Transferable Agent Skills](/202604/02/2603.25158v3-trace2skill-distill-trajectory-local-lessons-into-transferable-agent-skills)  
-   标签：评分：6.0/10、query:wam-vla
-   evidence：将轨迹经验提炼为可迁移的智能体技能
-12. [A Mentalistic Interface for Probing Folk-Psychological Attribution to Non-Humanoid Robots](/202604/02/2603.25646v1-a-mentalistic-interface-for-probing-folk-psychological-attribution-to-non-humanoid-robots)  
+   evidence：结合深度强化学习与贝叶斯推理的移动机器人目标搜索
+7. [LanteRn: Latent Visual Structured Reasoning](/20260326-20260404/2603.25629v1-lantern-latent-visual-structured-reasoning)  
+   标签：评分：7.0/10、query:q11
+   evidence：多模态模型的潜空间视觉结构化推理
+8. [R-C2: Cycle-Consistent Reinforcement Learning Improves Multimodal Reasoning](/20260326-20260404/2603.25720v1-r-c2-cycle-consistent-reinforcement-learning-improves-multimodal-reasoning)  
+   标签：评分：7.0/10、query:q13
+   evidence：多模态推理与跨模态一致性
+9. [Sci-Mind: Cognitively-Inspired Adversarial Debate for Autonomous Mathematical Modeling](/20260326-20260404/2603.27584v1-sci-mind-cognitively-inspired-adversarial-debate-for-autonomous-mathematical-modeling)  
    标签：评分：6.0/10、query:q11
-   evidence：利用LLM探究人类对机器人的心理归因
+   evidence：受认知启发的数学建模自主代理
+10. [Sci-Mind: Cognitively-Inspired Adversarial Debate for Autonomous Mathematical Modeling](/20260326-20260404/2603.27584v2-sci-mind-cognitively-inspired-adversarial-debate-for-autonomous-mathematical-modeling)  
+   标签：评分：6.0/10、query:q11
+   evidence：具有认知启发式对抗辩论和推理能力的自主智能体
+11. [Learning Certified Neural Network Controllers Using Contraction and Interval Analysis](/20260326-20260404/2603.28011v1-learning-certified-neural-network-controllers-using-contraction-and-interval-analysis)  
+   标签：评分：6.0/10、query:q9
+   evidence：用于机器人系统的认证神经网络控制器
+12. [PReD: An LLM-based Foundation Multimodal Model for Electromagnetic Perception, Recognition, and Decision](/20260326-20260404/2603.28183v1-pred-an-llm-based-foundation-multimodal-model-for-electromagnetic-perception-recognition-and-decision)  
+   标签：评分：6.0/10、query:q13
+   evidence：电磁领域的跨模态感知与决策
 
 
 <div class="dpr-home-promo-card">
