@@ -6,79 +6,79 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-04
-- 运行时间：2026-04-04 19:31:51 UTC
+- 最新运行日期：2026-04-05
+- 运行时间：2026-04-05 19:31:51 UTC
 - 运行状态：成功
 - 本次总论文数：19
 - 精读区：7
 - 速读区：12
 
 ### 今日简报（AI）
-今日聚焦视觉大模型在真实世界中的零样本导航实测，并深入探讨了提升机器人操作稳定性的强化学习新框架。
-核心结论指出视觉基础模型已具备跨场景导航潜力，而 D-SPEAR 算法通过双流经验回放显著优化了复杂任务的训练效率。
-建议关注如何利用离线 RL 在极低算力下实现自主探索，这是推动机器人技术平民化的重要方向。
-- 详情：[/202604/04/README](/202604/04/README)
+今日聚焦 19 篇前沿进展，深度解析 AnchorVLA 与 UniDriveVLA 如何重塑移动操控与自动驾驶的端到端架构。
+核心结论指出，锚定扩散技术与感知-动作统一框架正显著提升机器人在复杂环境下的执行效率与决策精度。
+建议重点关注 VLA 模型在水下作业及 3D 重建成本优化等细分领域的跨场景落地应用。
+- 详情：[/202604/05/README](/202604/05/README)
 
 ### 精读区论文标签
-1. [Can Vision Foundation Models Navigate? Zero-Shot Real-World Evaluation and Lessons Learned](/202604/04/2603.25937v1-can-vision-foundation-models-navigate-zero-shot-real-world-evaluation-and-lessons-learned)  
-   标签：评分：9.0/10、query:profile-2
-   evidence：视觉导航基础模型的真实世界评估
-2. [D-SPEAR: Dual-Stream Prioritized Experience Adaptive Replay for Stable Reinforcement Learning in Robotic Manipulation](/202604/04/2603.27346v2-d-spear-dual-stream-prioritized-experience-adaptive-replay-for-stable-reinforcement-learning-in-robotic-manipulation)  
+1. [AnchorVLA: Anchored Diffusion for Efficient End-to-End Mobile Manipulation](/202604/05/2604.01567v1-anchorvla-anchored-diffusion-for-efficient-end-to-end-mobile-manipulation)  
+   标签：评分：10.0/10、query:wam-vla
+   evidence：用于移动操作的基于扩散的 VLA 策略
+2. [UniDriveVLA: Unifying Understanding, Perception, and Action Planning for Autonomous Driving](/202604/05/2604.02190v1-unidrivevla-unifying-understanding-perception-and-action-planning-for-autonomous-driving)  
+   标签：评分：10.0/10、query:wam-vla
+   evidence：用于自动驾驶的视觉-语言-动作 (VLA) 模型
+3. [Agent-Driven Autonomous Reinforcement Learning Research: Iterative Policy Improvement for Quadruped Locomotion](/202604/05/2603.27416v1-agent-driven-autonomous-reinforcement-learning-research-iterative-policy-improvement-for-quadruped-locomotion)  
    标签：评分：9.0/10、query:wam-vla
-   evidence：机器人操纵的强化学习与策略稳定性
-3. [CReF: Cross-modal and Recurrent Fusion for Depth-conditioned Humanoid Locomotion](/202604/04/2603.29452v2-cref-cross-modal-and-recurrent-fusion-for-depth-conditioned-humanoid-locomotion)  
-   标签：评分：9.0/10、query:profile-2
-   evidence：基于原始感知数据的深度条件类人机器人步态学习
-4. [Learning When to See and When to Feel: Adaptive Vision-Torque Fusion for Contact-Aware Manipulation](/202604/04/2604.01414v1-learning-when-to-see-and-when-to-feel-adaptive-vision-torque-fusion-for-contact-aware-manipulation)  
+   evidence：智能体驱动的四足机器人运动策略改进自主强化学习
+4. [Tele-Catch: Adaptive Teleoperation for Dexterous Dynamic 3D Object Catching](/202604/05/2603.28427v1-tele-catch-adaptive-teleoperation-for-dexterous-dynamic-3d-object-catching)  
    标签：评分：9.0/10、query:wam-vla
-   evidence：触觉感知的视觉-力矩融合操作
-5. [CReF: Cross-modal and Recurrent Fusion for Depth-conditioned Humanoid Locomotion](/202604/04/2603.29452v1-cref-cross-modal-and-recurrent-fusion-for-depth-conditioned-humanoid-locomotion)  
-   标签：评分：8.0/10、query:profile-2
-   evidence：人形机器人运动与外感受感知
-6. [A Physical Imitation Learning Pipeline for Energy-Efficient Quadruped Locomotion Assisted by Parallel Elastic Joint](/202604/04/2604.00611v1-a-physical-imitation-learning-pipeline-for-energy-efficient-quadruped-locomotion-assisted-by-parallel-elastic-joint)  
-   标签：评分：8.0/10、query:q10
-   evidence：通过物理身体动力学进行学习
-7. [Hi-LOAM: Hierarchical Implicit Neural Fields for LiDAR Odometry and Mapping](/202604/04/2604.01720v1-hi-loam-hierarchical-implicit-neural-fields-for-lidar-odometry-and-mapping)  
-   标签：评分：8.0/10、query:profile-2
-   evidence：用于具身智能应用的LiDAR里程计与建图
+   evidence：将远程操作信号融合到扩散策略中的共享自主操作
+5. [Causal Scene Narration with Runtime Safety Supervision for Vision-Language-Action Driving](/202604/05/2604.01723v1-causal-scene-narration-with-runtime-safety-supervision-for-vision-language-action-driving)  
+   标签：评分：9.0/10、query:wam-vla
+   evidence：具有因果叙事的自动驾驶视觉-语言-动作 (VLA) 模型
+6. [Not All Tokens See Equally: Perception-Grounded Policy Optimization for Large Vision-Language Models](/202604/05/2604.01840v1-not-all-tokens-see-equally-perception-grounded-policy-optimization-for-large-vision-language-models)  
+   标签：评分：9.0/10、query:wam-vla
+   evidence：视觉语言模型的感知落地策略优化
+7. [Stop Wandering: Efficient Vision-Language Navigation via Metacognitive Reasoning](/202604/05/2604.02318v1-stop-wandering-efficient-vision-language-navigation-via-metacognitive-reasoning)  
+   标签：评分：9.0/10、query:profile-2
+   evidence：具有元认知推理的视觉语言导航
 
 ### 速读区论文标签
-1. [120 Minutes and a Laptop: Minimalist Image-goal Navigation via Unsupervised Exploration and Offline RL](/202604/04/2603.26441v1-120-minutes-and-a-laptop-minimalist-image-goal-navigation-via-unsupervised-exploration-and-offline-rl)  
+1. [UMI-Underwater: Learning Underwater Manipulation without Underwater Teleoperation](/202604/05/2603.27012v1-umi-underwater-learning-underwater-manipulation-without-underwater-teleoperation)  
    标签：评分：8.0/10、query:wam-vla
-   evidence：用于导航机器人策略学习的离线强化学习
-2. [SpatialAnt: Autonomous Zero-Shot Robot Navigation via Active Scene Reconstruction and Visual Anticipation](/202604/04/2603.26837v1-spatialant-autonomous-zero-shot-robot-navigation-via-active-scene-reconstruction-and-visual-anticipation)  
+   evidence：水下机器人操作与抓取
+2. [Difference Feedback: Generating Multimodal Process-Level Supervision for VLM Reinforcement Learning](/202604/05/2603.27482v1-difference-feedback-generating-multimodal-process-level-supervision-for-vlm-reinforcement-learning)  
    标签：评分：8.0/10、query:wam-vla
-   evidence：通过视觉语言模型实现机器人零样本导航
-3. [Bridging Visual Representation and Reinforcement Learning from Verifiable Rewards in Large Vision-Language Models](/202604/04/2603.27375v1-bridging-visual-representation-and-reinforcement-learning-from-verifiable-rewards-in-large-vision-language-models)  
+   evidence：视觉语言模型强化学习的过程级监督
+3. [Which Reconstruction Model Should a Robot Use? Routing Image-to-3D Models for Cost-Aware Robotic Manipulation](/202604/05/2603.27797v1-which-reconstruction-model-should-a-robot-use-routing-image-to-3d-models-for-cost-aware-robotic-manipulation)  
    标签：评分：8.0/10、query:wam-vla
-   evidence：大型视觉语言模型中的强化学习
-4. [Learning Smooth and Robust Space Robotic Manipulation of Dynamic Target via Inter-frame Correlation](/202604/04/2603.27537v1-learning-smooth-and-robust-space-robotic-manipulation-of-dynamic-target-via-inter-frame-correlation)  
+   evidence：为机器人操作任务路由图像转3D模型
+4. [Efficient Inference of Large Vision Language Models](/202604/05/2603.27960v1-efficient-inference-of-large-vision-language-models)  
    标签：评分：8.0/10、query:wam-vla
-   evidence：空间环境下动态目标的机器人操纵
-5. [SCRAMPPI: Efficient Contingency Planning for Mobile Robot Navigation via Hamilton-Jacobi Reachability](/202604/04/2603.26995v1-scramppi-efficient-contingency-planning-for-mobile-robot-navigation-via-hamilton-jacobi-reachability)  
-   标签：评分：7.0/10、query:q9
-   evidence：移动机器人导航与安全的应急规划
-6. [Falcon Perception](/202604/04/2603.27365v1-falcon-perception)  
+   evidence：大型视觉语言模型推理加速技术综述
+5. [Learning to See through Illumination Extremes with Event Streaming in Multimodal Large Language Models](/202604/05/2603.27558v1-learning-to-see-through-illumination-extremes-with-event-streaming-in-multimodal-large-language-models)  
    标签：评分：7.0/10、query:q13
-   evidence：感知与任务建模的统一Transformer
-7. [Robotic Dexterous Manipulation via Anisotropic Friction Modulation using Passive Rollers](/202604/04/2603.27452v1-robotic-dexterous-manipulation-via-anisotropic-friction-modulation-using-passive-rollers)  
+   evidence：在极端光照下结合事件流和 RGB 的多模态感知
+6. [MuSEAgent: A Multimodal Reasoning Agent with Stateful Experiences](/202604/05/2603.27813v1-museagent-a-multimodal-reasoning-agent-with-stateful-experiences)  
+   标签：评分：7.0/10、query:q10
+   evidence：具有状态经验的多模态推理智能体
+7. [Flip Stunts on Bicycle Robots using Iterative Motion Imitation](/202604/05/2603.27944v1-flip-stunts-on-bicycle-robots-using-iterative-motion-imitation)  
    标签：评分：7.0/10、query:wam-vla
-   evidence：用于灵巧操纵任务的机器人指尖设计
-8. [SPREAD: Spatial-Physical REasoning via geometry Aware Diffusion](/202604/04/2603.27573v1-spread-spatial-physical-reasoning-via-geometry-aware-diffusion)  
+   evidence：用于敏捷自行车特技的机器人策略学习
+8. [Self++: Co-Determined Agency for Human--AI Symbiosis in Extended Reality](/202604/05/2603.28306v1-self-co-determined-agency-for-human--ai-symbiosis-in-extended-reality)  
    标签：评分：7.0/10、query:profile-2
-   evidence：具身智能中3D场景生成的空间物理推理
-9. [Beyond Where to Look: Trajectory-Guided Reinforcement Learning for Multimodal RLVR](/202604/04/2603.26126v1-beyond-where-to-look-trajectory-guided-reinforcement-learning-for-multimodal-rlvr)  
-   标签：评分：6.0/10、query:q11
-   evidence：基于视觉事实的多模态推理链
-10. [LVRPO: Language-Visual Alignment with GRPO for Multimodal Understanding and Generation](/202604/04/2603.27693v1-lvrpo-language-visual-alignment-with-grpo-for-multimodal-understanding-and-generation)  
-   标签：评分：6.0/10、query:q13
-   evidence：使用策略优化进行语言-视觉对齐
-11. [PReD: An LLM-based Foundation Multimodal Model for Electromagnetic Perception, Recognition, and Decision](/202604/04/2603.28183v2-pred-an-llm-based-foundation-multimodal-model-for-electromagnetic-perception-recognition-and-decision)  
-   标签：评分：6.0/10、query:q13
-   evidence：用于感知和决策的多模态基础模型
-12. [MemFactory: Unified Inference & Training Framework for Agent Memory](/202604/04/2603.29493v1-memfactory-unified-inference--training-framework-for-agent-memory)  
+   evidence：扩展现实中的人机共生与代理
+9. [Synergy: A Next-Generation General-Purpose Agent for Open Agentic Web](/202604/05/2603.28428v1-synergy-a-next-generation-general-purpose-agent-for-open-agentic-web)  
    标签：评分：6.0/10、query:q12
-   evidence：记忆增强型智能体的统一框架
+   evidence：面向开放代理网络和具身环境的通用代理
+10. [Human-Like Lifelong Memory: A Neuroscience-Grounded Architecture for Infinite Interaction](/202604/05/2603.29023v1-human-like-lifelong-memory-a-neuroscience-grounded-architecture-for-infinite-interaction)  
+   标签：评分：6.0/10、query:q11
+   evidence：用于长期交互和记忆的认知架构
+11. [SkeletonContext: Skeleton-side Context Prompt Learning for Zero-Shot Skeleton-based Action Recognition](/202604/05/2603.29692v1-skeletoncontext-skeleton-side-context-prompt-learning-for-zero-shot-skeleton-based-action-recognition)  
+   标签：评分：6.0/10、query:q13
+   evidence：骨架特征与文本嵌入之间的跨模态对齐
+12. [Reconfiguration of supernumerary robotic limbs for human augmentation](/202604/05/2603.29808v1-reconfiguration-of-supernumerary-robotic-limbs-for-human-augmentation)  
+   标签：评分：6.0/10、query:q9
+   evidence：用于人体增强的超数机器人肢体
 
 
 <div class="dpr-home-promo-card">
