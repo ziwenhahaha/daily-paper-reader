@@ -1,0 +1,1046 @@
+Title: SnapFlow: One-Step Action Generation for Flow-Matching VLAs via Progressive Self-Distillation
+
+URL Source: https://arxiv.org/pdf/2604.05656v1
+
+Published Time: Wed, 08 Apr 2026 00:51:00 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# SnapFlow: One-Step Action Generation for Flow-Matching VLAs via Progressive Self-Distillation 
+
+Wuyang Luan 
+
+Jilin University 
+
+luanwy25@mails.jlu.edu.cn 
+
+Junhui Li 
+
+Chongqing University 
+
+junhuili@stu.cqu.edu.cn 
+
+Weiguang Zhao 
+
+University of Liverpool 
+
+weiguang.zhao@liverpool.ac.uk 
+
+Wenjian Zhang ∗
+
+GenY 
+
+zhangwenjian@genycc.cn 
+
+Tieru Wu 
+
+Jilin University 
+
+wutr@jlu.edu.cn 
+
+Rui Ma †
+
+Jilin University 
+
+ruim@jlu.edu.cn 
+
+Abstract 
+
+Vision-Language-Action (VLA) models based on flow matching—such as π0, 
+
+π0.5, and SmolVLA—achieve state-of-the-art generalist robotic manipulation, yet their iterative denoising, typically 10 ODE steps, introduces substantial latency: on a modern GPU, denoising alone accounts for 80% of end-to-end inference time. Naïvely reducing the step count is unreliable, degrading success on most tasks due to the velocity field being uncalibrated for single-step jumps. We present SnapFlow, a plug-and-play self-distillation method that compresses multi-step denoising into a single forward pass (1-NFE) for flow-matching VLAs. SnapFlow mixes standard flow-matching samples with consistency samples whose targets are two-step Euler shortcut velocities computed from the model’s own marginal velocity predictions, avoiding the trajectory drift caused by conditional velocities, as we analyze theoretically. A zero-initialized target-time embedding lets the network switch between local velocity estimation and global one-step generation within a single architecture. SnapFlow requires no external teacher, no architecture changes, and trains in ∼12h on a single GPU. We validate on two VLA architectures spanning a 6× parameter range, with identical hyperparameters: on π0.5 (3B) across four LIBERO suites (40 tasks, 400 episodes), SnapFlow achieves 98.75% average success—matching the 10-step teacher at 97.75% and slightly exceeding it—with 9.6 × denoising speedup and end-to-end latency reduced from 274 ms to 83 ms; on SmolVLA (500M), it reduces MSE by 8.3% with 3.56 × end-to-end acceleration. An action-step sweep on long-horizon tasks reveals that SnapFlow maintains its advantage across execution horizons, achieving 93% at nact = 5 where the baseline reaches only 90%. SnapFlow is orthogonal to layer-distillation and token-pruning approaches, enabling compositional speedups. 
+
+> ∗Corresponding author (industry).
+> †Corresponding author. Preprint.
+> arXiv:2604.05656v1 [cs.CV] 7 Apr 2026
+
+1 Introduction 
+
+Vision-Language-Action (VLA) models Black et al. [2024], Intelligence et al. [2025], Kim et al. [2024], Team et al. [2024] have advanced generalist robotic manipulation, with π0 Black et al. [2024] and π0.5 Intelligence et al. [2025] generating action trajectories via flow matching Lipman et al. [2023]: a learned velocity field iteratively denoises Gaussian noise into a coherent action chunk through 10 Euler steps. This iterative process is the primary inference bottleneck. On an A800 GPU, each denoising step of π0.5 takes ∼23 ms; the 10-step chain consumes ∼241 ms—80% of the total 274 ms end-to-end latency, with the remaining 60 ms spent on the shared VLM prefix. On edge devices the problem is more acute: at 3 Hz control frequency each cycle allows only ∼330 ms for perception and action generation, leaving almost no headroom for 10-step denoising. Can fewer Euler steps suffice? Naïvely reducing the step count is unreliable: on LIBERO, 1-step inference drops from 97.75% to 96.75% average success. The velocity field learned for 10-step integration is not calibrated for single-step jumps. We propose SnapFlow, a self-distillation method that trains a flow-matching VLA to generate high-quality actions in a single forward pass . SnapFlow mixes standard flow-matching samples that preserve multi-step capability with consistency samples whose target is the average velocity along a two-step Euler shortcut. A learnable target-time projection lets the network distinguish these two objectives within a single architecture, progressively “straightening” the velocity field for accurate single-step generation. Evaluated on π0.5 across all four LIBERO suites following the protocol of Intelligence et al. [2025], SnapFlow at 1-step achieves 98.75% average success, matching the 10-step teacher at 97.75% and slightly exceeding it. The consistency objective directly optimizes single-step predictions, whereas multi-step Euler integration compounds discretization errors as predicted by Theorem 3. SnapFlow delivers a 9.6 × denoising speedup, reducing end-to-end latency from 274 ms to 83 ms. 
+
+Contributions. 
+
+• SnapFlow: A progressive self-distillation framework that achieves 1-NFE inference for flow-matching VLAs via FM/consistency sample mixing and a target-time embedding— requiring no external teacher, no architecture changes, and only ∼12h of training on a single A800. • Favorable quality–speed trade-off in tested settings: SnapFlow 1-step achieves 98.75% average success on LIBERO, matching the 10-step baseline at 97.75% and slightly exceeding it, with 9.6 × denoising speedup. • Generality and orthogonality: Validated on two representative flow-matching VLAs span-ning 500M–3B with identical hyperparameters; orthogonal to layer-distillation methods Jeon et al. [2026], enabling compositional speedups. 
+
+2 Related Work 
+
+Flow-Matching VLAs and Their Latency Bottleneck. π0 Black et al. [2024] introduced flow matching as the action head for generalist VLAs; π0.5 Intelligence et al. [2025] scales this to 3B parameters; SmolVLA Shukor et al. [2025] provides a lightweight ∼500M alternative; complementary open VLA baselines include OpenVLA Kim et al. [2024] and Octo Team et al. [2024]. All share a critical bottleneck: iterative Euler denoising—typically 10 sequential forward passes through the action expert—dominates end-to-end latency. 
+
+VLA Inference Acceleration. Recent works attack VLA latency from two complementary angles. 
+
+Architecture compression: Shallow-π Jeon et al. [2026] distills the π0.5 transformer from 18 to 6 layers for 2 × speedup; EfficientVLA Yang et al. [2025] dynamically skips layers and prunes visual tokens for 1.9 ×. Sampling compression: our work belongs to this category—reducing the 
+
+number of denoising steps rather than the per-step cost. The two axes are orthogonal and compose multiplicatively; see Sec. 4.4. 2Vision Encoder                                                                                               
+
+> (ViT )
+> Language Model
+> (Gemma)
+> FROZEN VLM BACKBONE
+> (~2.7B Params)
+> Self-Attention
+> FFN
+> Transformer Stack
+> TRAINABLE ACTION EXPERT (~300M Params)
+> SNAPFLOW TRAINING
+> Time
+> Embedding
+> 𝐀 𝐀
+> Target-Time
+> MLP ɸ𝐀 ɸ𝐀 (s)
+> Predicted
+> velocity
+> 𝐀 𝐀 𝐀 𝐀 ,𝐀 ,𝐀 |𝐀
+> Camera
+> Image
+> 𝐀 𝐀
+> Instruction
+> ℓ
+> Zero-initialized
+> Current time t target time t Target-Time
+> Embedding
+> Current
+> time t
+> Context
+> 𝐀
+> 𝐀 𝐀 𝐀 𝐀 ,𝐀 =𝐀 ,𝐀 ∥𝐀 Loss: 𝐀 𝐀 𝐀 =∥𝐀 𝐀 −𝐀 −𝐀 0∥2
+> 𝐀 𝐀 𝐀 1,𝐀 =1,𝐀 =1|𝐀 𝐀 𝐀 𝐀 0.5,𝐀 =0.5,𝐀 =0.5|𝐀
+> Midpoint:
+> 𝐀 0.5=𝐀 1−0.5⋅𝐀 1
+> 𝐀 𝐀 𝐀 1,𝐀 =0,𝐀 =1|𝐀
+> Path 1 (FM Objective)
+> Path 2 (Consistency Distillation)
+> STUDENT PATH
+> Teacher Target 𝐀 0
+> 𝐀 =𝐀 ⋅𝐀 𝐀 𝐀 +1−𝐀 ⋅𝐀 ⋅𝐀 𝐀 S=0 ACTIVATES ɸ𝐀 embedding to predict 𝐀 0directly
+> Pure
+> Noise x 1
+> Pure
+> Noise x 1
+> TEACHER
+> PATH
+> noisy
+> action alpha=0.5 𝐀 𝐀 =1−𝐀 ⋅𝐀 0+𝐀 ⋅𝐀
+> Student Output 𝐀 0
+> Ground truth
+> action 𝐀 𝐀
+> Gaussian
+> noise 𝐀
+> Distillation
+> Loss 𝐀 𝐀
+> 1-NFE INFERENCE (DEPLOYMENT)
+> 1-Step
+> Denoising
+> Predicted
+> Action 𝐀 𝐀
+> Gaussian
+> Noise 𝐀 𝐀
+> Inference: Set s=0, t=1 for ONE
+> forward pass.
+> No iteration needed.
+> 9.6 ×Speedup (Denoising) | 3.3 ×End-
+> to-End
+> sg sg sg
+> Noisy action 𝐀 𝐀
+> 𝐀 −𝐀 0
+> Cross-Attention
+
+Figure 1: SnapFlow overview. SnapFlow is a plug-and-play self-distillation method for flow-matching VLAs. During training, it mixes flow-matching and two-step Euler shortcut objectives; at inference, a single forward pass replaces the 10-step denoising loop. The VLM prefix is shared and unmodified. 
+
+Fast Flow Models. Consistency Models Song et al. [2023] enforce trajectory self-consistency for single-step generation and are closely related to continuous-time consistency formulations Lu and Song [2025], with foundations in score/diffusion modeling Song et al. [2020], Ho et al. [2020], Sohl-Dickstein et al. [2015], Karras et al. [2022]. In the flow-matching setting, MeanFlow Geng et al. [2025a] models average velocity; ShortCut Frans et al. [2025] uses two-step target decompositions; 
+
+α-Flow Zhang et al. [2025] introduces FM-to-consistency curricula. Prior work identifies trajectory drift from conditional velocities and proposes corrected consistency objectives. These methods target image or video generation. 
+
+Fast Sampling for Robot Policies. Consistency Policy Prasad et al. [2024] applies consistency distillation to small DDPM U-Net policies with an EMA target network, building on diffusion-policy style robot control formulations Chi et al. [2023], Ajay et al. [2022], Janner et al. [2022], Carvalho et al. [2023], Ke et al. [2024]. FlowPolicy Zhang et al. [2025b] uses consistency flow matching on 3D point clouds for single-step generation; ManiFlow Yan et al. [2025] combines consistency flow training with a DiT-X architecture for 1–2 NFE manipulation across 60+ tasks; FreqPolicy Wang et al. [2025b] introduces frequency-domain consistency constraints on LIBERO. SnapFlow differs in three respects: theoretical grounding in the corrected consistency objective of Theorems 1–3, which avoids trajectory drift; minimal intervention—a single zero-initialized MLP with no EMA, no auxiliary networks, and no frequency transforms; and comprehensive evaluation on billion-parameter VLAs across four LIBERO suites. 
+
+3 Method 
+
+We first review flow matching in VLAs (Sec. 3.1–3.2), analyze the trajectory consistency problem (Sec. 3.3), and then present the SnapFlow framework (Sec. 3.4–3.6). 
+
+3.1 Preliminaries: Flow Matching in VLAs 
+
+Flow-matching VLAs Black et al. [2024], Intelligence et al. [2025] generate action chunks x0 ∈
+
+RH×D by learning a velocity field conditioned on a context c encoding the observation and language instruction. Given a ground-truth action x0 and noise ϵ ∼ N (0, I), a flow path is defined by linear 3interpolation: 
+
+xt = (1 − t) x0 + t ϵ, t ∈ [0 , 1] (1) The velocity along this path is the conditional velocity vt = ϵ − x0, determined by the specific pair (x0, ϵ). Since multiple pairs can produce the same xt, the marginal velocity field is defined as 
+
+ut(xt) = E[vt | xt]. Flow matching trains a network Fθ to approximate ut using the conditional velocity as a surrogate: 
+
+LFM = Et, x0,ϵ
+
+h
+
+∥Fθ (xt, t, t | c) − (ϵ − x0)∥2i
+
+(2) Here Fθ (xt, s, t | c) denotes the predicted average velocity from t to target time s; at s = t this reduces to the instantaneous velocity. At inference, the model starts from pure noise x1 ∼ N (0, I) and integrates backward using K-step Euler: 
+
+xt−∆t = xt − ∆t · Fθ (xt, t, t | c), ∆t = 1 /K (3) In π0.5, K = 10 is the default, requiring 10 sequential forward passes through the action expert. 
+
+3.2 Fast Flow Models and Average Velocity 
+
+Rather than using many Euler steps to approximate the ODE integral, a fast flow model directly learns the average velocity between time t and a target time s < t , enabling a linear mapping Geng et al. [2025a], Zhang et al. [2025]: 
+
+fθ (xt, s, t ) = xt − (t − s) Fθ (xt, s, t | c) (4) where Fθ (xt, s, t ) approximates the true average velocity uavg (xt, s, t ) = 1
+
+> t−s
+
+R ts u(xτ , τ ) dτ . Setting 
+
+s = 0 and t = 1 yields the desired 1-NFE mapping from noise to action: ˆx0 = x1 − Fθ (x1, 0, 1) .The trajectory consistency objective Song et al. [2023], Geng et al. [2025a] enforces that the predicted endpoint fθ (xt, s, t ) is invariant to the starting time t along the same trajectory: 
+
+Ext
+
+"
+
+ddt fθ (xt, s, t )
+
+> 2
+
+#
+
+= Ext
+
+h
+
+∥∇ xt fθ · ut + ∂tfθ ∥2i
+
+= 0 (5) In practice ut is unknown and is typically replaced by the conditional velocity vt = ϵ − x0. For standard flow matching at s = t, this substitution is valid because E[vt | xt] = ut. However, for fast flow models that require trajectory consistency across a finite time span s̸ = t, we show below that this substitution introduces systematic drift. 
+
+3.3 Trajectory Consistency Analysis 
+
+Two theoretical results motivate SnapFlow’s design; complete proofs are in Appendix A. 
+
+Theorem 1 (Conditional–Marginal Velocity Discrepancy) . Let x0 ∼ pdata be non-degenerate (not a Dirac mass) and ϵ ∼ N (0, I). Let vt = ϵ − x0 be the conditional velocity and ut = E[vt | xt]
+
+the marginal velocity. The conditional covariance Σt(xt) = E[( vt − ut)( vt − ut)⊤ | xt] satisfies 
+
+Σt(xt)̸ = 0 almost surely for all t ∈ [0 , 1] .
+
+Proof sketch. At t = 0 , xt = x0 is deterministic given the data, so v0 = ϵ − x0 has variance Var (ϵ) = I. For t ∈ (0 , 1] , substituting ϵ = ( xt − (1 −t)x0)/t gives Σt = t−2Var (x0 | xt). Since 
+
+pdata is non-degenerate and ϵ has full support, the posterior p(x0 | xt) cannot be a point mass, so Var (x0 | xt)̸ = 0 a.s. □
+
+Theorem 2 (Trajectory Drift Under Conditional Training) . Let the conditional training objective be 
+
+Lcond (θ) = Ext,vt [∥∇ xt fθ · vt + ∂tfθ ∥2]. Then: 
+
+Lcond (θ) = Ext
+
+h
+
+∥∇ xt fθ · ut + ∂tfθ ∥2i| {z }
+
+> Lconsist (θ)
+
++ Ext
+
+Tr  ∇xt fθ Σt(xt) ( ∇xt fθ )⊤ | {z }
+
+> Lvar (θ)
+
+(6) Optimizing Lcond equals optimizing the true consistency objective Lconsist only if Σt = 0, which Theorem 1 shows is never the case. 4Proof sketch. Decompose vt = ut + ( vt − ut) in the quadratic loss. The cross term vanishes because 
+
+E[vt − ut | xt] = 0. The residual is Lvar , a positive-definite quadratic form in ∇xt fθ weighted by 
+
+Σt. □
+
+Remark 1. The variance term Lvar forces ∇xt fθ toward zero in high-variance directions, suppressing the model’s ability to faithfully capture trajectory curvature. For standard flow matching ( s = t), this does not matter because fθ (xt, t, t ) = xt is trivially consistent. For fast flow models ( s̸ = t), however, Lvar induces systematic trajectory drift that degrades one-step generation quality. 
+
+Theorem 3 (Cumulative Error in Consistency Mapping) . Let f ∗(xt, s, t ) denote the ideal consistency mapping and fθ (xt, s, t ) the learned model. Define the local residual R(t) = ∂tfθ + ∇xt fθ · ut and the total error e(s, t ) = fθ (xt, s, t ) − f ∗(xt, s, t ). Then: 
+
+e(s, t ) = 
+
+Z ts
+
+R(r) dr (7) The total approximation error grows with the time span |t − s| via accumulation of local residuals. 
+
+Remark 2. Theorem 3 suggests why a single-step model can match a multi-step teacher: the Euler integrator compounds discretization error over K steps, whereas the 1-NFE consistency model learns a direct mapping that avoids this accumulation. Whether this advantage materializes depends on 
+
+∥R(t)∥ relative to the single-step approximation error; Sec. 4.3 provides empirical evidence that it does for VLA action prediction. 
+
+3.4 SnapFlow: Corrected Consistency Training for VLAs 
+
+Motivated by Theorems 1–3, SnapFlow replaces the conditional velocity in the consistency target with the model’s own marginal velocity prediction and uses progressive mixing to stabilize training. 
+
+Corrected Consistency Objective. Prior theoretical analysis of corrected consistency objectives shows that replacing ut with vt in the first term of the consistency loss introduces only a parameter-free constant (Appendix A.4), but the total-derivative term must use the marginal velocity estimate 
+
+uθ = Fθ (xt, t, t ) to avoid drift per Theorem 2. This yields: 
+
+Lconsist = Ext
+
+h
+
+∥Fθ (xt, s, t ) − sg (vt − (t − s)( ∇xt Fθ · uθ + ∂tFθ )) ∥2i
+
+(8) where sg (·) denotes stop-gradient and uθ = Fθ (xt, t, t | c) is the model’s marginal velocity estimate, maintained by the FM component of training. 
+
+Two-Step Euler Shortcut Target. Computing ∇xt Fθ ·uθ +∂tFθ is expensive for billion-parameter VLAs. We instead implement Eq. (8) via a two-step Euler shortcut Frans et al. [2025], evaluating the model at two time points and averaging their velocities: 
+
+x0.5 = x1 − 0.5 · sg (Fθ (x1, 1, 1 | c)) (9) 
+
+vtarget = 12 [sg (Fθ (x1, 1, 1 | c)) + sg (Fθ (x0.5, 0.5, 0.5 | c))] (10) The consistency loss then trains the 1-step velocity to match this two-step shortcut: 
+
+Lshortcut = ∥Fθ (x1, 0, 1 | c) − vtarget ∥2 (11) The two-step Euler target better estimates the true average velocity than vt because it uses the model’s marginal velocity predictions at both t = 1 and t = 0 .5, effectively approximating the integral R 10 u(xτ , τ ) dτ via the trapezoidal rule rather than a single conditional sample. As the model improves during training, these marginal velocity estimates become more accurate, creating a virtuous cycle: better uθ yields a better shortcut target, which in turn produces a better 1-step predictor. 
+
+Progressive FM/Consistency Mixing. Following α-Flow Zhang et al. [2025], we mix the FM and consistency objectives with ratio α:
+
+L = α · L FM + (1 − α) · λ · L shortcut (12) The FM component maintains the velocity estimator uθ used in the consistency target; the consistency component teaches accurate one-step jumps; λ balances their gradient magnitudes. 53.5 Target-Time Embedding 
+
+To let Fθ distinguish FM ( s = t) from consistency ( s = 0 ) samples without modifying the pretrained architecture, we inject a target-time embedding ϕs Lee et al. [2025]: a zero-initialized two-layer MLP that encodes s and adds to the existing time embedding before each transformer block. Zero initialization preserves the teacher at step 0; ϕs is the only new parameter, making SnapFlow applicable to any flow-matching VLA by a single addition to the time-embedding pathway. 
+
+3.6 Training and Inference 
+
+SnapFlow freezes the VLM backbone and trains only the action expert and ϕs—about 10% of parameters—with gradient checkpointing, for 30k steps on a single A800 in ∼12h; full hyperparame-ters are in Appendix J. At deployment, a single forward pass produces the action chunk: 
+
+ˆx0 = x1 − Fθ (x1, s = 0 , t = 1 | c), x1 ∼ N (0, I) (13) yielding ∼83 ms E2E (3.3 × faster than the 274 ms baseline). 
+
+4 Experiments 
+
+4.1 Experimental Setup Models. We evaluate on two flow-matching VLAs spanning a 6× parameter range to demonstrate plug-and-play generality: π0.5 Intelligence et al. [2025], a 3B VLA with PaliGemma backbone and cross-attention action expert, and SmolVLA Shukor et al. [2025], a ∼500M VLA with SmolVLM backbone and concatenation-based expert. These cover two distinct VLM backbones and two different action expert designs. Published π0 Black et al. [2024] results serve as a cross-model reference. 
+
+Benchmarks. For π0.5 we use LIBERO Liu et al. [2024]: four suites, 10 tasks each, 10 episodes per task (400 total), following the protocol of Intelligence et al. [2025], Black et al. [2024]. All methods share the same LeRobot evaluation pipeline and seeds. 3 Offline metrics use 500 held-out samples; latency is profiled on a single A800-80G. 
+
+Baselines. Baseline 10-step : pretrained model with default 10-step Euler; Naïve 1-step : same model with 1 step, no retraining; SnapFlow 1-step : distilled model with 1-step inference. 
+
+4.2 Main Results 
+
+All flow-matching VLAs are designed and deployed with 10-step Euler denoising as the standard configuration Black et al. [2024], Intelligence et al. [2025], Shukor et al. [2025]. Table 1 presents the central result: SnapFlow improves both quality and speed vs. this baseline across two VLAs spanning a 6× parameter range, with no architecture changes and identical hyperparameters. On 
+
+π0.5 it achieves 98.75% LIBERO success at 1 step, matching or exceeding the teacher at 97.75%. On SmolVLA it reduces MSE by 8.3% and improves CosSim by 6.9% with 3.56 × E2E acceleration. 
+
+Key observations. SnapFlow 1-step reaches 98.75% average success, exceeding the 10-step baseline by 1 pp, consistent with Theorem 3’s prediction that multi-step integration accumulates error. It also compares favorably to π0, OpenVLA, Octo, and Diffusion Policy while being 3.3 × faster than the π0.5 baseline. Naïve 1-step reduction shows mixed reliability: while its average (96.75%) is competitive, per-task variance is high (Appendix C). On libero_goal, both naïve 1-step (98%) and SnapFlow (99%) exceed the 10-step baseline (96%), suggesting that 10-step Euler can compound errors on certain tasks. Identical hyperparameters improve both π0.5 and SmolVLA, confirming plug-and-play generality. Table 2 shows that SnapFlow’s advantage grows at higher percentiles—P95 MSE drops 29.4% on π0.5—taming the worst-case predictions that drive closed-loop failures. 
+
+4.3 Inference Steps vs. Quality: Pareto Analysis 
+
+We sweep denoising steps ∈ { 1, 2, 3, 4, 5, 10 } for both the baseline and SnapFlow on π0.5 using 500 held-out LIBERO samples, and evaluate SmolVLA at deployment-relevant endpoints. Figure 2 and Table 3 present the quality–cost Pareto frontier across all three VLAs.  
+
+> 3A known LeRobot issue may cause episodes within the same task to share initial states at batch_size=1 ; this affects all methods equally.
+
+6Table 1: LIBERO closed-loop evaluation: SnapFlow vs. the VLA landscape. π0.5: Baseline uses 10-step Euler; Naïve sets 1 step without retraining; SnapFlow uses 1-step after distillation (α = 0 .5, λ = 0 .1, 30k steps). Published baselines † provide cross-model context. †Published results; OpenVLA/Octo/DP use per-suite fine-tuning (favors them), while π0/ π0.5/SnapFlow use a single 
+
+model for all 4 suites. All latency on A800-80G. SmolVLA (0.5B) results in Tables 2–3. Blue bold :best.                                                                                          
+
+> LIBERO Success (%) Offline Latency (A800) Method Params Steps Spatial Object Goal Long-10 Avg MSE ↓CosSim ↑E2E ↓E2E Speedup
+> Published VLA Baselines †LIBERO closed-loop success rates from original papers
+> Diff. Policy Chi et al. [2023] —100 78.3 92.5 68.3 50.5 72.40 n/a n/a
+> Octo-Base Team et al. [2024] 93M 10 78.9 85.7 84.6 51.1 75.08 n/a n/a
+> OpenVLA Kim et al. [2024] 7.0B AR 84.9 88.4 79.2 53.7 76.55 n/a n/a
+> π0 Black et al. [2024] 3.0B 10 97.4 98.4 97.6 93.0 96.60 n/a n/a
+> π0.5 + SnapFlow (Ours) Intelligence et al. [2025] PaliGemma backbone ·cross-attention action expert ·LIBERO (400 eps)
+> Baseline (Euler) 3.0B 10 98.0 100.0 96.0 97.0 97.75 .0117 .9885 274 ms 1.0 ×
+> Naïve 1-step 3.0B 196.0 99.0 98.0 94.0 96.75 .0089 .9911 81 ms 3.4 ×
+> SnapFlow 3.0B 199.0 100.0 99.0 97.0 98.75 .0077 .9916 83 ms 3.3 ×
+
+Table 2: Extended offline metrics. π0.5: 500 held-out LIBERO samples; SmolVLA: PushT. SnapFlow disproportionately reduces tail errors (P90/P95) and variance. Blue bold : best per block. 
+
+Method Avg MSE ↓ Med MSE ↓ Std MSE ↓ P90 MSE ↓ P95 MSE ↓ CosSim ↑
+
+π0.5 — LIBERO (500 samples) 
+
+Baseline (10-step) .01169 .00397 .05412 .01544 .02357 .9885 
+
+SnapFlow (1-step) .00773 .00367 .02964 .01179 .01664 .9916 
+
+∆: MSE −33.9%, Std −45.2%, P95 −29.4% 
+
+SmolVLA — PushT 
+
+Baseline (10-step) 0.468 0.268 0.517 1.162 — 0.765 
+
+SnapFlow (1-step) 0.429 0.272 0.452 1.029 — 0.818 
+
+∆: MSE −8.3%, Std −12.6%, P90 −11.4%, CosSim +6.9% 
+
+Key findings. On the pretrained model, offline MSE increases monotonically with step count— 
+
++30.7% from 1 to 10 steps—consistent with Theorem 3. This is an offline proxy: the 10-step baseline still achieves higher simulation success (97.75% vs. 96.75% for naïve 1-step), so MSE alone does not fully capture closed-loop quality. SnapFlow resolves this tension by achieving both low offline MSE 
+
+and the highest simulation success at 98.75% through explicit single-step training (Appendix C). SF 2-step achieves the lowest offline MSE at 0.00808, the Pareto optimum when multi-step inference is acceptable. SmolVLA confirms the pattern cross-architecture: SF 1-step reduces MSE by 8.3% and improves CosSim by 6.9% vs. the 10-step baseline. We further investigate the interaction between denoising steps and the action execution horizon nact on the challenging libero_10 suite. SnapFlow at nact = 5 reaches 93% success—exceeding the baseline’s 90% at the same setting—while being 1.4 × faster per episode. This suggests that SnapFlow’s advantage extends beyond pure inference speedup to improved robustness under moderate replanning frequencies; full results are in Appendix H. 
+
+4.4 Comparison with Concurrent VLA Acceleration Methods 
+
+Several concurrent works also target VLA inference efficiency. Table 4 compares SnapFlow with the two most relevant methods on π0.5. 
+
+Key insight: orthogonal axes. Shallow-π shrinks the transformer to reduce per-step cost; SnapFlow eliminates 9 of 10 steps. Since the two target different components, the speedups are in principle 71 2 3 5 10        
+
+> Number of Function Evaluations (NFE)
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> 1.1
+> Normalized MSE (10-step = 1.0)
+> Low-cost
+> zone
+> 10-step baseline
+> k=1 k=2
+> k=3
+> k=5
+> k=10
+> k=1
+> k=2
+> k=4
+> k=10
+> Best
+> 8.3%
+> 0
+> Better
+> (a) Action Accuracy vs. Cost
+> 0.5 Naive Euler
+> 0.5 SnapFlow (Ours)
+> SmolVLA Baseline (10-step)
+> SmolVLA SnapFlow (Ours)
+> 0 Published (10-step)
+> 123510
+> Number of Function Evaluations (NFE)
+> 95.5
+> 96.0
+> 96.5
+> 97.0
+> 97.5
+> 98.0
+> 98.5
+> 99.0
+> 99.5
+> 100.0
+> LIBERO Success Rate (%)
+> Low-cost
+> zone
+> 97.75%
+> 96.75%
+> 98.75%
+> 0: 96.6%
+> SF 0.5 (1-step)
+> surpasses 0 (10-step)
+> Better
+> (b) Simulation Success vs. Cost
+> 0.5 Baseline (10-step)
+> 0.5 Naive (1-step)
+> 0.5 SnapFlow (Ours, 1-step)
+> 0 Published (10-step)
+
+Figure 2: Pareto frontier: all VLAs on one plot. (a) Normalized MSE (each VLA’s 10-step baseline 
+
+= 1 .0; lower is better, y-axis inverted). π0.5 has a full step sweep; SmolVLA shows measured endpoints; π0 is a single published reference at k = 10 . All three VLAs cluster at the dashed 1.0
+
+line under the standard 10-step configuration; SnapFlow ( ⋆) breaks away into the low-cost zone. (b) LIBERO simulation success rate. SnapFlow π0.5 at 1-step (98.75%) matches or exceeds its own 10-step teacher (97.75%) and the published π0 at 10-step (96.6%). multiplicative: 2 × layer compression × 9.6 × denoising = 5–6 × E2E, potentially bringing π0.5 below 50 ms for 20 Hz control. SnapFlow is notable for maintaining or slightly improving task success rather than trading quality for speed. 
+
+4.5 Ablation Studies 
+
+We ablate the mixing ratio α, consistency weight λ, and target-time embedding on π0.5 with 1-NFE inference (500-sample offline set; Table 5). 
+
+Analysis. The mixing ratio α controls a fundamental trade-off: at α = 0 the velocity estimator degrades without FM supervision; at α = 1 no consistency signal exists. The balanced α = 0 .5 lets both objectives co-train stably; the target-time embedding enables clean separation between local velocity prediction and global one-step generation. 
+
+5 Conclusion 
+
+We presented SnapFlow, a plug-and-play self-distillation method that compresses multi-step denoising of flow-matching VLAs into a single forward pass via a corrected consistency objective, progressive FM/consistency mixing, and a zero-initialized target-time embedding—requiring no external teachers or architecture changes. On π0.5, it achieves 98.75% success on LIBERO (vs. 97.75% for the 10-step baseline) with 9.6 × denoising speedup; on SmolVLA, it reduces MSE by 8.3% with 3.56 ×
+
+acceleration, supporting transfer across model scales. An action-step sensitivity analysis shows that SnapFlow maintains its advantage across execution horizons (Appendix H). SnapFlow is orthogonal to layer-distillation methods Jeon et al. [2026], enabling compositional speedups. 
+
+Limitations. Evaluation is limited to LIBERO simulation (10 episodes per task, 10 pp resolution); real-robot validation is needed. We note that the same LIBERO protocol is used by π0/ π0.5 Black et al. [2024], Intelligence et al. [2025] to validate their core claims, and SnapFlow does not modify the policy’s action distribution—only its sampling efficiency—so we expect the sim-to-real gap to be comparable. A pretrained flow-matching checkpoint is required. 
+
+The VLM prefix bottleneck. With denoising compressed to one step, the VLM prefix (60 ms) becomes the new bottleneck (72% of E2E). Combining SnapFlow with VLM-side acceleration Jeon et al. [2026], Yang et al. [2025] can yield multiplicative speedups, potentially bringing π0.5 below 50 ms. 8Table 3: Step sweep: quality vs. latency Pareto analysis. π0.5 on LIBERO (A800, 500 samples); SmolVLA on PushT. Offline MSE increases monotonically with Euler step count on the pretrained model, consistent with Theorem 3. Blue bold : best per block. 
+
+Action Quality Quality Trend Latency Method Steps Avg MSE ↓ CosSim ↑ ∆MSE vs 1-step 
+
+∆CosSim vs 1-step E2E (ms) ↓
+
+E2E Speedup Pareto optimal? 
+
+π0.5 Baseline (Naïve Euler) 
+
+Naïve Euler 1 0.00893 0.9911 — — 163.5 2.24 × ✓
+
+Naïve Euler 2 0.00904 0.9910 +1.2% −0.01% 184.3 1.99 ×
+
+Naïve Euler 3 0.01001 0.9894 +12.1% −0.17% 206.0 1.78 ×
+
+Naïve Euler 4 0.01048 0.9890 +17.4% −0.21% 228.6 1.60 ×
+
+Naïve Euler 5 0.01091 0.9886 +22.2% −0.25% 251.4 1.46 ×
+
+Naïve Euler 10 0.01167 0.9880 +30.7% −0.31% 366.6 1.00 ×
+
+π0.5 SnapFlow 
+
+SnapFlow 1 0.00933 0.9904 — — 166.5 2.20 × ✓
+
+SnapFlow 2 0.00808 0.9906 −13.4% +0.02% 192.3 1.91 × ⋆
+
+SnapFlow 3 0.00825 0.9904 −11.6% +0.00% 216.2 1.70 ×
+
+SnapFlow 4 0.00848 0.9901 −9.1% −0.03% 240.1 1.53 ×
+
+SnapFlow 5 0.00901 0.9896 −3.4% −0.09% 264.0 1.39 ×
+
+SnapFlow 10 0.01043 0.9877 +11.8% −0.27% 382.2 0.96 ×
+
+SmolVLA — PushT offline 
+
+Naïve Euler 10 0.468 0.765 — 178 1.0 ×
+
+SnapFlow 1 0.429 0.818 MSE −8.3% 50 3.56 × ✓
+
+Table 4: Comparison with concurrent VLA acceleration methods on π0.5. SnapFlow compresses the sampling trajectory (denoising steps); Shallow-π Jeon et al. [2026] compresses the architecture 
+
+(transformer layers). The two approaches are orthogonal and can be composed for multiplicative speedups. Blue bold : best per column.                            
+
+> What is Compressed Result Method Layers (architecture) Steps (sampling) Success
+> ∆
+> E2E Speedup Orthogonal to SnapFlow?
+> Shallow-πJeon et al. [2026] 18 →610 (unchanged) <−1% 2×Yes — layer distillation EfficientVLA Yang et al. [2025] dynamic skip 10 →2−0.6% 1.9 ×Partially — also reduces steps
+> SnapFlow (ours) unchanged 10 →1+1% 3.3 ×—
+
+Acknowledgments and Disclosure of Funding References 
+
+K. Black, N. Brown, D. Driess, A. Esmail, M. Equi, et al. π0: A vision-language-action flow model for general robot control. arXiv preprint arXiv:2410.24164 , 2024. K. Frans, D. Hafner, S. Levine, and P. Abbeel. One step diffusion via shortcut models. In ICLR ,2025. Z. Geng, M. Deng, X. Bai, J. Z. Kolter, and K. He. Mean flows for one-step generative modeling. In 
+
+NeurIPS , 2025. Physical Intelligence, K. Black, N. Brown, et al. π0.5: A vision-language-action model with open-world generalization. arXiv preprint arXiv:2504.16054 , 2025. 9Table 5: Joint ablation study (π0.5, 1-NFE offline, 500 samples). We ablate three SnapFlow design choices: mixing ratio α, consistency weight λ, and target-time embedding. The default configuration (α = 0 .5, λ = 0 .1, with embedding) achieves the best trade-off. Blue bold : best per block.                                                                                    
+
+> Configuration 1-NFE Quality Variant αλTarget-Time Embed? MSE ↓CosSim ↑Observation (a) FM/Consistency Mixing Ratio α(fix λ= 0 .1, embed ON)
+> Pure consistency 0.0 0.1 ✓.0115 .9876 No FM signal; velocity estimate degrades Consistency-heavy 0.3 0.1 ✓.0088 .9901 Slightly less stable uθ
+> Balanced (default) 0.5 0.1 ✓.0077 .9916 Best: FM maintains uθquality
+> FM-heavy 0.7 0.1 ✓.0084 .9908 Insufficient consistency signal Pure FM 1.0 0.1 ✓.0093 .9896 No consistency; 1-step uncalibrated
+> (b) Consistency Weight λ(fix α= 0 .5, embed ON)
+> Low weight 0.5 0.01 ✓.0089 .9902 Weak consistency signal
+> Default 0.5 0.1 ✓.0077 .9916 Balanced gradient magnitude
+> High weight 0.5 1.0 ✓.0096 .9891 Overpowers FM component
+> (c) Target-Time Embedding (fix α= 0 .5,λ= 0 .1)
+> No embedding 0.5 0.1 ×.0098 .9889 FM and consistency objectives conflict
+> With embedding (default) 0.5 0.1 ✓.0077 .9916 Clean separation of objectives
+
+B. Jeon, Y. Choi, and T. Kim. Shallow-π: Knowledge distillation for flow-based VLAs. arXiv preprint arXiv:2601.20262 , 2026. C. Chi, S. Feng, Y. Du, Z. Xu, E. Cousineau, B. Burchfiel, and S. Song. Diffusion Policy: Visuomotor Policy Learning via Action Diffusion. In RSS , 2023. M. J. Kim, K. Pertsch, S. Karamcheti, et al. OpenVLA: An open-source vision-language-action model. arXiv preprint arXiv:2406.09246 , 2024. K. Lee, S. Yu, and J. Shin. Decoupled MeanFlow: Turning flow models into flow maps for accelerated sampling. arXiv preprint arXiv:2510.24474 , 2025. A. Prasad, K. Lin, J. Wu, L. Zhou, and J. Bohg. Consistency policy: Accelerated visuomotor policies via consistency distillation. In RSS , 2024. arXiv:2405.07503. Y. Lipman, R. T. Q. Chen, H. Ben-Hamu, M. Nickel, and M. Le. Flow matching for generative modeling. ICLR , 2023. B. Liu, Y. Zhu, C. Gao, Y. Feng, et al. LIBERO: Benchmarking knowledge transfer for lifelong robot learning. NeurIPS Datasets and Benchmarks , 2023. C. Lu and Y. Song. Simplifying, stabilizing and scaling continuous-time consistency models. In 
+
+ICLR , 2025. M. Shukor, et al. SmolVLA: A Vision-Language-Action Model for Affordable and Efficient Robotics. 
+
+arXiv preprint arXiv:2506.01844 , 2025. Octo Model Team, D. Ghosh, H. Walke, K. Pertsch, et al. Octo: An open-source generalist robot policy. arXiv preprint arXiv:2405.12213 , 2024. Y. Song, P. Dhariwal, M. Chen, and I. Sutskever. Consistency models. ICML , 2023. Y. Yang, et al. EfficientVLA: Training-Free Acceleration and Compression for Vision-Language-Action Models. arXiv preprint arXiv:2506.10100 , 2025. H. Zhang, A. Siarohin, W. Menapace, et al. AlphaFlow: Understanding and improving MeanFlow models. arXiv preprint arXiv:2510.20771 , 2025. Q. Zhang, Z. Liu, H. Fan, and S. Liu. FlowPolicy: Enabling fast and robust 3D flow-based policy via consistency flow matching for robot manipulation. In AAAI , 2025. 10 Z. Yan, et al. ManiFlow: A general robot manipulation policy via consistency flow training. In CoRL ,2025. Y. Wang, et al. FreqPolicy: Efficient flow-based visuomotor policy via frequency consistency. In 
+
+NeurIPS , 2025. J. Ho, A. Jain, and P. Abbeel. Denoising diffusion probabilistic models. In NeurIPS , 2020. J. Sohl-Dickstein, E. Weiss, N. Maheswaranathan, and S. Ganguli. Deep unsupervised learning using nonequilibrium thermodynamics. In ICML , 2015. Y. Song, J. Sohl-Dickstein, D. P. Kingma, A. Kumar, S. Ermon, and B. Poole. Score-based generative modeling through stochastic differential equations. In ICLR , 2021. T. Karras, M. Aittala, T. Aila, and S. Laine. Elucidating the design space of diffusion-based generative models. In NeurIPS , 2022. A. Ajay, Y. Du, A. Gupta, J. Tenenbaum, T. Jaakkola, and P. Agrawal. Is conditional generative modeling all you need for decision-making? In ICLR , 2023. M. Janner, Y. Du, J. B. Tenenbaum, and S. Levine. Planning with diffusion for flexible behavior synthesis. In ICML , 2022. J. Carvalho, A. T. Le, M. Baierl, D. Koert, and J. Peters. Motion planning diffusion: Learning and planning of robot motions with diffusion models. In IROS , 2023. T.-W. Ke, N. Gkanatsios, and K. Fragkiadaki. 3D diffuser actor: Policy diffusion with 3D scene representations. arXiv preprint arXiv:2402.10885 , 2024. 
+
+A Theoretical Proofs 
+
+We provide complete proofs for the three theorems stated in the main text. 
+
+A.1 Proof of Theorem 1 (Conditional–Marginal Velocity Discrepancy) 
+
+Proof. We analyze two cases. 
+
+Case 1: t = 0 . At t = 0 , xt = x0. The conditional velocity is v0 = ϵ − x0. Since ϵ ∼ N (0, I) is independent of x0, the marginal velocity is u0(x0) = E[ϵ − x0 | x0] = −x0. Therefore: 
+
+Σ0(x0) = Var (v0 | x0) = Var (ϵ) = I̸ = 0 (14) 
+
+Case 2: t ∈ (0 , 1] . Substituting ϵ = ( xt − (1 − t)x0)/t into vt = ϵ − x0:
+
+vt = xt − (1 − t)x0
+
+t − x0 = 1
+
+t (xt − x0) (15) The conditional covariance is therefore: 
+
+Σt(xt) = Var (vt | xt) = 1
+
+t2 Var (x0 | xt) (16) The posterior p(x0 | xt) ∝ pdata (x0) N
+
+ xt−(1 −t)x0 
+
+> t
+
+; 0, I
+
+
+
+. Since pdata is non-degenerate (contains at least two distinct points) and the Gaussian noise has full support on Rd, the posterior p(x0 | xt)
+
+cannot be a Dirac measure for almost all xt. Therefore Var (x0 | xt)̸ = 0, which implies Σt(xt)̸ = 0
+
+a.s. for all t ∈ [0 , 1] .11 A.2 Proof of Theorem 2 (Trajectory Drift Decomposition) 
+
+Proof. Let Jθ = ∇xt fθ and ˙fθ = ∂tfθ . The conditional objective can be written as: 
+
+Lcond (θ) = Ext
+
+h
+
+Evt|xt
+
+h
+
+∥Jθ vt + ˙fθ ∥2ii 
+
+(17) Decompose vt = ut + δt where δt = vt − ut and E[δt | xt] = 0:
+
+∥Jθ vt + ˙fθ ∥2 = ∥(Jθ ut + ˙fθ ) + Jθ δt∥2
+
+= ∥Jθ ut + ˙fθ ∥2 + 2( Jθ ut + ˙fθ )⊤Jθ δt + ∥Jθ δt∥2 (18) Taking the conditional expectation Evt|xt [·]:• The first term is deterministic given xt: ∥Jθ ut + ˙fθ ∥2.• The cross term vanishes: E[Jθ δt | xt] = Jθ E[δt | xt] = 0.• The third term: E[∥Jθ δt∥2 | xt] = Tr (Jθ Σt(xt) J⊤ 
+
+> θ
+
+).Taking the outer expectation over xt completes the decomposition: 
+
+Lcond (θ) = Ext [∥Jθ ut + ˙fθ ∥2]
+
+| {z }
+
+> Lconsist
+
++ Ext [Tr (Jθ Σt J⊤ 
+
+> θ
+
+)] 
+
+| {z }
+
+> Lvar
+
+(19) Since Σt̸ = 0 by Theorem 1, Lvar > 0 for any non-degenerate fθ (i.e., any fθ with Jθ̸ = 0). 
+
+A.3 Proof of Theorem 3 (Cumulative Error) 
+
+Proof. Let {xr }r∈[s,t ] follow the marginal flow: dxr 
+
+> dr
+
+= ur (xr ). The ideal consistency mapping satisfies f ∗(xt, s, t ) = xs for all t, hence its total derivative along the flow vanishes: 
+
+ddt f ∗(xt, s, t ) = ∂tf ∗ + ∇xt f ∗ · ut = 0 (20) The total derivative of the error e(s, t ) = fθ (xt, s, t ) − f ∗(xt, s, t ) is: 
+
+ddt e(s, t ) = ddt fθ (xt, s, t ) − ddt f ∗(xt, s, t ) = ( ∂tfθ + ∇xt fθ · ut) − 0 = R(t) (21) With boundary condition e(s, s ) = fθ (xs, s, s ) − f ∗(xs, s, s ) = xs − xs = 0, integration gives: 
+
+e(s, t ) = 
+
+Z ts
+
+R(r) dr (22) The total error is the integral of local residuals, growing with the time span |t − s|.
+
+A.4 Equivalence of Corrected Objective (Eq. 8) 
+
+We show that replacing the marginal velocity ut with the conditional velocity vt in the first term of the consistency loss introduces only a parameter-independent constant. Starting from the true consistency objective Lu 
+
+> consist
+
+= Ext [∥Fθ − ut + ( t−s) ˙Fθ (ut)∥2], define the auxiliary objective with vt in the first term: 
+
+Lv = Ext,vt
+
+h
+
+∥Fθ − vt + ( t−s) ˙Fθ (uθ )∥2i
+
+(23) Using vt = ut + δt with E[δt | xt] = 0:
+
+∥Fθ − vt + ∆ ∥2 = ∥(Fθ − ut + ∆) − δt∥2
+
+= ∥Fθ − ut + ∆ ∥2 − 2( Fθ − ut + ∆) ⊤δt + ∥δt∥2 (24) 12 where ∆ = ( t−s) ˙Fθ (uθ ). Taking the expectation, the cross term vanishes: 
+
+Evt|xt [( Fθ − ut + ∆) ⊤δt] = ( Fθ − ut + ∆) ⊤ E[δt|xt]
+
+| {z } 
+
+> =0
+
+= 0 (25) Therefore: 
+
+Lv = Lu 
+
+> consist
+
++ Ext,vt [∥δt∥2] = Lu 
+
+> consist
+
++ Tr (Σt) (26) Since Tr (Σt) is independent of θ, optimizing Lv is equivalent to optimizing Lu
+
+> consist
+
+. It remains to specify how ut in the total derivative term ˙Fθ (ut) is estimated. Observe that at s = t, the corrected objective (Eq. 8) reduces to the standard FM loss ∥Fθ (xt, t, t ) − vt∥2, whose minimizer is precisely the marginal velocity ut. The FM component of SnapFlow training ( α fraction of each batch) therefore provides a continuously refined estimate uθ = Fθ (xt, t, t ) ≈ ut. Substituting uθ for ut in the total derivative yields Eq. (8). 
+
+B Training and Inference Algorithms 
+
+We provide the complete SnapFlow training loop (Algorithm 1) and inference procedure (Algo-rithm 2). 
+
+Training details. Each training step involves three forward passes through the action expert: one for the FM loss (at random t), one for v1 at t = 1 , and one for v0.5 at t = 0 .5. The two consistency forward passes are wrapped in stop_gradient to prevent collapse: only the student prediction 
+
+Fθ (x1, 0, 1) receives gradients from the consistency loss. This is analogous to the target network in consistency models Song et al. [2023], but without requiring an EMA copy—the stop-gradient on the shortcut target suffices because the FM component continuously refines the velocity estimate uθ .
+
+Memory considerations. Three forward passes per step may seem expensive, but since the VLM backbone is frozen and only the action expert ( ∼300M params for π0.5) receives gradients, the memory footprint is modest. With gradient checkpointing enabled, peak VRAM for π0.5 is ∼40 GB, fitting comfortably on a single A800-80G. For SmolVLA ( ∼500M total), peak usage is only ∼18 GB. 
+
+Inference simplicity. At deployment, SnapFlow requires exactly one forward pass through the full model (VLM prefix + action expert), identical to a naïve 1-step run. The only difference from the pretrained model is that the target-time input s is set to 0 (instead of s = t for standard FM). No EMA networks, no multi-step scheduling, and no additional memory are needed at inference time. 
+
+Algorithm 1 SnapFlow Training 
+
+Require: Pretrained VLA Fθ , dataset D, ratio α, weight λ, learning rate η, steps N 
+
+> 1:
+
+Initialize target-time MLP ϕs ← 0; freeze VLM backbone  
+
+> 2:
+
+for i = 1 to N do  
+
+> 3:
+
+Sample batch {(x(j)0 , c(j))} from D 
+
+> 4:
+
+Sample ϵ(j) ∼ N (0, I); sample t(j) ∼ U (0 , 1)  
+
+> 5:
+
+Compute x(j) 
+
+> t
+
+= (1 − t(j)) x(j)0 + t(j) ϵ(j) 
+
+> 6:
+
+// FM component (with probability α) 
+
+> 7:
+
+LFM = ∥Fθ (xt, t, t | c) − (ϵ − x0)∥2 
+
+> 8:
+
+// Consistency component (with probability 1 − α) 
+
+> 9:
+
+v1 ← sg  Fθ (x1, 1, 1 | c) ▷ velocity at t = 1  
+
+> 10:
+
+x0.5 ← x1 − 0.5 · v1 ▷ midpoint via Euler  
+
+> 11:
+
+v0.5 ← sg  Fθ (x0.5, 0.5, 0.5 | c) ▷ velocity at t = 0 .5 
+
+> 12:
+
+vtarget ← 12 (v1 + v0.5) ▷ 2-step average velocity  
+
+> 13:
+
+Lshortcut = ∥Fθ (x1, 0, 1 | c) − vtarget ∥2 
+
+> 14:
+
+L = α · L FM + (1 − α) · λ · L shortcut  
+
+> 15:
+
+Update θ ← θ − η∇θ L ▷ action expert + ϕs only  
+
+> 16:
+
+end for  
+
+> 17:
+
+return Distilled model Fθ
+
+13 Algorithm 2 SnapFlow 1-NFE Inference 
+
+Require: Observation images o, language instruction l, distilled VLA Fθ 
+
+> 1:
+
+c ← VLM-P REFIX (o, l) ▷ shared VLM computation ( ∼60 ms)  
+
+> 2:
+
+x1 ∼ N (0, I) ∈ RH×D ▷ sample noise  
+
+> 3:
+
+ˆx0 = x1 − Fθ (x1, s = 0 , t = 1 | c) ▷ single forward pass ( ∼24 ms)  
+
+> 4:
+
+Execute first nact steps of ˆx0
+
+C Per-Task Success Rate Breakdown 
+
+Tables 6–6 provide the complete per-task breakdown for all four LIBERO suites, complementing the aggregate results in Table 1. Each task is evaluated over 10 independent episodes with randomized initial conditions. 
+
+Key patterns across suites. Several instructive patterns emerge from the per-task analysis: • Naïve 1-step failures are task-specific, not uniform. Most tasks show ≤10% degradation, but a few tasks exhibit notable drops (e.g., libero_spatial Task 6: −10%; libero_10 Task 6: 
+
++20%, Task 9: −10%). These are typically tasks requiring precise multi-phase coordination where the uncalibrated velocity field produces subtly misaligned actions. • SnapFlow recovers most naïve failures and often exceeds the baseline. On libero_spatial, SnapFlow achieves 99% vs. baseline 97%, recovering naïve drops on Tasks 6 and 9 while improving Task 5 from 80% to 90%. On libero_goal, SnapFlow reaches 99% vs. baseline 96%, with three tasks (3, 9) improving from 80–90% to 100%. • Long-horizon tasks (libero_10) exhibit high variance across all methods. Task 8 is at 60%/100%/50% for baseline/naïve/SnapFlow respectively—a 50 pp swing—illustrating that 10 episodes per task is insufficient to reliably distinguish methods on the hardest tasks. Suite-level averages (100 episodes) are more stable: SnapFlow (91%) exceeds baseline (89%) by 2 pp. • The hardest tasks are hard for all methods. Tasks 0 and 8 in libero_10 are at ≤90% for at least two methods, suggesting that these failures stem from the policy’s capability boundary rather than from inference quality. Table 6: Complete per-task LIBERO success rate (%) across all 4 suites (10 episodes per task, 400 total, following the standard protocol of Intelligence et al. [2025]). Blue row : suite averages. Red: notable drops from baseline. SnapFlow recovers the observed naïve degradations and closely tracks the teacher across tasks. Blue bold : best per task.                                                                                                                                                     
+
+> libero_spatial libero_object libero_goal libero_10 (long)
+> Task Base Naïve SF Base Naïve SF Base Naïve SF Base Naïve SF
+> 0100 100 100 100 100 100 100 100 100 90 90 90 1100 100 100 100 100 100 100 100 100 100 100 100 2100 100 100 100 100 100 90 90 90 90 100 100
+> 3100 100 100 100 90 100 80 90 100 100 100 100 4100 100 100 100 100 100 100 100 100 100 100 90 580 80 90 100 100 100 100 100 100 100 100 100 6100 90 100 100 100 100 100 100 100 70 90 100
+> 790 100 100 100 100 100 100 100 100 90 90 100
+> 8100 100 100 100 100 100 100 100 100 60 100 50 9100 90 100 100 100 100 90 100 100 90 80 80
+> Avg 97.0 96.0 99.0 100.0 99.0 100.0 96.0 98.0 99.0 89.0 95.0 91.0
+
+14 Spatial Object Goal Long-10 Average 
+
+> 92
+> 94
+> 96
+> 98
+> 100
+> 102
+> Success Rate (%)
+> 98
+> 100
+> 96
+> 97
+> 97.8
+> 96
+> 99
+> 98
+> 94
+> 96.8
+> 99
+> 100
+> 99
+> 97
+> 98.8
+> 0 10-step (96.6%)
+
+LIBERO Simulation Success Rate 0.5   
+
+> Baseline (10-step) Naïve (1-step) SnapFlow (1-step, Ours)
+
+Figure 3: LIBERO simulation success rate comparison ( π0.5). SnapFlow 1-step (red) exceeds the 10-step baseline (blue) on 3 of 4 suites. On libero_10, SnapFlow (91%) exceeds baseline (89%) but naïve 1-step (95%) is higher, reflecting high per-task variance on long-horizon tasks (see Table 6). The dashed line marks the published π0 10-step reference (96.6%). 
+
+D LIBERO Success Rate Visualization E Detailed Offline Metrics Analysis 
+
+Table 2 (main text) reports extended percentile metrics. Here we discuss the implications in depth. 
+
+Why SnapFlow improves across all percentiles. On π0.5, SnapFlow reduces MSE at the median (−7.6%), P90 ( −23.6%), and P95 ( −29.4%). The disproportionate tail improvement indicates SnapFlow is particularly effective at taming worst-case predictions—those causing closed-loop failures. The −45.2% standard deviation reduction means predictions are also significantly more 
+
+consistent across samples. 
+
+Cross-architecture consistency. SmolVLA shows an identical relative pattern : larger gains at higher percentiles and better stability (MSE −8.3%, P90 −11.4%, Std −12.6%, CosSim +6.9%), confirming generality despite 6× smaller model size. 
+
+Connection to simulation results. Simulation success is sensitive to the tail of the error distribution. A single catastrophic prediction can cause a task failure that a hundred good predictions cannot compensate for. SnapFlow’s tail MSE reduction ( π0.5: P95 −29.4%; SmolVLA: P90 −11.4%) directly translates to its closed-loop advantage. 
+
+F Latency Decomposition Details 
+
+Figure 4 visualizes the latency decomposition across both VLAs; Table 7 provides exact numbers at various step counts. Table 7 reports measured end-to-end latency at various step counts, demonstrating that denoising dominates at high step counts. All measurements are the median of 100 inference runs after 10 warm-up runs on a single NVIDIA A800-80G GPU with CUDA 12.1 and PyTorch 2.1, using 
+
+torch.cuda.synchronize() for accurate timing. 
+
+The VLM prefix as the new bottleneck. On π0.5, at 10 steps denoising accounts for 80% of E2E latency (214 ms out of 274 ms). After SnapFlow reduces denoising to 1 step ( ∼24 ms), the VLM prefix ( ∼60 ms) becomes the dominant cost at 72% of E2E. SmolVLA shows the same pattern: denoising drops from 79% to 24% of E2E. This inversion highlights VLM-side acceleration as the next leverage point (Sec. 5). 15 0.5 
+
+> Baseline
+> (10-step)
+> 0.5
+> Naïve
+> (1-step)
+> 0.5
+> SnapFlow
+> (1-step)
+> SmolVLA
+> Baseline
+> (10-step)
+> SmolVLA
+> SnapFlow
+> (1-step)
+
+0
+
+100 
+
+200 
+
+300  
+
+> End-to-End Latency (ms)  274 ms
+> 214 ms
+> 81 ms 83 ms
+> 178 ms
+> 140 ms
+> 50 ms
+> 9.6× denoising
+> speedup
+> 11.7× denoising
+> speedup
+
+Latency Decomposition: VLM Prefix vs. Denoising 
+
+> VLM Prefix (fixed)
+> Denoising Steps
+
+Figure 4: Latency decomposition: VLM prefix vs. denoising. SnapFlow compresses the denoising stage (red) by ∼10 × for both π0.5 and SmolVLA, making the fixed VLM prefix (blue) the new dominant cost. E2E speedup is 3.3 ×/3.56 × respectively. 
+
+Scaling implications. The denoising cost scales linearly with step count ( ∼23 ms/step), confirming that the flow-matching action expert processes each step in approximately constant time. The VLM prefix is strictly step-independent. This decomposition means that SnapFlow’s 10 × denoising speedup directly translates to a cost reduction from O(K) to O(1) in the denoising stage, with the constant VLM overhead determining the actual E2E speedup. Table 7: End-to-end latency vs. step count (A800, batch size 1). VLM prefix is constant; denoising scales linearly with steps. 
+
+VLA Steps E2E (ms) Denoise Fraction E2E Speedup 
+
+π0.5 (3B) 1 81.2 28% 3.38 ×
+
+2 103.3 44% 2.65 ×
+
+3 124.4 54% 2.20 ×
+
+5 166.9 66% 1.64 ×
+
+10 274.0 80% 1.00 ×
+
+SmolVLA (0.5B) 1 50 24% 3.56 ×
+
+10 178 79% 1.00 ×
+
+G Simulation Evaluation Timing 
+
+Table 8 reports wall-clock evaluation time per episode, showing the end-to-end speedup in the simulation loop (including environment stepping, rendering, and reset overhead that dilutes the pure inference speedup). Timing is measured from episode start to termination (success or max-step timeout). 
+
+Why simulation speedup is less than inference speedup. The ∼1.25 × simulation speedup is much less than the 3.3 × inference speedup because each evaluation loop iteration includes: (a) environment stepping and physics simulation ( ∼2 ms), (b) observation rendering and image preprocessing ( ∼5 ms), (c) action post-processing and execution ( ∼1 ms), and (d) episode reset overhead amortized over steps. These environment-side costs are independent of the inference method and effectively dilute the speedup. In a real-robot deployment, these overhead costs are typically lower (no physics simulation, no rendering), so the realized speedup would be closer to the 3.3 × inference ratio. 
+
+Variation across suites. The per-suite timing differences reflect task complexity: libero_10 (long-horizon) has the longest episodes ( ∼24 s baseline) because tasks involve multi-step manipulation 16 sequences, while libero_goal has the shortest ( ∼7.7 s) because most tasks terminate quickly upon reaching the goal pose. The speedup is relatively consistent (1.19–1.42 ×), indicating that SnapFlow’s benefit is robust across task complexities. Table 8: Simulation wall-clock time per episode across LIBERO suites. Environment overhead limits the apparent speedup to ∼1.25 × despite 3.3 × inference acceleration. 
+
+Suite Baseline (s/ep) Naïve (s/ep) SF (s/ep) Sim Speedup libero_spatial 12.57 10.91 10.60 1.19 ×
+
+libero_10 23.95 19.65 20.04 1.20 ×
+
+libero_object 9.41 6.62 6.64 1.42 ×
+
+libero_goal 7.71 5.72 5.74 1.34 ×
+
+Average 13.41 10.73 10.76 1.25 ×
+
+H Action Execution Horizon Sensitivity 
+
+We sweep the number of executed action steps nact ∈ { 1, 3, 5, 10 , 20 } on libero_10 (the most challenging long-horizon suite) for both the 10-step baseline and SnapFlow 1-step. This experiment disentangles two axes: how the action is generated (1-step vs. 10-step denoising) and how much of the action chunk is executed before replanning .1 3 5 10 20       
+
+> nact (executed action steps)
+> 65
+> 70
+> 75
+> 80
+> 85
+> 90
+> 95
+> 100
+> Success Rate (%)
+> 77
+> 72
+> 88
+> 87
+> 93
+> 90
+> 91
+> 89
+> 97
+> 92
+> (a) Success Rate vs. Execution Horizon
+> Baseline (10-step Euler)
+> SnapFlow (1-step)
+> 13510 20
+> nact (executed action steps)
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> 80
+> 90
+> 100
+> Time per Episode (s)
+> 96s
+> 37s
+> 50s
+> 32s
+> 37s
+> 26s
+> 24s
+> 20s
+> 27s
+> 24s
+> (b) Inference Cost vs. Execution Horizon
+> Baseline (10-step Euler)
+> SnapFlow (1-step)
+
+Figure 5: Action execution horizon sensitivity on libero_10. (a) Success rate vs. nact . SnapFlow peaks at nact = 5 (93%), exceeding the baseline (90%) at the same setting. Both methods suffer at 
+
+nact = 1 due to excessive replanning noise. (b) Wall-clock time per episode. SnapFlow is consistently faster due to 1-step inference; the gap is largest at low nact (2.6 × at nact = 1 ). 
+
+Key findings. 
+
+• Both methods suffer at nact = 1 . Executing only 1 step before replanning forces the policy to re-observe and re-infer at every control tick. The baseline drops to 77% and SnapFlow to 72%, indicating that very frequent replanning is harmful for long-horizon tasks—likely because each replanning introduces noise from re-sampled x1 and observation jitter. • SnapFlow peaks at nact = 5 (93%), outperforming the baseline at the same setting (90%). This is the “sweet spot” where replanning is frequent enough to correct errors but infrequent enough to avoid destabilizing the trajectory. SnapFlow’s advantage here is particularly notable: its 1-step inference takes only 26.3 s/ep vs. 37.2 s/ep for the baseline—a 1.4 × speedup at a higher success rate. • The baseline benefits most from nact = 20 (97%), but at the cost of replanning frequency. 
+
+Executing 20 of 50 action steps before replanning reduces the number of re-inference calls, 17 Table 9: Action execution horizon sweep on libero_10. Success rate (%) and wall-clock time per episode (s/ep) as a function of nact , the number of action steps executed before replanning. SnapFlow achieves its best at nact = 5 (93%), exceeding the baseline’s best sub-20 setting (90% at nact = 5 ). 
+
+Blue bold : best per column. 
+
+Success (%) Time (s/ep) 
+
+nact Baseline SnapFlow Baseline SnapFlow 1 77 72 96.2 36.8 3 88 87 50.3 31.6 5 90 93 37.2 26.3 10 89 91 23.9 20.0 
+
+20 97 92 27.1 24.2 which paradoxically helps the 10-step baseline by avoiding error injection from repeated denoising. However, this also means the policy cannot correct mid-trajectory errors—a liability in real-world deployment with perturbations. • SnapFlow provides a better speed–quality Pareto frontier. At every nact ≤ 10 , SnapFlow is faster and achieves comparable or better success. The baseline only surpasses SnapFlow at nact = 20 , where both methods are slow and the time difference is minimal (27.1 vs. 24.2 s/ep). 
+
+I Training Convergence Analysis 0 1000 2000 3000 4000 5000        
+
+> Training Step
+> 0.005
+> 0.010
+> 0.015
+> 0.020
+> 0.025
+> 0.030
+> 0.035
+> 0.040
+> Combined Loss (FM +  ·Consistency)
+> Warmup Onset Convergence
+> min=0.009
+> (a) Training Loss Convergence
+> Combined loss (smoothed)
+> Linear trend (slope=-0.00×10 ³/step)
+> 01000 2000 3000 4000 5000
+> Training Step
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> 3.5
+> Gradient Norm
+> (b) Gradient Norm Evolution
+> Gradient norm (smoothed)
+> Linear trend (slope=-0.210×10 ³/step)
+
+Figure 6: SnapFlow training convergence on π0.5. The combined loss (FM + λ· consistency) starts at ∼0.021 during warmup and steadily decreases to ∼0.017 by 3.5k steps, with the minimum reaching 0.009. The gradient norm decreases from ∼0.63 to ∼0.44, confirming smooth convergence. A brief gradient spike at step 650 ( ∥∇∥ = 7 .48 ) marks the onset of effective consistency learning and is immediately absorbed. Training is stable throughout with no NaN or divergence events. 
+
+Training dynamics. We log every 50 steps during a 5,000-step SnapFlow training run on π0.5 (batch size 4, single A800, 25 minutes total). The training exhibits three clear phases: 1. Warmup (steps 0–500): The learning rate ramps from 1.3 × 10 −6 to 2.4 × 10 −5. Loss oscillates between 0.016–0.028 (mean 0.021) as the zero-initialized target-time embedding 
+
+ϕs begins to differentiate the consistency objective from standard FM. Gradient norms are moderate ( ∼0.6). 2. Consistency onset (steps 500–1,000): The peak learning rate drives active consistency learning. A notable gradient spike at step 650 ( ∥∇∥ = 7 .48 ) marks the point where the 18 consistency objective begins producing meaningful updates; the loss briefly rises to 0.035 then recovers sharply. This spike is transient and does not cause instability. 3. Convergence (steps 1,000–5,000): Under cosine LR decay, both loss and gradient norm decrease monotonically. The loss trends from ∼0.021 (step 1,000) to ∼0.017 (step 3,500– 5,000), with lowest values of 0.009 (steps 3,250 and 4,400). The gradient norm decreases from ∼0.9 to ∼0.4, confirming the model approaches a stable minimum. The initial loss is already low ( ∼0.02) because SnapFlow fine-tunes a converged FM checkpoint: the FM component ( α = 0 .5 of the batch) is nearly at its optimum from the start, and the consistency component is weighted by λ = 0 .1. Despite this, the 18% relative loss reduction (0.021 →0.017) and the 30% gradient norm reduction (0.63 →0.44) are significant—they directly translate to the quality gap between naïve 1-step and SnapFlow 1-step observed in simulation (Table 1). 
+
+Stability observation. Unlike many consistency distillation methods that require careful EMA scheduling or progressive step reduction Song et al. [2023], Lu and Song [2025], SnapFlow training is remarkably stable. We attribute this to three factors: (a) the zero-initialized ϕs ensures a smooth start where FM training is initially unperturbed; (b) the FM component ( α = 0 .5) acts as an implicit regularizer that prevents the velocity field from degenerating; and (c) the low consistency weight (λ = 0 .1) prevents the consistency gradient from dominating early training. Across all experiments (including ablations with α ∈ { 0, 0.3, 0.7, 1.0} and λ ∈ { 0.01 , 1.0}), we observed zero training instabilities—no NaN losses, no gradient explosions, and no need for manual intervention. 
+
+J Training Hyperparameters 
+
+Table 10 lists all hyperparameters used for SnapFlow training across both VLA architectures. Unless stated otherwise, the same hyperparameters are used for all VLAs—an important aspect of the plug-and-play design. 
+
+Hyperparameter selection rationale. 
+
+• α = 0 .5: An equal mix of FM and consistency samples ensures that the velocity estimator 
+
+uθ remains well-calibrated throughout training (needed for the consistency target in Eq. 10) while providing sufficient 1-step supervision. This is the same default used in α-Flow Zhang et al. [2025]. • λ = 0 .1: The consistency gradient tends to be larger in magnitude than the FM gradient (because the shortcut target spans the full [0 , 1] interval). A weight of 0.1 brings the two gradient norms to comparable scales, preventing the consistency loss from dominating early training. • Learning rate 2.5 × 10 −5: One-tenth of the original π0.5 training rate, reflecting that we are fine-tuning from a converged checkpoint rather than training from scratch. We apply linear warmup over 500 steps. • Prediction clamp [−20 , 20] : The velocity predictions are clamped to prevent numerical instabilities from occasional outlier predictions during early consistency training. In practice, converged predictions rarely exceed ±5.• 30k training steps : Empirically, the combined loss plateaus by ∼3.5k steps in our 5k-step convergence study (see Appendix I). We train for 30k to ensure full convergence with diminishing-return safety margin. This corresponds to ∼12h on a single A800 GPU. 19 Table 10: SnapFlow training hyperparameters. Parameter Value SnapFlow 
+
+FM/Consistency ratio α 0.5 Consistency weight λ 0.1 Prediction clamp range [−20 , 20] 
+
+Target-time projection Zero-init MLP 
+
+Training 
+
+Optimizer AdamW Learning rate 2.5 × 10 −5
+
+Gradient clipping norm 1.0 Warmup steps 500 Total steps 30,000 Batch size 4Precision bfloat16 Frozen components VLM backbone (PaliGemma) Trainable components Action expert + target-time proj Gradient checkpointing Enabled 
+
+Inference 
+
+Denoising steps 1 (1-NFE) Action chunk size 50 Executed action steps 10 20

@@ -6,79 +6,79 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-11
-- 运行时间：2026-04-11 19:27:53 UTC
+- 最新运行日期：2026-04-12
+- 运行时间：2026-04-12 19:48:31 UTC
 - 运行状态：成功
 - 本次总论文数：19
 - 精读区：7
 - 速读区：12
 
 ### 今日简报（AI）
-今日深度解析 19 篇前沿论文，聚焦机器人原生策略优化与具身智能世界建模的重大突破。
-重点推荐基于漂移的单步在线控制算法及事件中心化记忆检索模型，显著提升了复杂环境下的决策精度。
-建议读者在探索多模态强化学习之余，关注大模型中介机器人系统面临的结构化
-- 详情：[/202604/11/README](/202604/11/README)
+今日聚焦机器人效率革命，涵盖从单步动作生成到野外数据采集的 19 篇前沿成果。
+满分论文 SnapFlow 实现了 VLA 的单步极速推理，而 RoSHI 套装则为获取高质量野外人体数据提供了新范式。
+推荐关注大模型在实时控制中的蒸馏加速技术，以及提升移动操作可靠性的最新方案。
+- 详情：[/202604/12/README](/202604/12/README)
 
 ### 精读区论文标签
-1. [Drift-Based Policy Optimization: Native One-Step Policy Learning for Online Robot Control](/202604/11/2604.03540v1-drift-based-policy-optimization-native-one-step-policy-learning-for-online-robot-control)  
+1. [SnapFlow: One-Step Action Generation for Flow-Matching VLAs via Progressive Self-Distillation](/202604/12/2604.05656v1-snapflow-one-step-action-generation-for-flow-matching-vlas-via-progressive-self-distillation)  
+   标签：评分：10.0/10、query:wam-vla
+   evidence：流匹配VLA模型的一步动作生成
+2. [RoSHI: A Versatile Robot-oriented Suit for Human Data In-the-Wild](/202604/12/2604.07331v1-roshi-a-versatile-robot-oriented-suit-for-human-data-in-the-wild)  
    标签：评分：9.0/10、query:wam-vla
-   evidence：机器人操作的单步策略学习
-2. [Event-Centric World Modeling with Memory-Augmented Retrieval for Embodied Decision-Making](/202604/11/2604.07392v1-event-centric-world-modeling-with-memory-augmented-retrieval-for-embodied-decision-making)  
-   标签：评分：9.0/10、query:profile-2
-   evidence：用于具身决策的以事件为中心的世界建模
-3. [Vision-Language Navigation for Aerial Robots: Towards the Era of Large Language Models](/202604/11/2604.07705v1-vision-language-navigation-for-aerial-robots-towards-the-era-of-large-language-models)  
+   evidence：收集人类数据以扩展机器人学习规模
+3. [WorldMAP: Bootstrapping Vision-Language Navigation Trajectory Prediction with Generative World Models](/202604/12/2604.07957v1-worldmap-bootstrapping-vision-language-navigation-trajectory-prediction-with-generative-world-models)  
    标签：评分：9.0/10、query:wam-vla
-   evidence：使用大模型和视觉语言模型的机器人导航
-4. [Learning Without Losing Identity: Capability Evolution for Embodied Agents](/202604/11/2604.07799v1-learning-without-losing-identity-capability-evolution-for-embodied-agents)  
-   标签：评分：9.0/10、query:profile-2
-   evidence：具身智能体的能力演化
-5. [Harnessing Embodied Agents: Runtime Governance for Policy-Constrained Execution](/202604/11/2604.07833v1-harnessing-embodied-agents-runtime-governance-for-policy-constrained-execution)  
-   标签：评分：9.0/10、query:q12
-   evidence：与物理环境交互的具身智能体运行时治理
-6. [A Unified Multi-Layer Framework for Skill Acquisition from Imperfect Human Demonstrations](/202604/11/2604.08341v1-a-unified-multi-layer-framework-for-skill-acquisition-from-imperfect-human-demonstrations)  
-   标签：评分：9.0/10、query:wam-vla
-   evidence：从人类演示中获取技能
-7. [Generalizable Audio-Visual Navigation via Binaural Difference Attention and Action Transition Prediction](/202604/11/2604.05007v1-generalizable-audio-visual-navigation-via-binaural-difference-attention-and-action-transition-prediction)  
-   标签：评分：8.0/10、query:profile-2
-   evidence：3D环境中的视听导航与策略优化
+   evidence：用于具身导航的视觉语言模型
+4. [FlashSAC: Fast and Stable Off-Policy Reinforcement Learning for High-Dimensional Robot Control](/202604/12/2604.04539v1-flashsac-fast-and-stable-off-policy-reinforcement-learning-for-high-dimensional-robot-control)  
+   标签：评分：8.0/10、query:wam-vla
+   evidence：用于机器人控制的离策强化学习
+5. [ClickAIXR: On-Device Multimodal Vision-Language Interaction with Real-World Objects in Extended Reality](/202604/12/2604.04905v1-clickaixr-on-device-multimodal-vision-language-interaction-with-real-world-objects-in-extended-reality)  
+   标签：评分：8.0/10、query:q13
+   evidence：与真实世界物体的端侧多模态视觉语言交互
+6. [FORGE:Fine-grained Multimodal Evaluation for Manufacturing Scenarios](/202604/12/2604.07413v1-forgefine-grained-multimodal-evaluation-for-manufacturing-scenarios)  
+   标签：评分：8.0/10、query:q15
+   evidence：制造业和组装验证任务的多模态评估
+7. [Spatio-Temporal Grounding of Large Language Models from Perception Streams](/202604/12/2604.07592v1-spatio-temporal-grounding-of-large-language-models-from-perception-streams)  
+   标签：评分：8.0/10、query:q11
+   evidence：具身智能体的时空推理与定位
 
 ### 速读区论文标签
-1. [From Prompt to Physical Action: Structured Backdoor Attacks on LLM-Mediated Robotic Control Systems](/202604/11/2604.03890v1-from-prompt-to-physical-action-structured-backdoor-attacks-on-llm-mediated-robotic-control-systems)  
+1. [Drift-Based Policy Optimization: Native One-Step Policy Learning for Online Robot Control](/202604/12/2604.03540v2-drift-based-policy-optimization-native-one-step-policy-learning-for-online-robot-control)  
    标签：评分：8.0/10、query:wam-vla
-   evidence：大模型介导的机器人控制中的后门攻击
-2. [VA-FastNavi-MARL: Real-Time Robot Control with Multimedia-Driven Meta-Reinforcement Learning](/202604/11/2604.03998v1-va-fastnavi-marl-real-time-robot-control-with-multimedia-driven-meta-reinforcement-learning)  
-   标签：评分：8.0/10、query:q13
-   evidence：对齐异步视听输入以实现实时机器人控制
-3. [Robots Need Some Education: On the complexity of learning in evolutionary robotics](/202604/11/2604.04196v1-robots-need-some-education-on-the-complexity-of-learning-in-evolutionary-robotics)  
+   evidence：机器人操纵中的单步生成式策略学习
+2. [Synergizing Efficiency and Reliability for Continuous Mobile Manipulation](/202604/12/2604.05430v1-synergizing-efficiency-and-reliability-for-continuous-mobile-manipulation)  
    标签：评分：8.0/10、query:wam-vla
-   evidence：机器人学习与进化机器人学
-4. [Learning from Imperfect Demonstrations via Temporal Behavior Tree-Guided Trajectory Repair](/202604/11/2604.04225v1-learning-from-imperfect-demonstrations-via-temporal-behavior-tree-guided-trajectory-repair)  
+   evidence：连续移动操作框架
+3. [Precise Aggressive Aerial Maneuvers with Sensorimotor Policies](/202604/12/2604.05828v1-precise-aggressive-aerial-maneuvers-with-sensorimotor-policies)  
    标签：评分：8.0/10、query:wam-vla
-   evidence：通过轨迹修复从不完美的人类演示中学习机器人控制策略
-5. [Goal-Conditioned Neural ODEs with Guaranteed Safety and Stability for Learning-Based All-Pairs Motion Planning](/202604/11/2604.02821v1-goal-conditioned-neural-odes-with-guaranteed-safety-and-stability-for-learning-based-all-pairs-motion-planning)  
-   标签：评分：7.0/10、query:wam-vla
-   evidence：具有安全性和稳定性保证的基于学习的运动规划
-6. [Coupled Control, Structured Memory, and Verifiable Action in Agentic AI (SCRAT -- Stochastic Control with Retrieval and Auditable Trajectories): A Comparative Perspective from Squirrel Locomotion and Scatter-Hoarding](/202604/11/2604.03201v1-coupled-control-structured-memory-and-verifiable-action-in-agentic-ai-scrat----stochastic-control-with-retrieval-and-auditable-trajectories-a-comparative-perspective-from-squirrel-locomotion-and-scatter-hoarding)  
-   标签：评分：7.0/10、query:q16
-   evidence：智能体AI与运动控制的理论基础
-7. [Leveraging Gaze and Set-of-Mark in VLLMs for Human-Object Interaction Anticipation from Egocentric Videos](/202604/11/2604.03667v1-leveraging-gaze-and-set-of-mark-in-vllms-for-human-object-interaction-anticipation-from-egocentric-videos)  
-   标签：评分：7.0/10、query:q11
-   evidence：利用大语言视觉模型和视线追踪预测人机交互意图
-8. [DC-Ada: Reward-Only Decentralized Observation-Interface Adaptation for Heterogeneous Multi-Robot Teams](/202604/11/2604.03905v1-dc-ada-reward-only-decentralized-observation-interface-adaptation-for-heterogeneous-multi-robot-teams)  
+   evidence：通过强化学习训练机器人控制的感官运动策略
+4. [You're Pushing My Buttons: Instrumented Learning of Gentle Button Presses](/202604/12/2604.05954v1-youre-pushing-my-buttons-instrumented-learning-of-gentle-button-presses)  
+   标签：评分：8.0/10、query:wam-vla
+   evidence：接触密集型操作的机器人策略学习
+5. [Adapting Neural Robot Dynamics on the Fly for Predictive Control](/202604/12/2604.04039v1-adapting-neural-robot-dynamics-on-the-fly-for-predictive-control)  
    标签：评分：7.0/10、query:q9
-   evidence：异构多机器人团队和自主智能体的去中心化自适应
-9. [What Do We Need for an Agentic Society?](/202604/11/2604.03938v1-what-do-we-need-for-an-agentic-society)  
+   evidence：自主移动机器人的自适应动力学
+6. [Precise Robot Command Understanding Using Grammar-Constrained Large Language Models](/202604/12/2604.04233v1-precise-robot-command-understanding-using-grammar-constrained-large-language-models)  
+   标签：评分：7.0/10、query:q11
+   evidence：机器人指令理解与推理
+7. [Discovering Failure Modes in Vision-Language Models using RL](/202604/12/2604.04733v1-discovering-failure-modes-in-vision-language-models-using-rl)  
+   标签：评分：7.0/10、query:wam-vla
+   evidence：使用强化学习发现视觉语言模型的失败模式
+8. [GaussFly: Contrastive Reinforcement Learning for Visuomotor Policies in 3D Gaussian Fields](/202604/12/2604.05062v1-gaussfly-contrastive-reinforcement-learning-for-visuomotor-policies-in-3d-gaussian-fields)  
+   标签：评分：7.0/10、query:wam-vla
+   evidence：自主飞行器的视觉运动策略
+9. [A Multi-View 3D Telepresence System for XR Robot Teleoperation](/202604/12/2604.03730v1-a-multi-view-3d-telepresence-system-for-xr-robot-teleoperation)  
+   标签：评分：6.0/10、query:wam-vla
+   evidence：通过远程操作进行机器人学习的数据收集
+10. [Efficient Inference for Large Vision-Language Models: Bottlenecks, Techniques, and Prospects](/202604/12/2604.05546v1-efficient-inference-for-large-vision-language-models-bottlenecks-techniques-and-prospects)  
+   标签：评分：6.0/10、query:q13
+   evidence：大型视觉语言模型的推理效率
+11. [Beyond Tools and Persons: Who Are They? Classifying Robots and AI Agents for Proportional Governance](/202604/12/2604.05568v1-beyond-tools-and-persons-who-are-they-classifying-robots-and-ai-agents-for-proportional-governance)  
    标签：评分：6.0/10、query:profile-2
-   evidence：智能体对象与集体环境
-10. [Symbolic-Vector Attention Fusion for Collective Intelligence](/202604/11/2604.03955v1-symbolic-vector-attention-fusion-for-collective-intelligence)  
-   标签：评分：6.0/10、query:q11
-   evidence：自主智能体与集体智能推理
-11. [Designing Digital Humans with Ambient Intelligence](/202604/11/2604.05120v2-designing-digital-humans-with-ambient-intelligence)  
-   标签：评分：6.0/10、query:profile-2
-   evidence：具备环境智能和环境传感器的数字人
-12. [Graph of Skills: Dependency-Aware Structural Retrieval for Massive Agent Skills](/202604/11/2604.05333v2-graph-of-skills-dependency-aware-structural-retrieval-for-massive-agent-skills)  
-   标签：评分：6.0/10、query:q11
-   evidence：大规模智能体技能的结构化检索以完成复杂任务
+   evidence：按具身和认知维度对机器人和 AI 智能体进行分类
+12. [Beyond Behavior: Why AI Evaluation Needs a Cognitive Revolution](/202604/12/2604.05631v1-beyond-behavior-why-ai-evaluation-needs-a-cognitive-revolution)  
+   标签：评分：6.0/10、query:q16
+   evidence：AI 智能的理论基础与内部组织
 
 
 <div class="dpr-home-promo-card">
