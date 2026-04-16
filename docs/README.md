@@ -6,96 +6,100 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-15
-- 运行时间：2026-04-15 20:30:30 UTC
+- 最新运行日期：2026-04-16
+- 运行时间：2026-04-16 19:53:33 UTC
 - 运行状态：成功
-- 本次总论文数：25
-- 精读区：13
+- 本次总论文数：26
+- 精读区：14
 - 速读区：12
 
 ### 今日简报（AI）
-今日精选 25 篇前沿成果，深度解析 VLA 模型在鲁棒性学习与零样本槽位放置上的重大突破。
-满分论文 STRONG-VLA 与 AnySlot 分别攻克了多模态抗干扰与精准操作难题
-- 详情：[/202604/15/README](/202604/15/README)
+今日精选 26 篇前沿成果，重点聚焦视觉语言动作正则化与长程操作规划，两篇满分佳作领衔机器人技能进化。
+视觉语言模型（VLA）正则化显著加速强化学习冷启动，而 Goal2Skill 通过自适应规划与反思实现了复杂长程任务的突破。
+建议优先研读两篇满分论文，掌握如何利用大模型先验知识提升机器人操作的泛化性与逻辑深度。
+- 详情：[/202604/16/README](/202604/16/README)
 
 ### 精读区论文标签
-1. [STRONG-VLA: Decoupled Robustness Learning for Vision-Language-Action Models under Multimodal Perturbations](/202604/15/2604.10055v2-strong-vla-decoupled-robustness-learning-for-vision-language-action-models-under-multimodal-perturbations)  
+1. [Jump-Start Reinforcement Learning with Vision-Language-Action Regularization](/202604/16/2604.13733v1-jump-start-reinforcement-learning-with-vision-language-action-regularization)  
    标签：评分：10.0/10、query:wam-vla
-   evidence：视觉-语言-动作（VLA）模型在扰动下的鲁棒性学习
-2. [AnySlot: Goal-Conditioned Vision-Language-Action Policies for Zero-Shot Slot-Level Placement](/202604/15/2604.10432v2-anyslot-goal-conditioned-vision-language-action-policies-for-zero-shot-slot-level-placement)  
+   evidence：用于机器人操作的视觉-语言-动作 (VLA) 模型
+2. [Goal2Skill: Long-Horizon Manipulation with Adaptive Planning and Reflection](/202604/16/2604.13942v1-goal2skill-long-horizon-manipulation-with-adaptive-planning-and-reflection)  
    标签：评分：10.0/10、query:wam-vla
-   evidence：用于精确操作的目标条件视觉-语言-动作（VLA）策略
-3. [HazardArena: Evaluating Semantic Safety in Vision-Language-Action Models](/202604/15/2604.12447v1-hazardarena-evaluating-semantic-safety-in-vision-language-action-models)  
+   evidence：用于长程具身操纵的VLA系统
+3. [HiVLA: A Visual-Grounded-Centric Hierarchical Embodied Manipulation System](/202604/16/2604.14125v1-hivla-a-visual-grounded-centric-hierarchical-embodied-manipulation-system)  
    标签：评分：10.0/10、query:wam-vla
-   evidence：评估视觉-语言-动作（VLA）模型中的语义安全性
-4. [Ro-SLM: Onboard Small Language Models for Robot Task Planning and Operation Code Generation](/202604/15/2604.10929v1-ro-slm-onboard-small-language-models-for-robot-task-planning-and-operation-code-generation)  
-   标签：评分：9.0/10、query:q11
-   evidence：用于机器人任务规划的小语言模型
-5. [EmbodiedGovBench: A Benchmark for Governance, Recovery, and Upgrade Safety in Embodied Agent Systems](/202604/15/2604.11174v1-embodiedgovbench-a-benchmark-for-governance-recovery-and-upgrade-safety-in-embodied-agent-systems)  
-   标签：评分：9.0/10、query:q14
-   evidence：具身智能体系统的治理与安全基准
-6. [CLAW: Composable Language-Annotated Whole-body Motion Generation](/202604/15/2604.11251v2-claw-composable-language-annotated-whole-body-motion-generation)  
+   evidence：分层视觉-语言-动作 (VLA) 系统
+4. [BLaDA: Bridging Language to Functional Dexterous Actions within 3DGS Fields](/202604/16/2604.08410v2-blada-bridging-language-to-functional-dexterous-actions-within-3dgs-fields)  
    标签：评分：9.0/10、query:wam-vla
-   evidence：语言标注的全身运动生成
-7. [Scalable Trajectory Generation for Whole-Body Mobile Manipulation](/202604/15/2604.12565v1-scalable-trajectory-generation-for-whole-body-mobile-manipulation)  
+   evidence：将开放词汇指令落地为功能性灵巧操作，作为端到端VLA的替代方案
+5. [MoRI: Mixture of RL and IL Experts for Long-Horizon Manipulation Tasks](/202604/16/2604.10165v1-mori-mixture-of-rl-and-il-experts-for-long-horizon-manipulation-tasks)  
    标签：评分：9.0/10、query:wam-vla
-   evidence：针对全身移动操作的可扩展轨迹生成
-8. [Habitat-GS: A High-Fidelity Navigation Simulator with Dynamic Gaussian Splatting](/202604/15/2604.12626v1-habitat-gs-a-high-fidelity-navigation-simulator-with-dynamic-gaussian-splatting)  
+   evidence：强化学习与模仿学习混合用于操作任务
+6. [A Progressive Training Strategy for Vision-Language Models to Counteract Spatio-Temporal Hallucinations in Embodied Reasoning](/202604/16/2604.10506v1-a-progressive-training-strategy-for-vision-language-models-to-counteract-spatio-temporal-hallucinations-in-embodied-reasoning)  
    标签：评分：9.0/10、query:profile-2
-   evidence：具身智能的高保真导航仿真器
-9. [FastGrasp: Learning-based Whole-body Control method for Fast Dexterous Grasping with Mobile Manipulators](/202604/15/2604.12879v1-fastgrasp-learning-based-whole-body-control-method-for-fast-dexterous-grasping-with-mobile-manipulators)  
+   evidence：具身VLM中的时空推理
+7. [From Perception to Planning: Evolving Ego-Centric Task-Oriented Spatiotemporal Reasoning via Curriculum Learning](/202604/16/2604.10517v1-from-perception-to-planning-evolving-ego-centric-task-oriented-spatiotemporal-reasoning-via-curriculum-learning)  
+   标签：评分：9.0/10、query:q14
+   evidence：具身第一视角任务的时空推理
+8. [ScoRe-Flow: Complete Distributional Control via Score-Based Reinforcement Learning for Flow Matching](/202604/16/2604.10962v1-score-flow-complete-distributional-control-via-score-based-reinforcement-learning-for-flow-matching)  
    标签：评分：9.0/10、query:wam-vla
-   evidence：移动操作器的快速灵巧抓取全身控制
-10. [Robotic Manipulation is Vision-to-Geometry Mapping ($f(v) \rightarrow G$): Vision-Geometry Backbones over Language and Video Models](/202604/15/2604.12908v1-robotic-manipulation-is-vision-to-geometry-mapping-fv-rightarrow-g-vision-geometry-backbones-over-language-and-video-models)  
+   evidence：用于机器人控制和策略学习的流匹配策略
+9. [OVAL: Open-Vocabulary Augmented Memory Model for Lifelong Object Goal Navigation](/202604/16/2604.12872v1-oval-open-vocabulary-augmented-memory-model-for-lifelong-object-goal-navigation)  
+   标签：评分：9.0/10、query:profile-2
+   evidence：具身环境中的终身目标导航
+10. [RobotPan: A 360$^\circ$ Surround-View Robotic Vision System for Embodied Perception](/202604/16/2604.13476v1-robotpan-a-360circ-surround-view-robotic-vision-system-for-embodied-perception)  
+   标签：评分：9.0/10、query:q13
+   evidence：使用多种感知模态和环视进行感知
+11. [Evolvable Embodied Agent for Robotic Manipulation via Long Short-Term Reflection and Optimization](/202604/16/2604.13533v1-evolvable-embodied-agent-for-robotic-manipulation-via-long-short-term-reflection-and-optimization)  
    标签：评分：9.0/10、query:wam-vla
-   evidence：对VLA模型的批判并提出用于操作的视觉-几何主干网络
-11. [Tree Learning: A Multi-Skill Continual Learning Framework for Humanoid Robots](/202604/15/2604.12909v1-tree-learning-a-multi-skill-continual-learning-framework-for-humanoid-robots)  
+   evidence：利用VLM进行环境解释和机器人操作中的策略规划
+12. [ESCAPE: Episodic Spatial Memory and Adaptive Execution Policy for Long-Horizon Mobile Manipulation](/202604/16/2604.13633v1-escape-episodic-spatial-memory-and-adaptive-execution-policy-for-long-horizon-mobile-manipulation)  
+   标签：评分：9.0/10、query:profile-2
+   evidence：具有情境空间记忆的长程移动操作
+13. [Vision-and-Language Navigation for UAVs: Progress, Challenges, and a Research Roadmap](/202604/16/2604.13654v1-vision-and-language-navigation-for-uavs-progress-challenges-and-a-research-roadmap)  
    标签：评分：9.0/10、query:wam-vla
-   evidence：人形机器人的多技能持续学习
-12. [XRZero-G0: Pushing the Frontier of Dexterous Robotic Manipulation with Interfaces, Quality and Ratios](/202604/15/2604.13001v1-xrzero-g0-pushing-the-frontier-of-dexterous-robotic-manipulation-with-interfaces-quality-and-ratios)  
-   标签：评分：9.0/10、query:wam-vla
-   evidence：灵巧操纵的数据采集与策略学习
-13. [Learning Versatile Humanoid Manipulation with Touch Dreaming](/202604/15/2604.13015v1-learning-versatile-humanoid-manipulation-with-touch-dreaming)  
-   标签：评分：9.0/10、query:wam-vla
-   evidence：全身控制器以及具有接触感知能力的类人机器人操作
+   evidence：无人机导航中VLA模型与智能体系统的综述
+14. [UMI-3D: Extending Universal Manipulation Interface from Vision-Limited to 3D Spatial Perception](/202604/16/2604.14089v1-umi-3d-extending-universal-manipulation-interface-from-vision-limited-to-3d-spatial-perception)  
+   标签：评分：9.0/10、query:profile-2
+   evidence：使用激光雷达和视觉进行具身操作数据采集的多模态扩展
 
 ### 速读区论文标签
-1. [Precise Aggressive Aerial Maneuvers with Sensorimotor Policies](/202604/15/2604.05828v2-precise-aggressive-aerial-maneuvers-with-sensorimotor-policies)  
+1. [BiDexGrasp: Coordinated Bimanual Dexterous Grasps across Object Geometries and Sizes](/202604/16/2604.06589v1-bidexgrasp-coordinated-bimanual-dexterous-grasps-across-object-geometries-and-sizes)  
    标签：评分：8.0/10、query:wam-vla
-   evidence：使用强化学习进行激进机动的感官运动策略
-2. [InstAP: Instance-Aware Vision-Language Pre-Train for Spatial-Temporal Understanding](/202604/15/2604.08337v1-instap-instance-aware-vision-language-pre-train-for-spatial-temporal-understanding)  
+   evidence：用于操作的大规模双灵巧手抓取数据集和生成模型
+2. [RichMap: A Reachability Map Balancing Precision, Efficiency, and Flexibility for Rich Robot Manipulation Tasks](/202604/16/2604.06778v1-richmap-a-reachability-map-balancing-precision-efficiency-and-flexibility-for-rich-robot-manipulation-tasks)  
    标签：评分：8.0/10、query:wam-vla
-   evidence：用于时空理解的实例感知视觉语言预训练
-3. [ASPECT:Analogical Semantic Policy Execution via Language Conditioned Transfer](/202604/15/2604.08355v1-aspectanalogical-semantic-policy-execution-via-language-conditioned-transfer)  
+   evidence：机器人操纵任务的可达性图
+3. [SkillClaw: Let Skills Evolve Collectively with Agentic Evolver](/202604/16/2604.08377v1-skillclaw-let-skills-evolve-collectively-with-agentic-evolver)  
    标签：评分：8.0/10、query:wam-vla
-   evidence：利用大语言模型作为语义算子的语言条件策略迁移
-4. [ASPECT:Analogical Semantic Policy Execution via Language Conditioned Transfer](/202604/15/2604.08355v2-aspectanalogical-semantic-policy-execution-via-language-conditioned-transfer)  
-   标签：评分：8.0/10、query:wam-vla
-   evidence：强化学习策略执行中的语言条件迁移
-5. [Dialogue based Interactive Explanations for Safety Decisions in Human Robot Collaboration](/202604/15/2604.05896v2-dialogue-based-interactive-explanations-for-safety-decisions-in-human-robot-collaboration)  
+   evidence：通过多用户交互实现技能进化
+4. [Exploring Temporal Representation in Neural Processes for Multimodal Action Prediction](/202604/16/2604.08418v1-exploring-temporal-representation-in-neural-processes-for-multimodal-action-prediction)  
+   标签：评分：8.0/10、query:q10
+   evidence：利用视觉-电机感觉信号进行多模态动作预测
+5. [Robots that learn to evaluate models of collective behavior](/202604/16/2604.07303v1-robots-that-learn-to-evaluate-models-of-collective-behavior)  
+   标签：评分：7.0/10、query:wam-vla
+   evidence：基于强化学习的机器人行为策略框架
+6. [Active Reward Machine Inference From Raw State Trajectories](/202604/16/2604.07480v1-active-reward-machine-inference-from-raw-state-trajectories)  
+   标签：评分：7.0/10、query:wam-vla
+   evidence：从状态轨迹中学习机器人策略
+7. [Learning over Forward-Invariant Policy Classes: Reinforcement Learning without Safety Concerns](/202604/16/2604.07875v1-learning-over-forward-invariant-policy-classes-reinforcement-learning-without-safety-concerns)  
+   标签：评分：7.0/10、query:wam-vla
+   evidence：机器人策略的安全强化学习
+8. [OpenVLThinkerV2: A Generalist Multimodal Reasoning Model for Multi-domain Visual Tasks](/202604/16/2604.08539v1-openvlthinkerv2-a-generalist-multimodal-reasoning-model-for-multi-domain-visual-tasks)  
    标签：评分：7.0/10、query:q11
-   evidence：基于对话的人机协作安全决策解释框架
-6. [DailyArt: Discovering Articulation from Single Static Images via Latent Dynamics](/202604/15/2604.07758v1-dailyart-discovering-articulation-from-single-static-images-via-latent-dynamics)  
-   标签：评分：7.0/10、query:profile-2
-   evidence：具身智能和世界模型的关节物体运动学
-7. [Incremental Residual Reinforcement Learning Toward Real-World Learning for Social Navigation](/202604/15/2604.07945v1-incremental-residual-reinforcement-learning-toward-real-world-learning-for-social-navigation)  
-   标签：评分：7.0/10、query:q9
-   evidence：机器人系统在社交导航中的真实世界学习
-8. ["Theater of Mind" for LLMs: A Cognitive Architecture Based on Global Workspace Theory](/202604/15/2604.08206v1-theater-of-mind-for-llms-a-cognitive-architecture-based-on-global-workspace-theory)  
-   标签：评分：7.0/10、query:q11
-   evidence：自主人工智能的认知架构
-9. [Q-Zoom: Query-Aware Adaptive Perception for Efficient Multimodal Large Language Models](/202604/15/2604.06912v1-q-zoom-query-aware-adaptive-perception-for-efficient-multimodal-large-language-models)  
+   evidence：多模态推理与细粒度感知
+9. [PhyEdit: Towards Real-World Object Manipulation via Physically-Grounded Image Editing](/202604/16/2604.07230v2-phyedit-towards-real-world-object-manipulation-via-physically-grounded-image-editing)  
+   标签：评分：6.0/10、query:wam-vla
+   evidence：世界模型中用于物体操作的物理接地图像编辑
+10. [PolySLGen: Online Multimodal Speaking-Listening Reaction Generation in Polyadic Interaction](/202604/16/2604.08125v1-polyslgen-online-multimodal-speaking-listening-reaction-generation-in-polyadic-interaction)  
+   标签：评分：6.0/10、query:wam-vla
+   evidence：社交场景下具身智能的多模态反应生成
+11. [KnowU-Bench: Towards Interactive, Proactive, and Personalized Mobile Agent Evaluation](/202604/16/2604.08455v1-knowu-bench-towards-interactive-proactive-and-personalized-mobile-agent-evaluation)  
+   标签：评分：6.0/10、query:q12
+   evidence：移动环境中的自主智能体与主动辅助
+12. [Wearable AI in the Era of Large Sensor Models](/202604/16/2604.10172v1-wearable-ai-in-the-era-of-large-sensor-models)  
    标签：评分：6.0/10、query:q13
-   evidence：多模态大语言模型的查询感知自适应感知
-10. [ImplicitMemBench: Measuring Unconscious Behavioral Adaptation in Large Language Models](/202604/15/2604.08064v1-implicitmembench-measuring-unconscious-behavioral-adaptation-in-large-language-models)  
-   标签：评分：6.0/10、query:q16
-   evidence：衡量LLM智能体中的内隐记忆和行为适应
-11. [Value-Guidance MeanFlow for Offline Multi-Agent Reinforcement Learning](/202604/15/2604.08174v1-value-guidance-meanflow-for-offline-multi-agent-reinforcement-learning)  
-   标签：评分：6.0/10、query:wam-vla
-   evidence：多智能体强化学习中的流式策略学习
-12. [Do Vision Language Models Need to Process Image Tokens?](/202604/15/2604.09425v1-do-vision-language-models-need-to-process-image-tokens)  
-   标签：评分：6.0/10、query:wam-vla
-   evidence：视觉语言模型中图像标记的作用研究
+   evidence：用于人类行为理解的多模态可穿戴传感器
 
 
 <div class="dpr-home-promo-card">
