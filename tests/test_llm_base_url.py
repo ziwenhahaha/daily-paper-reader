@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from llm import LLMClient
+from llm import BltClient, LLMClient
 
 
 class LlmBaseUrlTest(unittest.TestCase):
@@ -76,6 +76,30 @@ class LlmBaseUrlTest(unittest.TestCase):
         self.assertEqual(
             mock_post.call_args.args[0],
             "https://api.openai.com/v1/chat/completions",
+        )
+
+    @patch("llm.requests.post")
+    def test_blt_rerank_prefers_blt_specific_base_over_chat_base(self, mock_post):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {"results": []}
+        mock_post.return_value = resp
+
+        with patch.dict(
+            "os.environ",
+            {
+                "LLM_PRIMARY_BASE_URL": "https://api.gptbest.vip/v1",
+                "BLT_PRIMARY_BASE_URL": "https://api.bltcy.ai/v1",
+            },
+            clear=True,
+        ):
+            client = BltClient(api_key="test-key", model="qwen3-reranker-4b")
+
+        client.rerank(query="hello", documents=["doc1"], top_n=1)
+
+        self.assertEqual(
+            mock_post.call_args.args[0],
+            "https://api.bltcy.ai/v1/rerank",
         )
 
 

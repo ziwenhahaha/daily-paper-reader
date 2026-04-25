@@ -151,6 +151,78 @@ class MainPipelineTest(unittest.TestCase):
             labels = [item[0] for item in calls]
             self.assertIn("Step 3 - Rerank", labels)
 
+    def test_main_skips_rerank_when_only_gptbest_chat_base_is_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            src_dir = root / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            token = "20260310"
+            self._write_rrf_input(root, token)
+            calls = []
+
+            def fake_run_step(label, args, env=None):
+                calls.append((label, args, env))
+
+            with patch.object(self.mod, "ROOT_DIR", str(root)), patch.object(
+                self.mod, "SRC_DIR", str(src_dir)
+            ), patch.object(
+                self.mod, "resolve_run_date_token", return_value=token
+            ), patch.object(
+                self.mod, "resolve_sidebar_date_label", return_value=None
+            ), patch.object(
+                self.mod, "parse_trace_ids", return_value=[]
+            ), patch.object(
+                self.mod, "run_step", side_effect=fake_run_step
+            ), patch.object(
+                sys, "argv", ["main.py"]
+            ), patch.dict(
+                os.environ,
+                {"LLM_PRIMARY_BASE_URL": "https://api.gptbest.vip/v1"},
+                clear=True,
+            ):
+                self.mod.main()
+
+            labels = [item[0] for item in calls]
+            self.assertNotIn("Step 3 - Rerank", labels)
+            self.assertIn("Step 4 - LLM refine", labels)
+
+    def test_main_keeps_rerank_when_blt_rerank_base_overrides_gptbest_chat_base(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            src_dir = root / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            token = "20260310"
+            self._write_rrf_input(root, token)
+            calls = []
+
+            def fake_run_step(label, args, env=None):
+                calls.append((label, args, env))
+
+            with patch.object(self.mod, "ROOT_DIR", str(root)), patch.object(
+                self.mod, "SRC_DIR", str(src_dir)
+            ), patch.object(
+                self.mod, "resolve_run_date_token", return_value=token
+            ), patch.object(
+                self.mod, "resolve_sidebar_date_label", return_value=None
+            ), patch.object(
+                self.mod, "parse_trace_ids", return_value=[]
+            ), patch.object(
+                self.mod, "run_step", side_effect=fake_run_step
+            ), patch.object(
+                sys, "argv", ["main.py"]
+            ), patch.dict(
+                os.environ,
+                {
+                    "LLM_PRIMARY_BASE_URL": "https://api.gptbest.vip/v1",
+                    "BLT_PRIMARY_BASE_URL": "https://api.bltcy.ai/v1",
+                },
+                clear=True,
+            ):
+                self.mod.main()
+
+            labels = [item[0] for item in calls]
+            self.assertIn("Step 3 - Rerank", labels)
+
 
 if __name__ == "__main__":
     unittest.main()

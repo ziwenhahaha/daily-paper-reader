@@ -25,6 +25,12 @@ GLOBAL_TIME_SECONDS: float = 0.0
 
 PRIMARY_LLM_BASE_URL = "https://api.gptbest.vip/v1"
 DEFAULT_BLT_BASE_URL = "https://api.bltcy.ai/v1"
+BLT_RERANK_BASE_KEYWORDS = ("bltcy.ai", "blt")
+
+
+def _looks_like_blt_rerank_base(base_url: str | None) -> bool:
+    lowered = str(base_url or "").strip().lower()
+    return any(keyword in lowered for keyword in BLT_RERANK_BASE_KEYWORDS)
 
 
 def reset_global_tokens():
@@ -118,6 +124,10 @@ class LLMClient:
 
     def _iter_retry_bases(self, total_attempts: int = 6) -> List[str]:
         bases = self._iter_request_bases()
+        return self._expand_retry_bases(bases, total_attempts=total_attempts)
+
+    @staticmethod
+    def _expand_retry_bases(bases: List[str], total_attempts: int = 6) -> List[str]:
         if total_attempts <= 0:
             return []
         if not bases:
@@ -615,6 +625,18 @@ class BltClient(LLMClient):
         ).strip() or PRIMARY_LLM_BASE_URL
         super().__init__(api_key=api_key, model=model, base_url=primary_base)
         self._base_urls = self._normalize_base_urls([primary_base, legacy_base])
+        explicit_rerank_bases = [
+            candidate
+            for candidate in [
+                os.getenv("BLT_PRIMARY_BASE_URL"),
+                os.getenv("BLT_API_BASE"),
+                base_url,
+            ]
+            if _looks_like_blt_rerank_base(candidate)
+        ]
+        self._rerank_base_urls = self._normalize_base_urls(
+            explicit_rerank_bases + [DEFAULT_BLT_BASE_URL]
+        )
 
     def rerank(
         self,
@@ -648,7 +670,7 @@ class BltClient(LLMClient):
         if top_n is not None:
             payload["top_n"] = int(top_n)
 
-        request_bases = self._iter_retry_bases(total_attempts=6)
+        request_bases = self._expand_retry_bases(self._rerank_base_urls, total_attempts=6)
         last_error: Exception | None = None
         for attempt_idx, req_base in enumerate(request_bases, start=1):
             request_url = f"{req_base.rstrip('/')}/rerank"

@@ -25,7 +25,7 @@ CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 LONG_RANGE_DAYS_THRESHOLD = 10
 MAIN_DEFAULT_DAYS = 9
 SKIMS_FETCH_DAYS_THRESHOLD = 11
-BLT_PROVIDER_BASE_KEYWORDS = ("bltcy.ai", "gptbest.vip", "blt", "gptbest")
+BLT_PROVIDER_BASE_KEYWORDS = ("bltcy.ai", "blt")
 
 
 def run_step(label: str, args: list[str], env: dict[str, str] | None = None) -> None:
@@ -194,12 +194,13 @@ def _looks_like_blt_base(base_url: str) -> bool:
 
 
 def should_skip_rerank() -> tuple[bool, str]:
-    primary_base = _read_env_text(
-        "LLM_PRIMARY_BASE_URL",
-        "BLT_PRIMARY_BASE_URL",
-        "GPTBEST_BASE_URL",
-        "BLT_API_BASE",
-    )
+    rerank_base = _read_env_text("BLT_PRIMARY_BASE_URL", "BLT_API_BASE")
+    if rerank_base:
+        if _looks_like_blt_base(rerank_base):
+            return False, rerank_base
+        return True, rerank_base
+
+    primary_base = _read_env_text("LLM_PRIMARY_BASE_URL", "GPTBEST_BASE_URL")
     if not primary_base:
         return False, ""
     if _looks_like_blt_base(primary_base):
