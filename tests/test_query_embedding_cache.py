@@ -190,6 +190,56 @@ class QueryEmbeddingCacheTest(unittest.TestCase):
             "[0.1,0.2,0.3]",
         )
 
+    def test_group_queries_after_hydrate_keeps_query_embedding_on_source_copies(self):
+        queries = [
+            {
+                "query_text": "genetics",
+                "paper_sources": ["biorxiv"],
+                "cache_ref": {"profile_index": 0, "item_kind": "intent_queries", "item_index": 0},
+            }
+        ]
+        cfg = {
+            "subscriptions": {
+                "intent_profiles": [
+                    {
+                        "tag": "GENE",
+                        "description": "desc",
+                        "intent_queries": [{"query": "genetics"}],
+                    }
+                ]
+            }
+        }
+
+        original_encode = self.mod.encode_queries
+
+        def fake_encode(_model, texts, batch_size=8, max_length=None):
+            self.assertEqual(texts, ["genetics"])
+            return np.asarray([[0.7, 0.8, 0.9]], dtype=np.float32)
+
+        class DummyModel:
+            pass
+
+        self.mod.encode_queries = fake_encode
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = pathlib.Path(tmp) / "config.yaml"
+                self.mod.hydrate_query_embeddings_from_config(
+                    config=cfg,
+                    queries=queries,
+                    model_name="BAAI/bge-small-en-v1.5",
+                    model_provider=lambda: DummyModel(),
+                    batch_size=8,
+                    max_length=None,
+                    config_path=str(path),
+                )
+                grouped = self.mod.group_queries_by_source(queries)
+                self.assertIn("biorxiv", grouped)
+                copied_query = grouped["biorxiv"][0]
+                self.assertTrue(isinstance(copied_query.get("query_embedding"), np.ndarray))
+                np.testing.assert_allclose(copied_query["query_embedding"], np.asarray([0.7, 0.8, 0.9], dtype=np.float32))
+        finally:
+            self.mod.encode_queries = original_encode
+
 
 if __name__ == "__main__":
     unittest.main()

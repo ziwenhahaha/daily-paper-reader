@@ -57,7 +57,9 @@
   <img src="docs/tutorial/tutorial-zotero-settings.png" alt="Zotero Actions and Tags 设置" width="88%" />
 </p>
 
-5. 下载仓库里的脚本，并导入到 Zotero 中
+5. 下载仓库里的脚本，并导入到 Zotero 中  
+   脚本链接：
+   <a href="others/actions-zotero.yml" data-no-router download="actions-zotero.yml">下载 actions-zotero.yml</a>
 
 <p align="center">
   <img src="docs/tutorial/tutorial-zotero-script-download.png" alt="下载 Zotero 脚本" width="88%" />

@@ -1,5 +1,10 @@
 import unittest
+import sys
+from pathlib import Path
+from unittest.mock import patch
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 from src.subscription_plan import (
     build_pipeline_inputs,
     count_subscription_tags,
@@ -40,6 +45,7 @@ class SubscriptionPlanTest(unittest.TestCase):
         self.assertEqual(kw_bm25.get('boolean_expr'), '')
         self.assertEqual(kw_bm25.get('query_text'), 'A B')
         self.assertEqual(kw_bm25.get('paper_tag'), 'keyword:SR')
+        self.assertEqual(kw_bm25.get('paper_sources'), ['arxiv'])
 
     def test_build_pipeline_inputs_without_profiles(self):
         plan = build_pipeline_inputs({'subscriptions': {'keyword_recall_mode': 'or'}})
@@ -89,6 +95,7 @@ class SubscriptionPlanTest(unittest.TestCase):
         self.assertEqual(kw_bm25.get('query_text'), 'legacy expr')
         emb = [q for q in plan['embedding_queries'] if q.get('type') == 'keyword'][0]
         self.assertEqual(emb.get('query_text'), 'legacy expr')
+        self.assertEqual(emb.get('paper_sources'), ['arxiv'])
 
     def test_build_pipeline_inputs_with_intent_queries(self):
         cfg = {
@@ -135,6 +142,129 @@ class SubscriptionPlanTest(unittest.TestCase):
         self.assertIn('symbolic regression methods', context_texts)
         self.assertIn('symbolic regression with reinforcement learning', context_texts)
         self.assertIn('equation discovery for physical systems', context_texts)
+
+    def test_build_pipeline_inputs_keeps_explicit_paper_sources(self):
+        cfg = {
+            'source_backends': {
+                'arxiv': {'enabled': True},
+                'biorxiv': {'enabled': True},
+            },
+            'subscriptions': {
+                'intent_profiles': [
+                    {
+                        'id': 'p1',
+                        'tag': 'BIO',
+                        'enabled': True,
+                        'paper_sources': ['arxiv', 'biorxiv'],
+                        'keywords': [
+                            {'keyword': 'protein design', 'query': 'protein design with language models', 'enabled': True},
+                        ],
+                    }
+                ],
+            },
+        }
+        plan = build_pipeline_inputs(cfg)
+        self.assertEqual(plan['profiles'][0].get('paper_sources'), ['arxiv', 'biorxiv'])
+        self.assertEqual(plan['bm25_queries'][0].get('paper_sources'), ['arxiv', 'biorxiv'])
+
+    def test_build_pipeline_inputs_rejects_empty_paper_sources(self):
+        cfg = {
+            'subscriptions': {
+                'intent_profiles': [
+                    {
+                        'tag': 'BAD',
+                        'enabled': True,
+                        'paper_sources': [],
+                        'keywords': [{'keyword': 'x', 'query': 'x'}],
+                    }
+                ],
+            }
+        }
+        with self.assertRaises(ValueError):
+            build_pipeline_inputs(cfg)
+
+    def test_build_pipeline_inputs_rejects_unknown_paper_source(self):
+        cfg = {
+            'subscriptions': {
+                'intent_profiles': [
+                    {
+                        'tag': 'BAD',
+                        'enabled': True,
+                        'paper_sources': ['unknown-source'],
+                        'keywords': [{'keyword': 'x', 'query': 'x'}],
+                    }
+                ],
+            }
+        }
+        with self.assertRaises(ValueError):
+            build_pipeline_inputs(cfg)
+
+    def test_build_pipeline_inputs_can_append_runtime_paper_sources(self):
+        cfg = {
+            'source_backends': {
+                'arxiv': {'enabled': True},
+                'biorxiv': {'enabled': True},
+            },
+            'subscriptions': {
+                'intent_profiles': [
+                    {
+                        'tag': 'SR',
+                        'enabled': True,
+                        'paper_sources': ['arxiv'],
+                        'keywords': [{'keyword': 'x', 'query': 'x'}],
+                    }
+                ],
+            }
+        }
+        with patch.dict('os.environ', {'DPR_APPEND_PAPER_SOURCES': 'biorxiv'}, clear=False):
+            plan = build_pipeline_inputs(cfg)
+        self.assertEqual(plan['profiles'][0].get('paper_sources'), ['arxiv', 'biorxiv'])
+
+    def test_build_pipeline_inputs_can_filter_runtime_profile_tag(self):
+        cfg = {
+            'source_backends': {
+                'arxiv': {'enabled': True},
+                'biorxiv': {'enabled': True},
+            },
+            'subscriptions': {
+                'intent_profiles': [
+                    {
+                        'tag': 'AHD',
+                        'enabled': True,
+                        'keywords': [{'keyword': 'algo', 'query': 'algo'}],
+                    },
+                    {
+                        'tag': 'GENE',
+                        'enabled': True,
+                        'paper_sources': ['biorxiv'],
+                        'keywords': [{'keyword': 'genetics', 'query': 'genetics'}],
+                    },
+                ],
+            },
+        }
+        with patch.dict('os.environ', {'DPR_FILTER_PROFILE_TAG': 'GENE'}, clear=False):
+            plan = build_pipeline_inputs(cfg)
+        self.assertEqual([item.get('tag') for item in plan['profiles']], ['GENE'])
+        self.assertEqual([item.get('tag') for item in plan['bm25_queries']], ['GENE'])
+        self.assertEqual(plan['bm25_queries'][0].get('paper_sources'), ['biorxiv'])
+
+    def test_runtime_profile_tag_filter_can_run_paused_profile(self):
+        cfg = {
+            'subscriptions': {
+                'intent_profiles': [
+                    {
+                        'tag': 'PausedOnly',
+                        'enabled': True,
+                        'paused': True,
+                        'keywords': [{'keyword': 'paused keyword', 'query': 'paused keyword'}],
+                    },
+                ],
+            },
+        }
+        with patch.dict('os.environ', {'DPR_FILTER_PROFILE_TAG': 'PausedOnly'}, clear=False):
+            plan = build_pipeline_inputs(cfg)
+        self.assertEqual([item.get('tag') for item in plan['profiles']], ['PausedOnly'])
+        self.assertEqual([item.get('tag') for item in plan['bm25_queries']], ['PausedOnly'])
 
     def test_count_tags(self):
         cfg = {

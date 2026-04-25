@@ -316,102 +316,6 @@ def call_filter(
     debug_tag: str,
     retry_note: str = "",
 ) -> List[Dict[str, Any]]:
-    def strip_wrappers(text: str) -> str:
-        cleaned = (text or "").strip()
-        # 去掉常见的 markdown 代码块
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-        return cleaned.strip()
-
-    def repair_json_suffix(text: str) -> str:
-        # 尝试修复被截断/尾部坏掉的 JSON：补全未闭合字符串与括号
-        if not text:
-            return text
-
-        stack: List[str] = []
-        in_str = False
-        escaped = False
-
-        for ch in text:
-            if in_str:
-                if escaped:
-                    escaped = False
-                    continue
-                if ch == "\\":
-                    escaped = True
-                    continue
-                if ch == '"':
-                    in_str = False
-                continue
-
-            if ch == '"':
-                in_str = True
-            elif ch == '{':
-                stack.append('}')
-            elif ch == '[':
-                stack.append(']')
-            elif ch in ('}', ']'):
-                if stack and stack[-1] == ch:
-                    stack.pop()
-
-        repaired = text
-        if in_str:
-            repaired += '"'
-        if stack:
-            repaired += ''.join(reversed(stack))
-
-        # 去掉可能出现的尾部悬挂逗号，避免 `,}`、`,]`
-        repaired = re.sub(r",(\s*[}\]])", r"\1", repaired)
-        return repaired
-
-    def load_json_lenient(text: str) -> Dict[str, Any]:
-        """
-        宽松解析模型返回的 JSON。
-        兼容常见问题：
-        - JSON 后面夹带了额外文本（json.loads 报 Extra data）
-        - 前后包含多余空白或换行
-        """
-        raw = strip_wrappers((text or "").strip())
-        if not raw:
-            return {}
-
-        decoder = json.JSONDecoder()
-        candidates: List[str] = []
-
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start != -1:
-            candidates.append(raw[start:])
-            if end != -1 and end > start:
-                candidates.append(raw[start : end + 1])
-        else:
-            candidates.append(raw)
-
-        seen: set[str] = set()
-        last_exc: Exception | None = None
-        for candidate in candidates:
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            try:
-                obj, _idx = decoder.raw_decode(candidate)
-                if isinstance(obj, dict):
-                    return obj
-            except Exception as exc:
-                last_exc = exc
-                repaired = repair_json_suffix(candidate)
-                if repaired != candidate:
-                    try:
-                        obj = json.loads(repaired)
-                        if isinstance(obj, dict):
-                            return obj
-                    except Exception as exc2:
-                        last_exc = exc2
-                continue
-        if last_exc is not None:
-            raise last_exc
-        return {}
-
     schema = {
         "type": "object",
         "properties": {
@@ -444,19 +348,6 @@ def call_filter(
         "required": ["results"],
         "additionalProperties": False,
     }
-
-    use_json_object = "gemini" in (client.model or "").lower()
-    if use_json_object:
-        response_format = {"type": "json_object"}
-    else:
-        response_format = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "rerank_batch",
-                "schema": schema,
-                "strict": True,
-            },
-        }
 
     system_prompt = (
         "You are an intelligent Research Relevance Evaluator. "
@@ -522,20 +413,32 @@ def call_filter(
         user_prompt += f"\n\nRetry correction note:\n{retry_note}"
     repeated_user_prompt = build_repeated_user_prompt(user_prompt)
 
-    resp = client.chat(
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": repeated_user_prompt
-                + "\n\nOutput must be strict JSON only, no markdown, no fences, no extra text.",
-            },
-        ],
-        response_format=response_format,
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": repeated_user_prompt
+            + "\n\nOutput must be strict JSON only, no markdown, no fences, no extra text.",
+        },
+    ]
+    resp = client.chat_structured(
+        messages=messages,
+        schema_name="rerank_batch",
+        schema=schema,
+        strict=True,
+        allow_json_object_fallback=True,
     )
-    content = resp.get("content", "")
+    content = str(resp.get("content") or "")
     try:
-        payload = load_json_lenient(content)
+        if resp.get("refusal"):
+            raise ValueError(f"structured output refusal: {resp.get('refusal')}")
+        if resp.get("finish_reason") not in (None, "stop"):
+            raise ValueError(f"unexpected finish_reason: {resp.get('finish_reason')}")
+        if resp.get("parse_error") is not None:
+            raise resp["parse_error"]
+        payload = resp.get("parsed")
+        if not isinstance(payload, dict):
+            raise ValueError("parsed payload is not an object")
     except Exception as exc:
         preview = (content or "").strip().replace("\n", " ")
         if len(preview) > 800:

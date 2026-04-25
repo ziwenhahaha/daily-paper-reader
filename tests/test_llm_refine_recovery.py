@@ -78,14 +78,33 @@ class LlmRefineRecoveryTest(unittest.TestCase):
         class FakeClient:
             model = "gemini-3-flash-preview-nothinking"
 
-            def chat(self, messages, response_format):
+            def chat_structured(self, messages, schema_name, schema, strict, allow_json_object_fallback):
                 captured["messages"] = messages
-                captured["response_format"] = response_format
+                captured["schema_name"] = schema_name
+                captured["schema"] = schema
+                captured["strict"] = strict
+                captured["allow_json_object_fallback"] = allow_json_object_fallback
                 return {
                     "content": (
                         '{"results":[{"id":"p-1","matched_requirement_index":1,'
                         '"evidence_en":"ok","evidence_cn":"相关","tldr_en":"ok","tldr_cn":"相关","score":8}]}'
-                    )
+                    ),
+                    "parsed": {
+                        "results": [
+                            {
+                                "id": "p-1",
+                                "matched_requirement_index": 1,
+                                "evidence_en": "ok",
+                                "evidence_cn": "相关",
+                                "tldr_en": "ok",
+                                "tldr_cn": "相关",
+                                "score": 8,
+                            }
+                        ]
+                    },
+                    "parse_error": None,
+                    "refusal": "",
+                    "finish_reason": "stop",
                 }
 
         out = self.mod.call_filter(
@@ -106,6 +125,9 @@ class LlmRefineRecoveryTest(unittest.TestCase):
 
         self.assertEqual(out[0]["id"], "p-1")
         user_content = captured["messages"][1]["content"]
+        self.assertEqual(captured["schema_name"], "rerank_batch")
+        self.assertTrue(captured["strict"])
+        self.assertTrue(captured["allow_json_object_fallback"])
         self.assertIn("Let me repeat that:", user_content)
         self.assertEqual(user_content.count("User requirements list:"), 2)
         self.assertEqual(user_content.count("Papers:"), 2)

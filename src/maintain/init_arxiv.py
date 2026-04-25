@@ -1,22 +1,33 @@
 #!/usr/bin/env python
 # 初始化 Supabase 公共论文库：
-# 1) 使用 1.fetch_paper_arxiv.py 进行长时间窗口分片抓取（避免深分页 500）
-# 2) 使用 1.2.sync_supabase_public.py 生成 embedding 并 upsert 到 Supabase
+# 1) 使用 maintain/fetchers/fetch_arxiv.py 进行长时间窗口分片抓取
+# 2) 使用 maintain/sync.py 生成 embedding 并 upsert 到 Supabase
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
+try:
+    import torch
+except Exception:  # pragma: no cover
+    torch = None
+
 
 SCRIPT_DIR = os.path.dirname(__file__)
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
 LONG_RANGE_DAYS_THRESHOLD = 7
 RANGE_TOKEN_RE = re.compile(r"^(\d{8})-(\d{8})$")
+DEFAULT_FETCH_DAYS = 9
+DEFAULT_EMBED_BATCH_SIZE = 8
+DEFAULT_EMBED_CHUNK_SIZE = 512
+LOCAL_MAINTAIN_EMBED_BATCH_SIZE = 64
+LOCAL_MAINTAIN_EMBED_CHUNK_SIZE = 1024
 
 
 def run_step(label: str, args: list[str]) -> None:
@@ -64,11 +75,21 @@ def find_latest_raw_file(project_root: str) -> str:
     return best_path
 
 
+def count_raw_rows(path: str) -> int:
+    if not os.path.exists(path):
+        return 0
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f) or []
+    if not isinstance(data, list):
+        raise RuntimeError(f"raw json must be list: {path}")
+    return len(data)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="抓取近 N 天 arXiv 并初始化同步到 Supabase（含 embedding）。",
     )
-    parser.add_argument("--days", type=int, default=30, help="回溯抓取天数，默认 30。")
+    parser.add_argument("--days", type=int, default=DEFAULT_FETCH_DAYS, help="回溯抓取天数，默认 9。")
     parser.add_argument("--chunk-days", type=int, default=7, help="抓取分片窗口天数，默认 7。")
     parser.add_argument(
         "--ignore-seen",
@@ -100,10 +121,16 @@ def main() -> None:
         help="跳过抓取步骤，直接复用 archive/<token>/raw/arxiv_papers_<token>.json 做同步。",
     )
     parser.add_argument("--embed-model", type=str, default="", help="embedding 模型（空=按 config/default）。")
-    parser.add_argument("--embed-device", type=str, default="cpu", help="单设备模式（如 cpu/cuda:0）。")
+    parser.add_argument("--embed-device", type=str, default="", help="单设备模式（如 cpu/cuda:0）。")
     parser.add_argument("--embed-devices", type=str, default="", help="多设备列表，如 cuda:0,cuda:1。")
-    parser.add_argument("--embed-batch-size", type=int, default=8, help="embedding batch size。")
+    parser.add_argument("--embed-batch-size", type=int, default=DEFAULT_EMBED_BATCH_SIZE, help="embedding batch size。")
+    parser.add_argument("--embed-chunk-size", type=int, default=DEFAULT_EMBED_CHUNK_SIZE, help="流式上传时的 embedding 分片大小。")
     parser.add_argument("--embed-max-length", type=int, default=0, help="embedding max length，<=0 表示不限制。")
+    parser.add_argument("--embed-local-only", action="store_true", help="强制使用本地 embedding，不走远程服务。")
+    parser.add_argument("--local-maintain", action="store_true", help="本地维护 Supabase 模式：本地 embedding + 流式上传。")
+    parser.add_argument("--reserve-upload-cpus", type=int, default=2, help="本地维护模式下为上传保留的 CPU 核数。")
+    parser.add_argument("--upload-workers", type=int, default=2, help="本地维护模式下上传并发数。")
+    parser.add_argument("--max-pending-upload-chunks", type=int, default=2, help="本地维护模式下最多积压的待上传分片数。")
     parser.add_argument("--schema", type=str, default=os.getenv("SUPABASE_SCHEMA", "public"), help="Supabase schema。")
     parser.add_argument("--upsert-batch-size", type=int, default=200, help="Supabase upsert 批大小。")
     parser.add_argument("--upsert-timeout", type=int, default=120, help="Supabase upsert 超时（秒）。")
@@ -113,11 +140,25 @@ def main() -> None:
     args = parser.parse_args()
 
     python = sys.executable
-    project_root = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+    project_root = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
 
     date_str = resolve_date_token(args.date, int(args.days or 1))
     os.environ["DPR_RUN_DATE"] = date_str
     print(f"[INFO] DPR_RUN_DATE={date_str}", flush=True)
+    if args.local_maintain and args.embed_batch_size == DEFAULT_EMBED_BATCH_SIZE:
+        args.embed_batch_size = LOCAL_MAINTAIN_EMBED_BATCH_SIZE
+    if args.local_maintain and args.embed_chunk_size == DEFAULT_EMBED_CHUNK_SIZE:
+        args.embed_chunk_size = LOCAL_MAINTAIN_EMBED_CHUNK_SIZE
+    if args.local_maintain:
+        args.embed_local_only = True
+    if not str(args.embed_device or "").strip() and not str(args.embed_devices or "").strip():
+        cuda_mod = getattr(torch, "cuda", None)
+        cuda_available = bool(cuda_mod and getattr(cuda_mod, "is_available", lambda: False)())
+        cuda_count = int(getattr(cuda_mod, "device_count", lambda: 0)() or 0) if cuda_mod else 0
+        if args.local_maintain and cuda_available and cuda_count > 0:
+            args.embed_devices = ",".join(f"cuda:{idx}" for idx in range(cuda_count))
+        else:
+            args.embed_device = "cpu"
     raw_input = str(args.raw_input or "").strip()
     if raw_input:
         if os.path.isabs(raw_input):
@@ -136,11 +177,13 @@ def main() -> None:
     if not args.skip_fetch:
         fetch_cmd = [
             python,
-            os.path.join(SCRIPT_DIR, "1.fetch_paper_arxiv.py"),
+            os.path.join(SCRIPT_DIR, "fetchers", "fetch_arxiv.py"),
             "--days",
             str(max(int(args.days or 1), 1)),
             "--chunk-days",
             str(max(int(args.chunk_days or 1), 1)),
+            "--output",
+            raw_path,
             "--disable-supabase-read",
         ]
         if args.ignore_seen:
@@ -178,17 +221,31 @@ def main() -> None:
                 )
         print(f"[INFO] Step 1 已跳过，复用原始文件：{raw_path}", flush=True)
 
+    fetch_count = count_raw_rows(raw_path)
+    print(f"[INFO] arXiv fetch 预检结果：count={fetch_count}，raw_path={raw_path}", flush=True)
+    if fetch_count <= 0:
+        print("[INFO] 本次 arXiv 抓取无新增论文，已跳过 Supabase 同步。", flush=True)
+        return
+
     sync_cmd = [
         python,
-        os.path.join(SCRIPT_DIR, "1.2.sync_supabase_public.py"),
+        os.path.join(SCRIPT_DIR, "sync.py"),
         "--date",
         date_str,
         "--schema",
         str(args.schema),
         "--embed-batch-size",
         str(max(int(args.embed_batch_size or 1), 1)),
+        "--embed-chunk-size",
+        str(max(int(args.embed_chunk_size or 1), 1)),
         "--embed-max-length",
         str(int(args.embed_max_length or 0)),
+        "--reserve-upload-cpus",
+        str(max(int(args.reserve_upload_cpus or 0), 0)),
+        "--upload-workers",
+        str(max(int(args.upload_workers or 1), 1)),
+        "--max-pending-upload-chunks",
+        str(max(int(args.max_pending_upload_chunks or 1), 1)),
         "--upsert-batch-size",
         str(max(int(args.upsert_batch_size or 1), 1)),
         "--upsert-timeout",
@@ -198,6 +255,8 @@ def main() -> None:
         "--upsert-retry-wait",
         str(max(float(args.upsert_retry_wait or 0.0), 0.0)),
     ]
+    if args.local_maintain:
+        sync_cmd.append("--local-maintain-mode")
     sync_cmd += ["--raw-input", raw_path]
     if args.embed_model:
         sync_cmd += ["--embed-model", str(args.embed_model)]
@@ -205,6 +264,8 @@ def main() -> None:
         sync_cmd += ["--embed-devices", str(args.embed_devices)]
     else:
         sync_cmd += ["--embed-device", str(args.embed_device or "cpu")]
+    if args.embed_local_only and not args.local_maintain:
+        sync_cmd.append("--embed-local-only")
     if args.no_embeddings:
         sync_cmd.append("--no-embeddings")
     run_step("Step 2 - sync Supabase", sync_cmd)

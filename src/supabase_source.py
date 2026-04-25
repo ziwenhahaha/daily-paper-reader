@@ -10,6 +10,11 @@ import re
 import requests
 import time
 
+try:
+    from source_config import get_source_backend
+except Exception:  # pragma: no cover - 兼容 package 导入路径
+    from src.source_config import get_source_backend
+
 
 DEFAULT_TIMEOUT = 20
 _DEFAULT_SUPABASE_RETRY = 3
@@ -125,13 +130,13 @@ def _norm(v: Any) -> str:
 
 def get_supabase_read_config(config: Dict[str, Any]) -> Dict[str, Any]:
     root = config or {}
-    sb = (root.get("supabase") or {}) if isinstance(root, dict) else {}
+    sb = get_source_backend(root, "arxiv")
     setting = (root.get("arxiv_paper_setting") or {}) if isinstance(root, dict) else {}
 
     enabled = bool(sb.get("enabled", False))
     prefer_read = bool(setting.get("prefer_supabase_read", True))
     use_vector_rpc = bool(sb.get("use_vector_rpc", False))
-    vector_rpc_ann = _norm(sb.get("vector_rpc_ann") or sb.get("vector_rpc") or "match_arxiv_papers")
+    vector_rpc = _norm(sb.get("vector_rpc_exact") or sb.get("vector_rpc") or "match_arxiv_papers_exact")
     return {
         "enabled": enabled and prefer_read,
         "use_vector_rpc": use_vector_rpc,
@@ -140,8 +145,7 @@ def get_supabase_read_config(config: Dict[str, Any]) -> Dict[str, Any]:
         "anon_key": _norm(sb.get("anon_key")),
         "papers_table": _norm(sb.get("papers_table") or "arxiv_papers"),
         "schema": _norm(sb.get("schema") or "public"),
-        "vector_rpc": vector_rpc_ann,
-        "vector_rpc_ann": vector_rpc_ann,
+        "vector_rpc": vector_rpc,
         "vector_rpc_exact": _norm(sb.get("vector_rpc_exact")),
         "bm25_rpc": _norm(sb.get("bm25_rpc") or "match_arxiv_papers_bm25"),
     }
@@ -482,6 +486,7 @@ def match_papers_by_embedding(
     start_dt: datetime | None = None,
     end_dt: datetime | None = None,
     time_fields: tuple[str, ...] = ("published",),
+    filter_sources: List[str] | None = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
     调用 Supabase RPC，在数据库侧执行向量相似度检索。
@@ -504,6 +509,8 @@ def match_papers_by_embedding(
         "match_count": k,
         **_build_date_filter_payload(start_dt, end_dt),
     }
+    if isinstance(filter_sources, list) and filter_sources:
+        payload["filter_sources"] = [str(item).strip() for item in filter_sources if str(item).strip()]
     try:
         resp = _request_with_retries(
             "POST",
@@ -551,7 +558,7 @@ def match_papers_by_embedding(
                     "authors": r.get("authors") if isinstance(r.get("authors"), list) else [],
                     "primary_category": _norm(r.get("primary_category")) or None,
                     "categories": r.get("categories") if isinstance(r.get("categories"), list) else [],
-                    "source": "supabase",
+                    "source": _norm(r.get("source") or "supabase") or "supabase",
                     "similarity": sim_f,
                 }
             )
@@ -572,6 +579,7 @@ def match_papers_by_bm25(
     start_dt: datetime | None = None,
     end_dt: datetime | None = None,
     time_fields: tuple[str, ...] = ("published",),
+    filter_sources: List[str] | None = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
     调用 Supabase RPC，在数据库侧执行 BM25 风格检索（PostgreSQL FTS）。
@@ -594,6 +602,8 @@ def match_papers_by_bm25(
         "match_count": k,
         **_build_date_filter_payload(start_dt, end_dt),
     }
+    if isinstance(filter_sources, list) and filter_sources:
+        payload["filter_sources"] = [str(item).strip() for item in filter_sources if str(item).strip()]
     try:
         resp = _request_with_retries(
             "POST",
@@ -636,6 +646,7 @@ def match_papers_by_bm25(
                     "authors": r.get("authors") if isinstance(r.get("authors"), list) else [],
                     "primary_category": _norm(r.get("primary_category")) or None,
                     "categories": r.get("categories") if isinstance(r.get("categories"), list) else [],
+                    "source": _norm(r.get("source") or "supabase") or "supabase",
                     "score": r.get("score"),
                     "similarity": r.get("similarity"),
                 }

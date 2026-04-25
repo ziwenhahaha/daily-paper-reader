@@ -1,4 +1,6 @@
+import json
 import os
+import re
 import time
 from typing import List, Dict, Tuple, Any, Optional
 
@@ -103,6 +105,17 @@ class LLMClient:
     def _iter_request_bases(self) -> List[str]:
         return self._normalize_base_urls(self._base_urls)
 
+    @staticmethod
+    def _build_chat_completions_url(base_url: str | None) -> str:
+        raw = str(base_url or "").strip().rstrip("/")
+        if not raw:
+            raise ValueError("缺少可用的 LLM base_url")
+        if raw.lower().endswith("/chat/completions"):
+            return raw
+        if re.search(r"/v\d+$", raw, re.IGNORECASE):
+            return f"{raw}/chat/completions"
+        return f"{raw}/v1/chat/completions"
+
     def _iter_retry_bases(self, total_attempts: int = 6) -> List[str]:
         bases = self._iter_request_bases()
         if total_attempts <= 0:
@@ -136,6 +149,177 @@ class LLMClient:
         except Exception:
             pass
         return 'llm'
+
+    @staticmethod
+    def _extract_text_content(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            parts: List[str] = []
+            for item in value:
+                text = LLMClient._extract_text_content(item)
+                if text:
+                    parts.append(text)
+            return "\n".join(parts).strip()
+        if isinstance(value, dict):
+            for key in ("text", "content", "value"):
+                text = value.get(key)
+                if isinstance(text, str) and text.strip():
+                    return text
+        return ""
+
+    @staticmethod
+    def _strip_json_wrappers(text: str) -> str:
+        cleaned = (text or "").strip()
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _repair_json_suffix(text: str) -> str:
+        if not text:
+            return text
+
+        stack: List[str] = []
+        in_str = False
+        escaped = False
+
+        for ch in text:
+            if in_str:
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == "\\":
+                    escaped = True
+                    continue
+                if ch == '"':
+                    in_str = False
+                continue
+
+            if ch == '"':
+                in_str = True
+            elif ch == '{':
+                stack.append('}')
+            elif ch == '[':
+                stack.append(']')
+            elif ch in ('}', ']'):
+                if stack and stack[-1] == ch:
+                    stack.pop()
+
+        repaired = text
+        if in_str:
+            repaired += '"'
+        if stack:
+            repaired += ''.join(reversed(stack))
+        repaired = re.sub(r",(\s*[}\]])", r"\1", repaired)
+        return repaired
+
+    @classmethod
+    def parse_json_content(cls, text: str) -> Any:
+        raw = cls._strip_json_wrappers((text or "").strip())
+        if not raw:
+            return None
+
+        decoder = json.JSONDecoder()
+        candidates: List[str] = []
+        first_obj = raw.find("{")
+        last_obj = raw.rfind("}")
+        first_arr = raw.find("[")
+        last_arr = raw.rfind("]")
+        if first_obj != -1:
+            candidates.append(raw[first_obj:])
+            if last_obj != -1 and last_obj >= first_obj:
+                candidates.append(raw[first_obj:last_obj + 1])
+        if first_arr != -1:
+            candidates.append(raw[first_arr:])
+            if last_arr != -1 and last_arr >= first_arr:
+                candidates.append(raw[first_arr:last_arr + 1])
+        candidates.append(raw)
+
+        seen: set[str] = set()
+        last_exc: Exception | None = None
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            try:
+                obj, _idx = decoder.raw_decode(candidate)
+                return obj
+            except Exception as exc:
+                last_exc = exc
+                repaired = cls._repair_json_suffix(candidate)
+                if repaired == candidate:
+                    continue
+                try:
+                    return json.loads(repaired)
+                except Exception as exc2:
+                    last_exc = exc2
+
+        raise ValueError(f"模型未返回合法 JSON：{raw[:500]}") from last_exc
+
+    @staticmethod
+    def build_json_schema_response_format(
+        schema_name: str,
+        schema: Dict[str, Any],
+        strict: bool = True,
+    ) -> Dict[str, Any]:
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                "schema": schema,
+                "strict": bool(strict),
+            },
+        }
+
+    @staticmethod
+    def build_json_object_response_format() -> Dict[str, str]:
+        return {"type": "json_object"}
+
+    @staticmethod
+    def _is_structured_output_unsupported_error(error: Exception) -> bool:
+        response = getattr(error, "response", None)
+        status_code = getattr(response, "status_code", None)
+        text = ""
+        if response is not None:
+            try:
+                text = response.text or ""
+            except Exception:
+                text = ""
+        if not text:
+            text = str(error or "")
+        lowered = text.lower()
+        has_target = any(token in lowered for token in (
+            "response_format",
+            "json_schema",
+            "json object",
+            "json_object",
+        ))
+        has_signal = any(token in lowered for token in (
+            "unsupported",
+            "not support",
+            "not supported",
+            "invalid",
+            "unknown",
+            "unrecognized",
+            "extra inputs",
+            "unexpected",
+            "must be one of",
+            "one of",
+            "allowed values",
+            "enum",
+        ))
+        if has_target and has_signal:
+            return True
+        if (
+            status_code in (400, 404, 415, 422)
+            and "response_format" in lowered
+            and any(token in lowered for token in ("json_object", "json_schema", "text"))
+        ):
+            return True
+        if status_code in (400, 404, 415, 422) and "response_format" in lowered:
+            return True
+        return False
 
     def chat(self, messages: List[Dict[str, str]], response_format: Optional[Dict[str, Any]] = None) -> dict:
         """
@@ -186,7 +370,7 @@ class LLMClient:
         request_bases = self._iter_retry_bases(total_attempts=6)
         last_error: Exception | None = None
         for attempt_idx, req_base in enumerate(request_bases, start=1):
-            request_url = f"{req_base.rstrip('/')}/chat/completions"
+            request_url = self._build_chat_completions_url(req_base)
             try:
                 response = requests.post(request_url, headers=headers, json=payload, timeout=120)
                 response.raise_for_status()
@@ -213,9 +397,12 @@ class LLMClient:
                     print("API 响应不包含 choices 字段或为空：", str(response_data)[:500])
                     raise requests.exceptions.HTTPError("API response missing choices")
 
-                message = response_data['choices'][0].get('message', {})
-                content = message.get('content', '') or ''
-                reasoning_content = message.get('reasoning_content', '') or ''
+                choice = response_data['choices'][0] if isinstance(response_data['choices'][0], dict) else {}
+                message = choice.get('message', {}) if isinstance(choice, dict) else {}
+                content = self._extract_text_content(message.get('content'))
+                reasoning_content = self._extract_text_content(message.get('reasoning_content'))
+                refusal = str(message.get('refusal') or '').strip()
+                finish_reason = choice.get('finish_reason') if isinstance(choice, dict) else None
 
                 usage = response_data.get('usage', {})
                 prompt_tokens = usage.get('prompt_tokens', 0)
@@ -273,7 +460,12 @@ class LLMClient:
 
                 return {
                     "content": content,
+                    "raw_content": message.get('content'),
                     "reasoning_content": reasoning_content,
+                    "refusal": refusal,
+                    "finish_reason": finish_reason,
+                    "message": message,
+                    "raw_response": response_data,
                     "tokens": {
                         "prompt": prompt_tokens,
                         "content": completion_tokens - reasoning_tokens,
@@ -284,6 +476,8 @@ class LLMClient:
 
             except Exception as e:
                 last_error = e
+                if response_format is not None and self._is_structured_output_unsupported_error(e):
+                    raise
                 if attempt_idx < len(request_bases):
                     next_base = request_bases[attempt_idx] if attempt_idx < len(request_bases) else ''
                     print(
@@ -313,6 +507,61 @@ class LLMClient:
         if last_error is not None:
             raise last_error
         raise RuntimeError("LLM 请求未命中可用 base")
+
+    def chat_structured(
+        self,
+        messages: List[Dict[str, str]],
+        schema_name: str,
+        schema: Dict[str, Any],
+        *,
+        strict: bool = True,
+        allow_json_object_fallback: bool = True,
+    ) -> Dict[str, Any]:
+        attempts: List[Tuple[str, Dict[str, Any]]] = [
+            (
+                "json_schema",
+                self.build_json_schema_response_format(
+                    schema_name=schema_name,
+                    schema=schema,
+                    strict=strict,
+                ),
+            )
+        ]
+        if allow_json_object_fallback:
+            attempts.append(("json_object", self.build_json_object_response_format()))
+
+        last_error: Exception | None = None
+        for idx, (format_name, response_format) in enumerate(attempts):
+            try:
+                response = self.chat(messages=messages, response_format=response_format)
+            except Exception as exc:
+                last_error = exc
+                if idx + 1 < len(attempts) and self._is_structured_output_unsupported_error(exc):
+                    print(
+                        f"[INFO] Structured Outputs 不受支持，回退到 {attempts[idx + 1][0]}。"
+                    )
+                    continue
+                raise
+
+            parsed = None
+            parse_error: Exception | None = None
+            if not response.get("refusal"):
+                content = str(response.get("content") or "").strip()
+                if content:
+                    try:
+                        parsed = self.parse_json_content(content)
+                    except Exception as exc:
+                        parse_error = exc
+
+            structured = dict(response)
+            structured["parsed"] = parsed
+            structured["parse_error"] = parse_error
+            structured["response_format_used"] = format_name
+            return structured
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("结构化输出请求未命中可用格式")
 
     def rerank(
         self,

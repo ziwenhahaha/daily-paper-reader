@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import sys
 import tempfile
@@ -72,6 +73,126 @@ class SelectPapersSourceTagTest(unittest.TestCase):
             self.assertEqual(len(out), 1)
             self.assertNotIn("_source", out[0])
             self.assertEqual(out[0].get("selection_source"), "fresh_fetch")
+
+    def test_load_recent_carryover_keeps_tag_time_independent(self):
+        payload = {
+            "generated_at": "2026-03-28T00:00:00+00:00",
+            "tag_states": {
+                "GENE": {
+                    "updated_date": "20260328",
+                    "carryover_days": 5,
+                    "items": [
+                        {
+                            "id": "gene-1",
+                            "paper_id": "gene-1",
+                            "llm_score": 9.1,
+                            "matched_query_tag": "query:GENE",
+                            "carry_days": 1,
+                        }
+                    ],
+                },
+                "AHD": {
+                    "updated_date": "20260326",
+                    "carryover_days": 5,
+                    "items": [
+                        {
+                            "id": "ahd-1",
+                            "paper_id": "ahd-1",
+                            "llm_score": 9.2,
+                            "matched_query_tag": "query:AHD",
+                            "carry_days": 1,
+                        }
+                    ],
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "carryover.json"
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            items, delta = self.mod.load_recent_carryover(
+                str(path),
+                self.mod.parse_date_str("20260328"),
+                5,
+                active_tags=["GENE"],
+            )
+
+        self.assertEqual(delta, 0)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["id"], "gene-1")
+        self.assertEqual(items[0]["carry_days"], 1)
+
+    def test_build_carryover_payload_updates_only_active_tag(self):
+        existing = {
+            "generated_at": "2026-03-27T00:00:00+00:00",
+            "tag_states": {
+                "AHD": {
+                    "updated_date": "20260327",
+                    "carryover_days": 5,
+                    "items": [
+                        {
+                            "id": "ahd-1",
+                            "paper_id": "ahd-1",
+                            "llm_score": 9.2,
+                            "matched_query_tag": "query:AHD",
+                            "carry_days": 2,
+                        }
+                    ],
+                }
+            },
+        }
+        payload = self.mod.build_carryover_payload(
+            existing,
+            [
+                {
+                    "id": "gene-1",
+                    "paper_id": "gene-1",
+                    "llm_score": 9.3,
+                    "matched_query_tag": "query:GENE",
+                    "llm_tags": ["gene"],
+                    "carry_days": 1,
+                }
+            ],
+            active_tags=["GENE"],
+            carryover_days=5,
+            updated_date="20260328",
+        )
+
+        self.assertIn("AHD", payload["tag_states"])
+        self.assertIn("GENE", payload["tag_states"])
+        self.assertEqual(payload["tag_states"]["AHD"]["updated_date"], "20260327")
+        self.assertEqual(payload["tag_states"]["GENE"]["updated_date"], "20260328")
+        self.assertEqual(payload["tag_states"]["GENE"]["items"][0]["id"], "gene-1")
+
+    def test_collect_seen_ids_isolated_by_active_tag(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            recommend_dir = root / "20260327" / "recommend"
+            recommend_dir.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "deep_dive": [
+                    {
+                        "id": "paper-ahd",
+                        "matched_query_tag": "query:AHD",
+                    },
+                    {
+                        "id": "paper-gene",
+                        "matched_query_tag": "query:GENE",
+                    },
+                ],
+                "quick_skim": [],
+            }
+            (recommend_dir / "arxiv_papers_20260327.standard.json").write_text(
+                json.dumps(payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            seen_gene = self.mod.collect_seen_ids(str(root), "20260328", active_tags=["GENE"])
+            seen_ahd = self.mod.collect_seen_ids(str(root), "20260328", active_tags=["AHD"])
+            seen_all = self.mod.collect_seen_ids(str(root), "20260328")
+
+        self.assertEqual(seen_gene, {"paper-gene"})
+        self.assertEqual(seen_ahd, {"paper-ahd"})
+        self.assertEqual(seen_all, {"paper-ahd", "paper-gene"})
 
 
 class SelectPapersDeepPriorityModeTest(unittest.TestCase):

@@ -54,6 +54,7 @@ SOURCE_FRESH_FETCH = "fresh_fetch"
 SOURCE_CARRYOVER_CACHE = "carryover_cache"
 PRIORITY_DEEP_SCORE = 9.0
 CARRYOVER_MIN_SCORE = 8.0
+CARRYOVER_UNTAGGED = "untagged"
 
 
 def log(message: str) -> None:
@@ -111,33 +112,6 @@ def list_date_dirs(archive_root: str) -> List[str]:
     return sorted(result)
 
 
-def collect_seen_ids(archive_root: str, today_str: str) -> set:
-    seen = set()
-    for day in list_date_dirs(archive_root):
-        if day == today_str:
-            continue
-        rec_dir = os.path.join(archive_root, day, "recommend")
-        if not os.path.isdir(rec_dir):
-            continue
-        for name in os.listdir(rec_dir):
-            if not name.endswith(".json"):
-                continue
-            # 兼容单日与区间 token 的文件名前缀
-            if not name.startswith(f"arxiv_papers_{day}."):
-                continue
-            rec_path = os.path.join(rec_dir, name)
-            try:
-                payload = load_json(rec_path)
-            except Exception:
-                continue
-            for key in ("deep_dive", "quick_skim"):
-                for item in payload.get(key) or []:
-                    pid = str(item.get("id") or item.get("paper_id") or "").strip()
-                    if pid:
-                        seen.add(pid)
-    return seen
-
-
 def parse_payload_date(payload: Dict[str, Any]) -> date | None:
     date_str = str(payload.get("updated_date") or "").strip()
     if date_str:
@@ -154,43 +128,133 @@ def parse_payload_date(payload: Dict[str, Any]) -> date | None:
     return None
 
 
+def load_carryover_payload(carryover_path: str) -> Dict[str, Any]:
+    if not os.path.exists(carryover_path):
+        return {}
+    try:
+        payload = load_json(carryover_path)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def normalize_carryover_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"tag_states": {}}
+
+    raw_states = payload.get("tag_states")
+    if isinstance(raw_states, dict):
+        normalized_states: Dict[str, Dict[str, Any]] = {}
+        for raw_tag, raw_state in raw_states.items():
+            tag_key = normalize_carryover_tag(raw_tag) or CARRYOVER_UNTAGGED
+            state = raw_state if isinstance(raw_state, dict) else {}
+            items = state.get("items") if isinstance(state.get("items"), list) else []
+            normalized_states[tag_key] = {
+                "updated_date": str(state.get("updated_date") or payload.get("updated_date") or "").strip(),
+                "carryover_days": int(state.get("carryover_days") or payload.get("carryover_days") or CARRYOVER_DAYS),
+                "items": [dict(item) for item in items if isinstance(item, dict)],
+            }
+        return {
+            "generated_at": str(payload.get("generated_at") or "").strip(),
+            "updated_date": str(payload.get("updated_date") or "").strip(),
+            "carryover_days": int(payload.get("carryover_days") or CARRYOVER_DAYS),
+            "tag_states": normalized_states,
+        }
+
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    tag_states: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for tag_key in resolve_carryover_tags(item):
+            state = tag_states.setdefault(
+                tag_key,
+                {
+                    "updated_date": str(payload.get("updated_date") or "").strip(),
+                    "carryover_days": int(payload.get("carryover_days") or CARRYOVER_DAYS),
+                    "items": [],
+                },
+            )
+            state["items"].append(dict(item))
+
+    return {
+        "generated_at": str(payload.get("generated_at") or "").strip(),
+        "updated_date": str(payload.get("updated_date") or "").strip(),
+        "carryover_days": int(payload.get("carryover_days") or CARRYOVER_DAYS),
+        "tag_states": tag_states,
+    }
+
+
+def merge_carryover_item(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(existing)
+    merged["llm_tags"] = normalize_tags(
+        normalize_tags(existing.get("llm_tags")) + normalize_tags(incoming.get("llm_tags"))
+    )
+    if incoming.get("matched_query_tag") and not merged.get("matched_query_tag"):
+        merged["matched_query_tag"] = incoming.get("matched_query_tag")
+    if incoming.get("matched_requirement_id") and not merged.get("matched_requirement_id"):
+        merged["matched_requirement_id"] = incoming.get("matched_requirement_id")
+    if incoming.get("matched_query_text") and not merged.get("matched_query_text"):
+        merged["matched_query_text"] = incoming.get("matched_query_text")
+    try:
+        merged["carry_days"] = min(int(existing.get("carry_days") or 1), int(incoming.get("carry_days") or 1))
+    except Exception:
+        merged["carry_days"] = int(existing.get("carry_days") or incoming.get("carry_days") or 1)
+    return merged
+
+
 def load_recent_carryover(
     carryover_path: str,
     today_date: date,
     max_days: int,
+    active_tags: List[str] | None = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    if not os.path.exists(carryover_path):
-        return [], 0
-    try:
-        payload = load_json(carryover_path)
-    except Exception:
+    payload = normalize_carryover_payload(load_carryover_payload(carryover_path))
+    tag_states = payload.get("tag_states") or {}
+    if not isinstance(tag_states, dict):
         return [], 0
 
-    items = payload.get("items") or []
-    if not isinstance(items, list):
-        items = []
+    normalized_active_tags = [
+        normalize_carryover_tag(tag)
+        for tag in (active_tags or [])
+        if normalize_carryover_tag(tag)
+    ]
+    target_tags = normalized_active_tags or list(tag_states.keys())
 
-    base_date = parse_payload_date(payload)
-    delta = 0
-    if base_date:
-        delta = (today_date - base_date).days
-        if delta < 0:
-            delta = 0
-
-    updated: List[Dict[str, Any]] = []
-    for item in items:
-        if not isinstance(item, dict):
+    merged_by_id: Dict[str, Dict[str, Any]] = {}
+    max_delta = 0
+    for tag_key in target_tags:
+        state = tag_states.get(tag_key)
+        if not isinstance(state, dict):
             continue
-        carry_days = int(item.get("carry_days") or 1)
-        if delta > 0:
-            carry_days += delta
-        if carry_days > max_days:
-            continue
-        copied = dict(item)
-        copied["carry_days"] = carry_days
-        updated.append(copied)
+        base_date = parse_payload_date(state)
+        delta = 0
+        if base_date:
+            delta = (today_date - base_date).days
+            if delta < 0:
+                delta = 0
+        max_delta = max(max_delta, delta)
 
-    return updated, delta
+        items = state.get("items") if isinstance(state.get("items"), list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            carry_days = int(item.get("carry_days") or 1)
+            if delta > 0:
+                carry_days += delta
+            if carry_days > max_days:
+                continue
+            copied = dict(item)
+            copied["carry_days"] = carry_days
+            pid = str(copied.get("id") or copied.get("paper_id") or "").strip()
+            if not pid:
+                continue
+            if pid in merged_by_id:
+                merged_by_id[pid] = merge_carryover_item(merged_by_id[pid], copied)
+            else:
+                merged_by_id[pid] = copied
+
+    return list(merged_by_id.values()), max_delta
 
 
 def load_config_tag_count() -> Tuple[int, List[str]]:
@@ -242,6 +306,92 @@ def normalize_tags(raw: Any) -> List[str]:
         seen.add(text)
         cleaned.append(text)
     return cleaned
+
+
+def normalize_carryover_tag(tag: Any) -> str:
+    text = str(tag or "").strip()
+    if not text:
+        return ""
+    if ":" in text:
+        prefix, suffix = text.split(":", 1)
+        if prefix in {"query", "keyword"} and suffix.strip():
+            text = suffix.strip()
+    return text
+
+
+def resolve_carryover_tags(item: Dict[str, Any], fallback_tags: List[str] | None = None) -> List[str]:
+    collected: List[str] = []
+
+    matched_query_tag = normalize_carryover_tag(item.get("matched_query_tag"))
+    if matched_query_tag:
+        collected.append(matched_query_tag)
+
+    for raw_tag in normalize_tags(item.get("llm_tags")):
+        normalized = normalize_carryover_tag(raw_tag)
+        if normalized:
+            collected.append(normalized)
+
+    if not collected and fallback_tags:
+        for raw_tag in fallback_tags:
+            normalized = normalize_carryover_tag(raw_tag)
+            if normalized:
+                collected.append(normalized)
+
+    cleaned: List[str] = []
+    seen = set()
+    for tag in collected:
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        cleaned.append(tag)
+    return cleaned or [CARRYOVER_UNTAGGED]
+
+
+def collect_seen_ids(
+    archive_root: str,
+    today_str: str,
+    active_tags: List[str] | None = None,
+) -> set:
+    active_tag_keys = {
+        normalize_carryover_tag(tag).lower()
+        for tag in (active_tags or [])
+        if normalize_carryover_tag(tag)
+    }
+
+    seen = set()
+    for day in list_date_dirs(archive_root):
+        if day == today_str:
+            continue
+        rec_dir = os.path.join(archive_root, day, "recommend")
+        if not os.path.isdir(rec_dir):
+            continue
+        for name in os.listdir(rec_dir):
+            if not name.endswith(".json"):
+                continue
+            if not name.startswith(f"arxiv_papers_{day}."):
+                continue
+            rec_path = os.path.join(rec_dir, name)
+            try:
+                payload = load_json(rec_path)
+            except Exception:
+                continue
+            for key in ("deep_dive", "quick_skim"):
+                for item in payload.get(key) or []:
+                    if not isinstance(item, dict):
+                        continue
+                    pid = str(item.get("id") or item.get("paper_id") or "").strip()
+                    if not pid:
+                        continue
+                    if active_tag_keys:
+                        item_tag_keys = {
+                            normalize_carryover_tag(tag).lower()
+                            for tag in resolve_carryover_tags(item)
+                            if normalize_carryover_tag(tag)
+                        }
+                        if not item_tag_keys.intersection(active_tag_keys):
+                            continue
+                    seen.add(pid)
+    return seen
 
 
 def parse_score(value: Any) -> float:
@@ -591,6 +741,47 @@ def build_carryover_out(
     return carryover_out
 
 
+def build_carryover_payload(
+    existing_payload: Dict[str, Any],
+    carryover_items: List[Dict[str, Any]],
+    *,
+    active_tags: List[str],
+    carryover_days: int,
+    updated_date: str,
+) -> Dict[str, Any]:
+    payload = normalize_carryover_payload(existing_payload)
+    states = dict(payload.get("tag_states") or {})
+    active_tag_keys = [
+        normalize_carryover_tag(tag)
+        for tag in (active_tags or [])
+        if normalize_carryover_tag(tag)
+    ]
+
+    grouped: Dict[str, List[Dict[str, Any]]] = {tag: [] for tag in active_tag_keys}
+    for item in carryover_items:
+        if not isinstance(item, dict):
+            continue
+        bucket_tags = resolve_carryover_tags(item, fallback_tags=active_tag_keys)
+        for tag in bucket_tags:
+            if active_tag_keys and tag not in active_tag_keys:
+                continue
+            grouped.setdefault(tag, []).append(dict(item))
+
+    for tag in active_tag_keys or list(grouped.keys()):
+        states[tag] = {
+            "updated_date": updated_date,
+            "carryover_days": carryover_days,
+            "items": grouped.get(tag, []),
+        }
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_date": updated_date,
+        "carryover_days": carryover_days,
+        "tag_states": states,
+    }
+
+
 def process_mode(
     candidates: List[Dict[str, Any]],
     tag_count: int,
@@ -840,6 +1031,7 @@ def main() -> None:
         log("[INFO] 今天没有新论文，将只使用 carryover 生成推荐。")
 
     tag_count, tag_list = load_config_tag_count()
+    active_carryover_tags = [normalize_carryover_tag(tag) for tag in tag_list if normalize_carryover_tag(tag)]
     log(f"[INFO] config tags={tag_count} | {tag_list}")
     log(f"[INFO] arxiv_paper_setting mode={mode_text} days_window={carryover_days}")
 
@@ -858,13 +1050,14 @@ def main() -> None:
         if ignore_seen_ids:
             log("[INFO] skims/backfill 模式：已关闭历史 seen_ids 过滤（输出数量更完整）。")
     else:
-        seen_ids = collect_seen_ids(archive_root, TODAY_STR)
+        seen_ids = collect_seen_ids(archive_root, TODAY_STR, active_tags=active_carryover_tags)
     log_substep("5.3", "加载 carryover 并构建候选集", "START")
     try:
         carryover_items, _delta = load_recent_carryover(
             CARRYOVER_PATH,
             today_date,
             carryover_days,
+            active_tags=active_carryover_tags,
         )
         if args.carryover_only:
             candidates = []
@@ -907,12 +1100,13 @@ def main() -> None:
             }
             save_json(empty, output_path)
 
-        carryover_payload = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "updated_date": TODAY_STR,
-            "carryover_days": carryover_days,
-            "items": [],
-        }
+        carryover_payload = build_carryover_payload(
+            load_carryover_payload(CARRYOVER_PATH),
+            [],
+            active_tags=active_carryover_tags,
+            carryover_days=carryover_days,
+            updated_date=TODAY_STR,
+        )
         save_json(carryover_payload, CARRYOVER_PATH)
         group_end()
         return
@@ -959,12 +1153,13 @@ def main() -> None:
         log("[INFO] preserve-carryover=true：跳过写入 carryover.json")
     else:
         carryover_out = build_carryover_out(candidates, recommended_ids, carryover_days)
-        carryover_payload = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "updated_date": TODAY_STR,
-            "carryover_days": carryover_days,
-            "items": carryover_out,
-        }
+        carryover_payload = build_carryover_payload(
+            load_carryover_payload(CARRYOVER_PATH),
+            carryover_out,
+            active_tags=active_carryover_tags,
+            carryover_days=carryover_days,
+            updated_date=TODAY_STR,
+        )
         save_json(carryover_payload, CARRYOVER_PATH)
     log_substep("5.5", "写入 carryover 状态", "END")
 

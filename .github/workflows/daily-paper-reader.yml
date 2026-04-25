@@ -17,6 +17,10 @@ on:
         description: "抓取模式：auto/standard/skims（auto 按 fetch-days 阈值决定，standard/ skims 强制）"
         required: false
         default: "auto"
+      profile_tag:
+        description: "仅运行指定词条 tag；留空表示全量运行"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -31,10 +35,16 @@ jobs:
     timeout-minutes: 120
     env:
       BLT_API_KEY: ${{ secrets.BLT_API_KEY }}
-      BLT_REWRITE_MODEL: gemini-3-flash-preview
+      BLT_REWRITE_MODEL: ${{ secrets.BLT_REWRITE_MODEL }}
       BLT_RERANK_MODEL: qwen3-reranker-4b
-      BLT_FILTER_MODEL: gemini-3-flash-preview-nothinking
+      BLT_FILTER_MODEL: ${{ secrets.BLT_FILTER_MODEL }}
       DPR_EMBED_API_TIMEOUT: "60"
+      LLM_PRIMARY_BASE_URL: ${{ secrets.LLM_PRIMARY_BASE_URL }}
+      BLT_PRIMARY_BASE_URL: ${{ secrets.BLT_PRIMARY_BASE_URL }}
+      BLT_API_BASE: ${{ secrets.BLT_PRIMARY_BASE_URL }}
+      SUMMARY_API_KEY: ${{ secrets.SUMMARY_API_KEY }}
+      SUMMARY_BASE_URL: ${{ secrets.SUMMARY_BASE_URL }}
+      SUMMARY_MODEL: ${{ secrets.SUMMARY_MODEL }}
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -55,6 +65,12 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Cache Python deps
         uses: actions/cache@v5
         with:
@@ -62,6 +78,10 @@ jobs:
             ~/.cache/pip
             ~/.cache/uv
             ~/.cache/torch
+            ~/.cache/dpr-tools/pdffigures2
+            ~/.cache/coursier
+            ~/.ivy2/cache
+            ~/.sbt
           key: ${{ runner.os }}-dpr-embed-deps-v1-${{ hashFiles('requirements.txt') }}
 
       - name: Install deps (skip sqlite3)
@@ -75,6 +95,27 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install uv
           uv pip install --system -r /tmp/req.txt
+
+      - name: Prepare pdffigures2
+        run: |
+          set -euo pipefail
+
+          TOOL_DIR="$HOME/.cache/dpr-tools/pdffigures2"
+          SRC_DIR="$TOOL_DIR/src"
+          JAR_PATH="$TOOL_DIR/pdffigures2.jar"
+
+          mkdir -p "$TOOL_DIR"
+          if [ ! -f "$JAR_PATH" ]; then
+            rm -rf "$SRC_DIR"
+            git clone --depth 1 https://github.com/allenai/pdffigures2 "$SRC_DIR"
+            cd "$SRC_DIR"
+            curl -fsSL -o sbt.tgz https://github.com/sbt/sbt/releases/download/v1.10.1/sbt-1.10.1.tgz
+            tar -xzf sbt.tgz
+            ./sbt/bin/sbt assembly
+            cp pdffigures2.jar "$JAR_PATH"
+          fi
+
+          echo "PDFFIGURES2_JAR=$JAR_PATH" >> "$GITHUB_ENV"
 
       - name: Run Retrieval and Embedding
         env:
@@ -138,17 +179,21 @@ jobs:
           RUN_ENRICH="${{ github.event.inputs.run_enrich }}"
           FETCH_DAYS="${{ github.event.inputs.fetch_days }}"
           FETCH_MODE="${{ github.event.inputs.fetch_mode }}"
-          ARGS=""
+          PROFILE_TAG="${{ github.event.inputs.profile_tag }}"
+          ARGS=()
           if [ "$RUN_ENRICH" = "true" ]; then
-            ARGS="--run-enrich"
+            ARGS+=(--run-enrich)
           fi
           if [ -n "$FETCH_DAYS" ]; then
-            ARGS="$ARGS --fetch-days $FETCH_DAYS"
+            ARGS+=(--fetch-days "$FETCH_DAYS")
           fi
           if [ -n "$FETCH_MODE" ]; then
-            ARGS="$ARGS --fetch-mode $FETCH_MODE"
+            ARGS+=(--fetch-mode "$FETCH_MODE")
           fi
-          python src/main.py $ARGS --embedding-device cpu --embedding-batch-size 8
+          if [ -n "$PROFILE_TAG" ]; then
+            ARGS+=(--profile-tag "$PROFILE_TAG")
+          fi
+          python src/main.py "${ARGS[@]}" --embedding-device cpu --embedding-batch-size 8
 
           # 让前端可以在不配置 GitHub Token 的情况下直接读取配置（只读快照）
           cp -f config.yaml docs/config.yaml

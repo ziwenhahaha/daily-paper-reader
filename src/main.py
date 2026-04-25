@@ -9,6 +9,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 try:
+    from source_config import get_source_backend, load_config_with_source_migration
+except Exception:  # pragma: no cover - 兼容 package 导入路径
+    from src.source_config import get_source_backend, load_config_with_source_migration
+
+try:
     import yaml  # type: ignore
 except Exception:  # pragma: no cover
     yaml = None
@@ -20,22 +25,18 @@ CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 LONG_RANGE_DAYS_THRESHOLD = 10
 MAIN_DEFAULT_DAYS = 9
 SKIMS_FETCH_DAYS_THRESHOLD = 11
+BLT_PROVIDER_BASE_KEYWORDS = ("bltcy.ai", "gptbest.vip", "blt", "gptbest")
 
 
-def run_step(label: str, args: list[str]) -> None:
+def run_step(label: str, args: list[str], env: dict[str, str] | None = None) -> None:
     print(f"[INFO] {label}: {' '.join(args)}", flush=True)
-    subprocess.run(args, check=True)
+    subprocess.run(args, check=True, env=env)
 
 
 def _load_full_config() -> dict:
-    if yaml is None or not os.path.exists(CONFIG_FILE):
+    if not os.path.exists(CONFIG_FILE):
         return {}
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
+    return load_config_with_source_migration(CONFIG_FILE, write_back=False)
 
 
 def load_arxiv_paper_setting() -> dict:
@@ -52,7 +53,7 @@ def should_skip_fetch(config: dict | None = None) -> bool:
     """
     if config is None:
         config = _load_full_config()
-    sb = config.get("supabase") or {}
+    sb = get_source_backend(config, "arxiv")
     if not sb.get("enabled", False):
         return False
     paper_setting = config.get("arxiv_paper_setting") or {}
@@ -171,6 +172,148 @@ def load_json_safe(path: str) -> Any:
     except Exception as exc:
         print(f"[TRACE] 读取失败: {path} | {exc}", flush=True)
         return None
+
+
+def save_json(path: str, data: Any) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _read_env_text(*names: str) -> str:
+    for name in names:
+        value = str(os.getenv(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _looks_like_blt_base(base_url: str) -> bool:
+    lowered = str(base_url or "").strip().lower()
+    return any(keyword in lowered for keyword in BLT_PROVIDER_BASE_KEYWORDS)
+
+
+def should_skip_rerank() -> tuple[bool, str]:
+    primary_base = _read_env_text(
+        "LLM_PRIMARY_BASE_URL",
+        "BLT_PRIMARY_BASE_URL",
+        "GPTBEST_BASE_URL",
+        "BLT_API_BASE",
+    )
+    if not primary_base:
+        return False, ""
+    if _looks_like_blt_base(primary_base):
+        return False, primary_base
+    return True, primary_base
+
+
+def score_to_stars(score: float) -> int:
+    if score >= 0.9:
+        return 5
+    if score >= 0.5:
+        return 4
+    if score >= 0.1:
+        return 3
+    if score >= 0.01:
+        return 2
+    return 1
+
+
+def build_ranked_from_sim_scores(query_obj: dict[str, Any]) -> list[dict[str, Any]]:
+    sim_scores = query_obj.get("sim_scores")
+    if not isinstance(sim_scores, dict) or not sim_scores:
+        return []
+
+    items: list[tuple[str, float | None, int | None]] = []
+    for pid, meta in sim_scores.items():
+        score = None
+        rank = None
+        if isinstance(meta, dict):
+            raw_score = meta.get("score")
+            raw_rank = meta.get("rank")
+            if isinstance(raw_score, (int, float)):
+                score = float(raw_score)
+            if isinstance(raw_rank, (int, float)):
+                rank = int(raw_rank)
+        elif isinstance(meta, (int, float)):
+            score = float(meta)
+        items.append((str(pid), score, rank))
+
+    items.sort(
+        key=lambda item: (
+            item[2] is None,
+            item[2] if item[2] is not None else 10**9,
+            -(item[1] if item[1] is not None else 0.0),
+            item[0],
+        )
+    )
+    if not items:
+        return []
+
+    numeric_scores = [item[1] for item in items if item[1] is not None]
+    min_score = min(numeric_scores) if numeric_scores else None
+    max_score = max(numeric_scores) if numeric_scores else None
+    total = len(items)
+    ranked: list[dict[str, Any]] = []
+    for idx, (pid, score, _rank) in enumerate(items, start=1):
+        if (
+            score is not None
+            and min_score is not None
+            and max_score is not None
+            and max_score > min_score
+        ):
+            normalized = (score - min_score) / (max_score - min_score)
+        elif total == 1:
+            normalized = 1.0
+        else:
+            normalized = (total - idx) / (total - 1)
+        ranked.append(
+            {
+                "paper_id": pid,
+                "score": float(normalized),
+                "star_rating": score_to_stars(float(normalized)),
+            }
+        )
+    return ranked
+
+
+def prepare_rerank_fallback(input_path: str, output_path: str) -> bool:
+    if not os.path.exists(input_path):
+        print(f"[WARN] Step 3 fallback 输入不存在，无法生成兜底 rerank 文件: {input_path}", flush=True)
+        return False
+
+    data = load_json_safe(input_path)
+    if not isinstance(data, dict):
+        print(f"[WARN] Step 3 fallback 输入格式非法，无法生成兜底 rerank 文件: {input_path}", flush=True)
+        return False
+
+    queries = data.get("queries")
+    if isinstance(queries, list):
+        for query in queries:
+            if isinstance(query, dict):
+                query["ranked"] = build_ranked_from_sim_scores(query)
+
+    data["reranked_at"] = datetime.now(timezone.utc).isoformat()
+    save_json(output_path, data)
+    print(f"[INFO] 已生成 Step 3 fallback 结果: {output_path}", flush=True)
+    return True
+
+
+def resolve_summary_step_env() -> dict[str, str]:
+    env = os.environ.copy()
+    summary_api_key = _read_env_text("SUMMARY_API_KEY", "BLT_SUMMARY_API_KEY")
+    summary_base_url = _read_env_text("SUMMARY_BASE_URL", "BLT_SUMMARY_BASE_URL")
+    summary_model = _read_env_text("SUMMARY_MODEL", "BLT_SUMMARY_MODEL")
+
+    if summary_api_key:
+        env["BLT_API_KEY"] = summary_api_key
+    if summary_base_url:
+        env["LLM_PRIMARY_BASE_URL"] = summary_base_url
+        env["BLT_PRIMARY_BASE_URL"] = summary_base_url
+        env["BLT_API_BASE"] = summary_base_url
+    if summary_model:
+        env["BLT_SUMMARY_MODEL"] = summary_model
+    return env
 
 
 def build_paper_index(papers: Any, trace_set: set[str]) -> dict[str, dict[str, Any]]:
@@ -417,6 +560,11 @@ def main() -> None:
         help="Force fetch-run mode: auto(按阈值), standard(非skims), skims(强制skims).",
     )
     parser.add_argument(
+        "--profile-tag",
+        default="",
+        help="仅运行指定 tag 对应的词条；大小写不敏感，支持空格。",
+    )
+    parser.add_argument(
         "--trace-arxiv-id",
         action="append",
         default=None,
@@ -443,6 +591,12 @@ def main() -> None:
     run_date_token = resolve_run_date_token(args.fetch_days)
     os.environ["DPR_RUN_DATE"] = run_date_token
     print(f"[INFO] DPR_RUN_DATE={run_date_token}", flush=True)
+    profile_tag = str(args.profile_tag or os.getenv("DPR_FILTER_PROFILE_TAG") or "").strip()
+    if profile_tag:
+        os.environ["DPR_FILTER_PROFILE_TAG"] = profile_tag
+        print(f"[INFO] profile_tag={profile_tag}", flush=True)
+    else:
+        os.environ.pop("DPR_FILTER_PROFILE_TAG", None)
     fetch_mode = (args.fetch_mode or "auto").strip().lower()
     if fetch_mode == "skims":
         use_skims_mode = True
@@ -507,7 +661,7 @@ def main() -> None:
             "Step 1 - fetch arxiv",
             [
                 python,
-                os.path.join(SRC_DIR, "1.fetch_paper_arxiv.py"),
+                os.path.join(SRC_DIR, "maintain", "fetchers", "fetch_arxiv.py"),
                 *(["--days", str(args.fetch_days)] if args.fetch_days is not None else []),
                 *(["--ignore-seen"] if args.fetch_ignore_seen else []),
             ],
@@ -539,10 +693,19 @@ def main() -> None:
     )
     if trace_ids:
         print_trace_retrieval("RRF", rrf_path, trace_ids)
-    run_step(
-        "Step 3 - Rerank",
-        [python, os.path.join(SRC_DIR, "3.rank_papers.py")],
-    )
+    skip_rerank, rerank_base = should_skip_rerank()
+    if skip_rerank:
+        print(
+            f"[INFO] Step 3 - Rerank 已跳过：当前主 LLM base 不属于柏拉图/BLT，"
+            f"缺少稳定 /rerank 能力。base={rerank_base}",
+            flush=True,
+        )
+        prepare_rerank_fallback(rrf_path, rerank_path)
+    else:
+        run_step(
+            "Step 3 - Rerank",
+            [python, os.path.join(SRC_DIR, "3.rank_papers.py")],
+        )
     if trace_ids:
         print_trace_retrieval("RERANK", rerank_path, trace_ids)
     run_step(
@@ -573,6 +736,7 @@ def main() -> None:
                 else []
             ),
         ],
+        env=resolve_summary_step_env(),
     )
 
 

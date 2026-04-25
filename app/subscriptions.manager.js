@@ -83,6 +83,7 @@ window.SubscriptionsManager = (function () {
   ];
 
   const normalizeText = (v) => String(v || '').trim();
+  const normalizeSourceKey = (v) => normalizeText(v).toLowerCase();
   const toStableId = (value) => {
     const text = normalizeText(value).toLowerCase();
     const slug = text
@@ -99,6 +100,175 @@ window.SubscriptionsManager = (function () {
     } catch {
       return obj || {};
     }
+  };
+
+  const isPlainObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
+
+  const PAPER_SOURCE_ORDER = [
+    'arxiv',
+    'biorxiv',
+    'medrxiv',
+    'chemrxiv',
+    'neurips',
+    'iclr',
+    'icml',
+    'acl',
+    'emnlp',
+    'aaai',
+  ];
+  const VISIBLE_PAPER_SOURCES = ['arxiv', 'biorxiv'];
+  const SOURCE_BACKEND_DEFAULTS = {
+    arxiv: {
+      papers_table: 'arxiv_papers',
+      use_vector_rpc: true,
+      vector_rpc: 'match_arxiv_papers_exact',
+      vector_rpc_exact: 'match_arxiv_papers_exact',
+      use_bm25_rpc: true,
+      bm25_rpc: 'match_arxiv_papers_bm25',
+      sync_table: 'arxiv_sync_status',
+      sync_success_value: 'success',
+      schema: 'public',
+    },
+    biorxiv: {
+      papers_table: 'biorxiv_papers',
+      use_vector_rpc: true,
+      vector_rpc: 'match_biorxiv_papers_exact',
+      vector_rpc_exact: 'match_biorxiv_papers_exact',
+      use_bm25_rpc: true,
+      bm25_rpc: 'match_biorxiv_papers_bm25',
+      schema: 'public',
+    },
+  };
+
+  const filterVisiblePaperSources = (values) => {
+    const visible = new Set(VISIBLE_PAPER_SOURCES);
+    return (Array.isArray(values) ? values : []).filter((value) => visible.has(normalizeSourceKey(value)));
+  };
+
+  const getAvailablePaperSources = (config) => {
+    const cfg = config && typeof config === 'object' ? config : {};
+    const rawBackends = cfg.source_backends && typeof cfg.source_backends === 'object'
+      ? cfg.source_backends
+      : {};
+    const seen = new Set();
+    const out = [];
+    const runtimeCandidates = [];
+    if (window.DPR_RUNTIME_SOURCE_BACKENDS && typeof window.DPR_RUNTIME_SOURCE_BACKENDS === 'object') {
+      runtimeCandidates.push(...Object.keys(window.DPR_RUNTIME_SOURCE_BACKENDS || {}));
+    }
+    ['arxiv', ...Object.keys(rawBackends || {}), ...runtimeCandidates].forEach((key) => {
+      const normalized = normalizeSourceKey(key);
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      out.push(normalized);
+    });
+    const visibleOut = filterVisiblePaperSources(out);
+    visibleOut.sort((a, b) => {
+      const idxA = PAPER_SOURCE_ORDER.indexOf(a);
+      const idxB = PAPER_SOURCE_ORDER.indexOf(b);
+      const rankA = idxA >= 0 ? idxA : Number.MAX_SAFE_INTEGER;
+      const rankB = idxB >= 0 ? idxB : Number.MAX_SAFE_INTEGER;
+      if (rankA !== rankB) return rankA - rankB;
+      return a.localeCompare(b);
+    });
+    return visibleOut;
+  };
+
+  const normalizePaperSources = (values, options = {}) => {
+    const fallbackToArxiv = options.fallbackToArxiv !== false;
+    const rawList = Array.isArray(values)
+      ? values
+      : (typeof values === 'string' && values ? [values] : []);
+    const seen = new Set();
+    const out = [];
+    rawList.forEach((value) => {
+      const key = normalizeSourceKey(value);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(key);
+    });
+    const visibleOut = filterVisiblePaperSources(out);
+    if (!visibleOut.length && fallbackToArxiv) {
+      return ['arxiv'];
+    }
+    return visibleOut;
+  };
+
+  const mergeDefinedFields = (base, override) => {
+    const next = { ...(isPlainObject(base) ? base : {}) };
+    if (!isPlainObject(override)) return next;
+    Object.keys(override).forEach((key) => {
+      const value = override[key];
+      if (value === undefined) return;
+      next[key] = value;
+    });
+    return next;
+  };
+
+  const buildDefaultSourceBackend = (sourceKey, config) => {
+    const normalizedKey = normalizeSourceKey(sourceKey);
+    const defaults = SOURCE_BACKEND_DEFAULTS[normalizedKey];
+    if (!defaults) return null;
+
+    const cfg = isPlainObject(config) ? config : {};
+    const shared = isPlainObject(cfg.supabase_shared) ? cfg.supabase_shared : {};
+    const legacy = isPlainObject(cfg.supabase) ? cfg.supabase : {};
+
+    let base = {
+      kind: normalizeText(shared.kind || legacy.kind || 'supabase') || 'supabase',
+      enabled: shared.enabled !== false && legacy.enabled !== false,
+      url: normalizeText(shared.url || legacy.url || ''),
+      anon_key: normalizeText(shared.anon_key || legacy.anon_key || ''),
+      schema: normalizeText(shared.schema || legacy.schema || defaults.schema || 'public') || 'public',
+    };
+
+    if (normalizedKey === 'arxiv') {
+      base = mergeDefinedFields(base, {
+        enabled: Object.prototype.hasOwnProperty.call(legacy, 'enabled') ? legacy.enabled !== false : undefined,
+        papers_table: normalizeText(legacy.papers_table || ''),
+        use_vector_rpc: Object.prototype.hasOwnProperty.call(legacy, 'use_vector_rpc') ? legacy.use_vector_rpc !== false : undefined,
+        vector_rpc: normalizeText(legacy.vector_rpc || ''),
+        vector_rpc_exact: normalizeText(legacy.vector_rpc_exact || legacy.vector_rpc || ''),
+        use_bm25_rpc: Object.prototype.hasOwnProperty.call(legacy, 'use_bm25_rpc') ? legacy.use_bm25_rpc !== false : undefined,
+        bm25_rpc: normalizeText(legacy.bm25_rpc || ''),
+        sync_table: normalizeText(legacy.sync_table || ''),
+        sync_success_value: normalizeText(legacy.sync_success_value || ''),
+      });
+    }
+
+    return mergeDefinedFields(defaults, base);
+  };
+
+  const ensureSourceBackendsForProfiles = (config) => {
+    const next = isPlainObject(config) ? config : {};
+    const subs = isPlainObject(next.subscriptions) ? next.subscriptions : {};
+    const profiles = Array.isArray(subs.intent_profiles) ? subs.intent_profiles : [];
+    const existingBackends = isPlainObject(next.source_backends) ? next.source_backends : {};
+    const mergedBackends = cloneDeep(existingBackends);
+    let changed = !isPlainObject(next.source_backends);
+
+    profiles.forEach((profile) => {
+      if (!isPlainObject(profile)) return;
+      const fallbackToArxiv = !Object.prototype.hasOwnProperty.call(profile, 'paper_sources');
+      const paperSources = normalizePaperSources(profile.paper_sources, { fallbackToArxiv });
+      paperSources.forEach((sourceKey) => {
+        const template = buildDefaultSourceBackend(sourceKey, next);
+        if (!template) return;
+        const current = isPlainObject(mergedBackends[sourceKey]) ? mergedBackends[sourceKey] : {};
+        const merged = mergeDefinedFields(template, current);
+        const before = JSON.stringify(current);
+        const after = JSON.stringify(merged);
+        if (before !== after) {
+          mergedBackends[sourceKey] = merged;
+          changed = true;
+        }
+      });
+    });
+
+    if (changed) {
+      next.source_backends = mergedBackends;
+    }
+    return next;
   };
 
   const normalizeKeywordItem = (item) => {
@@ -234,27 +404,65 @@ window.SubscriptionsManager = (function () {
     }
   };
 
+  const setQuickRunMessage = (text, color) => {
+    if (quickRunMsgEl) {
+      quickRunMsgEl.textContent = text || '';
+      quickRunMsgEl.style.color = color || '#666';
+    }
+    if (msgEl && msgEl !== quickRunMsgEl) {
+      msgEl.textContent = text || '';
+      msgEl.style.color = color || '#666';
+    }
+  };
+
   const runQuickFetch = (days, msgEl, tipText, runOptions) => {
     if (hasUnsavedChanges) {
+      const text = '检测到未保存修改，请先点击“保存”后再发起快速抓取。';
       if (msgEl) {
-        msgEl.textContent = '检测到未保存修改，请先点击“保存”后再发起快速抓取。';
+        msgEl.textContent = text;
         msgEl.style.color = '#c00';
       }
-      return;
+      setQuickRunMessage(text, '#c00');
+      return false;
     }
     if (!window.DPRWorkflowRunner || typeof window.DPRWorkflowRunner.runQuickFetchByDays !== 'function') {
+      const text = '工作流触发器未加载到当前页面。';
       if (msgEl) {
-        msgEl.textContent = '工作流触发器未加载到当前页面。';
+        msgEl.textContent = text;
         msgEl.style.color = '#c00';
       }
-      return;
+      setQuickRunMessage(text, '#c00');
+      return false;
     }
     const options = runOptions && typeof runOptions === 'object' ? runOptions : {};
     window.DPRWorkflowRunner.runQuickFetchByDays(days, options);
+    const finalTip = (typeof tipText === 'string' ? tipText : null) || `已发起 ${days} 天内抓取任务。`;
     if (msgEl) {
-      msgEl.textContent = (typeof tipText === 'string' ? tipText : null) || `已发起 ${days} 天内抓取任务。`;
+      msgEl.textContent = finalTip;
       msgEl.style.color = '#080';
     }
+    setQuickRunMessage(finalTip, '#080');
+    return true;
+  };
+
+  const runProfileQuickFetch = (profileTag, days, runOptions) => {
+    const normalizedTag = normalizeText(profileTag);
+    if (!normalizedTag) {
+      setQuickRunMessage('词条标签为空，无法发起单词条抓取。', '#c00');
+      return false;
+    }
+    const options = runOptions && typeof runOptions === 'object' ? cloneDeep(runOptions) : {};
+    const dispatchInputs = isPlainObject(options.dispatchInputs) ? options.dispatchInputs : {};
+    options.dispatchInputs = {
+      ...dispatchInputs,
+      profile_tag: normalizedTag,
+    };
+    const fetchMode = normalizeText(options.fetchMode).toLowerCase();
+    const modeText = fetchMode === 'standard'
+      ? '30 天标准抓取任务'
+      : (fetchMode === 'skims' ? '30 天速览抓取任务' : `${days} 天抓取任务`);
+    const tip = `已发起词条「${normalizedTag}」的${modeText}。`;
+    return runQuickFetch(days, quickRunMsgEl || msgEl, tip, options);
   };
 
   const runQuickConferencePlaceholder = (yearSelectEl, confSelectEl, msgEl) => {
@@ -308,7 +516,7 @@ window.SubscriptionsManager = (function () {
     }
   };
 
-  const normalizeProfiles = (subs) => {
+  const normalizeProfiles = (subs, availableSources) => {
     const profiles = Array.isArray(subs.intent_profiles) ? subs.intent_profiles : [];
     return profiles
       .map((p, idx) => {
@@ -316,6 +524,8 @@ window.SubscriptionsManager = (function () {
         const tag = normalizeText(p.tag) || toStableId(p.description || `profile-${idx + 1}`);
         const description = normalizeText(p.description || '');
         const enabled = p.enabled !== false;
+        const fallbackToArxiv = !Object.prototype.hasOwnProperty.call(p, 'paper_sources');
+        const paperSources = normalizePaperSources(p.paper_sources, { fallbackToArxiv });
         const keywordRules = (Array.isArray(p.keywords) ? p.keywords : []).map(normalizeKeywordItem).filter(Boolean);
         const normalizedKeywords = dedupeKeywords(keywordRules);
         const normalizedIntentQueries = normalizeIntentQueries(p.intent_queries);
@@ -327,6 +537,7 @@ window.SubscriptionsManager = (function () {
           tag,
           description,
           enabled,
+          paper_sources: paperSources,
           keywords: normalizedKeywords,
           intent_queries: normalizedIntentQueries,
           updated_at: normalizeText(p.updated_at) || new Date().toISOString(),
@@ -340,19 +551,29 @@ window.SubscriptionsManager = (function () {
   };
 
   const validateIntentProfiles = (config) => {
-    const cfg = cloneDeep(config || {});
+    const cfg = ensureSourceBackendsForProfiles(cloneDeep(config || {}));
     const subs = (cfg && cfg.subscriptions) || {};
+    const availableSources = getAvailablePaperSources(cfg);
     const profiles = Array.isArray(subs.intent_profiles) ? subs.intent_profiles : [];
     for (let idx = 0; idx < profiles.length; idx += 1) {
       const profile = profiles[idx];
       if (!profile || typeof profile !== 'object') continue;
       const tag = normalizeText(profile.tag) || `词条${idx + 1}`;
+      const fallbackToArxiv = !Object.prototype.hasOwnProperty.call(profile, 'paper_sources');
+      const paperSources = normalizePaperSources(profile.paper_sources, { fallbackToArxiv });
       const keywords = dedupeKeywords(
         (Array.isArray(profile.keywords) ? profile.keywords : [])
           .map(normalizeKeywordItem)
           .filter(Boolean),
       );
       const intentQueries = normalizeIntentQueries(profile.intent_queries);
+      if (!paperSources.length) {
+        return `词条「${tag}」至少需要 1 个论文源。`;
+      }
+      const unknownSources = paperSources.filter((item) => !availableSources.includes(item));
+      if (unknownSources.length) {
+        return `词条「${tag}」包含未配置的论文源：${unknownSources.join(', ')}。`;
+      }
       if (!keywords.length) {
         return `词条「${tag}」至少需要 1 条关键词。`;
       }
@@ -428,7 +649,7 @@ window.SubscriptionsManager = (function () {
     const subs = next.subscriptions;
 
     migrateLegacyToProfilesIfNeeded(subs);
-      subs.intent_profiles = normalizeProfiles(subs);
+      subs.intent_profiles = normalizeProfiles(subs, getAvailablePaperSources(next));
 
     if (!subs.schema_migration || typeof subs.schema_migration !== 'object') {
       subs.schema_migration = {};
@@ -445,6 +666,7 @@ window.SubscriptionsManager = (function () {
     }
 
     next.subscriptions = subs;
+    ensureSourceBackendsForProfiles(next);
     return stripIntentProfileIds(next);
   };
 
@@ -862,5 +1084,12 @@ window.SubscriptionsManager = (function () {
     },
     getDraftConfig: () => cloneDeep(draftConfig || {}),
     validateDraftConfig: () => validateIntentProfiles(draftConfig || {}),
+    runProfileQuickFetch: (profileTag, days, runOptions) => runProfileQuickFetch(profileTag, days, runOptions),
+    __test: {
+      normalizeSubscriptions: (config) => normalizeSubscriptions(config),
+      ensureSourceBackendsForProfiles: (config) => ensureSourceBackendsForProfiles(cloneDeep(config || {})),
+      buildDefaultSourceBackend: (sourceKey, config) => buildDefaultSourceBackend(sourceKey, cloneDeep(config || {})),
+      normalizePaperSources: (values, options) => normalizePaperSources(values, options),
+    },
   };
 })();

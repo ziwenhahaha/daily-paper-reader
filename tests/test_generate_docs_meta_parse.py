@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -9,6 +10,12 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         root = Path(__file__).resolve().parents[1]
+        if "fitz" not in sys.modules:
+            import types
+
+            fitz_stub = types.ModuleType("fitz")
+            fitz_stub.open = lambda *args, **kwargs: None
+            sys.modules["fitz"] = fitz_stub
         if "llm" not in sys.modules:
             import types
 
@@ -70,6 +77,27 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
             self.assertEqual(item["tldr"], "legacy tldr text")
             self.assertEqual(item["selection_source"], "cache_hint")
 
+    def test_parse_source_from_front_matter(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "paper.md"
+            path.write_text(
+                "\n".join(
+                    [
+                        "---",
+                        "title: Test title",
+                        "source: biorxiv",
+                        "selection_source: fresh_fetch",
+                        "---",
+                        "## Abstract",
+                        "abstract body",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            item = self.mod._parse_generated_md_to_meta(str(path), "pid", "quick")
+            self.assertEqual(item["source"], "biorxiv")
+            self.assertEqual(item["selection_source"], "fresh_fetch")
+
     def test_extract_sidebar_tags_hides_composite_suffix(self):
         paper = {
             "llm_score": 8.0,
@@ -85,6 +113,57 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
         self.assertIn(("query", "equation-discovery"), tags)
         self.assertNotIn(("query", "sr:composite"), tags)
         self.assertEqual(tags.count(("query", "sr")), 1)
+
+    def test_build_markdown_content_writes_figures_json_front_matter(self):
+        paper = {
+            "title": "Figure Test",
+            "authors": ["Ada Lovelace"],
+            "published": "2026-03-26T00:00:00+00:00",
+            "link": "https://arxiv.org/pdf/1234.5678",
+            "abstract": "abstract body",
+            "source": "arxiv",
+            "_figure_assets": [
+                {
+                    "url": "assets/figures/arxiv/1234.5678/fig-001.webp",
+                    "caption": "",
+                    "page": 2,
+                    "index": 1,
+                    "width": 1280,
+                    "height": 720,
+                }
+            ],
+        }
+        md = self.mod.build_markdown_content(paper, "quick", "", "", [])
+        meta = self.mod._parse_front_matter(md)
+        self.assertIn("figures_json", meta)
+        figures = json.loads(meta["figures_json"])
+        self.assertEqual(len(figures), 1)
+        self.assertEqual(figures[0]["url"], "assets/figures/arxiv/1234.5678/fig-001.webp")
+
+    def test_maybe_generate_paper_figures_accepts_biorxiv(self):
+        calls = []
+
+        def fake_ensure_paper_figures(**kwargs):
+            calls.append(kwargs)
+            return [{"url": "assets/figures/biorxiv/pid/fig-001.webp"}]
+
+        original = self.mod.ensure_paper_figures
+        self.mod.ensure_paper_figures = fake_ensure_paper_figures
+        try:
+            figures = self.mod.maybe_generate_paper_figures(
+                {
+                    "id": "biorxiv-abc",
+                    "source": "biorxiv",
+                },
+                docs_dir="docs",
+                paper_id="202603/26/biorxiv-abc",
+                pdf_url="https://www.biorxiv.org/content/test.full.pdf",
+            )
+        finally:
+            self.mod.ensure_paper_figures = original
+
+        self.assertEqual(len(figures), 1)
+        self.assertEqual(calls[0]["source_key"], "biorxiv")
 
 
 if __name__ == "__main__":

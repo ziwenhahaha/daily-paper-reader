@@ -1,9 +1,11 @@
 import importlib.util
+import json
 import os
 import pathlib
 import tempfile
 import time
 import unittest
+import yaml
 
 
 def _load_module(module_name: str, path: pathlib.Path):
@@ -22,18 +24,12 @@ class SupabaseInitAndSyncTest(unittest.TestCase):
         try:
             init_mod = _load_module(
                 "init_supabase_mod",
-                src_dir / "1.3.init_supabase_from_arxiv.py",
+                src_dir / "maintain" / "init_arxiv.py",
             )
-            # 兼容“入口包装脚本”场景：真实实现可能位于中文命名文件
-            if not hasattr(init_mod, "resolve_date_token") or not hasattr(init_mod, "find_latest_raw_file"):
-                init_mod = _load_module(
-                    "init_supabase_real_mod",
-                    src_dir / "1.3.初始化一个月的内容上传supabase.py",
-                )
             cls.init_mod = init_mod
             cls.sync_mod = _load_module(
                 "sync_supabase_mod",
-                src_dir / "1.2.sync_supabase_public.py",
+                src_dir / "maintain" / "sync.py",
             )
         except Exception as exc:
             raise unittest.SkipTest(f"依赖不足，跳过 Supabase 初始化相关测试: {exc}")
@@ -45,6 +41,9 @@ class SupabaseInitAndSyncTest(unittest.TestCase):
     def test_resolve_date_token_manual(self):
         token = self.init_mod.resolve_date_token("20260201-20260207", 30)
         self.assertEqual(token, "20260201-20260207")
+
+    def test_default_fetch_days_is_nine(self):
+        self.assertEqual(self.init_mod.DEFAULT_FETCH_DAYS, 9)
 
     def test_find_latest_raw_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -64,6 +63,27 @@ class SupabaseInitAndSyncTest(unittest.TestCase):
             os.utime(f2, (f2_ts, f2_ts))
             latest = self.init_mod.find_latest_raw_file(str(root))
             self.assertTrue(latest.endswith("arxiv_papers_20260201-20260207.json"))
+
+    def test_count_raw_rows(self):
+        with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False) as f:
+            json.dump([{"id": "1"}, {"id": "2"}], f)
+            path = f.name
+        try:
+            self.assertEqual(self.init_mod.count_raw_rows(path), 2)
+        finally:
+            os.unlink(path)
+
+    def test_maintain_workflow_defaults_fetch_days_to_nine(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        workflow_path = root / ".github" / "workflows" / "maintain-supabase.yml"
+        text = workflow_path.read_text(encoding="utf-8")
+        workflow = yaml.safe_load(text) or {}
+        on_block = workflow.get("on") or workflow.get(True) or {}
+        inputs = (((on_block.get("workflow_dispatch") or {}).get("inputs")) or {})
+        fetch_days = (inputs.get("fetch_days") or {})
+        self.assertEqual(fetch_days.get("default"), "9")
+        self.assertIn('FETCH_DAYS="9"', text)
+        self.assertIn('ARGS=(--fetch-days "$FETCH_DAYS")', text)
 
     def test_deduplicate_rows_by_id(self):
         rows = [

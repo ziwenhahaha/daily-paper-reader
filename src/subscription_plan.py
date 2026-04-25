@@ -7,8 +7,14 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timezone
+import os
 from typing import Any, Dict, List, Tuple
 import re
+
+try:
+  from source_config import list_known_source_keys, validate_profile_paper_sources
+except Exception:  # pragma: no cover - 兼容 package 导入路径
+  from src.source_config import list_known_source_keys, validate_profile_paper_sources
 
 try:
   from query_boolean import clean_expr_for_embedding
@@ -66,6 +72,66 @@ def _uniq_keep_order(items: List[str]) -> List[str]:
     seen.add(key)
     out.append(t)
   return out
+
+
+def _runtime_source_override(paper_sources: List[str]) -> List[str]:
+  force_env = str(os.getenv("DPR_FORCE_PAPER_SOURCES") or "").strip()
+  append_env = str(os.getenv("DPR_APPEND_PAPER_SOURCES") or "").strip()
+
+  def _split(raw: str) -> List[str]:
+    parts = re.split(r"[,\s]+", str(raw or "").strip())
+    out: List[str] = []
+    seen = set()
+    for item in parts:
+      key = _norm_text(item).lower()
+      if not key or key in seen:
+        continue
+      seen.add(key)
+      out.append(key)
+    return out
+
+  if force_env:
+    return _split(force_env)
+  if append_env:
+    return _uniq_keep_order(list(paper_sources or []) + _split(append_env))
+  return list(paper_sources or [])
+
+
+def _runtime_profile_tag_filters() -> List[str]:
+  raw = (
+    str(os.getenv("DPR_FILTER_PROFILE_TAG") or "").strip()
+    or str(os.getenv("DPR_PROFILE_TAG") or "").strip()
+  )
+  if not raw:
+    return []
+  parts = re.split(r"[,\n]+", raw)
+  out: List[str] = []
+  seen = set()
+  for item in parts:
+    text = _norm_text(item)
+    if not text:
+      continue
+    key = text.lower()
+    slug = _slug(text)
+    if key in seen or slug in seen:
+      continue
+    seen.add(key)
+    seen.add(slug)
+    out.append(text)
+  return out
+
+
+def _profile_matches_runtime_filter(tag: str, filters: List[str]) -> bool:
+  if not filters:
+    return True
+  normalized_tag = _norm_text(tag).lower()
+  tag_slug = _slug(tag)
+  for item in filters:
+    if normalized_tag == _norm_text(item).lower():
+      return True
+    if tag_slug == _slug(item):
+      return True
+  return False
 
 
 def _normalize_text_item(item: Any) -> str:
@@ -230,7 +296,7 @@ def _normalize_keyword_expr(expr: str) -> str:
   return clean_expr_for_embedding(_norm_text(expr)) or _norm_text(expr)
 
 
-def _normalize_profile(profile: Dict[str, Any], idx: int) -> Dict[str, Any]:
+def _normalize_profile(profile: Dict[str, Any], idx: int, known_sources: List[str]) -> Dict[str, Any]:
   tag = _norm_text(profile.get("tag") or "")
   description = _norm_text(profile.get("description") or "")
   if not tag:
@@ -239,11 +305,14 @@ def _normalize_profile(profile: Dict[str, Any], idx: int) -> Dict[str, Any]:
   kw_rules_in = profile.get("keywords") or []
   kw_rules: List[Dict[str, Any]] = _normalize_keyword_list(kw_rules_in, profile_index=idx)
   intent_queries: List[Dict[str, Any]] = _normalize_query_list(profile.get("intent_queries"), profile_index=idx)
+  paper_sources, _ = validate_profile_paper_sources(profile, known_sources=known_sources)
+  paper_sources = _runtime_source_override(paper_sources)
 
   result = {
     "tag": tag,
     "description": description,
     "enabled": _as_bool(profile.get("enabled"), True),
+    "paper_sources": paper_sources,
     "keywords": kw_rules,
     "intent_queries": intent_queries,
     "updated_at": _norm_text(profile.get("updated_at") or _now_iso()),
@@ -253,14 +322,18 @@ def _normalize_profile(profile: Dict[str, Any], idx: int) -> Dict[str, Any]:
   return result
 
 
-def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
+def _build_from_profiles(subs: Dict[str, Any], known_sources: List[str]) -> Dict[str, Any]:
   raw_profiles = subs.get("intent_profiles") or []
+  runtime_tag_filters = _runtime_profile_tag_filters()
   profiles: List[Dict[str, Any]] = []
   if isinstance(raw_profiles, list):
     for idx, p in enumerate(raw_profiles):
       if not isinstance(p, dict):
         continue
-      profiles.append(_normalize_profile(p, idx))
+      normalized_profile = _normalize_profile(p, idx, known_sources)
+      if runtime_tag_filters and not _profile_matches_runtime_filter(normalized_profile.get("tag") or "", runtime_tag_filters):
+        continue
+      profiles.append(normalized_profile)
 
   bm25_queries: List[Dict[str, Any]] = []
   embedding_queries: List[Dict[str, Any]] = []
@@ -271,12 +344,13 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
   for profile in profiles:
     if not profile.get("enabled", True):
       continue
-    if _as_bool(profile.get("paused"), False):
+    if not runtime_tag_filters and _as_bool(profile.get("paused"), False):
       continue
     tag = _norm_text(profile.get("tag") or "")
     if not tag:
       continue
     tags.append(tag)
+    paper_sources = profile.get("paper_sources") or []
     paper_tag_keyword = f"keyword:{tag}"
     paper_tag_query = f"query:{tag}"
 
@@ -302,6 +376,7 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
           "type": "keyword",
           "tag": tag,
           "paper_tag": paper_tag_keyword,
+          "paper_sources": copy.deepcopy(paper_sources),
           "query_text": expr,
           "query_terms": [{"text": expr, "weight": MAIN_TERM_WEIGHT}],
           "boolean_expr": "",
@@ -315,6 +390,7 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
           "type": "keyword",
           "tag": tag,
           "paper_tag": paper_tag_keyword,
+          "paper_sources": copy.deepcopy(paper_sources),
           "query_text": raw_query,
           "logic_cn": logic_cn,
           "source": source,
@@ -350,6 +426,7 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
           "type": "intent_query",
           "tag": tag,
           "paper_tag": f"query:{tag}",
+          "paper_sources": copy.deepcopy(paper_sources),
           "query_text": raw_query,
           "query_terms": [{"text": raw_query, "weight": MAIN_TERM_WEIGHT}],
           "boolean_expr": "",
@@ -363,6 +440,7 @@ def _build_from_profiles(subs: Dict[str, Any]) -> Dict[str, Any]:
           "type": "intent_query",
           "tag": tag,
           "paper_tag": f"query:{tag}",
+          "paper_sources": copy.deepcopy(paper_sources),
           "query_text": raw_query,
           "logic_cn": "",
           "source": source,
@@ -399,8 +477,9 @@ def build_pipeline_inputs(config: Dict[str, Any]) -> Dict[str, Any]:
   subs = (cfg.get("subscriptions") or {}) if isinstance(cfg, dict) else {}
   stage = get_migration_stage(cfg)
   has_profiles = isinstance(subs.get("intent_profiles"), list) and bool(subs.get("intent_profiles"))
+  known_sources = list_known_source_keys(cfg)
 
-  profile_plan = _build_from_profiles(subs) if has_profiles else {}
+  profile_plan = _build_from_profiles(subs, known_sources) if has_profiles else {}
   plan: Dict[str, Any]
   source = "legacy"
   fallback_used = False

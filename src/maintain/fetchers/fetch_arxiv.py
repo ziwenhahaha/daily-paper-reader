@@ -5,15 +5,24 @@ import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+
+SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+
 from supabase_source import (
     get_supabase_read_config,
     fetch_recent_papers,
     fetch_papers_by_date_range,
 )
+try:
+    from source_config import load_config_with_source_migration
+except Exception:  # pragma: no cover - 兼容 package 导入路径
+    from src.source_config import load_config_with_source_migration
 
-# 项目根目录（当前脚本位于 src/ 下）
+# 项目根目录（当前脚本位于 src/maintain/fetchers/ 下）
 SCRIPT_DIR = os.path.dirname(__file__)
-ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
 CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 CRAWL_STATE_FILE = os.path.join(ROOT_DIR, "archive", "crawl_state.json")
 SEEN_IDS_FILE = os.path.join(ROOT_DIR, "archive", "arxiv_seen.json")
@@ -28,17 +37,8 @@ RANGE_TOKEN_RE = re.compile(r"^\d{8}-\d{8}$")
 
 
 def load_config() -> dict:
-    if not os.path.exists(CONFIG_FILE):
-        return {}
     try:
-        import yaml  # type: ignore
-    except Exception:
-        log("[WARN] 未安装 PyYAML，无法解析 config.yaml。")
-        return {}
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-            return data if isinstance(data, dict) else {}
+        return load_config_with_source_migration(CONFIG_FILE, write_back=False)
     except Exception as e:
         log(f"[WARN] 读取 config.yaml 失败：{e}")
         return {}

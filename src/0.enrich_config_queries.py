@@ -107,20 +107,24 @@ def build_rewrite_prompt(query: str) -> List[Dict[str, str]]:
 
 
 def call_llm_json(client: BltClient, messages: List[Dict[str, str]], schema_name: str, schema: Dict[str, Any]) -> Dict[str, Any]:
-  response_format = {
-    "type": "json_schema",
-    "json_schema": {
-      "name": schema_name,
-      "schema": schema,
-      "strict": True,
-    },
-  }
-  resp = client.chat(messages, response_format=response_format)
-  content = resp.get("content", "")
-  try:
-    return json.loads(content)
-  except Exception:
-    raise ValueError(f"模型未返回合法 JSON：{content}")
+  resp = client.chat_structured(
+    messages,
+    schema_name=schema_name,
+    schema=schema,
+    strict=True,
+    allow_json_object_fallback=True,
+  )
+  if resp.get("refusal"):
+    raise ValueError(f"模型拒绝输出结构化结果：{resp.get('refusal')}")
+  if resp.get("finish_reason") not in (None, "stop"):
+    raise ValueError(f"结构化输出未完成：finish_reason={resp.get('finish_reason')}")
+  if resp.get("parse_error") is not None:
+    raise ValueError(f"模型未返回合法 JSON：{resp.get('content')}")
+
+  parsed = resp.get("parsed")
+  if not isinstance(parsed, dict):
+    raise ValueError(f"模型未返回合法 JSON：{resp.get('content')}")
+  return parsed
 
 
 def main() -> None:

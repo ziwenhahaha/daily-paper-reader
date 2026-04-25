@@ -1,0 +1,94 @@
+name: maintain-biorxiv
+
+on:
+  schedule:
+    - cron: "45 0 * * *" # 北京时间 08:45（UTC 00:45）
+    - cron: "45 8 * * *" # 北京时间 16:45（UTC 08:45）
+    - cron: "45 16 * * *" # 北京时间 00:45（UTC 16:45）
+  workflow_dispatch:
+    inputs:
+      fetch_days:
+        description: "回溯抓取天数（默认 30）"
+        required: false
+        default: "30"
+      force_full_window:
+        description: "是否忽略 seen 状态并全量回补当前窗口（true/false）"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-paper-reader-maintain-biorxiv
+  cancel-in-progress: false
+
+jobs:
+  maintain_biorxiv:
+    if: github.repository == 'ziwenhahaha/daily-paper-reader' || github.repository == '5-xj/daily-paper-reader'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      SUPABASE_URL: https://lyucdwgefyfbmaiopjbk.supabase.co
+      SUPABASE_SCHEMA: public
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      SUPABASE_BACKEND_KEY: biorxiv
+      SUPABASE_PAPERS_TABLE: biorxiv_papers
+      SUPABASE_RETENTION_DAYS: "45"
+      DPR_ENABLE_BIORXIV_BACKEND: "1"
+      DPR_BIORXIV_ENABLED: "1"
+      DPR_BIORXIV_PAPERS_TABLE: biorxiv_papers
+      DPR_BIORXIV_VECTOR_RPC_EXACT: match_biorxiv_papers_exact
+      DPR_BIORXIV_BM25_RPC: match_biorxiv_papers_bm25
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip + torch
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/torch
+          key: ${{ runner.os }}-dpr-biorxiv-hf-v1-${{ hashFiles('requirements.txt') }}
+
+      - name: Install deps (skip sqlite3)
+        run: |
+          python - <<'PY'
+          import re
+          lines = open("requirements.txt", "r", encoding="utf-8").read().splitlines()
+          lines = [l for l in lines if l.strip() and not re.match(r"^sqlite3\\b", l)]
+          open("/tmp/req.txt", "w", encoding="utf-8").write("\n".join(lines))
+          PY
+          python -m pip install --upgrade pip
+          python -m pip install uv
+          uv pip install --system -r /tmp/req.txt
+
+      - name: Run bioRxiv Maintain Pipeline
+        run: |
+          set -euo pipefail
+          set -x
+
+          if [ -z "${SUPABASE_SERVICE_KEY}" ]; then
+            echo "[WARN] 未配置 SUPABASE_SERVICE_KEY，已跳过 bioRxiv 维护同步。"
+            exit 0
+          fi
+
+          FETCH_DAYS="${{ github.event.inputs.fetch_days }}"
+          FORCE_FULL_WINDOW="${{ github.event.inputs.force_full_window }}"
+          if [ -z "$FETCH_DAYS" ]; then
+            FETCH_DAYS="30"
+          fi
+
+          ARGS=(--fetch-days "$FETCH_DAYS")
+          if [ "${FORCE_FULL_WINDOW:-false}" = "true" ]; then
+            ARGS+=(--force-full-window)
+          fi
+          python src/maintain/biorxiv.py "${ARGS[@]}"
