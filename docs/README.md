@@ -6,46 +6,47 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-05-10
-- 运行时间：2026-05-10 19:50:38 UTC
+- 最新运行日期：2026-05-11
+- 运行时间：2026-05-11 21:09:52 UTC
 - 运行状态：成功
 - 本次总论文数：8
-- 精读区：1
-- 速读区：7
+- 精读区：0
+- 速读区：8
 
 ### 今日简报（AI）
-1) 今日速览8篇AI前沿，精读高分论文聚焦联邦学习与图模式检测。
-2) 跨客户端子图模式检测展现了联邦学习在隐私保护下的强大潜力，谱图稀疏化则为图神经网络的高效计算提供了新思路。
-3) 建议关注联邦学习在隐私敏感场景的应用，并探索图神经网络优化技术。
-- 详情：[/202605/10/README](/202605/10/README)
+1) 今日速读 8 篇前沿论文，聚焦突破通信瓶颈的分布式机器学习与联邦学习新技术。
+2) 最值得关注的是：可实现百倍通信压缩且无损同步的“SparseRL-Sync”算法，以及能应对突发流量的“DBLP”弹性训练机制。
+3) 建议关注大模型训练效率的读者，深入了解这些降低算力与通信成本的前沿优化方案。
+- 详情：[/202605/11/README](/202605/11/README)
 
 ### 精读区论文标签
-1. [Federated Cross-Client Subgraph Pattern Detection](/202605/10/2605.06433v1-federated-cross-client-subgraph-pattern-detection)  
-   标签：评分：8.0/10、query:dgnn-nas
-   evidence：跨图分区的分布式GNN逐层嵌入交换
+- 本次无精读推荐。
 
 ### 速读区论文标签
-1. [Spectral Graph Sparsification Preserves Representation Geometry in Graph Neural Networks](/202605/10/2605.01136v1-spectral-graph-sparsification-preserves-representation-geometry-in-graph-neural-networks)  
+1. [DBLP: Phase-Aware Bounded-Loss Transport for Burst-Resilient Distributed ML Training](/202605/11/2605.01989v1-dblp-phase-aware-bounded-loss-transport-for-burst-resilient-distributed-ml-training)  
+   标签：评分：7.0/10、query:dgnn-nas
+   evidence：面向分布式ML训练的抗突发通信协议
+2. [Federated Cross-Client Subgraph Pattern Detection](/202605/11/2605.06433v1-federated-cross-client-subgraph-pattern-detection)  
+   标签：评分：7.0/10、query:dgnn-nas
+   evidence：联邦GNN中跨图分区的逐层嵌入交换
+3. [SparseRL-Sync: Lossless Weight Synchronization with ~100x Less Communication](/202605/11/2605.07330v1-sparserl-sync-lossless-weight-synchronization-with-100x-less-communication)  
+   标签：评分：7.0/10、query:dgnn-nas
+   evidence：分布式训练中通信量减少100倍的无损权重同步
+4. [Bringing Order to Asynchronous SGD: Towards Optimality under Data-Dependent Delays with Momentum](/202605/11/2605.02043v1-bringing-order-to-asynchronous-sgd-towards-optimality-under-data-dependent-delays-with-momentum)  
    标签：评分：6.0/10、query:dgnn-nas
-   evidence：谱图稀疏化在保持嵌入的同时减少GNN计算
-2. [DBLP: Phase-Aware Bounded-Loss Transport for Burst-Resilient Distributed ML Training](/202605/10/2605.01989v1-dblp-phase-aware-bounded-loss-transport-for-burst-resilient-distributed-ml-training)  
+   evidence：基于动量的异步SGD用于可扩展分布式训练
+5. [Hardware-Aware Neural Feature Extraction for Resource-Constrained Devices](/202605/11/2605.04282v1-hardware-aware-neural-feature-extraction-for-resource-constrained-devices)  
    标签：评分：6.0/10、query:dgnn-nas
-   evidence：通信高效的分布式机器学习训练协议
-3. [Bringing Order to Asynchronous SGD: Towards Optimality under Data-Dependent Delays with Momentum](/202605/10/2605.02043v1-bringing-order-to-asynchronous-sgd-towards-optimality-under-data-dependent-delays-with-momentum)  
+   evidence：资源受限设备上受硬件约束的可微分神经架构搜索
+6. [Beyond Rigid Alignment: Graph Federated Learning via Dual Manifold Calibration](/202605/11/2605.06260v1-beyond-rigid-alignment-graph-federated-learning-via-dual-manifold-calibration)  
    标签：评分：6.0/10、query:dgnn-nas
-   evidence：基于动量的异步SGD分布式训练延迟缓解方法
-4. [FedQueue: Queue-Aware Federated Learning for Cross-Facility HPC Training](/202605/10/2605.02125v1-fedqueue-queue-aware-federated-learning-for-cross-facility-hpc-training)  
+   evidence：在通信约束下跨子图的分布式图学习
+7. [Resource-Element Energy Difference for Noncoherent Over-the-Air Federated Learning](/202605/11/2605.07263v1-resource-element-energy-difference-for-noncoherent-over-the-air-federated-learning)  
    标签：评分：6.0/10、query:dgnn-nas
-   evidence：具有陈旧度感知的异步聚合分布式训练
-5. [FedPLT: Scalable, Resource-Efficient, and Heterogeneity-Aware Federated Learning via Partial Layer Training](/202605/10/2605.02337v1-fedplt-scalable-resource-efficient-and-heterogeneity-aware-federated-learning-via-partial-layer-training)  
+   evidence：通过空中聚合实现通信高效的分布式学习
+8. [Scalable Distributed Stochastic Optimization via Bidirectional Compression: Beyond Pessimistic Limits](/202605/11/2605.07795v1-scalable-distributed-stochastic-optimization-via-bidirectional-compression-beyond-pessimistic-limits)  
    标签：评分：6.0/10、query:dgnn-nas
-   evidence：通过部分层训练实现通信高效的分布式训练
-6. [Hardware-Aware Neural Feature Extraction for Resource-Constrained Devices](/202605/10/2605.04282v1-hardware-aware-neural-feature-extraction-for-resource-constrained-devices)  
-   标签：评分：6.0/10、query:dgnn-nas
-   evidence：在硬件约束下使用可微分神经架构搜索(DNAS)
-7. [Hardware-Aware Neural Feature Extraction for Resource-Constrained Devices](/202605/10/2605.04282v2-hardware-aware-neural-feature-extraction-for-resource-constrained-devices)  
-   标签：评分：6.0/10、query:dgnn-nas
-   evidence：在硬件约束下使用可微分神经架构搜索(DNAS)
+   evidence：双向压缩的分布式优化实现通信高效
 
 
 <div class="dpr-home-promo-card">
