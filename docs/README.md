@@ -6,47 +6,34 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-05-11
-- 运行时间：2026-05-11 21:09:52 UTC
+- 最新运行日期：2026-05-12
+- 运行时间：2026-05-12 20:35:43 UTC
 - 运行状态：成功
-- 本次总论文数：8
-- 精读区：0
-- 速读区：8
+- 本次总论文数：4
+- 精读区：1
+- 速读区：3
 
 ### 今日简报（AI）
-1) 今日速读 8 篇前沿论文，聚焦突破通信瓶颈的分布式机器学习与联邦学习新技术。
-2) 最值得关注的是：可实现百倍通信压缩且无损同步的“SparseRL-Sync”算法，以及能应对突发流量的“DBLP”弹性训练机制。
-3) 建议关注大模型训练效率的读者，深入了解这些降低算力与通信成本的前沿优化方案。
-- 详情：[/202605/11/README](/202605/11/README)
+1) 5月12日学术日报：聚焦联邦学习与系统优化，精读子图模式检测，速读NAS与十亿级图神经网络推理。
+2) 最值得关注的是联邦跨客户端子图检测（8.0分）与基于元学习的NAS预测器（7.0分），它们分别探索了隐私保护下的图挖掘与高效架构搜索。
+3) 建议读者重点关注如何利用联邦学习打破数据孤岛，以及如何通过元学习加速模型设计，这些思路对解决实际业务中的隐私与算力瓶颈极具参考价值。
+- 详情：[/202605/12/README](/202605/12/README)
 
 ### 精读区论文标签
-- 本次无精读推荐。
+1. [Federated Cross-Client Subgraph Pattern Detection](/202605/12/2605.06433v1-federated-cross-client-subgraph-pattern-detection)  
+   标签：评分：8.0/10、query:dgnn-nas
+   evidence：跨图分区的联邦GNN逐层嵌入交换
 
 ### 速读区论文标签
-1. [DBLP: Phase-Aware Bounded-Loss Transport for Burst-Resilient Distributed ML Training](/202605/11/2605.01989v1-dblp-phase-aware-bounded-loss-transport-for-burst-resilient-distributed-ml-training)  
+1. [From Regression to Inference: Meta-Learning Predictors for Neural Architecture Search](/202605/12/2605.09290v1-from-regression-to-inference-meta-learning-predictors-for-neural-architecture-search)  
    标签：评分：7.0/10、query:dgnn-nas
-   evidence：面向分布式ML训练的抗突发通信协议
-2. [Federated Cross-Client Subgraph Pattern Detection](/202605/11/2605.06433v1-federated-cross-client-subgraph-pattern-detection)  
-   标签：评分：7.0/10、query:dgnn-nas
-   evidence：联邦GNN中跨图分区的逐层嵌入交换
-3. [SparseRL-Sync: Lossless Weight Synchronization with ~100x Less Communication](/202605/11/2605.07330v1-sparserl-sync-lossless-weight-synchronization-with-100x-less-communication)  
-   标签：评分：7.0/10、query:dgnn-nas
-   evidence：分布式训练中通信量减少100倍的无损权重同步
-4. [Bringing Order to Asynchronous SGD: Towards Optimality under Data-Dependent Delays with Momentum](/202605/11/2605.02043v1-bringing-order-to-asynchronous-sgd-towards-optimality-under-data-dependent-delays-with-momentum)  
+   evidence：基于元学习性能预测器的神经架构搜索
+2. [FedQueue: Queue-Aware Federated Learning for Cross-Facility HPC Training](/202605/12/2605.02125v1-fedqueue-queue-aware-federated-learning-for-cross-facility-hpc-training)  
    标签：评分：6.0/10、query:dgnn-nas
-   evidence：基于动量的异步SGD用于可扩展分布式训练
-5. [Hardware-Aware Neural Feature Extraction for Resource-Constrained Devices](/202605/11/2605.04282v1-hardware-aware-neural-feature-extraction-for-resource-constrained-devices)  
+   evidence：带有延迟感知聚合的异步分布式训练
+3. [ATLAS: Efficient Out-of-Core Inference for Billion-Scale Graph Neural Networks](/202605/12/2605.09402v1-atlas-efficient-out-of-core-inference-for-billion-scale-graph-neural-networks)  
    标签：评分：6.0/10、query:dgnn-nas
-   evidence：资源受限设备上受硬件约束的可微分神经架构搜索
-6. [Beyond Rigid Alignment: Graph Federated Learning via Dual Manifold Calibration](/202605/11/2605.06260v1-beyond-rigid-alignment-graph-federated-learning-via-dual-manifold-calibration)  
-   标签：评分：6.0/10、query:dgnn-nas
-   evidence：在通信约束下跨子图的分布式图学习
-7. [Resource-Element Energy Difference for Noncoherent Over-the-Air Federated Learning](/202605/11/2605.07263v1-resource-element-energy-difference-for-noncoherent-over-the-air-federated-learning)  
-   标签：评分：6.0/10、query:dgnn-nas
-   evidence：通过空中聚合实现通信高效的分布式学习
-8. [Scalable Distributed Stochastic Optimization via Bidirectional Compression: Beyond Pessimistic Limits](/202605/11/2605.07795v1-scalable-distributed-stochastic-optimization-via-bidirectional-compression-beyond-pessimistic-limits)  
-   标签：评分：6.0/10、query:dgnn-nas
-   evidence：双向压缩的分布式优化实现通信高效
+   evidence：解决通信成本的高效大规模GNN系统
 
 
 <div class="dpr-home-promo-card">
