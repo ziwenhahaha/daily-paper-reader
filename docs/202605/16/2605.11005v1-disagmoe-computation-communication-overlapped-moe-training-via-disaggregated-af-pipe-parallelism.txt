@@ -1,0 +1,800 @@
+Title: DisagMoE: Computation-Communication overlapped MoE Training via Disaggregated AF-Pipe Parallelism
+
+URL Source: https://arxiv.org/pdf/2605.11005v1
+
+Published Time: Wed, 13 May 2026 00:02:52 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# DisagMoE: Computation-Communication overlapped MoE Training via Disaggregated AF-Pipe Parallelism 
+
+## Zhichen Zeng 1,2, Chi-Chih Chang 1,3, Jiayi Wang 2, Zezhou Wang 2, Ningxin Zheng 1,
+
+## Zheng Zhong 1, Cesar A. Stuardo 1, Dongyang Wang 1, Mohamed S. Abdelfattah 3,
+
+## Haibin Lin 1, Banghua Zhu 2, Ang Li 2, Ziheng Jiang 1
+
+> 1
+
+ByteDance Seed , 2University of Washington , 3Cornell University 
+
+## Abstract 
+
+Mixture-of-experts (MoE) architectures enable trillion-parameter LLMs with sparsely activated experts. Expert parallelism (EP) is a widely adopted MoE training strategy, but it suffers from severe all-to-all communication bottlenecks, which is exaggerated by the limited inter-node network bandwidth as the growing model size requires distributing experts across GPU nodes. Prior work focused on overlapping these all-to-all communications with feed-forward network (FFN) and self-attention computations, which often leaves residual network-bound stalls due to inherent imbalance in attention and FFN layers’ computation-communication ratios. We present DisagMoE , a disaggregated MoE training system that jointly optimizes model placement and scheduling for maximal efficiency. DisagMoE separates attention and FFN layers into disjoint GPU groups, introduces a multi-stage pipeline with uni-directional, many-to-many communications, and employs a computation-communication roofline model to balance GPU and network bandwidth allocation among the attention and FFN groups. DisagMoE is implemented on Megatron-LM, and evaluation shows that DisagMoE improves training efficiency across multiple MoE models with up to 1.8 ×
+
+speedup on 16-node 8 ×H800 clusters.  
+
+> Date:
+
+May 13, 2026 
+
+## 1 Introduction 
+
+Mixture-of-Experts (MoE) architectures are widely adopted for scaling Transformer-based large language models (LLMs) [ 3, 9, 14 , 24 ]. By partitioning the feed-forward network (FFN) layers into experts and activating only a small subset of experts for each to-ken, MoE architectures decouple activated parameter count from total parameter count, achieving sublin-ear growth of per-token computation while scaling model capacity [ 6, 16 , 20 , 26 , 31 ]. DeepSeek-V4-Pro, for example, scales to 1.6T total parameters while activating only 49B parameters per token [4, 8]. Despite the compute efficiency, large MoE layers still face GPU memory capacity challenges due to the total parameter count. Expert parallelism (EP) ad-dresses the challenge by sharding experts across GPU devices, where dense components such as attention layers are replicated via data parallelism (DP) among the same GPU group. Two all-to-all communications arise from this EP+DP strategy, where tokens must be shuffled from the micro-batch ranking in attention layers to expert ranking in FFN layers ( dispatch ) and then shuffled back ( combine ). These communications transmit almost the entire micro-batch due to dy-namic expert routing, and they sit right on the critical path between the attention and MoE layers. More-over, as model size continues to scale, FFN layers no longer fit in a single multi-GPU node, forcing EP domain to span multiple nodes, where low inter-node 1           
+
+> arXiv:2605.11005v1 [cs.LG] 10 May 2026 4K 8K 16K 4K 8K 16K 4K 8K 16K
+> 0
+> 50
+> 100
+> 150
+> Latency (ms)
+> deepseek-moe gpt-oss qwen
+> Attention
+> FFN
+> Dispatch
+> Combine Figure 1 Analysis of the execution of MoE. Time break-down of MoE models executed on 8 nodes H800 GPUs using Megatron-LM.
+
+bandwidth further exaggerates the communication bottleneck. As shown by our profiling on 64 × H800 GPUs, the communications account for up to 50% time of a training step (Fig. 1). Optimizing inter-node dispatch/combine is a first-order optimization goal for large-scale MoE training, and a rich literature exists in this space [ 12 , 13 , 22 ,23 , 32 ]. One line of work overlaps communication with computation. Tutel [ 13 ] and Comet [ 32 ] propose operator-level chunking, which partitions FFN com-putations into fine-grained tiles and partially overlaps dispatch/combine with the MoE layer through tile-level pipelining. However, as shown in Fig. 4, the over-lap window is bounded by FFN computation, leaving residual communication exposed. Lancet [ 15 ] and Du-alPipe [ 7] enlarge the overlap window by pipelining multiple micro-batches and hiding the communica-tions of one micro-batch with the computations of another micro-batch. Nevertheless, they still face a fundamental imbalance: as shown in Fig. 4, attention computation time grows quadratically with sequence length, whereas FFN computation and all-to-all com-munications scale roughly linearly. This imbalance makes perfect overlap difficult across a wide range of workloads, as shown in Fig. 6a. Recent works [ 28 , 29 , 34 ] disaggregate attention and FFN (AFD) onto separate device groups to overlap inter-group communication. For serving, systems such as MegaScale-Infer [ 34 ] and StepFun [ 28 ] place attention and FFN layers on heterogeneous hardware based on the observation that during decoding, at-tention layers are relatively more memory-bound and FFN layers more compute-bound. While effective for latency-driven serving [ 28 , 34 ], this design is hard to apply to training: each group must hold its compo-nent’s full parameters across all layers, plus training-only states (e.g., optimizer). HeterMoE [ 29 ] brings AFD to training onto heterogeneous hardware, and proposes zebra parallelism (ZP) between the FFN group using older GPUs and the attention group adopting newer GPUs, which are communicated by all-to-all primitives. However, this two-stage pipeline is insufficient for large-scale MoE training, because each device group must retain all the parameters of their corresponding component across all transformer layers and causes out-of-memory at scale (Fig. 14), with HeterMoE demonstrated only up to around 4.3B parameters, leaving how to scale to hundred-billion-parameter communication-overlapped MoE training an open question. Moreover, existing methods main-tain a fixed Compute-Communication ratio, limiting the overlapping design space for balancing communi-cation and compute across pipeline stages. To address this imbalance and achieve scalable over-lap training, we present DisagMoE , a large-scale MoE training system that disaggregates attention and FFN across device groups with adaptive worker allocation, jointly optimizing model placement and scheduling to mitigate all-to-all bottlenecks. Our key contributions are:  
+
+> Disaggregated component placement.
+
+DisagMoE partitions the model by component type , assigning attention and FFN layers to different worker groups. The attention groups replicate the dense components and distribute training data in micro-batches, while the FFN groups shard the experts and process tokens based on expert selection. Each group may own com-ponents of the same type from multiple transformer layers, thereby maximizing device utilization under GPU memory constraints.  
+
+> Multi-stage pipeline with overlapping.
+
+We propose 
+
+AF-Pipe , a multi-stage schedule that replaces the con-ventional all-to-all with inter-group many-to-many 
+
+(M2N) token exchanges and treats them as a first-class stage alongside attention and FFN compute, aligning stage boundaries across groups to systemati-cally overlap communication with both computations.  
+
+> Adaptive worker allocation.
+
+DisagMoE employs an adaptive allocator that jointly sizes the attention and FFN groups as well as reallocating NIC band-width across them to balance the communication and computation time with various sequence lengths, top-k selection criteria, and EP sizes. Guided by a lightweight Compute-Communication roofline model, this resizing expands the effective overlap window, re-duces critical-path communication, and mitigates the attention–FFN imbalance that limits prior overlap strategies. We perform extensive pre-training experiments on MoE models with hundreds of billions of parame-ters, using clusters of 128 ×H800 GPUs and sequence lengths ranging from 4K to 32K. DisagMoE consis-2GPU i, i+1                       
+
+> GPU 0, 1..
+> DP 0 Attention
+> Tokens
+> Attention Gate
+> Expert 0
+> Expert 1
+> Expert 2
+> Expert 3
+> Sum Attention
+> (a) MoE Layer Architecture
+> DP 0 Attention
+> EP 0
+> Gate Expert 0
+> Expert 1 Sum Attention
+> (b) Expert Parallelism
+> DP i Attention
+> EP i
+> Gate Expert i
+> Expert i+1 Sum Attention
+> All2All All2All
+> DP 0 Attention
+> DP 1 Gate
+> GPU 0
+> DP 0 Attention
+> DP 1 Gate
+> GPU 0
+> DP 0 Attention
+> DP 1 Gate
+> GPU 0
+> DP 0 Attention
+> DP 1 Gate
+> GPU 0
+> M GPUs
+> M2N
+> N GPUs
+> GPU 0
+> Expert 0
+> Expert 1
+> GPU 0
+> Expert 0
+> Expert 1
+> GPU 0
+> Expert 0
+> Expert 1
+> N2M
+> (c) AF Disaggregated architecture
+> Attention
+> DP i Attention Attention
+
+Figure 2 Overview of MoE architecture, EP, and Attention-FFN Disaggregated architecture. 
+
+tently outperforms strong baselines, achieving up to 1.81 × higher throughput than Megatron-1F1B inter-leaved overlap and up to 1.34 × higher than state-of-the-art MoE overlap systems. 
+
+## 2 Background and Motivation 
+
+2.1 Mixture of Experts (MoE) Structure 
+
+The Mixture of Experts (MoE) architecture is a key technique for scaling LLMs efficiently while improving performance [ 7]. The MoE architecture substitutes a standard feed-forward network (FFN) with a set of multiple FFNs, known as experts .As shown in Figure 2 (a), MoE models use a train-able gate network to select the top-k experts with the highest probability scores. The outputs of these ac-tive experts are then reduced by a weighted sum, and the result is passed as the input to the next attention layer. Modern large-scale MoE models exhibit very sparse activation, whose principle of conditional com-putation facilitates the scaling of model parameters to hundreds of billions while incurring only a sub-linear increase in floating-point operations (FLOPs). For example, the DeepSeek-V4-Pro model [ 8 ], with 1.6T total parameters, activates 49B for each token by engaging 6 out of 384 total experts. 
+
+2.2 Distributed LLM Training 
+
+Distributed training scales LLMs beyond single-device limits through complementary parallelization strategies. 
+
+Data Parallelism (DP). DP replicates model states 
+
+Table 1 Description of DisagMoE symbols.  
+
+> Symbol Description
+
+L Number of transformer layers 
+
+E Total number of experts 
+
+k Top-K experts that each token routed 
+
+H Hidden size 
+
+De Hidden size of the FFN layer in experts 
+
+s Input sequence length 
+
+b Batch size 
+
+W Total parallel world size 
+
+m, M Disagg. Attention nodes/GPUs number 
+
+n, N Disagg. FFN nodes/GPUs number 
+
+EP Expert parallel size 
+
+P GPU compute density (FLOPs/s) 
+
+BNV , B IB NVLink / IB bandwidth (Bytes/s) 
+
+p Groups per component (pipeline depth) 
+
+v Virtual stages per group 
+
+across devices and splits batches for independent computation, synchronizing gradients via all-reduce. Memory-efficient variants like DeepSpeed-ZeRO [ 21 ]and FSDP [ 33 ] shard parameters, gradients, and op-timizer states. 
+
+Pipeline Parallelism (PP). PP divides layers into se-quential stages connected by activation transfers. Megatron-LM [ 17 , 25 ] adopts a 1F1B schedule to re-duce activation memory, leaving only minor pipeline bubbles. 
+
+Expert Parallelism (EP). MoE uses EP to shard experts across GPUs, with tokens dynamically routed to their assigned experts (Figure 2(b)). Each forward/back-ward pass includes two all-to-all operations, dispatch 
+
+and combine , for expert communication. 
+
+## 3 Challenges and Motivations 
+
+In this section, we first illustrate the dominant com-munication overhead under large-scale MoE training and explains the inadequate overlapping from existing methods. Then we introduce how these system-level problems motivate AF disaggregation. 
+
+3.1 Dominant MoE Communications Over-head 
+
+In large-scale EP training [ 7, 30 ], experts are sharded across multiple GPUs and nodes. Using the notation in Table 2, the expected per-GPU all-to-all commu-nication volume is V = EP −1 
+
+> EP
+
+N k , since each GPU exchanges tokens with every non-local GPU. Trans-fers use NVLink within a node and InfiniBand (IB) or Ethernet across nodes [ 10 ]. End-to-end comunica-3tion latency is dominated by the slower interconnect, typically IB near 100GB/s, well below NVLink near 900GB/s. As the EP size spans more nodes, a larger share of peers is reached over IB, which increases communication latency overhead. Figure 3a shows that as the EP degree spans more nodes, the all-to-all share of total training time rises from 22% on a single node to nearly 78% on 8 nodes. In parallel, since the communication volume V grows almost linearly with the number of top-k selected to-kens, as shown in Figure 3b, the percentage of all-to-all increases a lot. Scaling along either axis therefore incurs substantial communication overhead during training. As communication comes to dominate, com-pute resources idle until exchanges finish, pushing the system into a communication-bound regime. 1 2 4 8
+
+> # nodes
+> 0
+> 20
+> 40
+> 60
+> 80
+> All to all (%)
+
+(a) All-to-all percentage over total latency, topk = 4 2 4 8 16 
+
+> top-k (node=2)
+> 0
+> 20
+> 40
+> 60
+> 80
+> All to all (%)
+
+(b) All-to-all percentage, two-node H800 
+
+Figure 3 (a) MoE all-to-all share (%) per layer across nodes. (b) effect of varying top-k selection. Both under 8K sequence length in DeepSeek-MoE. 
+
+3.2 Unlocked operation-level overlapping space 
+
+Given the dominant all-to-all overhead and the two symmetric all-to-all phases (dispatch and com-bine) around attention and FFN, prior systems [ 12 , 13 , 15 , 32 ] attempt to hide communication by slic-ing the computation into operation-level chunks and pipelining dispatch and combine with computation across chunks, thereby overlapping communication with compute. Since GroupGEMM in the FFN admits natural chunk-ing, tokens can be transmitted and received in chunks and the compute can overlap with chunked communi-cation. Hence, most prior systems [ 12 , 13 , 32 ] confine overlap to the all-to-all phase and the FFN compute, as shown in Figure 4. A compiler-driven approach [ 15 ] extends overlap by microbatch-level partitioning and pipelining to shrink the communication bubbles around attention. Yet self-attention with FlashAtten-tion [ 5] remains hard to chunk completely, so when all-to-all dominates there are still non-overlapped (a) No overlapping                      
+
+> (b) Overlapping all-to-all to FFN computation
+> (c) Overlapping all-to-all to FFN and Attention computation
+> AjkFjkFjk+1 Ajk+1
+> FjkFjk+1
+> FjkFjk+1 AjkAjk+1
+> Attention
+> Dispatch
+> FFN
+> Combine
+> Attention
+> (a) No overlapping
+> Attention
+> AjkAjk+1
+> disp comb disp comb
+> disp comb disp comb
+> disp comb disp comb
+
+Figure 4 (a) Vanilla MoE forward. (b) Overlap all-to-all with FFN, Comet and Tutel. (c) microbatch-level pipelining to reduce bubbles. Non-overlapped tails remain when all-to-all dominates. 
+
+communication tails, as illustrated in Figure 5. We profiled the operation-level overlap and found that the narrow focus adopted by prior work con-strains overlap opportunities and yields suboptimal performance in Figure 5. These methods empha-size per-operator overlap while overlooking the richer module-level overlap that spans attention, and FFN. This insight motivates a more general scheduling strategy to unlock the full module-level overlapping space. Comet Tutel Megatron     
+
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Breakdown (%)
+> deepseek-moe
+> Comet Tutel Megatron
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Breakdown (%)
+> gpt-oss
+> Comm. Overlapped Compute
+
+Figure 5 Under operation-level overlap methods, it re-mains communication tails that cannot be hidden with compute. 
+
+3.3 Compute-Communication imbalance between attention and FFN 
+
+Consider hybrid EP–DP parallelism across nodes, the most common configuration used in real-world [ 30 ]. For each EP group, the attention FLOPs cost is 
+
+Fa(s) = α1s2+α2s, and the FFN is Ff(s) = βs , where 
+
+α1, α 2, β are constants defined by model dimensions such as hidden size, detailed in Sec. 4.3. On the networking side, both dispatch and combine all-to-all phases transfer the same token volume, giving a total 44K 8K 16K 32K 
+
+> Sequence Length
+> 0
+> 25
+> 50
+> 75
+> 100
+> Proportion (%)
+> Attention
+> Dispatch
+> FFN
+> Combine
+
+(a) Latency percentage of components. Performance  per GPU     
+
+> (FLOPs/s)
+> Comm
+> bound
+> Comp
+> Bound FFN
+> Attention
+> Overall
+> Arithmetic Intensity
+> (FLOPs/Bytes)
+> 4k 8k 16k 32k
+
+(b) Compute-Communication roofline model. 
+
+Figure 6 (a) Latency breakdown of attention, FFN, and all-to-all communication when trainining Qwen-3 across 8 nodes. (b) Compute-Communication roofline showing attention and FFN under the same network roof. The overall point, as a weighted average of both modules, illustrates their imbalance and motivates disaggregated resource allocation. 
+
+V = γs , where γ depends on model parameters such as hidden width and top-k.As shown in Figure 6a, within the same EP group, the attention component’s share of total computa-tion increases from 28.38% to 50.26% as the sequence length grows from 4K to 32K, while the FFN share decreases from 19.22% to 13.96%. The compute-to-communication ratio for attention rises from 1.08 to 2.78, whereas that for FFN remains nearly con-stant, changing slightly from 0.73 to 0.77. These trends highlight the distinct network–computation characteristics of attention and FFN layers. We also apply the roofline model [ 2] to characterize the compute–communication behavior of attention and FFN, as shown in Figure 6b. A system is network-bound when data transfer is slower than computation (Tcomm > T comp ), making bandwidth the bottleneck, and compute-bound when performance is limited by peak FLOPs throughput. The tuning point is de-fined as ˆI = Peak FLOPs Peak Bandwidth (Bytes/s) , with arithmetic intensity I = Compute FLOPs Communication Bytes .Since attention computation grows quadratically with sequence length while FFN and communication scale linearly, attention’s arithmetic intensity increases faster, allowing it to reach the compute-bound regime earlier. Within each EP group, dispatch and com-bine operations transfer equal data volumes, so Ia
+
+(attention) surpasses ˆI before If (FFN) as sequence length increases. This divergence highlights a fundamental imbalance: attention efficiently utilizes compute, whereas FFN remains constrained by communication. As a re-sult, overall system performance (can be viewed as a weighted one between attention and FFN) is bounded by FFN’s communication overhead. These insights motivate a disaggregated architecture that separates attention and FFN into independent re-source groups, allowing each to operate near its opti-mal compute–communication balance. 
+
+## 4 Design of DisagMoE 
+
+In this section, we present DisagMoE , a training system for large-scale MoE models that mitigates all-to-all bottlenecks by jointly rethinking placement and schedule in a disaggregated design. We orga-nize the design in dependency order: a disaggregated placement (Section 4.1) that maps attention and FFN to disjoint workers, a throughput-oriented pipeline schedule AF-Pipe (Section 4.2) built on this place-ment for training, and an adaptive worker allocation 
+
+(Section 4.3) that efficiently searches over pipeline configurations. 
+
+4.1 Disaggregated component place-ment 
+
+We first introduce the disaggregated architecture un-derlying DisagMoE. In the disaggregated architecture, attention and FFN layers are partitioned into dis-tinct groups and assigned to separate worker sets. Specifically, DisagMoE partitions the Transformer by component type and, for each type, forms inter-leaved groups . We use a unified notation c ∈ { A, F },where A denotes self-attention and F denotes the feed-forward block. Let the model have L layers indexed 0, . . . , L − 1.Fix p ≥ 1 groups per component type. For group 
+
+g ∈ { 0, . . . , p − 1} of component c, the assigned layers are 
+
+Lcg = { g + kp | k = 0 , 1, . . . , v − 1 }. (1) Thus each group receives every p-th occurrence of its component across depth. (When L is divisible by p,we write v = L/p and the enumeration truncates at 
+
+k = v − 1; otherwise, group sizes differ by at most one.) Unless noted, we use the same p for A and F .
+
+Example. With L=8 and p=2, attention groups are 
+
+{A0, A 2, A 4, A 6} and {A1, A 3, A 5, A 7}; the F groups follow the same pattern. Each group g of type c
+
+is placed on a dedicated worker W cg . The output embedding of the final layer resides on the worker hosting that layer’s F block. For the attention workers (A-Workers), GPUs within each group are replicated following data parallelism 5GPU 0   
+
+> GPU 1
+> GPU ..
+> GPU …
+> GPU 0
+> GPU 1
+> GPU ..
+> GPU …
+> Attention Worker 0
+> FFN Worker 0
+> N2M
+> GPU 0
+> GPU 1
+> GPU ..
+> GPU …
+> GPU 0
+> GPU 1
+> GPU ..
+> GPU …
+> GPU 0
+> GPU 1
+> GPU ..
+> GPU …
+> M
+> Attention Worker 1
+> N
+> GPU 0
+> GPU 1
+> GPU ..
+> GPU …
+> GPU 0
+> GPU 1
+> GPU ..
+> GPU …
+> GPU 0
+> GPU 1
+> GPU ..
+> GPU …
+> GPU 0
+> GPU 1
+> GPU ..
+> GPU …
+> M
+> M2N
+> M2N
+> N2M
+> NIC Figure 7 Disaggregated attention–FFN placement. At-tention groups ( {A0, A 2, A 4, A 6}, etc.) are assigned to A-Workers, where GPUs are replicated using data paral-lelism (DP). FFN groups are placed on F-Workers, where experts are distributed across GPUs following expert parallelism (EP). Workers communicate through many-to-many (M2N/N2M) links via NICs, enabling overlapped compute and communication across modules.
+
+(DP). For the FFN workers (F-Workers), experts within each FFN layer are distributed across GPUs inside the group using expert parallelism (EP). This design keeps all groups homogeneous and identically configured within each component type, enabling larger MoE configurations under fixed device-memory budgets and allowing uniform scaling across groups, thereby maintaining balanced compute and commu-nication utilization as analyzed in Section 4.3. 
+
+4.2 AF-Pipe with overlapping 
+
+In this section, we describe how to efficiently train disaggregated MoE-based LLMs at scale using a uni-fied multi-stage pipeline with overlapping, termed 
+
+> AF-Pipe
+
+.
+
+4.2.1 AF-Pipe Time-multiplexing scheduling 
+
+Since attention and FFN modules are partitioned into separate worker groups, training a single batch independently would cause idle periods for one group while the other is active. To mitigate this inefficiency, as illustrated in Figure 8, DisagMoE introduces AF-Pipe, a tailored pipeline parallelism (PP) strategy that unifies disaggregated architecture with time-multiplexing-level pipeline parallelism for efficient large-scale MoE training. Specifically, AF-Pipe adopts the AF disaggregated ar-chitecture described in Section 4.1, where each worker executes only one component type, either attention or FFN. During training, a batch is divided into mul-tiple microbatches, and execution is pipelined across them. Workers perform both forward and backward passes, exhibiting bidirectional behavior. In the for-ward pass, intermediate results (the hidden states) of each microbatch are transferred between adjacent stages, from the attention to the FFN workers. In the backward pass, the gradients of hidden_states 
+
+propagate in the reverse direction, from FFN back to attention workers. This design ensures both com-ponent groups remain continuously active, achieving efficient utilization and minimizing pipeline idle time. 
+
+4.2.2 AF-Pipe with M2N stage boundaries across groups 
+
+In DisagMoE, since each worker hosts the same component and assigned with different GPU re-sources for different types (assuming M for A-Worker and N for F-Worker). The traditional all-to-all ex-changes evolve into many-to-many communication primitives. AF-Pipe introduces multi-stage many-to-many (M2N/N2M) communication boundaries be-tween attention and FFN groups to eliminate redun-dant data transfers and reduce large-expert commu-nication overhead, extending ideas from MegaScale-Infer [ 34 ] and StepMesh [ 28 ]. This multi-stages M2N communication will behave full-duplex so the band-width can be fully utilized. By fusing conventional point-to-point (P2P) and combine operations into a single unified communication stage, AF-Pipe re-duces overall communication cost by roughly 1/k 
+
+and enables systematic computation–communication overlap across groups. This design keeps both atten-tion and FFN workers highly utilized while effectively hiding large-scale token dispatch and combine latency behind computation. As illustrated in Figure 8(b), each transformer layer includes two major all-to-all communications between attention and FFN. In con-ventional setups, tokens from FFN must first per-form a combine step before initiating inter-stage P2P exchanges, creating redundant data transfers and additional latency. We compare the warmup bubbles of AF-Pipe and standard pipeline parallelism. For the baseline: 
+
+Bbase = (P P − 1) [ L(Ta + Tf + 2 Ta2a) + Tp2p ]
+
+v , (2) where Ta, Tf , and Ta2a are attention, FFN, and all-to-all times per layer. In AF-Pipe, inter-stage communication is larger but fully overlapped via M2N exchange: 
+
+BAF = (P P − 1) [max( Ta, T f ) + TM2N ]2v . (3) With per-layer staging ( L = 1 ) and TM2N ≈ Ta2a, AF-Pipe’s bubble is about one-fourth of the baseline, as it 6A00 A10 A20 A30 A40 A50 A60 A70                                           
+
+> F00F10F20F30F40F50F60F70
+> A01A11A21A31A41A51A61
+> F01F11F21F31F41
+> A02A12A06
+> F16
+> A16
+> A27
+> F26
+> A26
+> F37F47F47
+> A47A37
+> F36F66
+> A57A67
+> F57F57
+> A76A80
+> F76
+> A00F00A10F10A20F20A30F30
+> A01F01A11F11A21F21
+> A02F02A12F12
+> A03F03
+> A04F04
+> A16
+> F15
+> A27F27
+> A46
+> A55F55
+> F46
+> A15
+> F26
+> A74F74
+> A37F37
+> Steady
+
+(a) 1F1B-interleaved Pipeline Parallelism 
+
+(b) AF-Pipe   
+
+> A00
+> Attention
+> Dispatch
+> FFN
+> Combine
+> Attn/FFN of layer k, microbatch j (fwd)
+> Dispatch/Combine
+> AjkFjk
+> AjkFjk
+> P2P Comm.
+> Within one layer
+
+0
+
+1
+
+2
+
+3
+
+0
+
+1
+
+2
+
+3      
+
+> Attn/FFN of layer k, microbatch j （bwd)
+> A47
+> A37A90
+> F80
+> F67F67
+> A77A57
+> F16F26F36F66F76
+> Comm. Stream
+> Compute Stream
+> Comm. Stream
+
+fwd execution 
+
+(c) Multi-Streams Execution in FFN group 
+
+bwd output send 
+
+bwd output recv. 
+
+> N2M
+> M2N
+
+Figure 8 (a) Naive 1F1B pipeline: overlaps inter-stage communication but leaves all-to-all unhidden. (b) AF-Pipe overview: treats MoE communication as a first-class pipeline stage. (c) Multi-stream execution: overlaps computation and communication across streams. 
+
+removes P2P delay and fuses two all-to-all operations into one overlapped M2N stage. 
+
+4.2.3 M2N communication overlapped with asynchronous execution 
+
+In the AF-Pipe, the traditional all-to-all exchanges are replaced with many-to-many (M2N/N2M) com-munication between attention and FFN groups to eliminate redundant transfers. We then describe how M2N overlaps with computation by asynchronous execution streams to maximize utilization. As illustrated in Figure 8, each A-group and F-group maintains dedicated send and receive ProcessGroups ,launched asynchronously across three coordinated streams in each workers, forward, backward, and communication, to guarantee non-blocking execution. For example, the steady-state schedule interleaves computation and communication across streams. At time period of T0, the F-worker sends (N2M) the gradients results of backward computation F 16 to the previous A-worker , while the compute stream con-currently executes the forward pass of F 66 on already available data. At the same time, this F-worker re-ceives the backward results from the next A-worker 
+
+A27. Through careful resource allocation (Section 4.3), the compute duration of each stage remains balanced, maintaining high pipeline utilization and minimiz-ing idle time. Symmetrically, the A-worker behave the same asynchronous execution. This design not only overlaps computation and communication but also minimizes synchronization overhead, achieving near-continuous GPU utilization across the entire pipeline. 
+
+4.3 Adaptive worker allocation 
+
+This section presents a Compute-Communication Roofline model to guide the adaptive allocation of disaggregated compute and communication resources, and casts the GPU/NIC partitioning between atten-tion and FFN groups as a Mixed Integer Linear Pro-gramming (MILP) problem. Unlike serving, where input shapes are dynamic and latency-bound, pre-training workloads run with fixed sequence lengths and batch sizes that are known offline [ 8, 27 , 30 , 31 ], so a one-shot static allocation suffices to balance throughput and utilization across stages. 
+
+Compute-Communication Roofline Model for AFD. 
+
+To capture the imbalance compute–communication characteristics of attention and FFN described in Sec-tion 3.3, we extend the classical roofline model to the AFD architecture. Notably, in large EP, we only con-sider inter-node communication, e.g., IB bandwidth. In AF-Pipe (Section 4.2), attention and FFN exe-cute in a time-multiplexed pipeline and communicate bidirectionally between groups. For simplicity, we model the system as two communicating worker clus-7FFN  
+
+> Worker
+> FFN
+> Attention
+> Overall
+> Aggregated Node
+> (Legacy)
+> Arithmetic Intensity
+> (FLOPs/Bytes)
+> Performance per GP U
+> (FLOPs/ s/GPU)
+> Attn
+> Worker
+> Higher Perf! Figure 9
+
+Compute-Communication roofline comparison of aggregated and disaggregated (AFD) architectures. In the aggregated baseline (gray), attention and FFN share the same slope (network bandwidth) and roof (compute), leaving FFN communication-bound and depressing the overall operating point. In AFD, we can redistributes NIC bandwidth across worker groups via resource allocation. FFN workers (blue) receive higher effective per-GPU network bandwidth (steeper slope) and move closer to the compute roof, while attention workers (purple) remain near the compute roof, yielding a higher overall system performance. 
+
+ters: attention ( m nodes) and FFN ( n nodes). We fix the number of NICs for A/F- worker and ensure both groups collectively occupy half of the system’s total NICs, maintain balanced ingress/egress band-width, avoiding link imbalance during inter-group communication. Following Section 3.3, the aggregated system turn-ing point is determined by the arithmetic intensity threshold ˆI. Each group’s peak FLOPs scale with its GPU count ( m for attention, n for FFN), while both sustain identical peak network bandwidth through balanced NIC allocation. The effective turning points differ as: 
+
+ˆIA = 2mm + n ˆI, ˆIF = 2nm + n ˆI. (4) We focus on dominant GEMM operations and ignore minor non-linear terms. Taking group-query atten-tion with group size g as an example (parameters in Table 1), the attention part includes hidden-state projection to QKV and self-attention, whose FLOPs are approximately Ca = b(SH 2(2 + 2 /g ) + 4 S2H).For the expert part, after gating kS tokens, two GroupGEMMs (up- and down-projection) require about Cf = b(4 kSHD e) operations. The total communication volume for bfloat16 data is roughly 
+
+b(2 SkH ). Consequently, the arithmetic intensities are Iattn = H(2+2 /g )+4 S 
+
+> 2k
+
+and Iffn = 2 De, while the system’s turning point Im. Figure 9 illustrates how the per-GPU performance scales with arithmetic in-tensity under the compute–communication roofline model. In legacy nodes, attention and FFN share identical per-GPU network bandwidth (the slope) and peak GPU FLOPs (the compute roof). The slope corre-sponds to the per-GPU InfiniBand bandwidth, and the overall system performance lies along the line segment connecting the two components’ operating points—below the compute roof. In the AFD archi-tecture, since ˆIA and ˆIF differ, we can lift the FFN group’s communication roof (slope) and drive its com-pute closer to the peak roof. Meanwhile, ˆIF shifts rightward, while the attention group still reaches the compute roof. As shown in Figure 9, FFN nodes require higher InfiniBand bandwidth to fully utilize their compute capacity, whereas attention nodes are more compute-bound and thus demand less band-width per GPU.  
+
+> Roofline-model guided resource placement.
+
+We jointly split W GPUs and Mtot NICs between the two groups: M = mμ GPUs to attention and N = nν 
+
+to FFN with NIC budget. Each stage’s latency is the max of its compute and communication time, 
+
+Ta = max 
+
+ Ca 
+
+> P M
+
+, VMaBIB 
+
+
+
+, (5) 
+
+Tf = max 
+
+ Cf 
+
+> P N
+
+, VMf BIB 
+
+
+
+, (6) where Ca, C f are per-iteration FLOPs and V is the inter-group volume. AF-Pipe couples the two groups as a producer– consumer pipeline, so iteration time tracks 
+
+max (Ta, Tf ) and any imbalance becomes a bubble; maximizing aggregate intensity Iattn + Iffn alone is therefore not sufficient. We decompose the placement: (i) the GPU split sets T ⋆ = min max (Ta, Tf ), remov-ing the bubble-generating bottleneck; (ii) among con-figurations attaining T ⋆, the NIC split maximizes 
+
+MFU = ( Ca+Cf )/(T ⋆W P ), equivalent under fixed 
+
+T ⋆ to maximizing Iattn + Iffn , by lifting the compute roof on the communication-slack side: 
+
+T ⋆ = min max( Ta, Tf ), (7a) 
+
+max Iattn + Iffn s.t. max( Ta, Tf ) ≤ T ⋆, (7b) s.t. M +N = W, M a +Mf = Mtot ,m, n, M a, M f ≥ 1, μ, ν ∈ [8] .
+
+The MILP based on [ 11 ] yields a roofline-guided seed 
+
+(M0, M a, 0), which Algorithm 1 refines via local search on measured per-step times to absorb effects unmod-eled by the analytic costs. 8Algorithm 1 AFD allocation: roofline seed with profile-guided refinement.  
+
+> Require:
+
+Θ = ( Ca, C f , V, P, B IB ), W , Mtot , search ra-dius r, trials K, tolerance ϵ 
+
+> Ensure:
+
+GPU split M ⋆, NIC split M ⋆a 
+
+> 1:
+
+S ← ∅ , T ⋆ ← ∞ ▷ Phase 1: minimize bottleneck stage via Eq. (7a)   
+
+> 2: for
+
+feasible (M, M a) under Eq. (7) do  
+
+> 3:
+
+T ← max( Ta, Tf )  
+
+> 4: if
+
+T < T ⋆ −ϵ then T ⋆ ← T , S ← { (M, M a)}  
+
+> 5: else if
+
+T ≤ T ⋆ +ϵ then S ← S ∪ { (M, M a)}   
+
+> 6: end if
+> 7: end for
+> 8:
+
+(M0, M a, 0) ← arg max S (Iattn +Iffn ) ▷ Phase 2: MFU tie-break (Eq. (7b))  
+
+> 9:
+
+(M ⋆, M ⋆a , T ⋆) ← (M0, M a, 0, Profile( M0, M a, 0)) ▷
+
+Phase 3: local refinement   
+
+> 10: for
+
+k = 1 to K do  
+
+> 11:
+
+(M ′, M ′
+
+> a
+
+) ← clip(( M ⋆, M ⋆a ) + rand( −r, r ))   
+
+> 12: if
+
+Profile (M ′, M ′
+
+> a
+
+) < T ⋆ then update 
+
+(M ⋆, M ⋆a , T ⋆)    
+
+> 13: end if
+> 14: end for
+> 15: return
+
+(M ⋆, M ⋆a )
+
+## 5 Implementation 
+
+We implement DisagMoE in 6K lines of Python and 2K C++, with components with Megatron-LM based on PyTorch v2.6 for NVIDIA GPUs. For efficient dispatching and combine data between AF, we im-plement an M-to-N/N-to-M communication primi-tives supported by GPUDirect [ 19 ] and GPUCopy [ 18 ], following the idea of [ 28 , 34 ]. In DisagMoE, we only change the module-level definition logits, trainers only need to define the attention and FFN computation as usual, and AF-Pipe will partition the transformer blocks into groups. DisagMoE is seamlessly integrated into Megatron-LM [ 25 ] to reuse the other model architecture, 3D parallelism, and hyperparameters. 
+
+## 6 Evaluation 
+
+6.1 Setups  
+
+> Testbed.
+
+We deploy DisagMoE on the cluster, which consists of 16 nodes, equipped with 8 Nvidia H800 GPUs (80 GB memory each), 168 CPUs and equipped with ConnectX-7 8 ×400 GbE NICs for each node. GPUs within the same node are interconnected via 400GB/s NVLINK.  
+
+> Models.
+
+We evaluate DisagMoE based on three MoE models, DeepSeek-MoE [ 4 ], GPT-OSS-120B [ 1], and  
+
+> Table 2
+
+MoE model configurations                     
+
+> Model Layers Hidden Experts top-k MoE Hidd.
+> Deepseek-moe 28 2048 64 41408 GPT-OSS 36 2880 128 42880 Qwen3 94 4096 128 81536
+
+Qwen3-235B-A22B [ 30 ]. The model parameter de-tails are listed in Table 2. We explore the number of experts on different depths (layers) and widths (hidden states size) in our system. The global batch size is set to be larger than on the pipeline stages to amortize the pipeline bubbles. 
+
+6.2 End-to-end Performance  
+
+> Baseline.
+
+We compare DisagMoE with four SOTA training methods: (1) Megatron-LM: a widely-used open-source training framework from NVIDIA with 3D parallelism (2) Tutel: the state-of-the-art MoE overlapping optimizations [ 13 ], (3) Comet [ 32 ]: afine-grained communication overlapping library for MoE (4) DualPipe [ 4]: a bidirectional pipeline paral-lelism overlap of forward and backward computation-communication. In this subsection, we evaluate the training through-put of our testbed across sequence lengths ranging from 4K to 32K. We compare DisagMoE ’s through-put with multiple baselines under varying numbers of GPUs. To ensure fairness, we fix the local batch size ( i.e., per-device batch size), allowing the model’s effective total batch size to scale linearly with the number of GPUs. For all baselines, we set the ex-pert parallelism (EP) size to 16 across two nodes and carefully tune the pipeline and virtual stage configu-rations to avoid OOM errors. For DisagMoE, we set the optimal resource allocation based on Sec. 4.3 . The overall results are presented in Figure 10. As shown, DisagMoE consistently outperforms all base-lines, achieving up to 1.81 × speedup over the naïve Megatron-1F1B interleaved overlap and 1.34 ×
+
+speedup compared to the SOTA overlapping training methods. We provide a detailed analysis of these results in the following paragraphs. Compared with Megatron-1F1B. Megatron-1F1B is deployed by 3D parallelism, including DP, EP, and PP. Models are distributed by layer chunks, and each chunk has mul-tiple EP/DP groups. Seeing from Figure 10, Dis-agMoE can achieve 1.59-1.81 × speedup under the model and sequence configures compared with this 3D parallelism. Interleaved PP overlaps inter-stage P2P communication but still incurs heavy intra-stage all-to-all overhead within each EP group. In con-94k 8k 16k 32k           
+
+> 0.8
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> 1.8
+> 2.0
+> Speedup (x)
+> deepseek-moe
+> 4k 8k 16k 32k
+> 0.8
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> 1.8
+> 2.0
+> Speedup (x)
+> gpt-oss
+> 4k 8k 16k 32k
+> 0.8
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> 1.8
+> 2.0
+> Speedup (x)
+> qwen3
+> Megatron Tutel Comet Dualpipe DisagMoE (This work)
+
+Figure 10 End-to-end training throughput across different sequence lengths (4K–32K) on DeepSeek-MoE, GPT-OSS, and Qwen3. DisagMoE consistently outperforms Megatron, Tutel, Comet, and DualPipe, achieving up to 1.81 ×
+
+speedup over Megatron-1F1B and 1.34 × over state-of-the-art MoE overlap systems. 
+
+trast, DisagMoE separates attention and FFN into two stages, effectively hiding this communication cost. This design enables DisagMoE to achieve significantly higher overall throughput as discussed in Section 3.3. 
+
+Compared with SOTA overlapping methods. We also compare DisagMoE against other SOTA MoE overlapping methods. Firstly, we observe a consis-tent 1.2-1.5 × speedups over Tutel [ 13 ] and Comet [ 32 ]. This improvement arises because both meth-ods purely rely on operation-level overlapping, as described in Section 3.2. In cross-node training, the computation latency of a single FFN operation ac-counts for only about 40–60% of the total time of the two all-to-all communications, leaving significant unoverlapped communication overhead. By constrast, DisagMoE removes these communication bubbles by separating attention and FFN into distinct pipeline stages and overlapping token dispatch and combina-tion across them, thereby achieving more complete module-level overlap. Compared with DualPipe [ 4], DisagMoE delivers 1.05 - 1.13 × average speedup. During warm-up and cool-down, DualPipe behaves similarly to Megatron-3D, producing large all-to-all communication bubbles along the critical path. Even in steady state, residual unoverlapped tails persist for long sequence lengths because the interleaved forward and backward passes exhibit mismatched compute-to-communication ra-tios between attention and FFN, limiting overlap efficiency. DisagMoE alleviates these issues by de-coupling the two modules and adaptively allocating GPU and network resources to maintain balanced overlap across stages. 
+
+Iteration time decomposition. Next, we analyze the contribution of each component to the total iteration time. As shown in Figure 11, DisagMoE achieves a 0 100 200 300 400 500 600 
+
+> Latency (ms)
+> Megatron
+> Tutel
+> Comet
+> Dualpipe
+> DisagMoE
+> Non-overlapped Comp.
+> Comm.-Comp. Overlapped
+> Non-overlapped Comm.
+
+Figure 11 Latency breakdown under 8K in deepseek-moe. 
+
+higher level of compute-communication overlapping than baselines, reducing non-overlapped communica-tion time by up to 88% compared to Tutel, 75% com-pared to Comet, and 45% off compared to Dualpipe. Overall, DisagMoE expands the effective overlap re-gion and shortens end-to-end iteration time, yielding higher overall efficiency than existing systems. 
+
+6.3 Ablations 
+
+Impacts of resource allocation in AF-Pipe. We study how the resource allocation impacts the Disag-MoE’s performance. Based on our Roofline Model in Sec. 4.3, we change the ratio of compute resources and communication resources for attention and FFN group to search the best resource configurations for DisagMoE under different sequence length. In cur-rent GPU nodes, we allocate the compute resources by setting the GPU_PER_NODES environment variable and adjust the communication resources by changing 
+
+NCCL_IB_HCA the number of NICs. Since the amount of compute and communication on each GPU de-pends solely on the ratio, not their absolute number. Therefore we fix the communication units number of Attention and FFN both as 16 NICs while chang-ing the compute number of each groups. In this allocation policy, we can dynamically adjust both of compute and communication rotios. We evaluate 10 DisagMoE compared with Megatron baseline by the throughput per GPU. 4k 8k 16k 32k 
+
+> Sequence Length
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> Speedup (x)  A:F Comp. Ratio
+> 8:16
+> 10:16
+> 12:16
+> 16:16
+> 16:12
+> 16:10
+> 16:8
+
+Figure 12 Effect of attention–FFN resource allocation on throughput. The y-axis shows per-GPU throughput speedups normalized over Megatron. Optimal A:F ratios vary with sequence length, where longer sequences favor more attention resources. 
+
+As shown in Figure 12, we adjust the attention and FFN compute numbers following the resource alloca-tor in Sec. 4.3, and we observe that the optimal GPU ratio varies for different sequence lengths. In long se-quence, DisagMoE ’s effectiveness peaks at 16:10 for 16K input with a speed-up of 1.56x over baseline and 1.29x over the homogeneous (16:16). In this setting, we can increase the training throughput per GPU and keep the total training latency minimum. In shorter sequence, for example, 4K, we also find that since the attention and FFN computation FLOPs are closer, the optimal ratio is the balanced one (16:16) or near it. In contrast, when we forcibly enlarge or decrease the A:F ratio, the performance will be harmed since now the stages of A-Group and F-Group are showing imbalance in our AF-Pipe, which will bring extra bubbles. 
+
+Impacts of different top-k and EP size. We also study the impacts of MoE architecture configuration settings, eg, topk size and EP size. We adjust the number of EP size as well as topk to evaluate the performance of DisagMoE in total experts as 64. The results shown in Figure 13 observe that with the topk size larger, the total training time will increase since both the communication time and the FFN computa-tion time will increase linearly. With EP size larger, the tokens will be routed into more GPUs, increasing the communication time in meanwhile. Results show that DisagMoE consistently demonstrates better per-formance across different setting of topk and EP size, from 1.08-1.92x speedup compared with baselines. 
+
+Impacts of virtual stages in AF-Pipe. We further analyze how the number of interleaved virtual stages in DisagMoE affects training throughput. Each A-group and F-group holds multiple attention and FFN layers, respectively, as introduced in Section 4.2. As topk=2 topk=4 topk=8 topk=16 
+
+> 0
+> 200
+> 400
+> 600
+> 800
+> 1000
+> Latency (ms)
+> Megatron
+> Tutel
+> Comet
+> Dualpipe
+> DisagMoE (This work)
+
+Figure 13 Impact of top-k and expert-parallel (EP) size on training performance. Increasing top-k raises both communication and FFN computation costs, while larger EP sizes expand cross-node communication. 4k 8k 16k 32k 
+
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> Speedup (x)
+> VPP
+> 1
+> 2
+> 4
+> 8
+> 16
+> OOM
+
+Figure 14 Effect of virtual stage size on training through-put. More virtual stages improve pipeline utilization up to the memory limit ( v ≤ 16 ), beyond which GPUs run out of memory. 
+
+shown in Fig. 14, increasing the number of virtual stages enhances throughput by reducing pipeline bub-bles roughly in proportion to v. However, when the virtual size exceeds 16, GPU memory overflows due to the storage of parameters and activations from all 16 layers within one group. This behavior mirrors a direct extension of serving-oriented AFD systems [ 28 , 34 ] to training workloads, such as HeteroMoE [ 29 ], which quickly leads to out-of-memory (OOM) conditions. 
+
+## 7 Limitations and Discussion 
+
+Limitations. DisagMoE assumes pretraining-style stable shapes such as fixed sequence length and micro-batch size; supporting workloads with dynamic shapes (e.g., RL training) would require online re-allocation, which is outside the scope of this work. The current design uses a single pipeline depth p
+
+shared by attention and FFN groups; asymmetric depths (pA, p F ) are a promising extension but in-troduce non-trivial scheduling complexity, which we leave as future work. 11 Hardware-software co-design insight. The roofline analyses in Sec. 3.3 and Sec. 4.3 surface akey observation: whether communication can be fully hidden depends on the per-component com-pute–communication ratio, not on raw interconnect bandwidth. Because attention and FFN exhibit a structural imbalance in this ratio, uniformly scal-ing bandwidth across the system cannot drive both components to the compute roof at once. This is precisely why DisagMoE disaggregates attention and FFN into separate worker groups and adaptively re-allocates GPU and NIC budgets across them, so that each component is driven toward its own com-pute–communication ratio and the effective overlap window expands beyond what symmetric bandwidth provisioning can achieve. This view echoes the hard-ware proposal from DeepSeek-V4 [ 8]. Together, these views suggest future hardware should target favorable compute–communication ratios across components rather than scaling bandwidth alone. 
+
+## 8 Conclusion 
+
+We present DisaggMoE , a disaggregated MoE train-ing system that addresses the communication bot-tlenecks of large-scale expert-parallel training. By partitioning attention and FFN layers into separate worker groups and introducing AF-Pipe, a multi-stage pipeline with many-to-many communication overlap, DisaggMoE achieves fine-grained coordina-tion between compute and communication. Guided by a network–compute roofline model, our adaptive al-locator dynamically balances GPU and NIC resources across groups, delivering high efficiency across differ-ent sequence lengths, top-k, and EP sizes. Experi-ments on 8–16 node H800 clusters demonstrate that 
+
+DisaggMoE consistently improves training through-put, achieving up to 1.81 × speedup over Megatron-1F1B and up to 1.34 × over state-of-the-art MoE overlap systems. These results highlight the effec-tiveness of disaggregated architecture and commu-nication–compute co-optimization for scaling MoE training efficiently. 12 References 
+
+[1] Sandhini Agarwal, Lama Ahmad, Jason Ai, Sam Altman, Andy Applebaum, Edwin Arbus, Rahul K Arora, Yu Bai, Bowen Baker, Haiming Bao, et al. gpt-oss-120b & gpt-oss-20b model card. arXiv preprint arXiv:2508.10925, 2025. [2] Jacob Austin, Sholto Douglas, Roy Frostig, Anselm Levskaya, Charlie Chen, Sharad Vikram, Federico Le-bron, Peter Choy, Vinay Ramasesh, Albert Webson, and Reiner Pope. How to scale your model. 2025. Re-trieved from https://jax-ml.github.io/scaling-book/. [3] Aakanksha Chowdhery, Sharan Narang, Jacob Devlin, Maarten Bosma, Gaurav Mishra, Adam Roberts, Paul Barham, Hyung Won Chung, Charles Sutton, Sebastian Gehrmann, et al. Palm: Scal-ing language modeling with pathways. Journal of Machine Learning Research, 24(240):1–113, 2023. [4] Damai Dai, Chengqi Deng, Chenggang Zhao, RX Xu, Huazuo Gao, Deli Chen, Jiashi Li, Wangding Zeng, Xingkai Yu, et al. Deepseekmoe: Towards ultimate expert specialization in mixture-of-experts language models. arXiv preprint arXiv:2401.06066, 2024. [5] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. Flashattention: Fast and memory-efficient exact attention with io-awareness. Advances in neural information processing systems , 35:16344– 16359, 2022. [6] DeepSeek-AI. DeepSeek-V3.2: Efficient Rea-soning & Agentic AI. https://huggingface. co/deepseek-ai/DeepSeek-V3.2 , 2025. Accessed: 2026-05-02. [7] DeepSeek-AI. Deepseek-v3 technical report, 2025. URL https://arxiv.org/abs/2412.19437 .[8] DeepSeek-AI. DeepSeek-V4-Pro. https:// huggingface.co/deepseek-ai/DeepSeek-V4-Pro ,2026. Accessed: 2026-05-02. [9] William Fedus, Barret Zoph, and Noam Shazeer. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. Journal of Machine Learning Research, 23(120):1–39, 2022. [10] Adithya Gangidi, Rui Miao, Shengbao Zheng, Sai Jayesh Bondu, Guilherme Goes, Hany Morsy, Rohit Puri, Mohammad Riftadi, Ashmitha Jeevaraj Shetty, Jingyi Yang, et al. Rdma over ethernet for distributed training at meta scale. In Proceedings of the ACM SIGCOMM 2024 Conference , pages 57–70, 2024. [11] Gurobi Optimization, LLC. Gurobi Optimizer Refer-ence Manual, 2026. URL https://www.gurobi.com .[12] Jiaao He, Jidong Zhai, Tiago Antunes, Haojie Wang, Fuwen Luo, Shangfeng Shi, and Qin Li. Faster-moe: modeling and optimizing training of large-scale dynamic pre-trained models. In Proceedings of the 27th ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming , pages 120–134, 2022. [13] Changho Hwang, Wei Cui, Yifan Xiong, Ziyue Yang, Ze Liu, Han Hu, Zilong Wang, Rafael Salas, Jithin Jose, Prabhat Ram, Joe Chau, Peng Cheng, Fan Yang, Mao Yang, and Yongqiang Xiong. Tu-tel: Adaptive mixture-of-experts at scale. CoRR ,abs/2206.03382, June 2022. URL https://arxiv. org/pdf/2206.03382.pdf .[14] Albert Q Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Mensch, Blanche Savary, Chris Bam-ford, Devendra Singh Chaplot, Diego de las Casas, Emma Bou Hanna, Florian Bressand, et al. Mixtral of experts. arXiv preprint arXiv:2401.04088, 2024. [15] Chenyu Jiang, Ye Tian, Zhen Jia, Shuai Zheng, Chuan Wu, and Yida Wang. Lancet: Ac-celerating mixture-of-experts training via whole graph computation-communication overlapping. Proceedings of Machine Learning and Systems , 6: 74–86, 2024. [16] Dmitry Lepikhin, HyoukJoong Lee, Yuanzhong Xu, Dehao Chen, Orhan Firat, Yanping Huang, Maxim Krikun, Noam Shazeer, and Zhifeng Chen. Gshard: Scaling giant models with conditional com-putation and automatic sharding. arXiv preprint arXiv:2006.16668, 2020. [17] Deepak Narayanan, Mohammad Shoeybi, Jared Casper, Patrick LeGresley, Mostofa Patwary, Vijay Korthikanti, Dmitri Vainbrand, Prethvi Kashinkunti, Julie Bernauer, Bryan Catanzaro, et al. Effi-cient large-scale language model training on gpu clusters using megatron-lm. In Proceedings of the international conference for high performance computing, networking, storage and analysis , pages 1–15, 2021. [18] NVIDIA. Gdrcopy. https://github.com/NVIDIA/ gdrcopy , 2025. Accessed: 2025-10-27. [19] NVIDIA. Gpudirect. https://developer.nvidia. com/gpudirect , 2025. Accessed: 2025-10-27. [20] Qwen Team. Qwen3.6-Max-Preview: Smarter, Sharper, Still Evolving. https://qwen.ai/blog?id= qwen3.6-max-preview , April 2026. Accessed: 2026-05-02. [21] Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase, and Yuxiong He. Zero: Memory optimizations to-ward training trillion parameter models. In SC20: International Conference for High Performance Computing, Networking, Storage and Analysis ,pages 1–16. IEEE, 2020. 
+
+13 [22] Samyam Rajbhandari, Conglong Li, Zhewei Yao, Minjia Zhang, Reza Yazdani Aminabadi, Ammar Ah-mad Awan, Jeff Rasley, and Yuxiong He. Deepspeed-moe: Advancing mixture-of-experts inference and training to power next-generation ai scale. In International conference on machine learning , pages 18332–18346. PMLR, 2022. [23] Jeff Rasley, Samyam Rajbhandari, Olatunji Ruwase, and Yuxiong He. Deepspeed: System optimiza-tions enable training deep learning models with over 100 billion parameters. In Proceedings of the 26th ACM SIGKDD international conference on knowledge discovery & data mining , pages 3505– 3506, 2020. [24] Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton, and Jeff Dean. Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. arXiv preprint arXiv:1701.06538, 2017. [25] Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper, and Bryan Catan-zaro. Megatron-lm: Training multi-billion parameter language models using model parallelism. arXiv preprint arXiv:1909.08053, 2019. [26] ByteDance Seed Team. Seed2. 0 model card: To-wards intelligence frontier for real-world complexity, february 2026. Model Card. [27] Qwen Team. Qwen3.5: Accelerating productivity with native multimodal agents, February 2026. URL 
+
+https://qwen.ai/blog?id=qwen3.5 .[28] Bin Wang, Bojun Wang, Changyi Wan, Guanzhe Huang, Hanpeng Hu, Haonan Jia, Hao Nie, Min-gliang Li, Nuo Chen, Siyu Chen, et al. Step-3 is large yet affordable: Model-system co-design for cost-effective decoding. arXiv preprint arXiv:2507.19427, 2025. [29] Yongji Wu, Xueshen Liu, Shuowei Jin, Ceyu Xu, Feng Qian, Z Morley Mao, Matthew Lentz, Danyang Zhuo, and Ion Stoica. Hetermoe: Efficient training of mixture-of-experts models on heterogeneous gpus. arXiv preprint arXiv:2504.03871, 2025. [30] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388, 2025. [31] Z.ai. GLM-5.1. https://huggingface.co/zai-org/ GLM-5.1 , 2026. Accessed: 2026-05-02. [32] Shulai Zhang, Ningxin Zheng, Haibin Lin, Ziheng Jiang, Wenlei Bao, Chengquan Jiang, Qi Hou, Weihao Cui, Size Zheng, Li-Wen Chang, et al. Comet: Fine-grained computation-communication overlapping for mixture-of-experts. arXiv preprint arXiv:2502.19811, 2025. [33] Yanli Zhao, Andrew Gu, Rohan Varma, Liang Luo, Chien-Chin Huang, Min Xu, Less Wright, Hamid Shojanazeri, Myle Ott, Sam Shleifer, et al. Pytorch fsdp: experiences on scaling fully sharded data par-allel. arXiv preprint arXiv:2304.11277, 2023. [34] Ruidong Zhu, Ziheng Jiang, Chao Jin, Peng Wu, Ce-sar A Stuardo, Dongyang Wang, Xinlei Zhang, Huap-ing Zhou, Haoran Wei, Yang Cheng, et al. Megascale-infer: Serving mixture-of-experts at scale with disaggregated expert parallelism. arXiv preprint arXiv:2504.02263, 2025. 
+
+14
