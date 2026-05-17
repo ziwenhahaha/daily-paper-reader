@@ -1,0 +1,1187 @@
+Title: ATLAS: Efficient Out-of-Core Inference for Billion-Scale Graph Neural Networks
+
+URL Source: https://arxiv.org/pdf/2605.09402v1
+
+Published Time: Tue, 12 May 2026 01:26:37 GMT
+
+Number of Pages: 25
+
+Markdown Content:
+# ATLAS : Efficient Out-of-Core Inference for Billion-Scale Graph Neural Networks ∗
+
+Pranjal Naman and Yogesh Simmhan 1
+
+Department of Computational and Data Sciences (CDS), Indian Institute of Science (IISc), Bangalore 560012 India 
+
+Email:{pranjalnaman, simmhan}@iisc.ac.in 
+
+Abstract 
+
+Graph Neural Network (GNN) inference on billion-scale graphs is critical for domains like fintech and recommendation systems. Full-graph inference on these large graphs can be challenging due to high communication costs in distributed settings and high I/O costs in disk-backed Out-of-Core (OOC) settings. Existing OOC systems, operating across disk and memory, primarily focus on GNN training and perform poorly for full-graph inference due to massive read amplification, irregular I/O and memory pressure. We present ATLAS , a disk-based GNN inference framework that enables efficient full-graph, layer-wise inference on graphs whose topologies, features and intermediate embeddings exceed the available memory on single machines. ATLAS replaces gather-based execution with a broadcast-based model that enables sequential, single-pass streaming reads of features and embeddings per layer. A tiered memory–disk hierarchy with minimum-pending-message eviction, graph reordering and a GPU-accelerated pipeline sustains high throughput within 128 GiB RAM and 2 TiB SSD. Across out-of-core graphs with up to 4B edges and 550 GiB features and multiple GNN architectures, ATLAS improves end-to-end inference time by ≈ 12 –30 × over State-of-the-Art (SOTA) OOC baselines on a single workstation, while remaining within ≈ 5% when features fit in memory. 
+
+# 1 Introduction 
+
+Graph neural networks (GNNs) have become popular for learning low-dimensional representa-tions from linked data, capturing both the topology and associated features [10,15]. This makes them especially adept at performing a wide range of tasks such as detecting financial fraud in transaction networks [4,6,17], predicting traffic flows and signaling in Intelligent Transportation Systems (ITS) [9, 27], and making e-commerce recommendations [43]. GNN inference typically follows a message-passing paradigm, where each vertex gathers and aggregates messages from its 
+
+k-hop neighborhood ( computation graph ) and applies a neural-network transformation per layer. This recursive multi-hop aggregation makes inference (and training) expensive due to irregular graph memory access and per-layer neural network compute.  
+
+> ∗
+
+Preprint of paper to appear in the proceedings of The 35th International Symposium on High-Performance Parallel and Distributed Computing (HPDC 26): Pranjal Naman and Yogesh Simmhan, “ ATLAS : Efficient Out-of-Core Inference for Billion-Scale Graph Neural Networks”, in International Symposium on High-Performance Parallel and Distributed Computing (HPDC) , 2026. DOI: https://doi.org/10.1145/3806645.3807597 
+
+1
+
+> arXiv:2605.09402v1 [cs.DC] 10 May 2026
+
+Motivation Given these memory and computational expenses, optimizing inference is crucial for real-world deployments. GNNs are often deployed in settings where the underlying graph can change, or the GNN model may be updated, requiring predictions to be refreshed periodically. Even in systems that support incremental inference [18, 21, 36], a full inference pass over the entire (materialized historical) graph is still required for a new GNN model to establish a baseline against which incremental updates can be applied to future graph entities. While this process is not latency-critical, it must complete within a reasonable time, e.g., a couple of hours rather than days. This is further complicated by the fact that GNNs often find applications in real-world large-scale graphs comprising millions to billions of vertices and edges, e.g., for predicting fraud in a fintech transaction graph or recommending products or friends in e-commerce or social networks. While the graph topology may fit in the RAM of a single machine, the feature and embedding vectors associated with vertices and edges are large and often exceed the available memory on workstations and even servers. E.g., the IGB-Large citation graph [14] used in our experiments has 100 M vertices, 1.2B edges, and 1024 -length FP16 features, which together consume 219 GiB of RAM (Table 1) and well-exceed the RAM ( 128 GiB) and GPU memory ( 32 GiB) on our RTX 5090 GPU workstation. To circumvent this, several works adopt a distributed data-parallel approach , where multiple compute servers collaboratively train or infer a GNN model on smaller, distributed subgraphs [1, 8, 19, 22, 42, 47]. Meanwhile, distributed GNN inference systems [3, 12] employ strategies like probabilistic caching of frequently accessed remote features, and collaborative graph and feature tensor partitioning. 
+
+Disk-based GNN training and inference has emerged as a promising alternative [16,24,28,29, 39], along the lines of prior Out-of-Core (OOC) disk-based parallel graph processing [26, 33, 41]. These focus on efficient data layouts and intelligent caching strategies to fully utilize memory, disk capacity and bandwidth on a single machine. This is all the more relevant given the lower latency and higher bandwidth of Solid State Disks (SSDs) with capacities of 2 TiB+ common even for prosumer disks, at a much lower price point than RAM. 
+
+Challenges While disk-based OOC GNN training has been widely studied recently, efficient OOC inference poses a variety of challenges, as discussed below, and remains fairly underex-plored. 
+
+(1) Working-set Amplification During Inference. Out-of-core GNN training methods optimize multiple aspects of the training pipeline, including data transfer , such as leveraging GPU-direct [23, 30] to bypass the CPU in the I/O path; data organization [16, 24, 28, 39], which governs the ordering of data movement and the use of multi-tier caching; and the data stor-age layout [16], where the logical arrangement of features is redesigned to enable more efficient training. While inference, at first glance, just appears to be the forward pass phase of training, these are fundamentally different workloads. Training typically operates on a small subset of vertices which have labels available (e.g., 
+
+≈ 1% for OGBN-Papers100M [11] in Table 1), whereas inference computes representations for the entire vertex set . This changes the access pattern from repeated sampling of localized neighborhoods to materializing embeddings for all vertices. Existing OOC training frameworks exploit the small working set during training to perform optimizations, often requiring the entire computation graph to be precomputed [16,39]. Applying this strategy to inference is impractical, as constructing full unsampled computation graphs for the entire graph upfront is prohibitively expensive in time and storage, e.g., on OGBN-Papers100M for a 3-layer GNN using DGL [35] with disk-backed topology takes ≈ 1 hour and ≈ 500 GiB of storage for just 1% of vertices. 
+
+(2) Sampling Effects on Inference. During training, GNNs commonly use neighborhood sam-pling [10] at each layer to limit memory usage by considering only a subset of neighbors. However, 2such sampling is undesirable during inference, as it leads to non-deterministic outputs [13,21,46], which is unacceptable for accuracy-critical applications such as fintech and ITS. As a result, in-ference typically requires full-graph execution, where each vertex aggregates information from its complete neighborhood. In disk-resident settings, this results in repeated random accesses to vertex features and intermediate embeddings for all vertices, rather than a comparatively smaller working set for training, e.g., in IGB-Large [14], training a 2-layer GNN on 1% training vertices with neighborhood sampling touches only ≈ 8% of all vertices per epoch [20]. When the feature set fits in RAM, layer-wise baselines can be competitive due to caching, but performance degrades sharply once features exceed memory and disk I/O dominates. 
+
+(3) I/O Challenges at Full-Graph Scale. A common approach to GNN inference is to reuse the training pipeline without the backward pass, often referred to as vertex-wise inference . In this setting, each vertex (or batch of vertices) recursively gathers features from its k-hop neighbors to compute its embedding. However, this approach is highly inefficient for GNN inference (Fig. 2). First, it leads to random accesses to vertex features. Since features are stored on disk and accessed at block granularity (e.g., 4 KB), even small, scattered reads fetch entire blocks, reducing effective bandwidth. Second, it incurs repeated accesses , where the same vertex features are fetched multiple times across different target vertices (or batches). E.g., a high-degree vertex may be read repeatedly when processing each of its neighbors, further amplifying disk I/O. Third, it performs redundant computation , as overlapping neighborhoods are recomputed across batches. Some works mitigate these issues using graph partitioning [34,47], where subgraphs are processed in memory to eliminate disk accesses. However, this results in dropping cross-partition dependencies, which impacts model accuracy. An alternative is layer-wise inference , where embeddings for all vertices are computed one layer at a time . This eliminates redundant computation by sharing intermediate results across vertices. However, random and repeated accesses still exist, since each vertex continues to independently gather features from its in-neighbors within a layer. For instance, DGI [44], a layer-wise inference framework with SSD-backed execution, still performs random feature and embedding gathers, leading to significant I/O overhead. Despite operating in a layer-wise manner, it does not address the fundamental issue of repeated and irregular data access. We observe that the root cause across both vertex-wise and layer-wise approaches is their reliance on a gather-based execution model. Since each vertex independently pulls data from its neighbors, the system remains input-unaware, leading to redundant data movement, poor locality, and severe I/O amplification. We empirically demonstrate these challenges in Fig. 1 by comparing three SOTA systems: 
+
+DGI [44] (layer-wise inference), and Ginex [24] and Marius [34] (training frameworks adapted for inference), on full-graph inference for a 2-layer SAGEConv model [10] over PApers and MAG-Cites (Table 1), on GPU workstations with 128 GiB RAM, RTX 4090 /5090 GPUs and 512 GiB/2 TiB SSD (§ 4.1). DGI is unable to complete the inference even within a 6 h time budget on MA, taking an extrapolated ≈ 11 h for just the first layer (Fig. 1b, left Y axis, hatched orange bars ), while the vertex-wise baseline, Ginex [24], took 8 h ( hatched red bar ). In contrast, our ATLAS framework completes this in < 1 h for both layers ( solid blue bars ). This extends to even Marius, which uses edge-wise graph partitioning, which takes about 17 mins for the much smaller PA graph on the 4090 workstation (Fig. 1c) while ATLAS takes ≈ 13 mins; Marius could not be evaluated on larger graphs due to lack of SSD resources on the 4090 workstation (with 512 GiB SSD) and library compatibility issues with the 5090’s Blackwell architecture. 
+
+Proposal To address these challenges, we leverage a key insight: full-batch GNN inference can be reformulated as a broadcast operation, enabling strictly sequential disk access instead of repeated random gathers. This greatly reduces read amplification. However, if done naïvely, this merely shifts the bottleneck from read I/O to aggregation and random write overheads, 3Ginex     
+
+> L1
+> DGI
+> L2L1
+> Atlas
+> L2
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> Time (s)
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> Bytes Read (GiB)
+> GiB (a) PA/SAGE2/5090 Ginex
+> L1
+> DGI
+> L2L1
+> Atlas
+> L2
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> Time (s)
+> DNF
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> Bytes Read (GiB)
+> GiB (b) MA/SAGE2/5090 Marius
+> L1
+> Atlas
+> L2
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> Time (s)
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> Bytes Read (GiB)
+> GiB (c) PA/SAGE2/4090
+
+Figure 1: Time taken (left Y axis, hatched bars : extrapolated, solid bars : completed) and Total bytes read from disk ( markers , right Y axis), for full-graph inference of 2-layer SAGEConv , with topology and features disk-resident for Ginex [24], DGI [44], Marius [34] and ATLAS (ours), for Papers [11] and MAG240M-Cites [11], on 4090 and 5090 GPU workstations. as intermediate outputs for all vertices may need to be materialized in memory. To achieve broadcast-based inference under tight memory constraints, we must avoid fully materializing intermediate embeddings while still ensuring single-pass sequential reads .
+
+Contributions In this paper, we leverage this design intuition and present ATLAS , an OOC disk-based GNN inference framework that enables full-graph inference on billion-scale graphs on a single machine, through broadcast-based sequential I/O and memory-tiered aggregation. Specifically, we make the following contributions: 1. Broadcast-based inference model. We propose a broadcast-based execution model for ATLAS ,for layer-wise GNN inference, enabling features and embeddings to be read sequentially and 
+
+exactly once per layer, significantly reducing read amplification compared to gather-based approaches. 2. Tiered memory-disk runtime. We design a tiered memory-disk hierarchy for ATLAS that leverages graph topology to manage partially aggregated vertices under constrained memory, that bounds partial-state residency, and avoids churn while maintaining high throughput. 3. Pipelined, overlapped execution. We implement a full pipeline for ATLAS that streams topology and features in chunks (from SSD), overlaps reading with aggregation on CPU, and performs forward pass on the GPU and writing using dedicated threads, and supports multi-ple message-passing GNN layer architectures (GCN, GIN, GraphSAGE) with a configurable memory budget and chunk size. 4. Comprehensive evaluation. We evaluate ATLAS on multiple large graphs ranging between 100–240 million vertices and 1.4–4 billion edges with size on disk ranging between 54 –550 GiB that easily exceed the combined RAM and GPU memory of a single workstation. We demon-strate that full-graph layer-wise inference is competitive, taking a maximum of ≈ 3 h for the largest graph, with substantial read I/O reduction compared to gather-based baselines. We also outperform the SOTA baselines, several of which are unable to support our largest graphs. We further present comprehensive ablation studies of all critical ATLAS components. The rest of the paper is organized as follows: we present background on GNN training and inference using gather and layer-based approaches in § 2; we propose our ATLAS system design in § 3; we detail the implementation of ATLAS , and report detailed experimental evaluation and comparative results across multiple GNNs and billion-scale graphs in § 4; we discuss related works in § 5; and offer our conclusions in § 6. 42 Background 
+
+2.1 GNN Training and Inference 
+
+Similar to Deep Neural Networks (DNNs), Graph Neural Network (GNN) training uses a two-pass (forward and backward) approach. During the forward pass , for a labeled vertex u, each layer l of an L-layer GNN gathers and aggregates information from the embeddings of its neigh-bors. Specifically, the embeddings {hl−1 
+
+> v
+
+| v ∈ N (u)} from the previous layer are combined using an Aggregate function to produce an intermediate representation xlu (Eqn. 1). This aggregated representation is then transformed by a learnable Update function, followed by a nonlinear activation function σ(.), to compute the layer-l embedding of vertex u (Eqn. 2). This is repeated for L layers, yielding the final embedding hLu at the end of the forward pass. Then, a backward pass updates the model parameters based on the loss function. 
+
+xlu = Aggregate l({hl−1 
+
+> v
+
+, v ∈ N (u)}) (1) 
+
+hlu = σ(Update l(hl−1 
+
+> u
+
+, x lu)) (2) Here, G = ( V, E ) is the graph, u, v ∈ V are vertices, l ∈ { 1, . . . , L } is the layer index, N (u)
+
+denotes the in-neighbors of u, and hlu ∈ Rd is the d-dimensional embedding of u at layer l.However, recursively aggregating all neighbors can quickly lead to out-of-memory (OOM) errors ( neighborhood explosion ) [10]. To avoid this, neighborhood sampling is performed where only a subset of neighbors of each vertex are selected to be aggregated at each hop [10]. In contrast to training, GNN inference only requires performing a forward pass through the 
+
+L layers. However, while training can rely on neighborhood sampling to reduce memory costs, inference typically requires full-neighborhood aggregation to ensure accurate and deterministic vertex embeddings [13, 21, 46]. Consequently, full-neighborhood vertex-wise inference [21, 44] is prone to neighborhood explosion, with the frontier size increasing exponentially across layers, motivating layer-wise inference [44] that computes embeddings for all vertices one layer at a time. Layer-wise inference minimizes redundant computation, making it more scalable than vertex-wise execution. ATLAS utilizes this layer-wise inference strategy and optimizes it for full-scale graph inference in an out-of-core setting. 
+
+2.2 Gather-based Execution Model 
+
+Most widely used GNNs use the message-passing execution model, where vertex representations are iteratively updated by aggregating information from their in-neighbors. In gather-based 
+
+execution, each destination vertex v pulls (gathers) the embeddings of its in-neighbors {hl−1 
+
+> u
+
+|
+
+u ∈ N (v)} to compute hlv, which induces irregular and repeated accesses when embeddings reside on disk. Consequently, modern GNN systems primarily target message-passing GNN architectures such as GraphConv [15], GraphSAGE [10], Graph Isomorphism [40] and Graph Attention [32] networks. ATLAS optimizes the evaluation of this class of GNNs. Broadly, message-passing GNN execution involves sample , gather , transfer and compute .During training, sample is used to limit neighborhood explosion, where each vertex selects a random subset of its neighborhood for aggregation. In contrast, inference typically omits sampling to ensure deterministic full-graph execution. In the gather stage, each vertex retrieves the embeddings (or, features for the first layer) of its in-neighbors (randomly selected or all), after which these are transferred to the GPU. Compute applies an aggregation function, such as sum ,
+
+mean , max or attention , depending on the GNN model, to encode neighborhood information and produce updated embeddings. 
+
+2.3 Layer-wise Inference 
+
+A common approach to inference reuses training code with the backward pass disabled ( vertex-wise inference ) [21, 44]. However, under full-neighborhood aggregation, this approach leads to 50
+
+# 1 3
+
+(a) Graph 
+
+# 4
+
+# 2
+
+(b) Gather-based GNN Methods  
+
+> On Disk
+> Feature Store
+> Random
+> Reads
+> Repeated
+> Reads
+> Amplified
+> Reads
+> 204
+> 3
+
+(c) ATLAS Broadcast 
+
+# 5      
+
+> ℎ଴
+> ଴ℎଵ
+> ଴
+> ℎଶ
+> ଴ℎଷ
+> ଴
+> ℎସ
+> ଴ℎହ
+> ଴
+> ℎ௠
+> ଴
+> 𝐵 ଴
+> 𝐵 ଵ
+> 𝐵 ଶ
+> 𝐵 ௡
+> …
+> Scattered
+> random reads
+> per vertex
+> Feats. of 0
+> and 4 read
+> twice
+> Wasted reads
+> (ℎଵ
+> ଴, ℎ ଷ
+> ଴, ℎ ହ
+> ଴
+> 𝑤𝑎𝑠𝑡𝑒𝑑 )
+> 6
+> ℎ଴
+> ଴ℎଵ
+> ଴
+> ℎଶ
+> ଴ℎଷ
+> ଴
+> ℎସ
+> ଴ℎହ
+> ଴
+> 𝐵 ଴
+> 𝐵 ଵ
+> 𝐵 ଶ
+
+0
+
+1 3
+
+4
+
+2 1
+
+0 0
+
+1               
+
+> 1
+> 04
+> 4
+> 204
+> 361
+> 04
+> 4
+> 2
+> 04
+> 3
+> 𝐵 ଴ℎ଴
+> ଴ℎଵ
+> ଴𝐵 ଵℎଶ
+> ଴ℎଷ
+> ଴
+> 𝐵 ଶℎସ
+> ଴ℎହ
+> ଴
+> ℎ଴
+> ଴ℎଵ
+> ଴
+> ℎସ
+> ଴ℎହ
+> ଴
+> 𝐵 ଴
+> 𝐵 ଵ
+> 𝐵 ଶ
+
+0
+
+1 3
+
+2 1
+
+0 0 
+
+> ℎ଴
+> ଴ℎଵ
+> ଴𝐵 ଴
+> 𝐵 ଵ
+> 𝐵 ଶ
+
+0
+
+1 3
+
+4
+
+2 1
+
+4 0
+
+9 
+
+> ℎଶ
+> ଴ℎଷ
+> ଴
+
+0  
+
+> ℎଶ
+> ଴ℎଷ
+> ଴
+> ℎସ
+> ଴ℎହ
+> ଴
+
+4 4
+
+2 6
+
+Legend Completed Aggregated Value Feature Read Figure 2: Illustration of gather-based versus broadcast-based execution for one layer. memory explosion and redundant computations, where overlapping neighborhoods are repeat-edly processed. To tackle this, layer-wise inference executes GNN computation one layer at a time by first materializing embeddings for all vertices at a given layer, and then reusing these embeddings as inputs to the next layer [21,36,44]. This approach reduces the memory growth by processing only one layer at a time and eliminates redundant recomputation. However, it does not eliminate redundant data movement. When features/embeddings are disk-resident, per-vertex gathers translate into many small, repeated reads that amplify I/O volume and reduce effective bandwidth. This inefficiency stems from the input-unaware gather -based execution model, where each vertex independently pulls embeddings from its in-neighbors. Full-neighborhood aggregation induces high fan-in, causing the aggregate read volume to scale with the number of edges rather than the number of vertices. Graph reordering techniques [2, 44] improve spatial locality by placing neighboring vertices closer in memory, but they do not fully eliminate redundant feature accesses. In OOC settings, layer-wise inference still repeatedly fetches shared embeddings within a layer, causing read amplification that scales with fan-in rather than vertex count. Since infer-ence performs full-neighborhood aggregation with relatively lightweight computation, execution quickly becomes I/O-bound. Moreover, this access pattern repeats for each layer of the GNN, leading to extremely high cumulative read volumes. 
+
+# 3 ATLAS System Design 
+
+3.1 Broadcast Execution Model and Challenges 
+
+Broadcast-based execution processes each source vertex once and pushes messages along out-edges (Fig. 2c), instead of each destination pulling from its in-neighbors (Fig. 2b). Features are read sequentially from disk blocks ( B0 → B1 → B2), and each hlu is consumed exactly once, in contrast to gather, where vertices issue scattered reads (vertex 3 issues reads from {0, 2, 4}), repeatedly fetch the same features (vertex 3 and 1 both fetch {0, 4}), and waste already read blocks (e.g., h01, h 03, h 05 go unused by 3). Broadcast replaces fan-in driven random access with fan-out driven sequential propagation (each block Bi and vertex features h0 
+
+> i
+
+are read sequentially). 6Notably, this shift from gather to broadcast is semantically equivalent per layer under the same aggregation and update functions, as seen for vertices 1 and 3, resulting in aggregated values of 
+
+4 and 6, respectively, assuming scalar vertex IDs as features and sum as aggregator. However, realizing broadcast-based layer-wise inference for OOC graphs poses several challenges. 1. Bounded memory. Full-batch, layer-wise inference places significant pressure on memory. Although broadcast-based execution avoids repeated and random reads, it produces intermediate representations for all vertices at each layer, which cannot be fully materialized in memory for large graphs. 2. Execution order. The order in which source vertices are processed determines when each destination vertex receives its neighbor’s features and when it has received enough to be trans-formed by the GNN layer and written out. A poor order can force a large number of vertices to be partially aggregated at once, exceeding the memory budget. 3. Completion Order. Broadcast-based execution does not enforce an order of vertex comple-tion (vertices that have received all the features) within a layer. Naively materializing outputs as they are produced can shift the I/O bottleneck from random reads to random writes, which can be even more expensive. 4. I/O efficiency and overlap. Features and topology must be stored and read in a way that supports sequential access and avoids fetching the same data repeatedly. At the same time, reading data, performing aggregation, applying the layer transformation, and writing results should overlap so that the critical path is not dominated by any single stage. 
+
+Design Approach ATLAS performs full-graph GNN inference using a broadcast-driven pipeline. It targets large graphs whose topology, features and intermediate embeddings do not fit in mem-ory, executing inference directly over disk-resident data. ATLAS is designed to avoid the limita-tions of traditional gather-driven layer- and vertex-wise inference under memory constraints. The system reads vertex features and topology sequentially in chunked order, propagates messages through a tiered memory hierarchy, finalizes embeddings via GPU transformation, and writes outputs as sorted spill files for the next layer. This enables ATLAS to eliminate redundant and irregular reads caused by repeatedly fetching embeddings from storage, which otherwise leads to poor locality and high I/O amplification. Figure 3 presents an overview of the pipeline and its components. We next describe the ATLAS system design in detail. 
+
+3.2 Data Layout 
+
+We identify that data layout is a critical component of any out-of-core system. Accordingly, we design a simple on-disk layout for features and embeddings. This choice is intentional, as it keeps the preprocessing step simple and time-efficient. Since we target a broadcast-based approach for ATLAS , messages in the form of transformed features/embeddings propagate along out-edges of vertices. For this reason, we store the graph topology in the compressed sparse row (CSR) format (Fig. 3, top, green ). This representation requires O(|V | + |E|) space on disk and allows the graph reader to access source vertices and edges sequentially using file offsets. For features and intermediate embeddings, we observe that the order in which vertices complete computation in the broadcast-based model is not sequential. As a result, storing them in a large contiguous array would require random writes, which are expensive to perform. Another caveat is that reordering the entire feature set to enable sequential writes would require costly external sorting due to system memory constraints. Instead, we range-partition features and embeddings by vertex ID. This preserves sequential writes within each partition while avoiding a global external sort. For each range, we maintain multiple spill files, each of 705-02-2026 
+
+Features/Embeddings Topology   
+
+> Cold Store
+> 0
+> 1
+> 2
+> 0
+> 1
+> 2
+> 0
+> 1
+> 2
+> Partition 0 Partition 1 Partition N
+> Sparse CSR
+> Representation
+
+Graph Reader O_DIRECT 
+
+> MMAP I/O
+> Ingest & Assemble
+> Chunk
+
+…
+
+> Chunk
+
+Memory Manager 
+
+Graduation Processor 
+
+Orchestrator 
+
+> Pending Messages
+
+…
+
+> Chunk
+
+Writer  
+
+> Read Queue
+> Hot Store
+> Transform
+> Apply
+> Eviction
+> Policy
+> Min
+> Heap
+> Grad. Buffer
+> Update GPU Queue Write
+> Buff.
+
+… Write Queue   
+
+> NS HS CP
+> EV
+> Vertex
+> States
+> Send
+> Messages
+
+Figure 3: ATLAS architecture which is internally sorted by vertex ID. We note that merging these spill files would again require a multi-way merge, which suffers from the same limitations discussed above. Therefore, we place the onus of presenting a sequential view of reads on the graph reader , as discussed later. When a group of vertices finishes computation for a layer (i.e., after all messages are received and the outputs are transformed by the GPU), their output embeddings are routed to spill buffers 
+
+associated with each range partition. Once a spill buffer is full, its contents are written to disk rather than being held until all vertices complete computation. Each spill buffer is sorted in memory by vertex ID, since it contains only a small fraction of all embeddings, and then spilled to disk. As a result, even though embeddings are produced in an arbitrary order, they can later be read in a mostly sequential manner. The graph reader can open multiple spill files for a given range and scan them sequentially to serve the next layer, without requiring a global merge or reordering step. 
+
+3.3 Graph Reader 
+
+The key issue with gather-based approaches is read amplification. A vertex feature may be read multiple times, and because disk accesses occur at the block level (typically, 4 KB), much of each block may be fetched without being used. We use this observation to design a pseudo-sequential graph reader that reads each vertex feature exactly once. This graph reader runs as a separate thread to ensure I/O can be overlapped with computation. As noted above, features and embeddings are written as multiple spill files per range parti-tion. The graph reader exposes a chunk -based iterator that yields a sequence of chunks , each corresponding to a contiguous range of vertex IDs and their corresponding features in the graph. For each chunk, the graph reader delivers two components. First, it provides the topology for the corresponding vertex range, including out-neighbors and offsets, as read from the graph’s CSR representation. Second, it provides the features for the same vertices, in the same order. Each chunk is added to the reader queue for the downstream orchestrator to consume and pro-cess. The number of vertices per chunk is configurable and determined by the user-provided size and the size of each vertex feature. Chunk boundaries are defined by feature bytes (not edge volume); topology is streamed from CSR for the same vertex range, so high-degree vertices increase per-chunk edge processing but do not change feature-read ordering. Next, we describe how the graph reader creates these chunks. For each chunk, the reader is assigned a contiguous vertex ID range [ start _id , end _id ) to read. Since features for this range may reside in multiple spill files (as discussed previously), each spill file is indexed by its minimum and maximum vertex ID, and the list of spill descriptors 8is sorted by minimum ID. Using this index, the reader identifies the spill files whose ID ranges overlap the chunk’s vertex range. For each relevant spill file, since the vertex IDs are stored in sorted order, this allows the reader to binary-search for the row indices corresponding to the chunk’s start and end IDs and obtain a single contiguous row range. We then issue one aligned 
+
+pread per spill file using direct I/O (enabled via O_DIRECT ), bypassing the OS page cache because each feature is read exactly once and page-cache buffering provides no benefit. Moreover, since ATLAS targets memory-constrained systems, bypassing the page cache using O_DIRECT 
+
+avoids cache pollution and reduces memory pressure. The rows retrieved from different spill files are concatenated and sorted in memory by vertex ID to produce a feature matrix in the same order as the chunk’s vertex range. This merge-on-read approach avoids a costly external merge sort over the output embeddings of all vertices at each layer. Spill descriptors are opened lazily, keeping open file descriptors bounded. 
+
+3.4 Orchestrator 
+
+The orchestrator sits at the core of the ATLAS system and coordinates the interaction among its components. It maintains the system state required for execution and tracks the transformations and aggregations that must be applied to preserve GNN semantics. It consumes chunks of topology and features/embeddings from the graph reader. These chunks are consumed in a strictly ordered manner via a read queue populated by a dedicated reader thread, allowing disk I/O to run ahead of the main execution thread. The orchestrator also maintains per-vertex state to track each vertex’s computation progress in each layer. Upon initialization for a layer, the orchestrator coordinates and initializes other components, including the memory manager and the graduation processor. It serves as the entry point for executing the current layer and requests both components to perform their required memory allocations. Additionally, it initializes the data structures associated with the selected eviction policy. It creates a pending messages tracker for every vertex to record how many messages the vertex has received cumulatively before the processing of the current chunk. Next, it also records a vertex’s state based on the number of messages it has received. Each vertex can only be in exactly one of the four possible states. A vertex is in the NOT STARTED state if it has not yet received any messages for the current layer. It transitions to the HOT state once it starts receiving messages and its partial aggregation state is resident in memory, as we discuss next. If the buffer holding this partial state is evicted due to memory pressure before the vertex has received all required messages, the vertex enters the COLD state, and its intermediate state is spilled to disk. Finally, a vertex reaches the COMPLETED state once it has received all messages for the layer. We note that the only valid state transitions are from NOT STARTED to HOT , from HOT to either 
+
+COLD or COMPLETED , and from COLD back to HOT when the spilled state is reloaded for continued processing. No other transitions are permitted. The global orchestrator state is stored as compact per-vertex arrays (e.g., degrees, pending counts, and 1-byte state), requiring O(|V |)
+
+memory and remaining within a few GiB even for IF-scale graphs (Tab. 1). Next, to connect the orchestrator’s and other ATLAS components’ execution with GNN semantics, we describe the mathematical formulation of a layer with mean aggregation. Let 
+
+G = ( V, E ) be a directed graph. Let hlu ∈ Rd denote the embedding of vertex u at layer l, and let N (v) denote the set of in-neighbors of vertex v. The output embedding of vertex v at the next layer is given by h(l+1)  
+
+> v
+
+= σ
+
+
+
+W (l) · 1 
+
+> |N (v)|
+
+P  
+
+> u∈N (v)
+
+h(l)
+
+> u
+
+
+
+, where W (l) is the learnable weight matrix for layer l, and σ(·) is a non-linear activation function. During execution, the orchestrator implements this formulation in a broadcast-based manner. For every outgoing edge (u, v ), the orchestrator constructs a message, m(l) 
+
+> u→v
+
+= 1  
+
+> |N (v)|
+
+h(l) 
+
+> u
+
+, where normalization by the destination degree is applied at message construction time. These messages are emitted as records of the form ⟨v, m (l)
+
+> u→v
+
+, s v⟩, where sv denotes the current state of the destination vertex. These records are forwarded to the memory manager, which uses the vertex state to determine whether to 9assign, update, or reload the aggregation buffer for a vertex into the hot store .
+
+3.5 Memory Manager 
+
+The memory manager holds vertex partial aggregated state for the current layer under a fixed configurable RAM budget. It manages a RAM–disk hierarchical store to hold the partial states of vertices that are currently active, i.e., vertices that have received ≥ 1 messages but not all of them. It also manages a configurable eviction policy to decide which vertices get a slot in the RAM (are maintained in the hot store ) and which vertices need to be evicted to the cold store 
+
+on disk. Specifically, the memory manager is responsible for a hot store in RAM, a cold store 
+
+on disk and the eviction policy to decide which vertices need to transition from HOT to COLD .
+
+3.5.1 Hot Store 
+
+The hot store is a fixed-size array of slots, allocated upon initialization, with each slot holding the partial state of a single vertex. It also aggregates incoming messages from the orchestrator directly into these slots using a vertex-to-slot mapping. Slots are assigned on demand when vertices transition to HOT and are freed once vertices receive all messages and move to COM-PLETE . When the hot store has no free slots and additional vertices must be brought in, the memory manager consults the eviction policy and evicts some of the existing vertices to the 
+
+cold store . The cold store is a disk-backed tier on SSD, and it preserves the feature state of evicted vertices so that they can be reactivated later when they are again required as message destinations. We note that a vertex can update its partial state only while it resides in the hot store. As such, the cold store serves solely as backing storage for vertices that have been evicted and are waiting to be reactivated into the hot store. The memory manager also interacts with the orchestrator, keeping it informed about the state changes of any vertex. 
+
+3.5.2 ATLAS Eviction Policy 
+
+When the hot store exhausts its available slots, and evictions are required, the choice of vertices to evict is delegated to an eviction policy. System performance can be bottlenecked by frequent disk reads incurred when partial states are repeatedly reloaded from the cold store into the hot store, or by repeated evictions to the cold store. If vertices are evicted at random, a vertex may undergo multiple eviction-and-reload cycles before completing aggregation, significantly degrading performance. To circumvent this, ATLAS employs a minimum-pending-messages 
+
+eviction policy. Vertices with the fewest remaining pending messages are selected for eviction, as they are closer to completion and are more likely to complete the next time they are reloaded to the hot store. This reduces repeated eviction-reload cycles of the partial states of the same vertex and limits unnecessary disk traffic. The eviction policy must maintain an ordered view of vertices currently in the hot store. Additionally, it should support insertion, removal, score updates as messages arrive, and selection of the k-smallest vertices for eviction. We implement this using a custom bucket-based min-heap, rather than Python’s heapq . We exploit the fact that eviction scores are integers in a small bounded range ( [0 , max _in _degree ]), corresponding to pending message counts. Vertices are stored in score-indexed (pending messages-indexed) buckets implemented as doubly linked lists, allowing constant-time insertion, removal, and score decrement. Eviction selects victims by scanning the smallest non-empty buckets, resulting in O(k) for choosing k vertices. 
+
+3.5.3 Cold Store 
+
+The cold store is implemented as a memory-mapped file using Numpy’s mmap API. This design choice deviates from our earlier decision to avoid the page cache using O_DIRECT . However, this is done intentionally. An evicted vertex is guaranteed to be reloaded into the hot store 10 in a subsequent chunk, making page-cache buffering beneficial rather than wasteful. By using buffered I/O, we exploit caching effects to reduce the cost of repeated reads and writes for evicted vertex states. Lastly, the memory manager is also responsible for offloading vertices that have received all messages to the graduation processor . We discuss this next. 
+
+3.6 Graduation Processor 
+
+The graduation processor is responsible for processing vertices that have received messages from all of their in-neighbors. When a vertex’s pending message count reaches zero, the orchestrator signals the memory manager to finalize aggregation and release the corresponding hot store slots. The finalized aggregated features are copied into a configurable graduation buffer managed by the graduation processor. This allows hot store slots to be freed immediately. Once the graduation buffer is full, it is offloaded to the GPU queue (Fig. 3). To avoid stalling chunk execution in the main thread, the graduation processor uses double buffering ,where one buffer is offloaded while the main thread continues writing graduated vertices into the alternate buffer. The graduation processor also launches a dedicated GPU offload thread that dequeues buffers from the GPU queue and transfers the aggregated vertex states to the GPU. The linear transformation and non-linearity are applied on the GPU, and the thread waits for the results to be transferred back to host memory. By offloading this work to a separate thread, the graduation processor avoids blocking on GPU execution or data transfers. The GPU offload thread uses CUDA streams to overlap data movement and computation, and once the transformed embeddings are available, it enqueues them to the write queue for disk output. 
+
+3.7 Embedding Writer 
+
+Finally, the transformed embeddings produced by the graduation processor must be written to disk so they can be consumed by the next layer or used as final output. This is handled by the writer that runs in a dedicated writer thread and consumes batches of (vertex IDs, transformed embeddings) from the write queue . Vertices arrive at the writer in graduation order, which is arbitrary with respect to the order of processing and is, therefore, unsuitable for downstream consumption as is. To address this, the writer range-partitions vertices by ID, similar to how the reader expects the inputs, ensuring that each partition corresponds to a disjoint vertex ID range. For each partition, the writer maintains in-memory spill buffers (Fig. 3) for vertex IDs and embeddings. Incoming batches are scattered into these per-partition spill buffers. When a buffer fills, its contents are sorted by vertex ID and flushed to disk as a sorted spill file. Over the course of a layer, the writer may produce multiple sorted spills per partition. As also previously discussed in § 3.3, this design avoids performing a global merge or maintaining a fully sorted output during layer execution, which would be expensive under memory constraints. The writer, like the reader, also employs a non-buffered I/O strategy and uses O_DIRECT to write aligned buffers to the spill files. This helps ATLAS perform large, contiguous writes to disk, avoiding system-call overhead while also preventing page-cache pollution from finalized embeddings that are not going to be reused in the current layer. 
+
+3.8 Graph Reordering 
+
+Proceeding with layer-wise execution in the original vertex ID order might not be optimal and can lead to memory pressure, increased evictions, reduced graduation throughput, and overall system slowdown. Vertices might occupy the hot store during initial phases and might not complete till the last chunk is processed, resulting in increased eviction frequency. 11 Before executing layer-wise inference, ATLAS provides the option to reorder the graph by reassigning vertex IDs and relabeling the topology and features accordingly. For downstream layers, ATLAS graph reader follows this new order while producing the chunks for processing. We note that while reordering is a one-time offline cost that amortizes across layer executions, it is not trivial to do so in a memory-constrained setting. Next, we describe the approach to this reordering scheme. ATLAS reorders the graph while keeping two constraints in mind; to maximize the vertex completion rate while minimizing the number of vertices that remain partially aggregated at any point in time. To achieve this, ATLAS adopts a greedy message-passing heuristic to compute the vertex ordering. Next, we define this formally. Let G = ( V, E ) be a directed graph. For a vertex v ∈ V , let din (v) and dout (v) denote its in-degree and out-degree, respectively. Let kv(t) denote the number of messages received by vertex v after processing the first t vertices in a given ordering. Therefore, a vertex v is complete when kv(t) = din (v).We define the fractional completion state of a vertex at t as cv(t) = kv (t) 
+
+> din (v)
+
+. The global completion state at t is ϕ(t) = P 
+
+> v∈V
+
+cv(t) = P  
+
+> v∈Vkv(t)
+> din (v)
+
+. When the next vertex u is processed at t + 1 , it sends one message to each vertex v ∈ Out (u), increasing their message counts by one: kv(t + 1) = kv(t) + 1 , ∀v ∈ Out (u). Therefore, the marginal gain in the completion state can be given by ∆ϕ(u) = ϕ(t + 1) − ϕ(t) = P  
+
+> v∈Out (u)1
+> din (v)
+
+. So, we should pick a vertex u that provides the maximal marginal gain to process next. However, to balance completion benefit against memory requirements for processing, ATLAS 
+
+assigns each vertex u a score of Score (u) =   
+
+> P
+> v∈Out (u)1
+> din (v)
+> dout (u)
+
+, where the denominator is a heuristic of how many buffers a vertex might open if it is picked. This is the cost of picking vertex u.Vertices are ordered greedily in decreasing order of this score, favoring vertices whose processing contributes most to global completion while emitting fewer messages. This strategy has the benefit of being light-weight enough to be calculated in only a single pass over the graph topology information. Finally, ATLAS reads the original feature matrix in old-ID order and processes it in chunks. Each vertex ID in a chunk is first mapped to its new ID using the relabeling map, and then assigned to an output partition based on the new ID, using the same range-partitioning scheme employed by the runtime writer. Features are buffered per partition, sorted by new ID within each buffer, and written to disk as partitioned spill files. As a result, feature vectors are laid out on disk in increasing new-ID order within each partition, matching the access pattern expected by the graph reader during layer execution. 
+
+3.9 Generalizability of ATLAS 
+
+Lastly, while ATLAS currently only supports specific GNN architectures, we note that any other message-passing GNN architecture, such as GAT [32] or SGC [37], can be easily adopted into this execution model. Alternative GNN semantics, such as neighborhood sampling, can also be supported by running a preprocessing pass over the topology to disable edges that are not required, thereby simulating sampling. However, since most GNN architectures combine a vertex’s own embeddings with the aggregated embeddings of its in-neighbors, it is important to note that all vertex features still need to be read from disk, making ATLAS and its optimizations highly relevant. 
+
+# 4 Experiments and Results 
+
+4.1 Experimental Setup 
+
+We use three popular GNN models for the vertex classification task – GraphConv [15], SAGE-Conv [10], and GINConv [40] – with 2 layers and hidden dimension set to 128 . To evaluate 12 Table 1: Graph datasets [11, 14] used in experiments.                                
+
+> Papers MAG-Cites IGB-Large IGB-Full Abbr. PA MA IL IF
+> Vertex Count 111M 121M 100M 269M
+> Edge Count 1.7B 1.4B 1.2B 4B
+> Feat. Dim 128 768 1024 1024
+> Num. Classes 172 153 19 19
+> Topology Size (GiB) 27 22 19 56
+> Feature size (GiB) 54 (FP32) 175 (FP16) 200 (FP16) 550 (FP16)
+
+ATLAS , we use four popular open-source large-scale datasets described in Tab. 1. These fea-ture sets of these datasets range between medium-sized ( 54 GiB for Papers [11]) with FP32 precision to large-scale for IGB-full [14] at 550 GiB using FP16 representation. We perform full-graph GNN inference where no incoming edges for any vertex are sampled, i.e., all neighbors participate at each hop of the computation graph. We note that ATLAS produces output rep-resentations that match the reference within the floating-point precision bounds. The reference is an in-memory full-batch layer-wise implementation with identical weights and precision on PA using DGL [35]. For PA, the mean over vertices of the maximum absolute error across output dimensions is 8 × 10 −5, while the mean over vertices of the average relative error across output dimensions is 2.8 × 10 −6.All our experiments are performed on a single GPU workstation with a 12 -core AMD Ryzen 
+
+9 9900 X processor ( 4.4 GHz), 128 GiB of RAM, an NVIDIA RTX 5090 GPU card with 32 GiB of memory. The workstation is also equipped with a 2 TiB Samsung 990 PRO SSD and runs Ubuntu 24 .04 .3 LTS. To eliminate OS page-cache effects across runs (especially for mmap-based baselines), we clear the page cache at the start of each experiment. Lastly, we obtain per-process I/O statistics, including bytes read and written, from /proc/<pid>/io .
+
+4.2 ATLAS Implementation and Baselines 
+
+ATLAS is implemented in Python using NumPy v2.0 and PyTorch v2.8. The graph reader and 
+
+embedding writer are implemented in C++ and integrated via PyTorch C++ extensions, com-piled using ninja . The framework overhead can vary depending on the sizes of the graduation buffers at the graduation processor, the spill buffers at the writer , the maximum queue sizes, etc. For our experiments, with a chunk size of 8 MiB, graduation buffer of size 256 MiB, 8 spill buffers of size 1 GiB each (total 8 GiB), all queues of size 20, with the framework overhead across datasets varying between 6–7 GiB. We implement ATLAS (AT ) against two key baselines for comparison, one based on vertex-wise execution (Ginex [24], GN ) and the other based on layer-wise execution (DGI [44], DG ). Ginex is primarily designed for GNN training. It builds and stores a neighbor cache on disk for a vertex-based popularity score and performs sampling of computation graphs across multiple batches of training vertices (called superbatch ), using this neighbor cache. We modify Ginex to perform only the forward pass to simulate inference and use the default superbatch and batch sizes of 2500–3300 and 1000, respectively, from the paper. Since our testbed machine has 128 GiB of RAM, we allocate 80 GiB for the feature cache and 10 GiB for the neighbor cache. DGI, on the other hand, is a layer-wise full-graph inference baseline that proposes dynamic batching and graph reordering to optimize inference. DGI maps the features and CSC indices on disk as NumPy mmap files and uses buffered I/O for disk reads and writes. Moreover, they use the RCMK ordering [2] for optimal results. We adopt the settings from the paper as is for DGI. We report layer-wise results for both DGI and ATLAS and consolidated results for Ginex since it follows a vertex-based execution model. Lastly, we run each experiment for up to 13 GN  
+
+> L1
+> DG
+> L2L1
+> AT
+> L2
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> Time (s)
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> Bytes Read (GiB)
+> GiB
+
+(a) PA/GCN2 GN   
+
+> L1
+> DG
+> L2L1
+> AT
+> L2
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> Time (s)
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> Bytes Read (GiB)
+> GiB
+
+(b) PA/SAGE2 GN   
+
+> L1
+> DG
+> L2L1
+> AT
+> L2
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> Time (s)
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> Bytes Read (GiB)
+> GiB
+
+(c) PA/GIN2 GN   
+
+> L1
+> DG
+> L2L1
+> AT
+> L2
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Time (s)
+> DNF
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Bytes Read (GiB)
+> GiB
+
+(d) MA/GCN2 GN  
+
+> L1
+> DG
+> L2L1
+> AT
+> L2
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Time (s)
+> DNF
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Bytes Read (GiB)
+> GiB
+
+(e) MA/SAGE2 GN   
+
+> L1
+> DG
+> L2L1
+> AT
+> L2
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Time (s)
+> DNF
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Bytes Read (GiB)
+> GiB
+
+(f) MA/GIN2 GN   
+
+> L1
+> DG
+> L2L1
+> AT
+> L2
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Time (s)
+> DNF
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Bytes Read (GiB)
+> GiB
+
+(g) IL/GCN2 GN   
+
+> L1
+> DG
+> L2L1
+> AT
+> L2
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Time (s)
+> DNF
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Bytes Read (GiB)
+> GiB
+
+(h) IL/SAGE2 GN  
+
+> L1
+> DG
+> L2L1
+> AT
+> L2
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Time (s)
+> DNF
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Bytes Read (GiB)
+> GiB
+
+(i) IL/GIN2 L1
+
+DG 
+
+L2 L1
+
+AT 
+
+L2
+
+10 0
+
+10 1
+
+10 2
+
+10 3
+
+10 4
+
+10 5
+
+10 6
+
+> Time (s)
+> DNF
+
+10 0
+
+10 1
+
+10 2
+
+10 3
+
+10 4
+
+10 5
+
+10 6 
+
+> Bytes Read (GiB)
+> GiB
+
+(j) IF/GCN2 
+
+Figure 4: Time taken (left Y axis, hatched bars for extrapolated, solid bars for completed runs) and extrapolated data read from disk (right Y axis, marker ) for complete execution of Ginex and layer-wise executions of DGI and ATLAS .
+
+6 h and record the percentage of execution completed within that time. The final time is then extrapolated from this linearly using the fraction of the layer completed within 6 h (by processed vertex range/chunks). This is done at a layer level for DGI and ATLAS , and at the framework level for Ginex. For our experiments, we assign the hot store as 50 GiB, 70 GiB, 80 GiB, and 
+
+100 GiB for PA, MA, IL, and IF, respectively. We choose the smallest hot-store size that (nearly) eliminates evictions for each dataset, capped at 100 GiB to leave headroom for other framework buffers and overhead. 
+
+4.3 Comparison with SOTA Baselines 
+
+Fig. 4 reports the total/extrapolated time of execution (left Y axis) of 2-layer GNN models across all 4 datasets for the 3 frameworks. For Ginex, each bar is end-to-end time; for DGI and 
+
+ATLAS , bars report per-layer time and the total inference time is the sum across layers (when both complete). The executions that did not run are marked as “DNF”. Across OOC datasets (MA/IL/IF), ATLAS reduces disk traffic by 1–2 orders of magnitude relative to gather-based 14 baselines, yielding large runtime improvements; on PA (fits in-memory), ATLAS matches DGI within ≈ 5% runtime overall, while reducing disk traffic by ≈ 9% .
+
+Performance Improvements over Ginex We observe an average decrease in execution time for ATLAS over Ginex of 12 .4×, 30 ×, and 23 .4× for PA, MA and IL, with the latter two being extrapolated times. This is primarily because Ginex does multiple I/O operations before and within each superbatch. Precisely, during each superbatch sampling phase, Ginex loads the neighbor cache from SSD and writes all batches within the superbatch to disk. Within the processing phase, the feature cache is initialized from disk, and even during batch process-ing, Belady’s algorithm reduces the I/O but does not eliminate it. In contrast, ATLAS does sequential reads and writes exactly once . Additionally, the vertex-wise inference baseline also tends to perform redundant computation during the forward pass. However, we see from the extrapolated amount of data read by Ginex that I/O is the major bottleneck. Ginex reads on average 16 ×, 15 ×, 11 × more data than ATLAS (combined for both layers) for PA, MA, and IL, respectively, with absolute values going as high as 7.7 TiB on MA (feature size 175 GiB). 
+
+Performance Improvements over DGI For DGI, we note that, since the first-layer execu-tions in Fig. 4(d)–(j) did not finish within the allocated 6 hours, the second-layer execution did not start. For PA, from Fig. 4(a)–(c), we see that both DGI and ATLAS exhibit similar perfor-mances within 5% of each other. This is because the PA graph fits entirely in the memory of our testbed machine with 128 GiB of RAM. When DGI begins execution, the buffered behavior of 
+
+mmap causes the accessed blocks to be paged into memory. Subsequent accesses are then served from the page cache, effectively avoiding disk I/O. However, for MA and IL, the feature sizes are too large to fit in memory. This can also be observed from the extrapolated time taken by 
+
+L1 of DGI being 44 × and 36 × more than AT’s L1 time for MA and IL, respectively, averaged across GNN models. 
+
+Increase in ATLAS execution time for SAGEConv for MA and IL We note a sharp increase in the L1 execution times for SAGEConv as compared to GCN2 and GIN2 for both MA (Fig. 4e) and IL (Fig. 4h), increasing from an average of ≈ 800 s to 3400 s for MA and 
+
+≈ 7000 s for IL. This is because the SAGEConv model concatenates its own embeddings with the aggregated embeddings of its in-neighbors. This doubles the number of columns in the hot store per vertex, effectively halving its size. This, in turn, leads to a rise in evictions and partial states being read or written to or from the disk. This can also be observed in the higher number of bytes read in Fig. 4e and Fig. 4h compared to the other 2 models. However, even with this restriction, AT’s L1 outperforms DGI’s L1 by 13 × for MA and 6.3× for IL. 
+
+Impact of hidden dimension on layer execution time We notice the layer execution time for ATLAS dropping from L1 to L2 for both MA and IL by ≈ 5× and 10 × on average, respectively. This is primarily because both MA and IL have high feature dimensions of 768 
+
+and 1024 , respectively, whereas hidden dimension sizes in most GNN architectures range from 
+
+32 to 256 . In our case, the hidden dimension is set to 128 .
+
+Performance Improvement over DGI on IF Finally, we show the performance of ATLAS 
+
+on the largest dataset IF. Note that Ginex could not be evaluated on this dataset because of runtime errors. We see a massive reduction in execution time of ≈ 39 × for L1 of ATLAS vs L1
+
+of DGI. This is again due to the memory pressure created by large, repeated, random reads in DGI, as evidenced by the extrapolated read size of ≈ 262 TiB for L1, compared to ATLAS ’s 
+
+3.6 TiB summed across both layers. 15 0 200 400 600 800 
+
+> Time (s)
+> 0
+> 300
+> 600
+> 900
+> 1200
+> CPU Util (%)
+> 0
+> 30
+> 60
+> 90
+> 120
+> Memory (GiB)
+
+(a) IL/GCN2 CPU and Memory 0 200 400 600 800  
+
+> Time (s)
+> 0
+> 300
+> 600
+> 900
+> 1200
+> CPU Util (%)
+> 0
+> 30
+> 60
+> 90
+> 120
+> Memory (GiB)
+
+(b) MA/GCN2 CPU and Memory 0 200 400 600 800 
+
+> Time (s)
+> 0
+> 10
+> 20
+> 30
+> 40
+> GPU Util (%)
+> 0
+> 8
+> 16
+> 24
+> 32
+> GPU Mem (GiB)
+
+(c) IL/GCN2 GPU Util and Memory 0 200 400 600 800  
+
+> Time (s)
+> 0
+> 10
+> 20
+> 30
+> 40
+> GPU Util (%)
+> 0
+> 8
+> 16
+> 24
+> 32
+> GPU Mem (GiB)
+
+(d) MA/GCN2 GPU Util and Memory 0 200 400 600 800 
+
+> Time (s)
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> Read (GiB/s)
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> Write (GiB/s)
+
+(e) IL/GCN2 Read/Write Bandwidth 0 200 400 600 800  
+
+> Time (s)
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> Read (GiB/s)
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> Write (GiB/s)
+
+(f) MA/GCN2 Read/Write Bandwidth Read Only Atlas 
+
+> 0
+> 1
+> 2
+> 3
+> Read B/w (GiB/s)
+
+(g) IL/GCN2 Read-Only microbench-mark vs. ATLAS 
+
+Figure 5: Resource utilization for a 2-layer GCN on the IL and MA datasets. First row: 
+
+CPU ( blue , left Y axis) and memory ( red , right Y axis) over time. Second Row: GPU util ( sky blue , left Y axis) and memory ( red , right Y axis) usage over time. Third row: SSD read ( green ,left Y axis) and write ( orange , right Y axis) bandwidth over time. Last row: Baseline “read-only” microbenchmark vs. ATLAS active read rate. 
+
+4.4 Resource Utilization of ATLAS 
+
+Fig. 5 reports CPU utilization, resident memory, and SSD read/write bandwidth, samples at a 1 second interval, over a complete 2-layer GCN run on IL and MA datasets with hot-memory budgets set to 70 GiB for MA and 80 GiB for IL. 
+
+Compute Figs. 5a and 5b show that ATLAS sustains a high and stable CPU utilization ( blue line , left Y axis) throughout both dataset runs, with an average of 856% for IL and 852% for MA on a 12-core machine (§ 4.1). The sustained high CPU utilization indicates that the computation threads are not bottlenecked by the upstream reader or downstream writer I/O tasks, allowing the system to efficiently execute the dense feature aggregation operations. We notice a sharp dip in the CPU utilization for both IL and MA around the ≈ 700 second and ≈ 650 second marks, respectively. This is the layer boundary as the ATLAS orchestrator prepares to process the next layer. 16 Memory The memory footprint ( red lines , right Y axis) remains stable at ≈ 95 GiB dur-ing Layer 1 ( 0–700 seconds) for IL. This includes 80 GiB for the hot store, 8 GiB for spill buffers (§ 3.7), and an additional ≈ 6–7 GiB for ATLAS framework overheads. We see a simi-lar trend for MA during Layer 1 ( 0–650 seconds), where memory usage stabilizes at ≈ 85 GiB, consisting of 70 GiB for the hot store, 8 GiB for spill buffers, and the remainder for framework overheads. The memory footprints drop significantly for Layer 2 across both datasets to 40 GiB for IL and ≈ 47 GiB for MA as the intermediate embeddings produced by Layer 1 (128 dim) are much smaller than the raw input features (e.g., 1024 for IL), and the total hot-store budget is not utilized. Notably, the memory overhead from spill buffers and other framework components still persists. 
+
+GPU Utilization Figs. 5c and 5d demonstrate the GPU utilization ( sky blue , left Y axis) and memory usage ( brown , right Y axis) during complete ATLAS runs. We notice ATLAS exhibits intermittent bursts of GPU compute, peaking at ≈ 20% during Layer 1 for both datasets, and reaching up to 40% during Layer 2 for MA. The bursty utilization reflects the offload of full 
+
+graduation buffers by the graduation processor. The GPU memory used, in addition to fixed overheads of model weights and biases and the Pytorch and CUDA context, are proportional to the offloaded buffer size as well as the output dimensions for that layer. The used GPU memory for IL holds steady at ≈ 9 GiB across both layers. However, we observe that GPU memory increases from ≈ 9 GiB to ≈ 20 GiB for Layer 2 of MA, accommodating the larger output dimension of 153 .
+
+I/O Bandwidth Figs. 5e and 5f show the SSD read ( green lines , left Y axis) and write ( orange lines , right Y axis) bandwidth during execution. We observe sharp read spikes (up to ≈ 1.5–
+
+1.8 GiB/s) at the start of execution and at layer boundaries for both datasets, corresponding to the initial filling of the read queues. Additionally, the ATLAS ordering front-loads vertices with very small in-degree (e.g., only self-loops), allowing them to complete quickly and, therefore, exhibits high upstream read throughput early in the layer execution. However, during the bulk of the layer execution, the sustained read bandwidth remains relatively low, averaging 
+
+≈ 0.25 GiB/s for both IL and MA, indicating the execution is relatively compute-bound and that read rate throttle is due to read queue backpressure. We also validate this through Fig. 5g, which compares ATLAS ’s active read rate against a sequential “read-only” microbenchmark on the same SSD. While the NVMe SSD hardware can sustain ≈ 2.5 GiB/s for reading chunks without any downstream processing, ATLAS utilizes only ≈ 0.25 GiB/s on average during execution. Finally, the intermittent write spikes correspond to the periodic flushing of the full 
+
+in-memory spill buffers to disk as vertices graduate. We again observe dense groupings at the start of both layers, suggesting the rapid graduation of very low in-degree vertices at the start of execution. 
+
+4.5 Impact of ATLAS Ordering 
+
+Fig. 6 compares original (OG), random (RND), and ATLAS (AT) orderings for a 2-layer GCN on IL and MA with a 50 GiB hot store, reporting reload/eviction time, mean reload % (i.e., the % of destination vertices reloaded per chunk), and end-to-end runtime. AT reduces reload time ( blue bars , left Y axis) by ≈ 3.3× for IL, from 520 –530 s to 158 s, and by ≈ 3× for MA, from 192 –200 s to 64 s, compared to OG and RND. The corresponding eviction times ( orange bars , left Y axis) decrease by about 2.4× for IL and 2.1–2.3× for MA. These reductions translate directly to lower end-to-end execution time ( green stars , outer right Y axis), dropping from ≈ 32 minutes for IL and 22 minutes for MA under OG and RND to 20 
+
+minutes and 17 minutes, respectively, with AT. These reductions are primarily because ATLAS 
+
+ordering prioritizes vertices that contribute most to completion while limiting fan-out, allowing 17 OG RND AT 
+
+> 0
+> 200
+> 400
+> 600
+> 800
+> Time (s,  bars ) Read
+> Write
+> 0
+> 2
+> 4
+> 6
+> 8
+> Avg. Reload %
+> 0
+> 10
+> 20
+> 30
+> 40
+> Total Time (min)
+
+(a) IL/GCN2 OG RND AT  
+
+> 0
+> 50
+> 100
+> 150
+> 200
+> 250
+> Time (s,  bars )
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> Avg. Reload %
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> Total Time (min)
+
+(b) MA/GCN2 
+
+Figure 6: Performance comparison of OG, RND, and AT orderings showing read (reload) and write (eviction) times ( bars , left Y axis), avg. % destination vertices reloaded per chunk ( red circles , inner right Y axis), and total execution time ( green stars , outer right Y axis). RND LRU AT 
+
+> 0
+> 200
+> 400
+> 600
+> 800
+> Time (s,  bars ) Read
+> Write
+> 0
+> 1
+> 2
+> 3
+> 4
+> Avg. Reload %
+> 0
+> 10
+> 20
+> 30
+> 40
+> Total Time (min)
+
+(a) IL/GCN2 RND LRU AT  
+
+> 0
+> 50
+> 100
+> 150
+> 200
+> 250
+> Time (s,  bars )
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> Avg. Reload %
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> Total Time (min)
+
+(b) MA/GCN2 50 100 150  
+
+> Reloads ( CS HS )
+> 20
+> 30
+> # Vertices (M)
+> RND (34M)
+> LRU (32M)
+> AT (19M)
+
+(c) IL/GCN2 20 40 60   
+
+> Reloads ( CS HS )
+> 15
+> 20
+> 25
+> # Vertices (M)
+> RND (25M)
+> LRU (26M)
+> AT (16M)
+
+(d) MA/GCN2 
+
+Figure 7: Performance comparison of RND, LRU, and AT eviction policies. Top Row: Cold-store read (reload) and write (eviction) times ( bars , left Y axis), avg. % destination vertices reloaded per chunk ( red circles , inner right Y axis), and total execution time ( green stars , outer right Y axis). Bottom row: Cumulative reload distribution of the number of unique vertices reloaded from the cold store. vertices to finish earlier and reducing the number of partially active states in the hot store. We validate this using the span of a vertex, defined as the difference between the last and first time it receives a message, which captures how long its state must be maintained. The mean span for AT drops from ≈ 39 .5M (OG/RND) to 11 .9M ( 3.3× drop) for IL, and from ≈ 42 .7M to 
+
+15 .2M ( 2.8× drop) for MA, with similar reductions across higher percentiles. We also see the mean reload % drop from ≈ 7% (OG/RND) to ≈ 1.1% with AT on IL, and from ≈ 2.9% to 0.5% on MA. This reflects fewer evict–reload cycles under AT due to earlier vertex completion. Finally, we note that reordering is a one-time cost ( 213 s on IL, 258 s on MA) amortized across runs. 
+
+4.6 Impact of ATLAS Eviction Policy 
+
+Fig. 7 compares AT, RND and LRU eviction for a 2-layer GCN on IL and MA (50 GiB hot store, AT ordering), reporting cold-store read/write time, mean reload %, end-to-end runtime, and reload-count distribution. We notice from Figs. 7a and 7b that AT significantly reduces both reload (read from SSD) and eviction (write to SSD) time compared to RND and LRU across both datasets. For IL, 18 30 40 50 60 70 80 90 100  
+
+> Hot Store Size (GiB)
+> 0
+> 15
+> 30
+> 45
+> 60
+> Time (min,  bars )
+> 0
+> 50
+> 100
+> 150
+> 200
+> Num. Reloads ( M)
+> Reloads ( CS HS )
+
+(a) IL/GCN2 30 40 50 60 70 80 90 100   
+
+> Hot Store Size (GiB)
+> 0
+> 10
+> 20
+> 30
+> 40
+> Time (min,  bars )
+> 0
+> 30
+> 60
+> 90
+> 120
+> Num. Reloads ( M)
+> Reloads ( CS HS )
+
+(b) MA/GCN2 0 5000 10000 15000 20000 
+
+> Chunk Index
+> 0
+> 5
+> 10
+> 15
+> 20
+> Verts. in CS ( M) 30 GiB
+> 40 GiB
+> 50 GiB
+> 60 GiB
+> 70 GiB
+> 80 GiB
+> 90 GiB
+> 100 GiB
+
+(c) IL/GCN2/CS 0 5000 10000 15000 20000  
+
+> Chunk Index
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> Verts. in CS ( M) 30 GiB
+> 40 GiB
+> 50 GiB
+> 60 GiB
+> 70 GiB
+> 80 GiB
+> 90 GiB
+> 100 GiB
+
+(d) MA/GCN2/CS 
+
+Figure 8: Sensitivity of ATLAS to hot-store memory budgets for IL and MA. Top Row: Exe-cution time ( bars , left Y axis) and num. reloads ( marker , right Y axis) across memory budgets. 
+
+Bottom row: Num. vertices in cold store state across chunks. AT reduces reload time ( blue bars , left Y axis) by 1.5–2.2× compared to RND/LRU, while eviction time ( orange bars , left Y axis) drops by 3–5.6×. Similar trends hold for MA, where AT consistently achieves the lowest I/O cost. The reduction in read/write times is also reflected in the average reload % ( red circles , inner right Y axis), which drops to approximately 1.2% for IL and 0.6% for MA using AT, compared to about 2.5% and 1.2% for RND, respectively, roughly a 2× reduction for both datasets. This is because AT evicts vertices closest to completion, which significantly reduces the evict-reload cycles. Notably, LRU performs the worst across both datasets, incurring the highest reload and eviction costs, as it evicts vertices solely by recency, potentially causing high-degree vertices that are still active to be evicted prematurely and repeatedly reloaded as their remaining messages arrive. This reduction in cold-store I/O directly translates into faster overall execution time ( green stars , outer right Y axis), with the total end-to-end execution time decreasing from approximately 30 minutes with RND to 20 
+
+minutes with AT for IL ( 1.5× faster) and from ≈ 22 minutes with RND to 17 minutes with AT for MA ( 1.3× faster). Fig. 7c and 7d show that AT reduces the number of reloaded vertices by ≈ 44% on IL (to 
+
+19 M) and ≈ 36% on MA (to 16 M), and shortens the reload tail compared to RND/LRU. This confirms that minimum-pending-message eviction limits repeated thrashing of partial states. 
+
+4.7 Impact of Hot Store Memory 
+
+Finally, we study the impact of hot-store memory size on the performance of ATLAS for IL and MA datasets using a 2-layer GCN model. Fig. 8 varies hot-store budget (30–100 GiB) for a 2-layer GCN on IL and MA, reporting end-to-end time and cold-to-hot reloads. We fix the reordering strategy and eviction policy to AT. The number of reloads correlates closely with the end-to-end execution time for both IL and MA. As the hot-store size increases, reloads drop sharply, and the runtime decreases accordingly. For IL, increasing the hot-store from 30 GiB to 100 GiB reduces execution time by ≈ 3.8×, while for MA, the reduction is ≈ 2.3×. For both datasets, reloads drop to (nearly) zero beyond a memory threshold. For IL, the threshold is 70 GiB; for MA, 60 GiB. Beyond this point, increasing the hot-store size has little to no impact on runtime, suggesting that once the hot 19 store is large enough to avoid evictions, reloads are eliminated and performance stabilizes. In contrast, when the hot store is smaller than this threshold, frequent reloads lead to higher execution time. We further show the number of vertices in the cold store in Figs. 8c and 8d as hot store size increases. The cold-store footprint is large for smaller hot-store sizes ( 30 –50 GiB) for both IL and MA, reaching 8–22 million vertices and indicating frequent evictions. As the hot-store size increases, the number of vertices in the cold store drops sharply and becomes negligible beyond 70 GiB. Overall, ATLAS sustains stable performance on ≈ 200 GiB feature sets with ≈ 60 GiB hot-store memory (plus framework overheads). 
+
+# 5 Related Works 
+
+Due to their ability to learn expressive representations from linked data, GNNs have been widely adopted in real-world applications. Social media platforms such as Pinterest use GNNs for content recommendations [45], while major e-commerce platforms, including Alibaba, employ GNNs to model user behavior and deliver personalized product recommendations [42]. Similarly, Google leverages GNNs to estimate travel times in Google Maps [5]. In practice, however, these graphs are rarely static. GNNs deployed in such environments are therefore commonly retrained periodically (e.g., daily or weekly) to address data drift caused by evolving graph structure, vertex features, and label distributions [25,38]. Between retraining cycles, models must continue serving inference requests, requiring access to up-to-date embeddings or prediction results for vertices and edges [21, 36]. In this paper, we focus on accelerating the evaluation of GNNs on billion-scale graphs using a single machine, enabling cost-effective inference without distributed infrastructure. 
+
+5.1 Large-scale GNN Training and Inference 
+
+While there are plenty of systems working on scaling GNN training [8, 31, 42, 47], comparatively little attention has been paid to efficient, large-scale GNN inference . Existing industrial systems such as AliGraph and DistDGL are explicitly designed around distributed mini-batch training; these partition graphs across clusters of machines, co-locate data and computation, and optimize sampling and gradient synchronization to train on hundred-million-node graphs [42, 47]. More generally, popular GNN libraries like PyTorch Geometric [7] and DGL [35] provide rich support for mini-batch training and neighborhood sampling on large graphs, but their abstractions and implementations are not optimized for full-graph inference on a single machine. Therefore, scaling inference to billion-scale graphs means adopting distributed deployments (e.g., DistDGL-style clusters), which incur substantial setup complexity and infrastructure costs. Distributed full-graph inference is especially challenging because it operates over the entire graph, leading to substantially larger working sets than during training. Additionally, disabling neighborhood sampling for deterministic inference increases inter-node communication due to the need to share embeddings across the cluster, often resulting in out-of-memory (OOM) failures. A few recent works address this challenge by proposing inference-specific frameworks. Infer-Turbo [46], in turn, adopts a GAS-style abstraction with strategies such as shadow nodes and 
+
+partial-gather to eliminate redundant k-hop computation and to balance load for hub nodes, en-abling full-graph GNN inference on industrial graphs. However, it is also built on a cluster-based infrastructure with MapReduce-based deployments across 5000 instances. DGI [44] translates existing training code into a layer-wise execution plan and supports out-of-core full-graph by dynamically batching nodes and reordering them to improve input sharing, achieving substantial speedups over naive layer-wise baselines on large graphs. While DGI demonstrates strong performance for in-memory inference on a single machine, its reliance 20 on a memory-mapped out-of-core implementation limits scalability when graphs exceed available RAM, resulting in high read overheads. We compare ATLAS against DGI in our experiments. 
+
+5.2 Out-of-core GNN Training Systems 
+
+Owing to the infrastructure costs and the complexity of implementing distributed GNN training, many recent works have explored ways to utilize all available resources, particularly disk, on an isolated commodity machine for GNN training on billion-scale graphs [16,24,28–30,34,39]. Most of these works mainly focus on optimizing data transfer, organization, and layout to speed up training. DiskGNN [16] introduces an offline sampling paradigm that decouples graph sampling from model computation, precomputes many mini-batch samples, and then packs node features contiguously on disk to avoid read amplification. To further reduce disk traffic, it uses a four-level feature store, batched feature packing, and a pipelined training pipeline. However, it must generate all computation graphs beforehand, which is a costly step when performing full-graph GNN inference over the entire graph. Additionally, DiskGNN relies heavily on feature packing for each computation graph as a contiguous chunk on disk. While this is a good strategy for training, for full-graph inference it leads to a massive blowup in disk space, since each computation involves many more vertices. Capsule [39] combines graph partitioning with subgraph pruning so that each training sub-graph fits the GPU budget and designs a subgraph loading mechanism modeled as a shortest Hamiltonian cycle to minimize the cost of loading successive subgraphs from disk. Inspired by the inspector-executor model from compilers, Ginex [24] splits training into a sample stage and a gather stage, allowing it to know in advance which node features future mini-batches will re-quire. Ginex applies Belady’s optimal caching algorithm to maintain feature vectors in memory. However, full-batch inference accesses span the entire graph, leading to cache thrashing and massive random SSD reads. 
+
+# 6 Conclusion 
+
+In this paper, we have proposed ATLAS , a broadcast-driven, OOC framework that enables efficient full-batch GNN inference on billion-scale graphs that do not fit in memory. By restruc-turing inference around sequential, single-pass I/O and introducing a tiered memory-disk hierar-chy with an intelligent eviction policy, ATLAS overcomes the challenges of read amplification, memory pressure, and irregular access patterns inherent in traditional gather-based methods. Our end-to-end pipelined design further overlaps disk access, message aggregation, and GPU-based inference to sustain high throughput under modest memory budgets available on a single workstation. Experiments on billion-sized graphs taking up to 550 GiB on disk demonstrate substantial I/O reduction and up to 12 –30 × speedups over SOTA baselines, several of which fail to complete. 
+
+ATLAS offers a cost-effective design for large-scale GNN inference on single-machine plat-forms and opens opportunities to extend this approach to attention-based layers and incremental inference workloads, as well as to other GNN-specific additions, such as neighborhood-sampling-based inference. 21 References 
+
+[1] Zhenkun Cai, Qihui Zhou, Xiao Yan, Da Zheng, Xiang Song, Chenguang Zheng, James Cheng, and George Karypis. Dsp: Efficient gnn training with multiple gpus. In Proceedings of the 28th ACM SIGPLAN Annual Symposium on Principles and Practice of Parallel Programming , pages 392–404, 2023. [2] Wing-Man Chan and Alan George. A linear time implementation of the reverse cuthill-mckee algorithm. BIT Numerical Mathematics , 20(1):8–14, 1980. [3] Shiyang Chen, Xiang Song, Vasiloudis Theodore, and Hang Liu. Deal: distributed end-to-end gnn inference for all nodes. arXiv preprint arXiv:2503.02960 , 2025. [4] Bharadwaj Dasari, Turaga Sai Dhiraj, Ganesh Jambhrunkar, Thirumalai Kailasam, Charu Vikram, Saurav Singla, Pranjal Naman, and Yogesh Simmhan. Billion-scale fintech ana-lytics: Scalable data management and anomaly detection at npci. In IEEE International Conference on Data Engineering (ICDE) , 2026. [5] Austin Derrow-Pinion, Jennifer She, David Wong, Oliver Lange, Todd Hester, Luis Perez, Marc Nunkesser, Seongjae Lee, Xueying Guo, Brett Wiltshire, et al. Eta prediction with graph neural networks in google maps. In Proceedings of the 30th ACM international conference on information & knowledge management , pages 3767–3776, 2021. [6] Yingtong Dou, Zhiwei Liu, Li Sun, Yutong Deng, Hao Peng, and Philip S Yu. Enhancing graph neural network-based fraud detectors against camouflaged fraudsters. In Proceedings of the 29th ACM international conference on information & knowledge management , pages 315–324, 2020. [7] Matthias Fey and Jan Eric Lenssen. Fast graph representation learning with pytorch geo-metric. arXiv preprint arXiv:1903.02428 , 2019. [8] Swapnil Gandhi and Anand Padmanabha Iyer. P3: Distributed deep graph learning at scale. In 15th USENIX Symposium on Operating Systems Design and Implementation (OSDI 21) ,pages 551–568, 2021. [9] Shengnan Guo, Youfang Lin, Ning Feng, Chao Song, and Huaiyu Wan. Attention based spatial-temporal graph convolutional networks for traffic flow forecasting. In Proceedings of the AAAI conference on artificial intelligence , volume 33, pages 922–929, 2019. [10] William L. Hamilton, Rex Ying, and Jure Leskovec. Inductive representation learning on large graphs. In Proceedings of the 31st International Conference on Neural Information Processing Systems , NIPS’17, page 1025–1035, 2017. [11] Weihua Hu, Matthias Fey, Marinka Zitnik, Yuxiao Dong, Hongyu Ren, Bowen Liu, Michele Catasta, and Jure Leskovec. Open graph benchmark: Datasets for machine learning on graphs. Advances in neural information processing systems , 33:22118–22133, 2020. [12] Tim Kaler, Alexandros Iliopoulos, Philip Murzynowski, Tao Schardl, Charles E Leiserson, and Jie Chen. Communication-efficient graph neural networks with probabilistic neigh-borhood expansion analysis and caching. Proceedings of Machine Learning and Systems ,5:477–494, 2023. [13] Tim Kaler, Nickolas Stathas, Anne Ouyang, Alexandros-Stavros Iliopoulos, Tao Schardl, Charles E Leiserson, and Jie Chen. Accelerating training and inference of graph neural networks with fast sampling and pipelining. Proceedings of Machine Learning and Systems ,4:172–189, 2022. 22 [14] Arpandeep Khatua, Vikram Sharma Mailthody, Bhagyashree Taleka, Tengfei Ma, Xiang Song, and Wen-mei Hwu. Igb: Addressing the gaps in labeling, features, heterogeneity, and size of public graph datasets for deep learning research. In Proceedings of the 29th ACM SIGKDD Conference on Knowledge Discovery and Data Mining , pages 4284–4295, 2023. [15] Thomas N. Kipf and Max Welling. Semi-supervised classification with graph convolu-tional networks. In 5th International Conference on Learning Representations, ICLR 2017, Toulon, France, April 24-26, 2017, Conference Track Proceedings , 2017. [16] Renjie Liu, Yichuan Wang, Xiao Yan, Haitian Jiang, Zhenkun Cai, Minjie Wang, Bo Tang, and Jinyang Li. Diskgnn: Bridging i/o efficiency and model accuracy for out-of-core gnn training. Proceedings of the ACM on Management of Data , 3(1):1–27, 2025. [17] Yang Liu, Xiang Ao, Zidi Qin, Jianfeng Chi, Jinghua Feng, Hao Yang, and Qing He. Pick and choose: a gnn-based imbalanced learning approach for fraud detection. In Proceedings of the web conference 2021 , pages 3168–3177, 2021. [18] Pranjal Naman, Parv Agarwal, Hrishikesh Haritas, and Yogesh Simmhan. Ripple++: An incremental framework for efficient gnn inference on evolving graphs. arXiv preprint arXiv:2601.12347 , 2026. [19] Pranjal Naman and Yogesh Simmhan. Optimizing federated learning using remote embed-dings for graph neural networks. In European Conference on Parallel Processing , pages 470–484. Springer, 2024. [20] Pranjal Naman and Yogesh Simmhan. A gpu is all you need: Rethinking distributed and out-of-core gnn training. In 2025 IEEE 32nd International Conference on High Performance Computing, Data and Analytics Workshop (HiPCW) , pages 193–194, 2025. [21] Pranjal Naman and Yogesh Simmhan. Ripple: Scalable incremental gnn inferencing on large streaming graphs. In 2025 IEEE 45th International Conference on Distributed Computing Systems (ICDCS) , pages 857–867, 2025. [22] Pranjal Naman and Yogesh Simmhan. Optimes: Optimizing federated learning using remote embeddings for graph neural networks. Journal of Parallel and Distributed Computing , page 105227, 2026. [23] Jeongmin Brian Park, Vikram Sharma Mailthody, Zaid Qureshi, and Wen-mei Hwu. Accel-erating sampling and aggregation operations in gnn frameworks with gpu initiated direct storage accesses. Proceedings of the VLDB Endowment , 17(6):1227–1240, 2024. [24] Yeonhong Park, Sunhong Min, and Jae W Lee. Ginex: Ssd-enabled billion-scale graph neural network training on a single machine via provably optimal in-memory caching. Pro-ceedings of the VLDB Endowment , 15(11):2626–2639, 2022. [25] Emanuele Rossi, Ben Chamberlain, Fabrizio Frasca, Davide Eynard, Federico Monti, and Michael Bronstein. Temporal graph networks for deep learning on dynamic graphs. arXiv preprint arXiv:2006.10637 , 2020. [26] Amitabha Roy, Ivo Mihailovic, and Willy Zwaenepoel. X-stream: Edge-centric graph pro-cessing using streaming partitions. In Proceedings of the Twenty-Fourth ACM Symposium on Operating Systems Principles , pages 472–488, 2013. [27] Akash Sharma, Pranjal Naman, Roopkatha Banerjee, Priyanshu Pansari, Sankalp Gawali, Mayank Arya, Sharath Chandra, Arun Josephraj, Rakshit Ramesh, Punit Rathore, et al. Scaling real-time traffic analytics on edge-cloud fabrics for city-scale camera networks. In 
+
+TCSC SCALE Challenge, IEEE CCGRID Workshops , 2026. 23 [28] Zeang Sheng, Wentao Zhang, Yangyu Tao, and Bin Cui. Outre: An out-of-core de-redundancy gnn training framework for massive graphs within a single machine. Proceedings of the VLDB Endowment , 17(11):2960–2973, 2024. [29] Can Su, Haipeng Zhang, Hanyu Zhao, Wenting Shen, Baole Ai, Yong Li, Kaigui Bian, and Bin Cui. Caliex: A disk-based large-scale gnn training system with joint design of caching and execution. In 2025 IEEE 41st International Conference on Data Engineering (ICDE) ,pages 2908–2921. IEEE, 2025. [30] Jie Sun, Mo Sun, Zheng Zhang, Zuocheng Shi, Jun Xie, Zihan Yang, Jie Zhang, Zeke Wang, and Fei Wu. Hyperion: Co-optimizing ssd access and gpu computation for cost-efficient gnn training. In 2025 IEEE 41st International Conference on Data Engineering (ICDE) , pages 321–335. IEEE, 2025. [31] Arnab Kanti Tarafder, Yidong Gong, and Pradeep Kumar. Optimization of gnn train-ing through half-precision. In Proceedings of the 34th International Symposium on High-Performance Parallel and Distributed Computing , HPDC ’25, 2025. [32] Petar Veličković, Guillem Cucurull, Arantxa Casanova, Adriana Romero, Pietro Liò, and Yoshua Bengio. Graph Attention Networks. International Conference on Learning Repre-sentations , 2018. [33] Keval Vora. Lumos: Dependency-driven disk-based graph processing. In 2019 USENIX Annual Technical Conference (USENIX ATC 19) , pages 429–442, 2019. [34] Roger Waleffe, Jason Mohoney, Theodoros Rekatsinas, and Shivaram Venkataraman. Mar-iusgnn: Resource-efficient out-of-core training of graph neural networks. In Proceedings of the Eighteenth European Conference on Computer Systems , pages 144–161, 2023. [35] Minjie Yu Wang. Deep graph library: Towards efficient and scalable deep learning on graphs. In ICLR workshop on representation learning on graphs and manifolds , 2019. [36] Dan Wu, Zhaoying Li, and Tulika Mitra. Inkstream: Instantaneous gnn inference on dy-namic graphs via incremental update. In 2025 IEEE International Parallel and Distributed Processing Symposium (IPDPS) , pages 1273–1285. IEEE, 2025. [37] Felix Wu, Amauri Souza, Tianyi Zhang, Christopher Fifty, Tao Yu, and Kilian Weinberger. Simplifying graph convolutional networks. In Proceedings of the 36th International Confer-ence on Machine Learning , Proceedings of Machine Learning Research, 2019. [38] Yaqi Xia, Zheng Zhang, Hulin Wang, Donglin Yang, Xiaobo Zhou, and Dazhao Cheng. Redundancy-free high-performance dynamic gnn training with hierarchical pipeline paral-lelism. In Proceedings of the 32nd International Symposium on High-Performance Parallel and Distributed Computing , HPDC ’23, 2023. [39] Yongan Xiang, Zezhong Ding, Rui Guo, Shangyou Wang, Xike Xie, and S Kevin Zhou. Capsule: an out-of-core training mechanism for colossal gnns. Proceedings of the ACM on Management of Data , 3(1):1–30, 2025. [40] Keyulu Xu, Weihua Hu, Jure Leskovec, and Stefanie Jegelka. How powerful are graph neural networks? In International Conference on Learning Representations , 2019. [41] Xianghao Xu, Fang Wang, Hong Jiang, Yongli Cheng, Dan Feng, and Yongxuan Zhang. A hybrid update strategy for i/o-efficient out-of-core graph processing. IEEE Transactions on Parallel and Distributed Systems , 31(8):1767–1782, 2020. 24 [42] Hongxia Yang. Aligraph: A comprehensive graph neural network platform. In Proceedings of the 25th ACM SIGKDD international conference on knowledge discovery & data mining ,pages 3165–3166, 2019. [43] Liangwei Yang, Zhiwei Liu, Yingtong Dou, Jing Ma, and Philip S Yu. Consisrec: Enhancing gnn for social recommendation via consistent neighbor aggregation. In Proceedings of the 44th international ACM SIGIR conference on Research and development in information retrieval , pages 2141–2145, 2021. [44] Peiqi Yin, Xiao Yan, Jinjing Zhou, Qiang Fu, Zhenkun Cai, James Cheng, Bo Tang, and Minjie Wang. Dgi: An easy and efficient framework for gnn model evaluation. In Proceedings of the 29th ACM SIGKDD Conference on Knowledge Discovery and Data Mining , pages 5439–5450, 2023. [45] Rex Ying, Ruining He, Kaifeng Chen, Pong Eksombatchai, William L Hamilton, and Jure Leskovec. Graph convolutional neural networks for web-scale recommender systems. In 
+
+Proceedings of the 24th ACM SIGKDD international conference on knowledge discovery & data mining , pages 974–983, 2018. [46] Dalong Zhang, Xianzheng Song, Zhiyang Hu, Yang Li, Miao Tao, Binbin Hu, Lin Wang, Zhiqiang Zhang, and Jun Zhou. Inferturbo: A scalable system for boosting full-graph inference of graph neural network over huge graphs. In 2023 IEEE 39th International Conference on Data Engineering (ICDE) , pages 3235–3247. IEEE, 2023. [47] Da Zheng, Chao Ma, Minjie Wang, Jinjing Zhou, Qidong Su, Xiang Song, Quan Gan, Zheng Zhang, and George Karypis. Distdgl: Distributed graph neural network training for billion-scale graphs. In 2020 IEEE/ACM 10th Workshop on Irregular Applications: Architectures and Algorithms (IA3) , pages 36–44. IEEE, 2020. 25
