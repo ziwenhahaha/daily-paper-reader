@@ -47,9 +47,17 @@
 4. 需要仓库侧验证时，优先手动触发 workflow，并显式指定该工作分支。
 5. 需要给上游提 PR 时，从 fork 的 `work/openai-compatible` 提到上游的 `main-openai-compatible`。
 
+## 提交署名规则
+
+- 本仓库内由 Agent/Codex 创建的 commit，提交信息末尾必须追加以下共同作者 trailer：
+
+```text
+Co-Authored-By: xixi <3495302215@qq.com>
+Co-Authored-By: lilmortyj <781113402@qq.com>
+```
+
 ## 禁止事项
 
 - 不要把 `main` 当成功能开发分支长期使用。
 - 不要在 `main`、`main-openai-compatible`、`work/openai-compatible` 三条分支上同时承载同一组未整理改动。
 - 不要为了临时测试频繁把 `main` 指向某个功能状态；如确有需要，应先说明用途，再做一次性同步或 cherry-pick。
-
