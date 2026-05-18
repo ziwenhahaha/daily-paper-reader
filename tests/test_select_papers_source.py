@@ -194,6 +194,32 @@ class SelectPapersSourceTagTest(unittest.TestCase):
         self.assertEqual(seen_ahd, {"paper-ahd"})
         self.assertEqual(seen_all, {"paper-ahd", "paper-gene"})
 
+    def test_collect_seen_ids_uses_recommendation_tags_with_versioned_id(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            recommend_dir = root / "20260517" / "recommend"
+            recommend_dir.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "deep_dive": [
+                    {
+                        "id": "2605.09701v1",
+                        "title": "DriveFuture: Future-Aware Latent World Models for Autonomous Driving",
+                        "tags": ["keyword:轨规", "query:轨规"],
+                        "llm_tags": ["query:q6"],
+                        "matched_query_tag": "query:q6",
+                    }
+                ],
+                "quick_skim": [],
+            }
+            (recommend_dir / "arxiv_papers_20260517.standard.json").write_text(
+                json.dumps(payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            seen = self.mod.collect_seen_ids(str(root), "20260518", active_tags=["轨规"])
+
+        self.assertEqual(seen, {"2605.09701v1"})
+
 
 class SelectPapersDeepPriorityModeTest(unittest.TestCase):
     @classmethod

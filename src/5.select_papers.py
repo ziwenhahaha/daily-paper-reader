@@ -326,6 +326,11 @@ def resolve_carryover_tags(item: Dict[str, Any], fallback_tags: List[str] | None
     if matched_query_tag:
         collected.append(matched_query_tag)
 
+    for raw_tag in normalize_tags(item.get("tags")):
+        normalized = normalize_carryover_tag(raw_tag)
+        if normalized:
+            collected.append(normalized)
+
     for raw_tag in normalize_tags(item.get("llm_tags")):
         normalized = normalize_carryover_tag(raw_tag)
         if normalized:
