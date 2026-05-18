@@ -892,9 +892,34 @@ window.$docsify = {
         window.renderMathInElement(el, {
           delimiters: [
             { left: '$$', right: '$$', display: true },
+            { left: '\\[', right: '\\]', display: true },
+            { left: '\\(', right: '\\)', display: false },
             { left: '$', right: '$', display: false },
           ],
           throwOnError: false,
+        });
+      };
+
+      const normalizeLatexDelimiters = (markdown) => {
+        if (!markdown) return '';
+        const placeholders = [];
+        const protect = (match) => {
+          const idx = placeholders.length;
+          placeholders.push(match);
+          return `@@DPR_CODE_PLACEHOLDER_${idx}@@`;
+        };
+
+        let text = String(markdown)
+          .replace(/(```[\s\S]*?```|~~~[\s\S]*?~~~)/g, protect)
+          .replace(/`[^`\n]*`/g, protect);
+
+        text = text
+          .replace(/\\\[([\s\S]*?)\\\]/g, (_, body) => `$$${body}$$`)
+          .replace(/\\\(([^\n]*?)\\\)/g, (_, body) => `$${body}$`);
+
+        return text.replace(/@@DPR_CODE_PLACEHOLDER_(\d+)@@/g, (_, idx) => {
+          const original = placeholders[parseInt(idx, 10)];
+          return original == null ? '' : original;
         });
       };
 
@@ -904,7 +929,7 @@ window.$docsify = {
       const normalizeTables = (markdown) => {
         if (!markdown) return '';
         // 清理历史遗留的协议标记
-        let text = markdown
+        let text = normalizeLatexDelimiters(markdown)
           .replace(/\[ANS\]/g, '')
           .replace(/\[THINK\]/g, '');
 
@@ -1087,6 +1112,7 @@ window.$docsify = {
 
       // 导出给外部模块（例如聊天模块）复用
       window.DPRMarkdown = {
+        normalizeLatexDelimiters,
         normalizeTables,
         renderMarkdownWithTables,
         renderMathInEl,
@@ -3808,18 +3834,18 @@ window.$docsify = {
         // 只对论文页面处理
         if (!isPaperRouteFile(file)) {
           latestPaperRawMarkdown = '';
-          return content;
+          return normalizeLatexDelimiters(content || '');
         }
         latestPaperRawMarkdown = content || '';
 
         const { meta, body } = parseFrontMatter(content);
         if (!meta) {
-          return content;
+          return normalizeLatexDelimiters(content || '');
         }
 
         // 生成论文页面 HTML + 正文
         const paperHtml = renderPaperFromMeta(meta);
-        return paperHtml + body;
+        return paperHtml + normalizeLatexDelimiters(body);
       });
 
       // --- Docsify 生命周期钩子 ---
