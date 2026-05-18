@@ -11,12 +11,14 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List
 
 from llm import LLMClient, create_chat_client, default_chat_base_url, first_env
+from recommend_history import collect_seen_ids
 from subscription_plan import build_pipeline_inputs
 
 SCRIPT_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 TODAY_STR = str(os.getenv("DPR_RUN_DATE") or "").strip() or datetime.now(timezone.utc).strftime("%Y%m%d")
-ARCHIVE_DIR = os.path.join(ROOT_DIR, "archive", TODAY_STR)
+ARCHIVE_ROOT = os.path.join(ROOT_DIR, "archive")
+ARCHIVE_DIR = os.path.join(ARCHIVE_ROOT, TODAY_STR)
 RANKED_DIR = os.path.join(ARCHIVE_DIR, "rank")
 CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 
@@ -282,6 +284,11 @@ def build_user_requirements(
                 }
             )
     return requirements
+
+
+def get_active_subscription_tags(config: Dict[str, Any]) -> List[str]:
+    pipeline_inputs = build_pipeline_inputs(config or {})
+    return _unique_keep_order([_norm_text(tag) for tag in pipeline_inputs.get("tags") or []])
 
 
 def build_paper_map(papers: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -712,6 +719,7 @@ def process_file(
     filter_model: str,
     max_output_tokens: int,
     filter_concurrency: int,
+    include_seen: bool = False,
 ) -> None:
     # 检查输入文件是否存在，如果不存在说明今天没有新论文，优雅退出
     if not os.path.exists(input_path):
@@ -732,6 +740,60 @@ def process_file(
         save_json(data, output_path)
         return
     paper_map = build_paper_map(papers)
+
+    candidate_ids: List[str] = []
+    for q in queries:
+        ranked = q.get("ranked") or []
+        for item in ranked:
+            if item.get("star_rating", 0) >= min_star:
+                pid = str(item.get("paper_id"))
+                if pid:
+                    candidate_ids.append(pid)
+
+    candidate_ids = unique_tagged([{"tag": pid} for pid in candidate_ids])
+    candidate_ids = [item["tag"] for item in candidate_ids]
+    candidate_count_before_history = len(candidate_ids)
+
+    active_tags = get_active_subscription_tags(config)
+    if include_seen:
+        history_filter_summary = (
+            f"disabled include_seen=true | candidates={candidate_count_before_history}"
+        )
+    else:
+        history_seen_ids = collect_seen_ids(ARCHIVE_ROOT, TODAY_STR, active_tags=active_tags)
+        if history_seen_ids:
+            candidate_ids = [pid for pid in candidate_ids if pid not in history_seen_ids]
+        active_tag_label = ", ".join(active_tags[:8]) if active_tags else "ALL"
+        if len(active_tags) > 8:
+            active_tag_label += f", +{len(active_tags) - 8}"
+        history_filter_summary = (
+            f"enabled | active_tags={active_tag_label} | seen_ids={len(history_seen_ids)} "
+            f"| before={candidate_count_before_history} | after={len(candidate_ids)}"
+        )
+
+    if candidate_count_before_history <= 0:
+        log("[WARN] no candidates found with star_rating >= min_star.")
+        save_json(data, output_path)
+        return
+    if not candidate_ids:
+        log(f"[INFO] no candidates left after pre-LLM history filter: {history_filter_summary}")
+        save_json(data, output_path)
+        return
+
+    docs: List[Dict[str, str]] = []
+    for pid in candidate_ids:
+        paper = paper_map.get(pid)
+        if not paper:
+            continue
+        title = (paper.get("title") or "").strip()
+        abstract = (paper.get("abstract") or "").strip()
+        content = format_doc(title, abstract, max_chars)
+        docs.append({"id": pid, "content": content})
+
+    if not docs:
+        log("[WARN] candidate papers not found in paper map.")
+        save_json(data, output_path)
+        return
 
     api_key = first_env(
         "FILTER_API_KEY",
@@ -764,39 +826,7 @@ def process_file(
         f"min_star={min_star}, batch_size={batch_size}, max_chars={max_chars}, "
         f"concurrency={filter_concurrency}, model={filter_model}, base={base_url}"
     )
-
-    candidate_ids: List[str] = []
-    for q in queries:
-        ranked = q.get("ranked") or []
-        for item in ranked:
-            if item.get("star_rating", 0) >= min_star:
-                pid = str(item.get("paper_id"))
-                if pid:
-                    candidate_ids.append(pid)
-
-    candidate_ids = unique_tagged([{"tag": pid} for pid in candidate_ids])
-    candidate_ids = [item["tag"] for item in candidate_ids]
-    if not candidate_ids:
-        log("[WARN] no candidates found with star_rating >= min_star.")
-        save_json(data, output_path)
-        group_end()
-        return
-
-    docs: List[Dict[str, str]] = []
-    for pid in candidate_ids:
-        paper = paper_map.get(pid)
-        if not paper:
-            continue
-        title = (paper.get("title") or "").strip()
-        abstract = (paper.get("abstract") or "").strip()
-        content = format_doc(title, abstract, max_chars)
-        docs.append({"id": pid, "content": content})
-
-    if not docs:
-        log("[WARN] candidate papers not found in paper map.")
-        save_json(data, output_path)
-        group_end()
-        return
+    log(f"[INFO] pre-LLM history filter: {history_filter_summary}")
 
     random.shuffle(docs)
     batches = chunk_list(docs, batch_size)
@@ -938,6 +968,11 @@ def main() -> None:
         default=DEFAULT_FILTER_CONCURRENCY,
         help="concurrent LLM filter requests.",
     )
+    parser.add_argument(
+        "--include-seen",
+        action="store_true",
+        help="Do not skip papers already present in previous recommendation archives before LLM refine.",
+    )
 
     args = parser.parse_args()
 
@@ -958,6 +993,7 @@ def main() -> None:
         filter_model=args.filter_model,
         max_output_tokens=args.max_output_tokens,
         filter_concurrency=args.filter_concurrency,
+        include_seen=args.include_seen,
     )
 
 

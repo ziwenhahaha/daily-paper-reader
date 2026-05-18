@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import pathlib
 import sys
+import tempfile
 import unittest
 
 
@@ -132,6 +134,99 @@ class LlmRefineRecoveryTest(unittest.TestCase):
         self.assertEqual(user_content.count("User requirements list:"), 2)
         self.assertEqual(user_content.count("Papers:"), 2)
         self.assertTrue(user_content.rstrip().endswith("Output must be strict JSON only, no markdown, no fences, no extra text."))
+
+    def test_process_file_skips_seen_before_api_key_lookup(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            archive_root = root / "archive"
+            recommend_dir = archive_root / "20260517" / "recommend"
+            recommend_dir.mkdir(parents=True, exist_ok=True)
+            (recommend_dir / "arxiv_papers_20260517.standard.json").write_text(
+                json.dumps(
+                    {
+                        "deep_dive": [
+                            {
+                                "id": "paper-gene",
+                                "matched_query_tag": "query:GENE",
+                            }
+                        ],
+                        "quick_skim": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            input_path = root / "ranked.json"
+            output_path = root / "out.json"
+            input_path.write_text(
+                json.dumps(
+                    {
+                        "papers": [
+                            {
+                                "id": "paper-gene",
+                                "title": "Seen Paper",
+                                "abstract": "Already recommended.",
+                            }
+                        ],
+                        "queries": [
+                            {
+                                "type": "intent_query",
+                                "ranked": [
+                                    {
+                                        "paper_id": "paper-gene",
+                                        "star_rating": 5,
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            old_archive_root = self.mod.ARCHIVE_ROOT
+            old_today_str = self.mod.TODAY_STR
+            old_load_config = self.mod.load_config
+            old_first_env = self.mod.first_env
+            self.mod.ARCHIVE_ROOT = str(archive_root)
+            self.mod.TODAY_STR = "20260518"
+            self.mod.load_config = lambda: {
+                "subscriptions": {
+                    "intent_profiles": [
+                        {
+                            "tag": "GENE",
+                            "keywords": [{"keyword": "gene therapy"}],
+                        }
+                    ]
+                }
+            }
+
+            def fail_first_env(*args):
+                raise AssertionError("API key lookup should be skipped when all candidates are seen")
+
+            self.mod.first_env = fail_first_env
+            try:
+                self.mod.process_file(
+                    input_path=str(input_path),
+                    output_path=str(output_path),
+                    min_star=4,
+                    batch_size=10,
+                    max_chars=850,
+                    filter_model="test-model",
+                    max_output_tokens=128,
+                    filter_concurrency=1,
+                )
+            finally:
+                self.mod.ARCHIVE_ROOT = old_archive_root
+                self.mod.TODAY_STR = old_today_str
+                self.mod.load_config = old_load_config
+                self.mod.first_env = old_first_env
+
+            self.assertTrue(output_path.exists())
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertNotIn("llm_ranked", payload)
 
 
 if __name__ == "__main__":

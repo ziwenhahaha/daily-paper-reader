@@ -8,6 +8,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Tuple
 
+from recommend_history import collect_seen_ids
 from subscription_plan import count_subscription_tags
 
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -100,16 +101,6 @@ def parse_date_str(date_str: str) -> date:
         # 区间 token 用结束日期参与“今日/最近N天”逻辑
         s = s.split("-", 1)[1]
     return datetime.strptime(s, "%Y%m%d").date()
-
-
-def list_date_dirs(archive_root: str) -> List[str]:
-    if not os.path.isdir(archive_root):
-        return []
-    result: List[str] = []
-    for name in os.listdir(archive_root):
-        if re.match(r"^\d{8}$", name) or re.match(r"^\d{8}-\d{8}$", name):
-            result.append(name)
-    return sorted(result)
 
 
 def parse_payload_date(payload: Dict[str, Any]) -> date | None:
@@ -350,53 +341,6 @@ def resolve_carryover_tags(item: Dict[str, Any], fallback_tags: List[str] | None
         seen.add(tag)
         cleaned.append(tag)
     return cleaned or [CARRYOVER_UNTAGGED]
-
-
-def collect_seen_ids(
-    archive_root: str,
-    today_str: str,
-    active_tags: List[str] | None = None,
-) -> set:
-    active_tag_keys = {
-        normalize_carryover_tag(tag).lower()
-        for tag in (active_tags or [])
-        if normalize_carryover_tag(tag)
-    }
-
-    seen = set()
-    for day in list_date_dirs(archive_root):
-        if day == today_str:
-            continue
-        rec_dir = os.path.join(archive_root, day, "recommend")
-        if not os.path.isdir(rec_dir):
-            continue
-        for name in os.listdir(rec_dir):
-            if not name.endswith(".json"):
-                continue
-            if not name.startswith(f"arxiv_papers_{day}."):
-                continue
-            rec_path = os.path.join(rec_dir, name)
-            try:
-                payload = load_json(rec_path)
-            except Exception:
-                continue
-            for key in ("deep_dive", "quick_skim"):
-                for item in payload.get(key) or []:
-                    if not isinstance(item, dict):
-                        continue
-                    pid = str(item.get("id") or item.get("paper_id") or "").strip()
-                    if not pid:
-                        continue
-                    if active_tag_keys:
-                        item_tag_keys = {
-                            normalize_carryover_tag(tag).lower()
-                            for tag in resolve_carryover_tags(item)
-                            if normalize_carryover_tag(tag)
-                        }
-                        if not item_tag_keys.intersection(active_tag_keys):
-                            continue
-                    seen.add(pid)
-    return seen
 
 
 def parse_score(value: Any) -> float:
