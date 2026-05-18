@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List
 
-from llm import BltClient
+from llm import ClientFactory, LLMClient
 from subscription_plan import build_pipeline_inputs
 
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -591,14 +591,14 @@ def recover_filter_results(
     )
 
 
-def _make_filter_client(api_key: str, model: str, max_output_tokens: int) -> BltClient:
-    client = BltClient(api_key=api_key, model=model)
+def _make_filter_client(model: str, max_output_tokens: int) -> LLMClient:
+    client = ClientFactory.from_env()
     client.kwargs.update({"temperature": 0.1, "max_tokens": max_output_tokens})
     return client
 
 
 def _make_filter_runner(
-    client: BltClient,
+    client: LLMClient,
     all_requirements: List[Dict[str, str]],
     debug_dir: str,
     base_tag: str,
@@ -669,13 +669,12 @@ def merge_filter_result(
 def _filter_batch(
     batch_idx: int,
     batch: List[Dict[str, str]],
-    api_key: str,
     all_requirements: List[Dict[str, str]],
     filter_model: str,
     max_output_tokens: int,
     debug_dir: str,
 ) -> tuple[int, List[Dict[str, str]], List[Dict[str, Any]]]:
-    client = _make_filter_client(api_key, filter_model, max_output_tokens)
+    client = _make_filter_client(filter_model, max_output_tokens)
     runner = _make_filter_runner(
         client,
         all_requirements=all_requirements,
@@ -724,9 +723,9 @@ def process_file(
         return
     paper_map = build_paper_map(papers)
 
-    api_key = os.getenv("BLT_API_KEY")
-    if not api_key:
-        raise RuntimeError("missing BLT_API_KEY")
+    model_env = os.getenv("LLM_MODEL")
+    if not model_env:
+        raise RuntimeError("缺少 LLM_MODEL 环境变量，请设置为 'provider/model' 格式，例如 'minimax/MiniMax-M2.7'")
 
     group_start(f"Step 4 - llm refine {os.path.basename(input_path)}")
     log(
@@ -789,7 +788,6 @@ def process_file(
                 _filter_batch,
                 idx,
                 batch,
-                api_key,
                 user_requirements,
                 filter_model,
                 max_output_tokens,
@@ -815,7 +813,7 @@ def process_file(
             if _norm_text(doc.get("id"))
         }
         recovery_docs = list(recovery_map.values())
-        recovery_client = _make_filter_client(api_key, filter_model, max_output_tokens)
+        recovery_client = _make_filter_client(filter_model, max_output_tokens)
         log(
             f"[WARN] start missing-doc recovery: failed_batches_docs={len(failed_docs)} "
             f"| missing_after_merge={len(missing_docs)} | recover_docs={len(recovery_docs)}"

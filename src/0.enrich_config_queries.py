@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 import yaml  # type: ignore
 
-from llm import BltClient
+from llm import ClientFactory
 
 SCRIPT_DIR = os.path.dirname(__file__)
 CONFIG_FILE = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "config.yaml"))
@@ -140,9 +140,9 @@ def main() -> None:
     if not os.path.exists(CONFIG_FILE):
         raise FileNotFoundError(f"找不到 config.yaml：{CONFIG_FILE}")
 
-    api_key = os.getenv("BLT_API_KEY")
-    if not api_key:
-        raise RuntimeError("缺少 BLT_API_KEY 环境变量，无法调用 BLT。")
+    model_env = os.getenv("LLM_MODEL")
+    if not model_env:
+        raise RuntimeError("缺少 LLM_MODEL 环境变量，请设置为 'provider/model' 格式，例如 'minimax/MiniMax-M2.7'")
 
     group_start("Step 0.0 - load config")
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -153,7 +153,7 @@ def main() -> None:
     keywords = subs.get("keywords") or []
     llm_queries = subs.get("llm_queries") or []
 
-    client = BltClient(api_key=api_key, model=MODEL_NAME)
+    client = ClientFactory.from_env()
 
     related_schema = {
       "type": "object",

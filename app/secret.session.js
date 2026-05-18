@@ -492,6 +492,11 @@
       const secretNameRerankKey = 'Reranker_LLM_API_KEY';
       const secretNameRerankUrl = 'Reranker_LLM_BASE_URL';
       const secretNameRerankModel = 'Reranker_LLM_MODEL';
+      // 新的统一 LLM 配置变量
+      const secretNameLlmModel = 'LLM_MODEL';
+      const secretNameLlmApiKey = 'LLM_API_KEY';
+      const secretNameLlmBaseUrl = 'LLM_BASE_URL';
+      const secretNameMinimaxApiKey = 'MINIMAX_API_KEY';
 
       const putSecret = async (name, encrypted) => {
         const body = {
@@ -534,6 +539,10 @@
         { name: secretNameBltFilterModel, value: filterModel || summarizedModel },
         { name: secretNameBltRewriteModel, value: rewriteModel || summarizedModel },
         { name: secretNameSkipRerank, value: skipRerank ? 'true' : 'false' },
+        // 新的统一 LLM 配置变量（支持 MiniMax 等多 provider）
+        { name: secretNameLlmModel, value: summarizedModel },
+        { name: secretNameLlmApiKey, value: summarizedApiKey },
+        { name: secretNameLlmBaseUrl, value: summarizedBaseUrl },
       ];
 
       if (!skipRerank && rerankerApiKey && rerankerBaseUrl && rerankerModel) {

@@ -8,7 +8,7 @@ import random
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from llm import BltClient
+from llm import ClientFactory
 
 SCRIPT_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
@@ -429,11 +429,11 @@ def main() -> None:
     log(f"[WARN] 输入文件不存在（今天可能没有新论文）：{input_path}，将跳过 Step 3。")
     return
 
-  api_key = os.getenv("BLT_API_KEY")
-  if not api_key:
-    raise RuntimeError("缺少 BLT_API_KEY 环境变量，无法调用 BLT Rerank API。")
+  model_env = os.getenv("LLM_MODEL")
+  if not model_env:
+    raise RuntimeError("缺少 LLM_MODEL 环境变量，请设置为 'provider/model' 格式，例如 'minimax/MiniMax-M2.7'")
 
-  reranker = BltClient(api_key=api_key, model=args.rerank_model)
+  reranker = ClientFactory.from_env()
   process_file(
     reranker=reranker,
     input_path=input_path,
