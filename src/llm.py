@@ -595,6 +595,17 @@ class CSTCloudClient(LLMClient):
         super().__init__(api_key=api_key, model=model, base_url=base_url)
 
 
+class MiniMaxClient(LLMClient):
+    """MiniMax API，OpenAI Chat Completions 兼容接口。
+
+    默认基址：https://api.minimaxi.com/v1
+    使用示例：model="minimax/MiniMax-M2.7"
+    建议环境变量：MINIMAX_API_KEY
+    """
+    def __init__(self, api_key: str, model: str, base_url: str = "https://api.minimaxi.com/v1"):
+        super().__init__(api_key=api_key, model=model, base_url=base_url)
+
+
 SliconflowClient = SiliconflowClient
 
 
@@ -754,7 +765,10 @@ class ClientFactory:
             return BltClient(api_key=api_key or os.getenv('BLT_API_KEY', ''), model=model, base_url=base_url or os.getenv('BLT_API_BASE', 'https://api.bltcy.ai/v1'))
         if provider in ('cstcloud', 'cst', 'cst-cloud', 'keji', 'keji-yun'):
             return CSTCloudClient(api_key=api_key or os.getenv('CSTCLOUD_API_KEY', ''), model=model, base_url=base_url or 'https://uni-api.cstcloud.cn/v1')
-        raise ValueError(f"不支持的提供商: {provider}，请使用 'deepseek'、'siliconflow'、'blt'、'cstcloud' 或 'ollama'")
+        if provider in ('minimax', 'minimaxi'):
+            base_url = base_url or "https://api.minimaxi.com/v1"
+            return MiniMaxClient(api_key=api_key or os.getenv('MINIMAX_API_KEY', ''), model=model, base_url=base_url)
+        raise ValueError(f"不支持的提供商: {provider}，请使用 'deepseek'、'siliconflow'、'blt'、'cstcloud'、'minimax' 或 'ollama'")
 
     @staticmethod
     def from_config(_config: dict | None = None):

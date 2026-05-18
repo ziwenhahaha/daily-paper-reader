@@ -21,6 +21,12 @@
       baseUrl: 'https://api.deepseek.com',
       models: Object.freeze(['deepseek-chat', 'deepseek-reasoner']),
     }),
+    minimax: Object.freeze({
+      key: 'minimax',
+      label: 'MiniMax',
+      baseUrl: 'https://api.minimaxi.com/v1',
+      models: Object.freeze(['MiniMax-M2.7', 'MiniMax-M2.5', 'MiniMax-M2.1']),
+    }),
     glm: Object.freeze({
       key: 'glm',
       label: 'GLM Coding Plan',
@@ -31,13 +37,7 @@
       key: 'minimax',
       label: 'MiniMax Coding Plan',
       baseUrl: 'https://api.minimaxi.com/v1',
-      models: Object.freeze(['MiniMax-M2.5', 'MiniMax-M2.7', 'MiniMax-M2.1']),
-    }),
-    kimi: Object.freeze({
-      key: 'kimi',
-      label: 'Kimi 编程预设',
-      baseUrl: 'https://api.moonshot.ai/v1',
-      models: Object.freeze(['kimi-k2.5', 'kimi-k2-turbo-preview', 'kimi-k2-thinking']),
+      models: Object.freeze(['MiniMax-M2.7', 'MiniMax-M2.5', 'MiniMax-M2.1']),
     }),
     openai: Object.freeze({
       key: 'openai',
