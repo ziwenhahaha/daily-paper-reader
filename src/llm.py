@@ -333,6 +333,9 @@ class LLMClient:
             "Content-Type": "application/json",
         }
         model_name = self.model
+        # MiniMax API 不接受 provider 前缀
+        if '/' in model_name:
+            model_name = model_name.split('/', 1)[1]
         if 'qwen3' in model_name.lower():
             if '/think' in model_name:
                 self.kwargs['enable_thinking'] = True
