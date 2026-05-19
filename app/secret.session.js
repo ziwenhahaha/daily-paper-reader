@@ -1236,7 +1236,6 @@
       );
 
       // 添加 BLT 预设按钮事件
-      const platoPresetBtn = document.getElementById('secret-setup-preset-plato');
       if (platoPresetBtn) {
         platoPresetBtn.addEventListener('click', () => {
           applyPreset('plato');
