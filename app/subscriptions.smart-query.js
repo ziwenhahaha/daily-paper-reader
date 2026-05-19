@@ -807,14 +807,16 @@ window.SubscriptionsSmartQuery = (function () {
         pushUnique(`${src}/chat/completions`);
       };
 
+      // 用户配置的 API 优先
+      const raw = normalizeText(llm.baseUrl);
+      if (raw) {
+        expandEndpoint(raw);
+      }
+
+      // 备用地址（仅当用户未配置时使用）
       expandEndpoint('https://hk-api.gptbest.vip');
       expandEndpoint('https://api.bltcy.ai');
 
-      const raw = normalizeText(llm.baseUrl);
-      if (!raw) {
-        return out;
-      }
-      expandEndpoint(raw);
       return out;
     };
     const endpoints = buildEndpoints();
