@@ -755,6 +755,50 @@ class ClientFactory:
         api_key = (os.getenv('LLM_API_KEY') or '').strip() or None
         base_url = (os.getenv('LLM_BASE_URL') or '').strip() or None
 
+        return ClientFactory._create_client(provider, model, api_key, base_url)
+
+    @staticmethod
+    def from_model(model: str, api_key: str = None, base_url: str = None):
+        """
+        直接传入 model 名称和配置创建客户端。
+
+        参数：
+        - model：形如 'provider/model' 或直接是模型名（如 'MiniMax-M2.7'）
+        - api_key：API key
+        - base_url：API base URL
+        """
+        if not model:
+            raise ValueError("缺少 model 参数")
+
+        # 如果 model 包含 '/'，解析 provider
+        if '/' in model:
+            provider, actual_model = parse_provider_model(model)
+        else:
+            # 没有 provider 前缀，尝试根据 base_url 推断
+            actual_model = model
+            base_lower = (base_url or '').lower()
+            if 'minimaxi' in base_lower:
+                provider = 'minimax'
+            elif 'deepseek' in base_lower:
+                provider = 'deepseek'
+            elif 'siliconflow' in base_lower:
+                provider = 'siliconflow'
+            elif 'bigmodel' in base_lower:
+                provider = 'glm'
+            elif 'moonshot' in base_lower:
+                provider = 'kimi'
+            elif 'bltcy' in base_lower or 'gptbest' in base_lower:
+                provider = 'blt'
+            elif 'openai' in base_lower:
+                provider = 'openai'
+            else:
+                provider = 'openai-compatible'  # 默认
+
+        return ClientFactory._create_client(provider, actual_model, api_key, base_url)
+
+    @staticmethod
+    def _create_client(provider: str, model: str, api_key: str, base_url: str):
+        """根据 provider 创建对应的客户端"""
         if provider == 'deepseek':
             base_url = base_url or "https://api.deepseek.com"
             return DeepSeekClient(api_key=api_key or os.getenv('DEEPSEEK_API_KEY', ''), model=model, base_url=base_url)
@@ -771,7 +815,14 @@ class ClientFactory:
         if provider in ('minimax', 'minimaxi'):
             base_url = base_url or "https://api.minimaxi.com/v1"
             return MiniMaxClient(api_key=api_key or os.getenv('MINIMAX_API_KEY', ''), model=model, base_url=base_url)
-        raise ValueError(f"不支持的提供商: {provider}，请使用 'deepseek'、'siliconflow'、'blt'、'cstcloud'、'minimax' 或 'ollama'")
+        if provider in ('glm', 'zhipu'):
+            base_url = base_url or "https://open.bigmodel.cn/api/coding/paas/v4"
+            return SiliconflowClient(api_key=api_key, model=model, base_url=base_url)
+        if provider in ('kimi', 'moonshot'):
+            base_url = base_url or "https://api.moonshot.ai/v1"
+            return SiliconflowClient(api_key=api_key, model=model, base_url=base_url)
+        # 默认使用通用 LLMClient
+        return LLMClient(api_key=api_key or '', model=model, base_url=base_url or '')
 
     @staticmethod
     def from_config(_config: dict | None = None):

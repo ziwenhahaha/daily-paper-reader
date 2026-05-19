@@ -592,7 +592,11 @@ def recover_filter_results(
 
 
 def _make_filter_client(model: str, max_output_tokens: int) -> LLMClient:
-    client = ClientFactory.from_env()
+    client = ClientFactory.from_model(
+        model=model,
+        api_key=os.getenv('LLM_API_KEY') or os.getenv('MINIMAX_API_KEY'),
+        base_url=os.getenv('LLM_BASE_URL') or os.getenv('MINIMAX_BASE_URL'),
+    )
     client.kwargs.update({"temperature": 0.1, "max_tokens": max_output_tokens})
     return client
 
