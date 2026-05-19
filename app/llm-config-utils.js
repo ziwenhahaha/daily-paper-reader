@@ -219,6 +219,7 @@
       || /thinking/i.test(normalizedModel)
       || /^kimi-/i.test(normalizedModel)
       || /^minimax-/i.test(normalizedModel)
+      || /(^|\/\/)api\.minimax(?:i)?\.(?:io|com)(?:$|\/)/i.test(normalizedBaseUrl)
       || normalizedModel.toLowerCase() === 'deepseek-reasoner';
     const payload = {
       model: normalizedModel,
