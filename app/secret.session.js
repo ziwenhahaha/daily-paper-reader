@@ -1035,10 +1035,6 @@
               </button>
               <div id="secret-setup-llm-status" style="min-height:18px; font-size:12px; color:#999; margin-top:4px;"></div>
             </div>
-              <div id="secret-setup-custom-status" style="min-height:18px; font-size:12px; color:#999; margin-top:6px;">
-                将依次用已填写聊天模型发送 <code>hello world</code>，检查接口与模型是否可用。
-              </div>
-            </div>
           </div>
         </div>
 
@@ -1061,9 +1057,6 @@
       const githubInput = document.getElementById('secret-setup-github-token');
       const githubVerifyBtn = document.getElementById('secret-setup-github-verify');
       const githubStatusEl = document.getElementById('secret-setup-github-status');
-      const providerInputs = Array.from(
-        document.querySelectorAll('input[name="secret-setup-provider"]'),
-      );
       const llmApiKeyInput = document.getElementById('secret-setup-llm-api-key');
       const llmBaseUrlInput = document.getElementById('secret-setup-llm-base-url');
       const llmModel1Input = document.getElementById('secret-setup-llm-model-1');
@@ -1086,7 +1079,6 @@
         !githubInput ||
         !githubVerifyBtn ||
         !githubStatusEl ||
-        !providerInputs.length ||
         !llmApiKeyInput ||
         !llmBaseUrlInput ||
         !llmModel1Input ||

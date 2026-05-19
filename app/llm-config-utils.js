@@ -15,6 +15,12 @@
     'gemini-3-pro-preview',
   ];
   const OPENAI_COMPATIBLE_PRESETS = Object.freeze({
+    plato: Object.freeze({
+      key: 'plato',
+      label: 'BLT（柏拉图）',
+      baseUrl: 'https://api.bltcy.ai/v1',
+      models: Object.freeze(['gpt-5-chat', 'gemini-3-flash-preview-thinking-1000', 'deepseek-v3.2', 'gemini-3-pro-preview']),
+    }),
     deepseek: Object.freeze({
       key: 'deepseek',
       label: 'DeepSeek 官方',
