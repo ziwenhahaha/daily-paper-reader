@@ -6,125 +6,123 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-05-10 ~ 2026-05-19
-- 运行时间：2026-05-19 09:56:36 UTC
+- 最新运行日期：2026-04-20 ~ 2026-05-19
+- 运行时间：2026-05-19 13:58:39 UTC
 - 运行状态：成功
-- 本次总论文数：23
-- 精读区：12
+- 本次总论文数：21
+- 精读区：10
 - 速读区：11
 
 ### 今日简报（AI）
 <think>
-用户要求我作为日报编辑，输出3句以内、吸引人、简洁但具体的中文总结。
+The user asks: "日报日期：2026-04-20 ~ 2026-05-19 状态：成功 总数：21 篇 精读：10 篇 速读：11 篇 精读列表（含分数）：["《CODA: Coordination via On-Policy Diffusion for Multi-Agent Offline Reinforcement Learning》（9.0/10）", "《A Reward-Free Viewpoint on Multi-Objective Reinforcement Learning》（9.0/10）"] 速读列表（含分数）：["《Transformers Provably Implement In-Context Reinforcement Learning with Policy Improvement》（8.5/10）", "《Efficient Federated RLHF via Zeroth-Order Policy Optimization》（8.0/10）", "《Lever: Inference-Time Policy Reuse under Support Constraints》（8.0/10）"]"
 
-内容必须基于给定的推荐数据：
-- 日报日期：2026-05-10 ~ 2026-05-19
-- 状态：成功
-- 总数：23篇
-- 精读：12篇
-- 速读：11篇
+Then they ask to output 1-3 lines of text (no markdown titles or JSON) with:
 
-精读列表（含分数）：
-1. 《Natural Policy Gradient as Doubly Smoothed Policy Iteration: A Bellman-Operator Framework》（9.0/10）
-2. 《Trust Region Inverse Reinforcement Learning: Explicit Dual Ascent using Local Policy Updates》（9.0/10）
+1) A summary sentence about what was done today, suitable for a headline.
+2) A sentence giving the most worthwhile directions / conclusions.
+3) A sentence giving next step suggestions for the general reader.
 
-速读列表（含分数）：
-1. 《Macro-Action Based Multi-Agent Instruction Following through Value Cancellation》（8.5/10）
-2. 《Switching Successor Measures for Hierarchical Zero-shot Reinforcement Learning》（8.5/10）
-3. 《GAGPO: Generalized Advantage Grouped Policy Optimization》（8.5/10）
+We need to produce 3 sentences, each on its own line, no markdown or JSON. Must be Chinese. The content must be based on the given data. Must not fabricate any paper info beyond what is given.
 
-要求格式：
-1) 一句概括今天做了什么，适合标题感官。
-2) 一句给出最值得看的 1~2 个方向/结论。
-3) 一句给出下步建议（面向普通读者）。
+We have the daily report from 2026-04-20 to 2026-05-19. The total of 21 papers read, 10 thorough reads, 11 fast reads. The top rated papers:
 
-直接输出 1-3 行文本，不要 Markdown 标题，也不要 JSON。
+- CODA: Coordination via On-Policy Diffusion for Multi-Agent Offline RL (9.0)
+- A Reward-Free Viewpoint on Multi-Objective RL (9.0)
+- Transformers Provably Implement In-Context RL with Policy Improvement (8.5)
+- Efficient Federated RLHF via Zeroth-Order Policy Optimization (8.0)
+- Lever: Inference-Time Policy Reuse under Support Constraints (8.0)
 
-分析数据：
-- 本期共推荐23篇论文，其中12篇精读，11篇速读
+Thus the summary of work: reading many RL papers, focusing on multi-agent coordination, reward-free MO RL, transformer RL, federated RLHF, inference-time policy reuse.
 
+Thus the headline: maybe "本月完成21篇论文阅读，聚焦多智能体协同、奖励无关多目标RL、Transformer上下文强化学习等前沿方向" etc.
 
-- 最高分的两篇精读论文聚焦于策略优化的理论基础，分别采用双平滑和信任域方法
-- 多智能体系统也是本期重点研究方向，包括指令跟随和分层强化学习
+Second sentence: highlight top directions: multi-agent coordination via diffusion and reward-free multi-objective RL are high-scoring, also transformer RL appears promising.
 
-策略优化领域呈现多元化探索，不仅关注理论深度，还涉及多智能体协同和层次化决策。核心热点集中在自然策略梯度、逆强化学习和分层学习等前沿方向，体现出强化学习研究的创新性和系统性。
+Third sentence: suggestions: for ordinary readers, keep an eye on diffusion-based coordination methods and reward-free approaches, explore federated RLHF for efficient training, etc.
+
+Now produce the output. Must be 3 lines only, no markdown. Ensure each line is concise but contains at least some specifics.
+
+Make sure to not include bullet points or numbering. Just sentences separated by line breaks.
+
+Potential answer:
+
+"本月共完成21篇论文阅读，其中10篇深度研读，重点关注多智能体协同与奖励无关多目标强化学习。最高评分的两篇分别提出基于扩散策略的多智能体离线强化学习协同机制和无需显式奖励的多目标RL新视角，另有Transformer在情境强化学习中的可证明实现值得关注。建议读者关注扩散协同方法在多智能体场景的潜力，及奖励自由视角在复杂目标优化中的实际应用。"
+
+That's three sentences.
+
+Make sure each line is separate. Let's output that.
 </think>
 
-本周共推荐23篇论文，精读12篇，策略优化理论（双平滑自然策略梯度、信任域逆强化学习）与多智能体系统（宏动作指令跟随、分层零样本强化学习）为核心热点。策略梯度基础理论与多智能体协作学习值得优先关注，建议结合实际任务选择对应论文深入研读。
-- 详情：[/20260510-20260519/README](/20260510-20260519/README)
+本月共完成21篇论文阅读，其中10篇深度研读，重点关注多智能体协同与奖励无关多目标强化学习。最高评分的两篇分别提出基于扩散策略的多智能体离线强化学习协同机制和无需显式奖励的多目标RL新视角，另有Transformer在情境强化学习中的可证明实现
+- 详情：[/20260420-20260519/README](/20260420-20260519/README)
 
 ### 精读区论文标签
-1. [Natural Policy Gradient as Doubly Smoothed Policy Iteration: A Bellman-Operator Framework](/20260510-20260519/2605.10671v1-natural-policy-gradient-as-doubly-smoothed-policy-iteration-a-bellman-operator-framework)  
-   标签：评分：9.0/10、query:rl
-   evidence：自然策略梯度理论与Bellman算子框架
-2. [Trust Region Inverse Reinforcement Learning: Explicit Dual Ascent using Local Policy Updates](/20260510-20260519/2605.11020v1-trust-region-inverse-reinforcement-learning-explicit-dual-ascent-using-local-policy-updates)  
-   标签：评分：9.0/10、query:rl
-   evidence：信任域逆强化学习算法
-3. [Learning Weakly Communicating Average-Reward CMDPs: Strong Duality and Improved Regret](/20260510-20260519/2605.11586v1-learning-weakly-communicating-average-reward-cmdps-strong-duality-and-improved-regret)  
-   标签：评分：9.0/10、query:rl
-   evidence：平均奖励CMDP理论与原对偶强化学习算法
-4. [Adaptive TD-Lambda for Cooperative Multi-agent Reinforcement Learning](/20260510-20260519/2605.11880v1-adaptive-td-lambda-for-cooperative-multi-agent-reinforcement-learning)  
+1. [CODA: Coordination via On-Policy Diffusion for Multi-Agent Offline Reinforcement Learning](/20260420-20260519/2604.23308v1-coda-coordination-via-on-policy-diffusion-for-multi-agent-offline-reinforcement-learning)  
    标签：评分：9.0/10、query:mas
-   evidence：多智能体强化学习与自适应TD-lambda
-5. [On the Importance of Multistability for Horizon Generalization in Reinforcement Learning](/20260510-20260519/2605.12206v1-on-the-importance-of-multistability-for-horizon-generalization-in-reinforcement-learning)  
+   evidence：基于扩散协调的多智能体离线强化学习
+2. [A Reward-Free Viewpoint on Multi-Objective Reinforcement Learning](/20260420-20260519/2604.24532v1-a-reward-free-viewpoint-on-multi-objective-reinforcement-learning)  
    标签：评分：9.0/10、query:rl
-   evidence：POMDP地平线泛化的强化学习理论
-6. [Discrete Flow Matching for Offline-to-Online Reinforcement Learning](/20260510-20260519/2605.12379v1-discrete-flow-matching-for-offline-to-online-reinforcement-learning)  
+   evidence：多目标强化学习结合无奖励学习框架
+3. [Model-Based Reinforcement Learning with Double Oracle Efficiency in Policy Optimization and Offline Estimation](/20260420-20260519/2605.00393v1-model-based-reinforcement-learning-with-double-oracle-efficiency-in-policy-optimization-and-offline-estimation)  
    标签：评分：9.0/10、query:rl
-   evidence：离散流匹配用于离线到在线强化学习
-7. [DelAC: A Multi-agent Reinforcement Learning of Team-Symmetric Stochastic Games](/20260510-20260519/2605.12555v1-delac-a-multi-agent-reinforcement-learning-of-team-symmetric-stochastic-games)  
-   标签：评分：9.0/10、query:mas
-   evidence：团队对称博弈的多智能体强化学习算法
-8. [Trajectory-Level Data Augmentation for Offline Reinforcement Learning](/20260510-20260519/2605.13401v1-trajectory-level-data-augmentation-for-offline-reinforcement-learning)  
+   evidence：基于模型的可提强化学习算法
+4. [Breaking the Computational Barrier: Provably Efficient Actor-Critic for Low-Rank MDPs](/20260420-20260519/2605.01242v1-breaking-the-computational-barrier-provably-efficient-actor-critic-for-low-rank-mdps)  
    标签：评分：9.0/10、query:rl
-   evidence：离线强化学习数据增强与理论论证
-9. [Multi-Objective and Mixed-Reward Reinforcement Learning via Reward-Decorrelated Policy Optimization](/20260510-20260519/2605.13641v1-multi-objective-and-mixed-reward-reinforcement-learning-via-reward-decorrelated-policy-optimization)  
+   evidence：可证明高效的Actor-Critic强化学习算法设计
+5. [Unified Framework of Distributional Regret in Multi-Armed Bandits and Reinforcement Learning](/20260420-20260519/2605.05102v1-unified-framework-of-distributional-regret-in-multi-armed-bandits-and-reinforcement-learning)  
    标签：评分：9.0/10、query:rl
-   evidence：基于奖励解相关的多目标强化学习
-10. [ROAD: Adaptive Data Mixing for Offline-to-Online Reinforcement Learning via Bi-Level Optimization](/20260510-20260519/2605.14497v1-road-adaptive-data-mixing-for-offline-to-online-reinforcement-learning-via-bi-level-optimization)  
+   evidence：统一分布遗憾框架用于 bandit 和情景强化学习
+6. [Towards Differentially Private Reinforcement Learning with General Function Approximation](/20260420-20260519/2605.07049v1-towards-differentially-private-reinforcement-learning-with-general-function-approximation)  
    标签：评分：9.0/10、query:rl
-   evidence：离线到在线强化学习的自适应数据混合
-11. [Self-Distilled Agentic Reinforcement Learning](/20260510-20260519/2605.15155v1-self-distilled-agentic-reinforcement-learning)  
-   标签：评分：9.0/10、query:self-distillation
-   evidence：自蒸馏智能体强化学习结合RL与策略自蒸馏方法
-12. [Distributed Zeroth-Order Policy Gradient for Networked Multi-agent Reinforcement Learning from Human Feedback](/20260510-20260519/2605.15697v1-distributed-zeroth-order-policy-gradient-for-networked-multi-agent-reinforcement-learning-from-human-feedback)  
-   标签：评分：9.0/10、query:mas
-   evidence：基于人类反馈的网络化多智能体强化学习
+   evidence：差分私有强化学习理论分析
+7. [Policy Gradient Methods for Non-Markovian Reinforcement Learning](/20260420-20260519/2605.10816v1-policy-gradient-methods-for-non-markovian-reinforcement-learning)  
+   标签：评分：9.0/10、query:rl
+   evidence：非马尔可夫决策过程的策略梯度方法
+8. [Stochastic Minimum-Cost Reach-Avoid Reinforcement Learning](/20260420-20260519/2605.11975v1-stochastic-minimum-cost-reach-avoid-reinforcement-learning)  
+   标签：评分：9.0/10、query:rl
+   evidence：随机可达避让强化学习与理论认证
+9. [Multi-Objective and Mixed-Reward Reinforcement Learning via Reward-Decorrelated Policy Optimization](/20260420-20260519/2605.13641v1-multi-objective-and-mixed-reward-reinforcement-learning-via-reward-decorrelated-policy-optimization)  
+   标签：评分：9.0/10、query:rl
+   evidence：多目标强化学习奖励处理算法
+10. [Fast Rates for Inverse Reinforcement Learning](/20260420-20260519/2605.14599v1-fast-rates-for-inverse-reinforcement-learning)  
+   标签：评分：9.0/10、query:rl
+   evidence：逆强化学习理论分析
 
 ### 速读区论文标签
-1. [Macro-Action Based Multi-Agent Instruction Following through Value Cancellation](/20260510-20260519/2605.12655v1-macro-action-based-multi-agent-instruction-following-through-value-cancellation)  
-   标签：评分：8.5/10、query:mas
-   evidence：多智能体强化学习宏动作与价值修正
-2. [Switching Successor Measures for Hierarchical Zero-shot Reinforcement Learning](/20260510-20260519/2605.13207v1-switching-successor-measures-for-hierarchical-zero-shot-reinforcement-learning)  
+1. [Transformers Provably Implement In-Context Reinforcement Learning with Policy Improvement](/20260420-20260519/2605.05755v1-transformers-provably-implement-in-context-reinforcement-learning-with-policy-improvement)  
    标签：评分：8.5/10、query:rl
-   evidence：层级强化学习使用切换后继度量实现零样本泛化
-3. [GAGPO: Generalized Advantage Grouped Policy Optimization](/20260510-20260519/2605.13217v1-gagpo-generalized-advantage-grouped-policy-optimization)  
-   标签：评分：8.5/10、query:rl
-   evidence：强化学习策略优化信用分配
-4. [Submodular Multi-Agent Policy Learning for Online Distributed Task Allocation in Open Multi-Agent Systems](/20260510-20260519/2605.13269v1-submodular-multi-agent-policy-learning-for-online-distributed-task-allocation-in-open-multi-agent-systems)  
-   标签：评分：8.5/10、query:mas
-   evidence：多智能体强化学习与子模态效用用于分布式任务分配
-5. [RankQ: Offline-to-Online Reinforcement Learning via Self-Supervised Action Ranking](/20260510-20260519/2605.11151v1-rankq-offline-to-online-reinforcement-learning-via-self-supervised-action-ranking)  
+   evidence：transformer实现上下文强化学习，含策略改进与收敛保证
+2. [Efficient Federated RLHF via Zeroth-Order Policy Optimization](/20260420-20260519/2604.17747v1-efficient-federated-rlhf-via-zeroth-order-policy-optimization)  
+   标签：评分：8.0/10、query:rl
+   evidence：基于零阶策略优化的联邦强化学习
+3. [Lever: Inference-Time Policy Reuse under Support Constraints](/20260420-20260519/2604.20174v1-lever-inference-time-policy-reuse-under-support-constraints)  
+   标签：评分：8.0/10、query:rl
+   evidence：推理时强化学习策略复用框架
+4. [Task-specific Subnetwork Discovery in Reinforcement Learning for Autonomous Underwater Navigation](/20260420-20260519/2604.21640v1-task-specific-subnetwork-discovery-in-reinforcement-learning-for-autonomous-underwater-navigation)  
+   标签：评分：8.0/10、query:rl
+   evidence：强化学习用于自主水下航行器导航
+5. [Agent-Centric Visual Reinforcement Learning under Dynamic Perturbations](/20260420-20260519/2604.24661v2-agent-centric-visual-reinforcement-learning-under-dynamic-perturbations)  
    标签：评分：7.5/10、query:rl
-   evidence：RankQ引入排序损失用于离线到在线强化学习的 Critic 学习
-6. [dFlowGRPO: Rate-Aware Policy Optimization for Discrete Flow Models](/20260510-20260519/2605.09291v1-dflowgrpo-rate-aware-policy-optimization-for-discrete-flow-models)  
+   evidence：动态扰动下的视觉强化学习，智能体中心观测设计
+6. [Efficient Rationale-based Retrieval: On-policy Distillation from Generative Rerankers based on JEPA](/20260420-20260519/2604.23336v1-efficient-rationale-based-retrieval-on-policy-distillation-from-generative-rerankers-based-on-jepa)  
+   标签：评分：7.0/10、query:self-distillation
+   evidence：教师模型向学生模型进行在线策略蒸馏
+7. [Value-Decomposed Reinforcement Learning Framework for Taxiway Routing with Hierarchical Conflict-Aware Observations](/20260420-20260519/2605.08754v2-value-decomposed-reinforcement-learning-framework-for-taxiway-routing-with-hierarchical-conflict-aware-observations)  
    标签：评分：7.0/10、query:rl
-   evidence：离散流模型强化学习框架
-7. [HiRL: Hierarchical Reinforcement Learning for Coordinated Resource Management in Heterogeneous Edge Computing](/20260510-20260519/2605.10443v1-hirl-hierarchical-reinforcement-learning-for-coordinated-resource-management-in-heterogeneous-edge-computing)  
-   标签：评分：7.0/10、query:rl
-   evidence：用于边缘资源管理的分层强化学习
-8. [Uni-Synergy: Bridging Understanding and Generation for Personalized Reasoning via Co-operative Reinforcement Learning](/20260510-20260519/2605.10445v1-uni-synergy-bridging-understanding-and-generation-for-personalized-reasoning-via-co-operative-reinforcement-learning)  
-   标签：评分：7.0/10、query:rl
-   evidence：提出端到端强化学习框架用于联合理解和生成
-9. [Distributionally Robust Multi-Task Reinforcement Learning via Adaptive Task Sampling](/20260510-20260519/2605.14350v1-distributionally-robust-multi-task-reinforcement-learning-via-adaptive-task-sampling)  
+   evidence：基于价值分解的多飞机滑行道路由强化学习
+8. [A Single Deep Preference-Conditioned Policy for Learning Pareto Coverage Sets](/20260420-20260519/2605.08946v1-a-single-deep-preference-conditioned-policy-for-learning-pareto-coverage-sets)  
+   标签：评分：7.0/10、query:mas
+   evidence：偏好条件多目标强化学习，用于在马尔可夫决策过程中学习帕累托覆盖集
+9. [Hierarchical Support Vector State Partitioning for Distilling Black Box Reinforcement Learning Policies](/20260420-20260519/2605.04254v1-hierarchical-support-vector-state-partitioning-for-distilling-black-box-reinforcement-learning-policies)  
    标签：评分：6.0/10、query:rl
-   evidence：通过任务采样的分布鲁棒多任务强化学习
-10. [Egocentric belief attribution enables the modeling of higher level Theory of Mind during group interactions](/20260510-20260519/biorxiv-10-64898-2026-03-27-714726-v2-egocentric-belief-attribution-enables-the-modeling-of-higher-level-theory-of-mind-during-group-interactions)  
-   标签：评分：6.0/10、query:mas
-   evidence：群组互动中的多智能体信念建模
-11. [The Computational and Neural Basis of Zero-Shot Control in Dynamic Pursuit](/20260510-20260519/biorxiv-10-64898-2026-03-30-715455-v2-the-computational-and-neural-basis-of-zero-shot-control-in-dynamic-pursuit)  
+   evidence：基于SVM可解释子策略的强化学习策略蒸馏
+10. [REAP: Reinforcement-Learning End-to-End Autonomous Parking with Gaussian Splatting Simulator for Real2Sim2Real Transfer](/20260420-20260519/2605.08713v1-reap-reinforcement-learning-end-to-end-autonomous-parking-with-gaussian-splatting-simulator-for-real2sim2real-transfer)  
    标签：评分：6.0/10、query:rl
-   evidence：基于认知构念的零样本控制
+   evidence：强化学习端到端自主泊车应对复杂场景
+11. [Functional alignment of protein language models via reinforcement learning](/20260420-20260519/biorxiv-10-1101-2025-05-02-651993-v2-functional-alignment-of-protein-language-models-via-reinforcement-learning)  
+   标签：评分：6.0/10、query:rl
+   evidence：强化学习用于蛋白质模型对齐
 
 
 <div class="dpr-home-promo-card">
