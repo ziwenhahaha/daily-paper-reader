@@ -1,0 +1,1725 @@
+Title: TRACE: Distilling Where It Matters via Token-Routed Self On-Policy Alignment
+
+URL Source: https://arxiv.org/pdf/2605.10194v1
+
+Published Time: Tue, 12 May 2026 02:22:38 GMT
+
+Number of Pages: 27
+
+Markdown Content:
+# TRACE: Distilling Where It Matters via Token-Routed Self On-Policy Alignment 
+
+Jiaxuan Wang 1,2,3 Xuan Ouyang 4 Zhiyu Chen 5 Yulan Hu 3∗
+
+Zheng Pan 3 Xin Li 3 Lan-Zhe Guo 1,2∗
+
+> 1
+
+State Key Laboratory of Novel Software Technology, Nanjing University 
+
+> 2
+
+School of Intelligence Science and Technology, Nanjing University 
+
+> 3
+
+AMAP, Alibaba Group 4University of Wisconsin–Madison 5Tsinghua University jiaxuanwang@smail.nju.edu.cn, guolz@nju.edu.cn 
+
+Abstract 
+
+On-policy self-distillation (self-OPD) addresses the sparse-reward bottleneck of reinforcement learning with verifiable rewards (RLVR) by densifying the train-ing signal: a policy teaches itself under privileged context, producing token-level guidance at every position. However, we find that this guidance becomes a li-ability when its support spans the full response: all-token KL spends gradients on mostly redundant positions and amplifies privileged-information leakage, pro-ducing entropy rise, shortened reasoning, and out-of-distribution degradation in long-horizon math training. This points to a granularity mismatch: the right unit of distillation is not the whole response, but the small set of decisive reasoning tokens where the student needs correction. We propose Token-Routed Alignment for Critical r Easoning (TRACE), a token-routed self-OPD method that uses a privileged annotator to mark critical spans in each rollout while giving the teacher only a coarse diagnostic type, not the span text. TRACE applies forward KL (FKL) to key spans of correct rollouts, optionally applies reverse KL (RKL) to localized error spans, leaves all other tokens to GRPO, and anneals the KL chan-nel away after a short warm-up. Our analysis explains this routing through two complementary effects: FKL supplies non-vanishing lift to teacher-supported key tokens that the student under-allocates, while span masking and KL decay keep cumulative privileged-gradient exposure finite over the training horizon. On four held-out math benchmarks plus GPQA-Diamond, TRACE improves over GRPO by 2.76 percentage points on average and is the only trained method that preserves the Qwen3-8B base OOD score on GPQA-Diamond, where GRPO and all-token self-OPD baselines degrade. Gains persist under online self-annotation, where the actively-training student policy itself is reused as the annotator with no external supervisor ( +1 .90 points, ∼69% of the strong-API gain), reducing the concern that TRACE merely imports external annotator capability. Across scales, the best action is base-dependent: on a weaker Qwen3-1.7B base it inverts from FKL on key spans to RKL on error spans, and TRACE is the only trained method to exceed the base on the 5-benchmark average. 
+
+1 Introduction 
+
+Reinforcement learning with verifiable rewards (RLVR), instantiated by methods such as GRPO [Shao et al., 2024], has become a central paradigm for training large reasoning models [Guo et al., 2025, Olmo et al., 2025]. Yet RLVR assigns only a scalar reward to an entire trajectory, leaving step-                                                                                 
+
+> ∗Corresponding authors. Preprint.
+> arXiv:2605.10194v1 [cs.AI] 11 May 2026 050 100 150 200 250 300 350 400
+> Training step
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> Actor entropy (nats)
+> stable entropy band
+> entropy rises
+> >4 × before
+> accuracy collapse
+> (a) All-token self-OPD destabilizes reasoning
+> GRPO (stable)
+> TRACE (stable, ours)
+> SDPO
+> SRPO
+> Sampled rollout (correct, R=1 , excerpt): 13 of 51 KL-active ( 25% , capped at 25% )
+> Test small adirectly. a=1: 2^b+3^c=5 (1,1,1). a=2, c=1: (2,5,1). a=2, c=3:
+> (2,3,3). Now bound a3by modular arithmetic. Case c2and a2: mod 92^b 8,
+> b3(mod 6). For a3: mod 81+0+3^c {2,4} 0. Case c=1: contradicts b=2.
+> No further a3solutions. Final answer: (1,1,1), (2,5,1), (2,3,3).
+> Token-class routing teacher logits used only behind the span mask
+> key correct key span FKL DEFAULT
+> lift teacher-supported reasoning tokens
+> error incorrect error span RKL (optional, A2)
+> suppress confident local errors
+> non-span all remaining tokens GRPO
+> no teacher KL; verifier-grounded RL
+> Finite privileged-gradient exposure
+> TRACE: (k
+> 2
+> k)vs. all-token persistent KL: (K)
+> small coverage and decayed KL keep leakage finite; most tokens remain GRPO-driven
+> (b) TRACE routes teacher KL only to critical spans
+
+Takeaway 1: 
+
+All-token self-OPD destabilizes the actor well before accuracy collapses (a); TRACE routes the teacher signal only to annotator-marked critical spans and decays it away (b), preserving GRPO’s stability while delivering targeted distillation. Figure 1: Why TRACE. (a) Per-token actor entropy across 400 training steps (EMA α = 0 .85 ). SDPO and SRPO exceed 4× the GRPO baseline before validation accuracy collapses (App. D.6); TRACE tracks GRPO inside the stable band. (b) TRACE routing: span mask gates KL with coverage cap α = 0 .25 ; FKL on Ky (default), RKL on Ey (optional), GRPO on Ny . λk → 0 by step 40; cumulative privileged-gradient exposure O(α P
+
+k λ2
+
+k) (Prop. 3). and token-level credit assignment to the optimizer. On-policy distillation (OPD) [Hinton et al., 2015, Gu et al., 2024, Agarwal et al., 2023, Lu and Thinking Machines Lab, 2025] complements this sparse signal by querying teacher logits along the student’s own rollouts, often matching or improving RLVR with fewer sampled generations, but at the cost of a separate vocabulary-compatible teacher. On-policy self-distillation (self-OPD) [Hübotter et al., 2026, Zhao et al., 2026] removes this separate-teacher requirement by letting a policy snapshot teach the student under privileged context, such as verified traces, sibling solutions, or environment feedback; SDPO, for example, matches GRPO with 4–6× fewer generations [Hübotter et al., 2026]. The same all-token guidance that makes self-OPD sample-efficient becomes brittle over longer horizons. Across more than a dozen reproduced SDPO/SRPO configurations on Qwen3-8B math RL (App. D.5), we observe a consistent three-symptom collapse: responses shorten, per-token actor entropy rises above 4× the GRPO baseline (Fig. 1a, App. D.6), and validation accuracy drops 18–19 percentage points (pp) from an early peak. In SRPO, the EMA teacher tracks and amplifies the actor’s entropy, suggesting a feedback loop rather than a failure of the underlying GRPO optimizer (App. D.6). GRPO with clip-higher [Yu et al., 2026], under the same data and optimizer stack, remains stable. The failure is therefore specific to the all-token distillation pull, pointing toward the 
+
+unit of supervision rather than the verifier or optimizer: the response is the wrong granularity for privileged KL. 
+
+The failure is one of granularity, not of dense supervision per se. On-policy distillation analyses show ∼97% of probability mass concentrates on shared student-teacher tokens [Li et al., 2026b], so most KL gradient lands on tokens the student already produces correctly. Token-importance studies further show that retaining only a fraction of tokens preserves OPD performance [Lin et al., 2024, Xu et al., 2026]. The few tokens distillation does affect tend to include high-divergence epistemic 
+
+markers [Kirk et al., 2024, Kim et al., 2026] — exactly the uncertainty channel supporting robust reasoning. Yang et al. [2026] formalize a complementary perspective: the gradient deviation induced by privileged information has zero mean but variance proportional to a conditional mutual information, accumulating through SGD into spurious x → c correlations. Operationally, the privileged channel can behave like a training-only hint: if the hint is distilled across the whole response, the student may absorb correlations that are absent at inference. Together, these facts suggest a uniform distillation tax : all-token KL spends teacher gradients exactly where they are mostly redundant and most likely to leak. The right unit of distillation is the small set of reasoning spans where the student’s next-token distribution needs correction. 2TRACE routes teacher signal only to those spans. A privileged annotator marks localized key/error spans in each rollout and emits a coarse type label; the teacher sees the type label but not the span text, while the span mask gates the loss. Unlike SDPO [Hübotter et al., 2026] and SRPO [Li et al., 2026a], which apply KL across every rollout position, TRACE caps KL support at α = 0 .25 and decays the channel to zero within 40 steps [Chu et al., 2025]. TRACE applies forward KL (FKL) to key spans of correct rollouts, optional reverse KL (RKL) to localized error spans, and no KL to non-spans, which continue under GRPO. FKL lifts teacher-supported tokens that the student under-allocates; RKL suppresses student-confident tokens the teacher disfavors. These are not interchangeable: they call for different token classes. The annotator need not be an external supervisor: online self-annotation by the actively-training student recovers ∼69% of the strong-API gain (§5.3, annotator-quality ablation). Two complementary mechanisms motivate this design. (i) Lift : in the strong-base regime where our lift diagnostic indicates local under-allocation is a dominant remaining error mode, FKL on 
+
+Ky delivers logit pressure that does not vanish when the student assigns little mass — RKL is student-mass-scaled and can vanish with the very tokens we most want to lift (Cor. 2). (ii) Limit leakage : span masking and short-lived KL decay together bound the cumulative privileged-gradient exposure (Prop. 3), avoiding the long-horizon tax of persistent all-token KL. The default FKL-on-Ky
+
+corner therefore separates benefit from risk. Our contributions are as follows: • Diagnosis. We identify a uniform distillation tax : all-token self-OPD suffers from a granularity mismatch that connects rising entropy, epistemic suppression [Kim et al., 2026], and privileged-gradient leakage [Yang et al., 2026]. • Method and theory. We introduce TRACE, which routes {FKL , RKL , ∅} [Wen et al., 2023, Ko et al., 2024] by critical span class and decays the privileged channel; our analysis explains the default FKL-on-key-spans corner via non-vanishing key-token lift and finite cumulative exposure. • Empirical evidence. TRACE improves the Qwen3-8B 5-benchmark average by 2.76 pp, preserves the GPQA-Diamond OOD score, retains a 1.90 pp gain under online self-annotation, and shows the predicted FKL →RKL corner shift on the weaker Qwen3-1.7B base (matching Cor. 2). 
+
+2 Related Work 
+
+Knowledge distillation and on-policy variants [Hinton et al., 2015, Gu et al., 2024, Agarwal et al., 2023] densify sequence-level training with teacher logits, either from external teachers or privileged-context self-teachers. Self-OPD methods [Hübotter et al., 2026, Zhao et al., 2026] remove the separate-teacher requirement, but long-horizon collapse has been attributed to epistemic suppression [Kim et al., 2026] and privileged-information leakage [Yang et al., 2026], with sample-level routing [Li et al., 2026a] and advantage reweighting [Yang et al., 2026] as concurrent mitigations. A separate line on token importance and credit assignment [Li et al., 2026b, Lin et al., 2024, Xu et al., 2026, Kazemnejad et al., 2025] shows that useful supervision is concentrated on a small subset of decisive tokens, motivating sparse guidance. TRACE shares the long-horizon-collapse diagnosis but operates at token level via explicit span localization, treats divergence direction as a per-token-class action (§3), and identifies a teacher-coverage-gap regime where advantage reweighting can damp correct non-canonical gradients (Prop. 14). Standard RLVR baselines [Shao et al., 2024, Yu et al., 2026, Olmo et al., 2025] are the post-training framework we build on; the extended citation map and a position-by-axis paradigm comparison (Tab. 6) are in App. D.1. 
+
+3 TRACE: Corner-Routed Span Distillation 
+
+Overview. TRACE keeps three roles separate: the student πθ (·| x), the privileged-context teacher 
+
+πT (·| x, c ) := πθ (·| x, c ) (same parameters θ, synced from the student, different prompt; App. C.3), and the span annotator πA, which produces sparse Boolean masks plus coarse type labels but emits no logits and no gradients (full notation conventions in App. A). For each token-class TRACE selects a corner action from {FKL , RKL , ∅} , and the KL term is annealed to zero after a short warm-up so long-horizon optimization is GRPO-driven. Empirically, the dominant corner in our strong-base math regime (Tab. 2, Fig. 3) is (Ey , Ky , Ny ) = ( ∅, FKL , ∅), so the default configuration is FKL on key spans of correct rollouts, no-KL elsewhere ; on the weaker Qwen3-1.7B base the dominant corner inverts to (RKL , ∅, ∅) (Tab. 2, lower block), motivating the routed-action framing rather than a single fixed recipe. Reverse KL on error spans is therefore retained as a routed action throughout: an 3Student Policy 𝛑 𝐒 samples candidate reasoning traces                     
+
+> 𝐏𝐫𝐨𝐛𝐥𝐞𝐦 𝒙 𝐒𝐨𝐥𝐯𝐞 |𝟐𝐱 +𝟏 |=𝟕 𝐟𝐨𝐫 𝐫𝐞𝐚𝐥 𝐱 ,𝐚𝐧𝐝 𝐫𝐞𝐩𝐨𝐫𝐭 𝐭𝐡𝐞 𝐬𝐮𝐦 𝐨𝐟 𝐚𝐥𝐥 𝐬𝐨𝐥𝐮𝐭𝐢𝐨𝐧𝐬 .
+> Student
+
+𝜋 !                                                      
+
+> |𝟐𝒙 +𝟏 |=𝟕 ;case 𝟐𝒙 +𝟏 =
+> 𝟕 case 𝟐𝒙 +𝟏 =−𝟕
+> |𝟐𝒙 +𝟏 |=𝟕 ;let 𝟐𝒙 +𝟏 =
+> 𝟕 ⇒𝒙 =3
+> Reward = 1
+> Correct rollout 𝓣 !: explores both absolute -value.
+> Incorrect rollout 𝓣 ": misses the second branch.
+> ⇒𝒙 =
+> −4
+> ;
+> case 𝟐𝒙 +𝟏 =𝟕
+> sum
+> =3
+> Annotator 𝜋 !
+> Annotator 𝛑 𝐀 extracts critical spans and outputs diagnostic type labels
+> Teacher 𝛑 𝐓 receives problem 𝐱 and the diagnostic label
+> Problem 𝑥
+
++   
+
+> Teacher 𝛑 𝐓
+> Problem 𝑥
+
++                                                                  
+
+> Type Label: case_split
+> Type Label: missed_case
+> Teacher logits 𝐙 𝐓
+> Corner -routed span KL + GRPO update
+> |𝟐𝒙 +𝟏 |=𝟕 ;case 𝟐𝒙 +𝟏 =𝟕 case 𝟐𝒙 +𝟏 =−𝟕 ⇒
+> FKL :KL 𝜋 #|𝜋 $
+> |𝟐𝒙 +𝟏 |=𝟕 ;let 𝟐𝒙 +𝟏 =𝟕 ⇒𝒙 =3;sum
+> RKL :KL 𝜋 $|𝜋 #GRPO Only
+> ℒ=ℒ$%&'
+> 𝒩 𝓎 +𝜌 )ℒ$%&'
+> 𝒮 𝓎 +𝜆 )𝜇 +ℒ%,-
+> ℰ𝓎 +𝜇 /ℒ0,-
+> 𝒦 𝓎
+> default: 𝜇 +=0,𝜇 /=1
+> Verifier
+> …
+> Samples
+> Problem 𝑥
+
++  
+
+> Problem 𝑥
+
++                 
+
+> Correct rollout 𝒯 !
+> Incorrect rollout 𝒯 "
+> Type Label: case_split
+> Key Span: case 𝟐𝒙 +𝟏 =
+> let 𝟐𝒙 +𝟏 =Error Span:
+> Type Label: missed_case
+> Reward = 0
+> : Key Span
+> : Non -Span
+> : Error Span 0.0
+> 0.5
+> 010 40
+> 𝜆 #schedule
+> KL weight
+> Warm -up
+> decay Pure GRPO
+> 12
+> 3
+> 4
+
+Figure 2: TRACE pipeline: (1) student samples rollout ˆy and verifier returns R; (2) annotator πA
+
+produces both a span mask and a coarse type label; (3) teacher receives the type label as a private diagnostic prefix and computes logits causally on ˆy<t ; (4) routed KL action on each span class — the default is FKL on Ky with no-KL on Ey and Ny — combined with GRPO on Ny and the KL weight decaying to zero after warm-up. optional branch under the strong-base default and the dominant corner under weaker bases, matching the FKL →RKL shift predicted by Cor. 2 in §4. 
+
+Why discrete corners and not interior mixing? GKD-style methods treat the FKL/RKL coefficient 
+
+β ∈ [0 , 1] as a globally tuned hyperparameter. Under TRACE’s per-token-class routing, Prop. 17 (App. B.9) shows that interior β is dominated by endpoints under endpoint-alignment and density-floor assumptions: mixing FKL and RKL on the same token class averages two incompatible local behaviors. We therefore extend the choice space with ∅ (no-KL) for non-spans and treat divergence direction as a discrete per-token-class action throughout. Fig. 2 illustrates the resulting four-stage pipeline; Eq. (1) (§3) gives the per-step routed loss and Eq. (2) (§3) the KL decay schedule. 
+
+Span annotation via a privileged channel. For each rollout ˆy with verifier outcome R(x, ˆy) ∈{0, 1}, the response is split into numbered segments and the annotator πA (implementation in App. C.3) returns segment indices with a coarse type label — error spans on R=0 rollouts, key spans 
+
+on R=1 rollouts. Annotated segments are projected to a binary token mask m ∈ { 0, 1}|ˆy| and capped at |S y | ≤ α|ˆy| with α = 0 .25 . Full JSON schema, segment-to-token alignment, and the four prompt templates (annotator × teacher for correct/wrong rollouts) are in App. C.3. 
+
+Rollout-specific diagnostic prefix without content leakage. A defining design choice: the privi-leged context c given to the teacher is rollout-specific in type but not in content . The teacher prompt is the original problem x plus a private diagnostic prefix containing only the annotator’s coarse type description (e.g., missing_case_split , case_split_on_modular_assumption ) with explicit instructions not to reference the prefix. The teacher does not receive the completed rollout, marked span locations, marked span text, or any full-response diagnostic content as privileged input. For teacher-forced KL, it is evaluated on the same causal prefix ˆy<t as the student, plus the coarse type label in c; span locations are used only as a loss mask. This factorization distinguishes TRACE from content-conditioned self-OPD: OPSD/RLSD condition on verified or reference traces [Zhao et al., 2026, Yang et al., 2026], while SDPO injects a correct sibling rollout [Hübotter et al., 2026]. TRACE gives the teacher only a coarse type label; span locations are used solely as loss masks. 4Per-step loss. At step k, the per-rollout loss combines GRPO on non-span tokens, GRPO smoothly reintroduced on span tokens during decay, and a sequence-normalized routed KL on each span class: 
+
+L(k)(ˆ y; θ) = LNy 
+
+> GRPO
+
++ ρk LSy
+
+> GRPO
+
++ λk
+
+|ˆy|
+
+> |ˆy|
+
+X
+
+> t=1
+
+h
+
+μE ⊮{t ∈ E y } KL( πS ∥ sg πT )t + μK ⊮{t ∈ K y } KL(sg πT ∥ πS )t
+
+i
+
+,
+
+(1) where μE , μ K ∈ { 0, 1} select the active routed actions, λk is the KL weight schedule (§3), ρk =1 − λk/w 0 ∈ [0 , 1] smoothly returns span tokens to GRPO as λk → 0, and the per-position KL( ·)t
+
+is the standard token-level KL evaluated on the same causal prefix ˆy<t . The default TRACE configuration is (μE , μ K ) = (0 , 1) : FKL on Ky only. Per-vocabulary KL is pointwise-clipped at τ = 0 .05 before summation [Zhao et al., 2026]; the implementation accumulates each branch span-mean and applies an explicit |S y |/|ˆy| multiplier so Eq. (1) matches the optimizer step (App. C.1). The asymmetric local action of FKL vs RKL is what motivates this routing: FKL pressure scales with the student–teacher gap regardless of student mass, lifting under-allocated key tokens, while RKL pressure is student-mass-scaled and is sharper on confident-but-wrong tokens but more sensitive to annotation noise — formalized in Lemma 1 and Cor. 2 (§4). 
+
+Decay-to-GRPO and symmetric thinking. The KL coefficient is held at w0 during a short warm-up, anneals linearly to zero, and stays at zero afterwards: 
+
+λk =
+
+
+
+w0, k < t start ,w0
+
+
+
+1 − k − tstart 
+
+Tdecay 
+
+
+
+, tstart ≤ k ≤ tstart + Tdecay ,
+
+0, k > t start + Tdecay ,
+
+(2) with w0 = 0 .5, tstart = 10 , Tdecay = 30 . After step tstart + Tdecay the loss reduces to pure GRPO, the teacher forward pass is skipped, and the privileged channel is closed — the finite-decay schedule is what makes the cumulative privileged-gradient exposure bound (Prop. 3) finite. The teacher is periodically synced every N = 10 steps during the KL-active phase [Hübotter et al., 2026, Yang et al., 2026], avoiding the EMA feedback loop of Kim et al. [2026]. Thinking is symmetric (both student and teacher in Think mode), so the student’s rollout distribution and the teacher’s supervision live in the same surface space; the asymmetric (student NoThink, teacher Think) configuration of Hübotter et al. [2026], Zhao et al. [2026] is reported as a negative ablation in App. D.7. 
+
+4 Theoretical Analysis 
+
+We retain three load-bearing results: a softmax gradient identity (Lemma 1, Cor. 2), a cumulative privileged-gradient exposure bound (Prop. 3), and a conditional key-span signal lower bound (Prop. 4); supporting derivations are deferred to App. B. 
+
+Setup. Let πS (· | x, ˆy<t ) := πθ (· | x, ˆy<t ) and πT (· | x, c, ˆy<t ) := πθ (· | x, c, ˆy<t ). Denote forward / reverse KL as KL F (p, q ) := KL( p∥q), KL R(p, q ) := KL( q∥p). Spans Ey ⊔ K y ⊔ N y
+
+partition rollout positions with |E y ∪ K y | ≤ α|ˆy|, α = 0 .25 . Span masks, teacher logits, and verifier advantages are stop-gradient minibatch surrogates (matching GKD [Agarwal et al., 2023]). We use a standard score-operator bound : for all zero-sum a ∈ R|V| (P 
+
+> v
+
+av = 0 ), 
+
+X
+
+> v
+
+av ∇θ log πθ (v | x, ˆy<t ) 2
+
+≤ C2
+
+> s
+
+X
+
+> v
+
+a2 
+
+> v
+
+, (3) motivated in practice by gradient clipping, normalization, and bounded training trajectories. 
+
+Mechanism: regime-dependent pointwise asymmetry. Lemma 1 (Softmax gradient identities) . With r(v) := log[ πθ (v)/π T (v)] and ¯r := Eπθ [r],
+
+∂KL R(πT , π θ )
+
+∂ℓ v
+
+= πθ (v) r(v) − ¯r, ∂KL F (πT , π θ )
+
+∂ℓ v
+
+= πθ (v) − πT (v). (4) 5Corollary 2 (Asymmetric pointwise pressure) . Fix a token v with q := πT (v | c), p := πθ (v),
+
+r(v) := log( p/q ), and ¯r := Eπθ [r]. Assuming |¯r| is bounded (ensured in practice by top-K
+
+truncation and probability flooring), Eq. (4) yields a regime-dependent asymmetry: 
+
+• Under-allocated regime (p ≪ q): FKL gives a logit lift of magnitude Θ( q − p) = Θ( q), mass-independent in p, vs. an RKL lift of Θ( p |r(v) − ¯r|) = Θ( p log( q/p )) , vanishing as p → 0. FKL is the dominant tool to raise teacher-supported tokens that the student under-allocates. 
+
+• Confident-wrong regime (q ≪ p, v in the student-supported mode): RKL gives a logit down-pressure of magnitude Θ( p |r(v) − ¯r|), scaling with both student over-confidence ( p) and the teacher-disagreement gap ( log( p/q )), vs. an FKL down-pressure of Θ( p−q) = Θ( p), unmodulated by the gap. RKL is the dominant tool to suppress student-confident tokens that the teacher disfavors. Both directions follow directly from Lemma 1 by substituting the regime-defining inequality. 
+
+This bidirectional asymmetry explains why the dominant corner shifts with base capability: in the strong-base regime where our lift proxy indicates local under-allocation is a salient remaining error mode (§5.1), FKL on Ky delivers non-vanishing logit lift; in weaker-base regimes where local over-confidence is more frequent, RKL on Ey targets the over-confident mode with strength scaled by the over-confidence itself. 
+
+Risk control: span masking and decay keep exposure finite. Yang et al. [2026] show that, under all-token self-OPD, the per-sample gradient decomposes into a benign component plus a privileged-information-specific deviation δt(θ; c) with Ec[δt] = 0 and second moment proportional to the privileged variance Vt := P 
+
+> v
+
+Var c[πT (v|c)] (Eq. 9, App.). For TRACE’s default action (μK = 1 , μE = 0 ) the routed gradient is exactly the FKL gradient, whose privileged deviation 
+
+δt = − P 
+
+> v
+
+(πT (v|c) − ¯πT (v)) ∇θ log πS (v) is bounded by the score-operator constant. 
+
+Proposition 3 (Cumulative exposure bound) . Let mk,t ∈ { 0, 1} be the span mask at step k, position 
+
+t. Under the score-operator bound, 
+
+EK := 
+
+> K
+
+X
+
+> k=1
+
+λ2 
+
+> k
+
+· E
+
+"
+
+|ˆyk|−1X
+
+> t
+
+mk,t ∥δt(θk; c)∥2
+
+#
+
+≤ C2
+
+> sK
+
+X
+
+> k=1
+
+λ2 
+
+> k
+
+· E
+
+"
+
+|ˆyk|−1X
+
+> t
+
+mk,t Vk,t 
+
+#
+
+. (5) This bound is the no-harm side of TRACE: coverage controls bandwidth and decay controls duration. If the span mask covers at most α tokens per rollout (TRACE enforces α = 0 .25 ) and the masked privileged variance is uniformly bounded by ¯V , then EK ≤ C2 
+
+> s
+
+α ¯V P 
+
+> k
+
+λ2
+
+> k
+
+. Under the finite-decay schedule (§3), P 
+
+> k
+
+λ2 
+
+> k
+
+≤ Λ2 regardless of training horizon K, so EK = O(αΛ2) stays finite even as 
+
+K → ∞ . We treat this as a controlled risk model: it formalizes that TRACE does not exhibit the unbounded O(K) growth a persistent all-token KL baseline would under matched assumptions, with the caveat that empirical baselines combining clipping, decay, or routing modify this scaling. 
+
+Conditional positive signal on selected key spans. The exposure bound only says TRACE does not hurt long-horizon training. To explain why it also helps , we need a positive signal on the spans the annotator selects. Restricting to TRACE’s default action ( μK = 1 , μE = 0 ): 
+
+Proposition 4 (Key-span signal lower bound, default action) . Suppose the annotator achieves precision qK on key spans (fraction of selected tokens that are true critical), with false-positive misalignment bounded by BK ≥ 0. Assume an oracle alignment margin γK > 0: on a true key position, ⟨gFKL (t), ˜g(t)⟩ ≥ γK . Let pK := E[|K y |/|ˆy|]. Then 
+
+E⟨gsel  
+
+> k
+
+, ˜gk⟩ ≥ λk pK
+
+ qK γK − (1 − qK )BK
+
+,
+
+which is positive whenever annotator precision exceeds q∗ 
+
+> K
+
+:= BK /(γK + BK ).
+
+The error-span / RKL extension and the joint (μE , μ K ) = (1 , 1) corner are in App. B.7. 
+
+Risk-penalized utility: why the default is FKL-on-K. Combining Prop. 4 with Prop. 3, and writing Λ1 := P 
+
+> k
+
+λk, Λ2 := P 
+
+> k
+
+λ2
+
+> k
+
+, define the risk-penalized utility of the key-span branch over the KL-active window as 
+
+UK := Λ 1 pK
+
+ qK γK − (1 − qK )BK
+
+| {z }
+
+> alignment signal
+
+− κ · Λ2 C2 
+
+> s
+
+pK ¯VK
+
+| {z }
+
+> leakage exposure
+
+, (6) 6with risk coefficient κ > 0 weighting leakage against alignment, and ¯VK the masked privileged variance on Ky . This explains the default (∅, FKL , ∅): on Ky the alignment signal is positive once annotator precision exceeds q∗ 
+
+> K
+
+and Cor. 2 prevents it from vanishing under under-allocation; on Ny
+
+no per-class mechanism guarantees positive alignment so any KL action pays only exposure and ∅
+
+dominates; App. B.9 shows that under endpoint-alignment and density-floor assumptions no interior mixing β ∈ (0 , 1) dominates this corner. Mask coverage α and finite decay Λ2 jointly bound the leakage term, while Λ1 remains available for alignment. Table 1: ∆lift on teacher-supported 
+
+Ky tokens; same held-out token set across methods (post-update).               
+
+> Method ∆lift vs GRPO TRACE-FKL +0 .145 +168%
+> TRACE-RKL +0 .078 +44%
+> RLSD +0 .068 +26%
+> GRPO +0 .054 —SRPO +0 .027 −50%
+> SDPO +0 .019 −65%
+
+Empirical proxy: key-token probability lift. As a proxy for the unobservable ˜g in Prop. 4, we measure on the held-out validation set the per-step log-prob lift ∆lift := 
+
+Et∈K y , π (k)  
+
+> T(ˆ yt)>π θk(ˆ yt)
+
+[log πθk+1 (ˆ yt) − log πθk (ˆ yt)] on roll-out tokens inside teacher-supported key spans, conditioned at the pre-update policy. TRACE-FKL realizes +0 .145 nats (+168% vs GRPO), matching the mass-independent lift pre-dicted by Cor. 2, while all-token SDPO/SRPO fall below 
+
+GRPO. App. D.2 reports a complementary 8.5× credit concen-tration ratio for TRACE (vs 1.0−1.1× for all-token baselines), localizing the support narrowing of Prop. 3. 
+
+5 Experiments 
+
+5.1 Setup Model, data, evaluation. We train Qwen3-8B [Yang et al., 2025] on the OpenThoughts-114k math subset [Guha et al., 2025] (up to 30K problem–solution pairs) with verl [Sheng et al., 2025] on H100 GPUs, using DAPO clip-higher ( εlow =0 .2, εhigh =0 .28 ) [Yu et al., 2026] to isolate distillation-induced entropy dynamics. Qwen3-8B is in the strong-base regime (base avg@8 ≥ 60% on each in-distribution math benchmark; App. D.4); a cross-scale check on Qwen3-1.7B is reported alongside. In-distribution evaluation: MATH-500 [Lightman et al., 2023, Hendrycks et al., 2021], AIME 2024 [Mathematical Association of America, 2024]/ 2025 [Mathematical Association of America, 2025], AMC 2023 [Mathematical Association of America, 2023]; out-of-distribution: GPQA-Diamond [Rein et al., 2023]. We follow the Qwen3 thinking-mode protocol ( T =0 .6, p=0 .95 ,
+
+k=20 ); avg@k denotes per-problem mean accuracy over k samples. Full hyperparameters and decoding configurations are in App. C. 
+
+Baselines. GRPO [Shao et al., 2024] with recent improvements [Olmo et al., 2025, Khatri et al., 2025]; SDPO [Hübotter et al., 2026] (frozen teacher, JSD α=0 .5, top-K=100 ); SRPO [Li et al., 2026a] (EMA 0.05 , β=1 ); RLSD [Yang et al., 2026] (sync N =10 , λ decay 1.0→0 over 50 steps). Each baseline is best-of-grid over learning rate and batch size. Official SDPO/SRPO training code is not publicly available; we re-implement the objectives and select checkpoints by OpenThoughts validation, never by held-out benchmark columns. Two failure symptoms (length collapse: SDPO 
+
+2027 → 1042 tokens, SRPO 1873 → 759 ; per-token entropy rise to >4× the GRPO baseline) appear within 150–200 steps under all swept configurations; the third (validation collapse) is documented in §5.2. Full sweep grid, transfer caveats, and the four-panel diagnostic (including the SRPO EMA feedback loop) are in App. D.5–D.6. 
+
+5.2 Main Results 
+
+Table 2 reports held-out results across two scales. In the Qwen3-8B block, TRACE-FKL is best on MATH, both AIME splits, GPQA-Diamond, and the 5-benchmark AVG, improving AVG from GRPO’s 78 .75 to 81 .51 (+2 .76 pp); the RKL routing slightly edges it on AMC 23. The largest FKL gains appear on AIME 25 ( +4 .58 pp) and GPQA-Diamond ( +4 .48 pp), where TRACE matches the Qwen3-8B base score within evaluation resolution while GRPO and all-token self-OPD baselines degrade. RLSD is the strongest prior self-OPD baseline ( 78 .99 AVG) but remains 2.52 pp below TRACE; SDPO and SRPO trail GRPO by roughly 15 and 9 pp, consistent with the collapse diag-nostics in App. D.6. Cell-wise bootstrap 95% CIs are reported in App. D.4; because the smallest 7held-out sets are AIME’s 30 problems, we treat per-benchmark gaps as mean differences rather than standalone significance claims. Table 2: Main held-out results across scales. Symmetric Think evaluation on four math benchmarks and GPQA-Diamond. Checkpoints are selected by OpenThoughts validation. AVG is the unweighted mean over columns. Bold / underline mark best / second-best among trained methods within each model block; base rows are reference. Cell-wise bootstrap 95% CIs are in App. D.4.                                                                                                   
+
+> Method MATH-500 AIME 24 AIME 25 AMC 23 GPQA-D AVG
+> Qwen3-8B Base (ref.) 96.80 76.25 67.50 95.94 58.27 78.95
+> + GRPO 97.30 77.08 68.96 96.56 53.85 78.75 + SDPO 95.13 52.50 41.25 91.41 39.90 64.04 + SRPO 96.48 69.17 54.17 93.12 37.31 70.05 + RLSD 96.68 75.42 68.54 97.03 57.26 78.99 + TRACE (RKL on Ey)97.48 78.54 70.42 97.81 56.44 80.14 + TRACE (FKL on Ky)97.83 80.21 73.54 97.66 58.33 81.51
+> Qwen3-1.7B Base (ref.) 91.35 43.75 35.00 86.56 37.18 58.77
+> + GRPO 90.33 44.58 35.00 81.56 37.18 57.73 + SDPO 81.73 16.25 17.50 51.25 27.41 38.83 + SRPO 86.02 24.17 23.75 62.81 35.82 46.51 + RLSD 91.12 45.42 32.92 84.38 38.89 58.55 + TRACE (RKL on Ey)92.05 44.92 38.33 86.82 38.67 60.16
+> + TRACE (FKL on Ky)91.00 44.83 36.30 83.38 36.77 58.46
+
+Cross-scale corner inversion. Cor. 2 predicts that on a weaker base where confident-but-wrong tokens are more frequent, the RKL-on-Ey branch should dominate. The lower block of Tab. 2 confirms this: TRACE-RKL reaches 60 .16 AVG, the only trained method exceeding the 1.7B base and 1.70 pp above the FKL corner, while SDPO/SRPO collapse 11 –19 pp below GRPO. TRACE is therefore not a fixed FKL recipe but a corner-routed framework whose dominant action shifts with base capability. Fig. 3 shows the matching training-distribution dynamics. Fig. 3 supports the regime claim behind the routed action space: the best corner changes with the base model’s error profile, while all-token self-OPD remains unstable across scales. 
+
+5.3 Ablations 
+
+We ablate three design choices: mask localization, routing direction, and annotator quality; asymmetric-thinking and NoThink checks are in App. D.7–D.8. Routing direction is given by the two TRACE rows in Tab. 2. For mask localization, we fix the Qwen3-1.7B KL schedule and replace the RKL-on-Ey mask with all-token KL, random 25%, or inverted non-critical 25% controls. Fig. 4 shows that all-token KL falls below GRPO, random sparsity helps but trails TRACE, and inverted spans return to GRPO; which tokens carry privileged signal matters more than how many. For annotator quality, Tab. 3 sweeps from qwen3.5-plus (+2 .76 pp) to the actively-training student reused as its own annotator with no external supervisor ( +1 .90 pp, ∼69% of the strong-API gain), a frozen mid-tier Qwen3-32B ( +1 .09 pp), and a static Qwen3-8B copy of the student base ( +0 .92 pp). That an online self-annotator outperforms both a stronger but frozen model and a static student base weakens the reading that TRACE’s gains stem from imported capability; per-tier dynamics are in App. D.3. 
+
+6 Discussion and Conclusion 
+
+TRACE routes {FKL , RKL , ∅} by token class on annotator-marked spans and then decays to GRPO. Its default FKL-on-Ky corner follows from non-vanishing key-token lift (Cor. 2) and finite privileged-gradient exposure (Prop. 3); empirically, it improves GRPO by +2 .76 pp, preserves GPQA-Diamond OOD accuracy, and shifts to RKL on Qwen3-1.7B as predicted. Although we focus on math RLVR as a clean stress test, the mechanisms are loss-geometric rather than domain-specific: pointwise 8TRACE (FKL on 𝒦 y ) TRACE (RKL on ℰ y) GRPO RLSD SDPO SRPO 
+
+(a) Qwen3-8B validation       
+
+> 050 100 150 200 250 300 0.3 0.4 0.5 0.6 0.7
+> Mean@16
+
+(b) Qwen3-8B reward       
+
+> 050 100 150 200 250 300 0.2 0.4 0.6
+> Reward
+
+(c) Qwen3-1.7B validation        
+
+> 050 100 150 200 250 300 0.2 0.3 0.4 0.5 0.6
+> Training step
+> Mean@16
+
+(d) Qwen3-1.7B reward        
+
+> 050 100 150 200 250 300 0.2 0.4 0.6
+> Training step
+> Reward
+
+Takeaway 2:                                    
+
+> TRACE is acorner-routed framework, not afixed KL recipe: the routed corner shifts with the base model's error mode. Strong base: FKL on 𝒦 y;weaker base: RKL on ℰy;all-token self-OPD collapses across scales.
+
+Figure 3: Cross-scale training dynamics. Validation mean@16 (left) and training reward (right) on OpenThoughts math, for Qwen3-8B (top) and Qwen3-1.7B (bottom). EMA α=0 .85 . On the strong base, TRACE-FKL on Ky is the dominant corner and TRACE-RKL on Ey is second; on the weaker base, the dominant corner inverts to RKL-on-Ey , matching Cor. 2’s prediction when confident-but-wrong tokens become the dominant error mode. Both routed corners exceed GRPO at both scales, while all-token SDPO / SRPO peak early and collapse, ruling out base-model-specific implementation artifacts. 0 20 40 60 80 100  
+
+> Training step
+> 0.25
+> 0.30
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> Validation mean@16  0.555
+> 0.433
+> TRACE (RKL on Ey)
+> Random-25%
+> Inverted-25%
+> All-token (matched decay)
+> GRPO
+> KL-active
+
+Takeaway 3: 
+
+Span localization is the active ingredient — not coverage, not decay. Under TRACE’s matched decay: all-token KL drops 3.0 pp below GRPO; Random-25% trails TRACE by 3.5 pp; Inverted-25% returns to the GRPO baseline. The localized gain persists 60 steps after KL closes (0.552 → 0.555) — a stable re-allocation, not transient noise. 
+
+Figure 4: Qwen3-1.7B validation mean@16 (EMA α = 0 .55 ), with RKL on Ey dominant. All KL variants share TRACE’s decay schedule (Eq. 2); shading marks the KL-active window. FKL/RKL asymmetry and finite exposure under mask coverage plus decay. The resulting design principle is to choose the routed corner by the base model’s dominant residual error mode: FKL for under-allocated teacher-supported key tokens, RKL for locally over-confident teacher-disfavored tokens. 9Table 3: Annotator quality ablation (Qwen3-8B student). Four annotator tiers; best per column 
+
+bold ; GRPO row matches Tab. 2.                                               
+
+> Method (annotator) MATH-500 AIME 24 AIME 25 AMC 23 GPQA-D AVG ∆
+> GRPO (no annotator) 97.30 77.08 68.96 96.56 53.85 78.75 —TRACE-strong ( qwen3.5-plus )97.83 80.21 73.54 97.66 58.33 81.51 +2 .76
+> TRACE-online-self (current policy) †97.55 78.54 72.29 97.03 57.84 80.65 +1 .90
+> TRACE-mid (Qwen3-32B) 96.83 79.08 68.61 97.27 57.43 79.84 +1 .09
+> TRACE-self (Qwen3-8B static) *97.34 75.92 72.19 96.11 56.78 79.67 +0 .92
+> †Online-self: actor weights reused as annotator via vLLM on the same H100, only during the 40-step KL-active window.
+> *Static-self: Qwen3-8B from the student base, zero-shot with the same template.
+
+References 
+
+Rishabh Agarwal, Nino Vieillard, Yongchao Zhou, Piotr Stanczyk, Sabela Ramos, Matthieu Geist, and Olivier Bachem. On-policy distillation of language models: Learning from self-generated mistakes. 2023. Shun-Ichi Amari. Natural gradient works efficiently in learning. Neural computation , 10(2):251–276, 1998. Tianzhe Chu, Yuexiang Zhai, Jihan Yang, Shengbang Tong, Saining Xie, Dale Schuurmans, Quoc V Le, Sergey Levine, and Yi Ma. Sft memorizes, rl generalizes: A comparative study of foundation model post-training. 
+
+arXiv preprint arXiv:2501.17161 , 2025. Yuxian Gu, Li Dong, Furu Wei, and Minlie Huang. Minillm: Knowledge distillation of large language models. In International Conference on Learning Representations , volume 2024, pages 32694–32717, 2024. Etash Guha, Ryan Marten, Sedrick Keh, Negin Raoof, Georgios Smyrnis, Hritik Bansal, Marianna Nezhurina, Jean Mercat, Trung Vu, Zayne Sprague, et al. Openthoughts: Data recipes for reasoning models. arXiv preprint arXiv:2506.04178 , 2025. Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. 
+
+arXiv preprint arXiv:2501.12948 , 2025. Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the MATH dataset. NeurIPS Datasets and Benchmarks Track , 2021. Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. Distilling the knowledge in a neural network. In NeurIPS Deep Learning and Representation Learning Workshop , 2015. Jonas Hübotter, Frederike Lübeck, Lejs Behric, Anton Baumann, Marco Bagatella, Daniel Marta, Ido Hakimi, Idan Shenfeld, Thomas Kleine Buening, Carlos Guestrin, et al. Reinforcement learning via self-distillation. 
+
+arXiv preprint arXiv:2601.20802 , 2026. Amirhossein Kazemnejad, Milad Aghajohari, Eva Portelance, Alessandro Sordoni, Siva Reddy, Aaron Courville, and Nicolas Le Roux. Vineppo: Refining credit assignment in rl training of llms. In Proceedings of the 42nd International Conference on Machine Learning , 2025. Devvrit Khatri, Lovish Madaan, Rishabh Tiwari, Rachit Bansal, Sai Surya Duvvuri, Manzil Zaheer, Inderjit S Dhillon, David Brandfonbrener, and Rishabh Agarwal. The art of scaling reinforcement learning compute for llms. arXiv preprint arXiv:2510.13786 , 2025. Jeonghye Kim, Xufang Luo, Minbeom Kim, Sangmook Lee, Dohyung Kim, Jiwon Jeon, Dongsheng Li, and Yuqing Yang. Why does self-distillation (sometimes) degrade the reasoning capability of llms? arXiv preprint arXiv:2603.24472 , 2026. Yoon Kim and Alexander M. Rush. Sequence-level knowledge distillation. In Proceedings of the 2016 Conference on Empirical Methods in Natural Language Processing , pages 1317–1327, 2016. Robert Kirk, Ishita Mediratta, Christoforos Nalmpantis, Jelena Luketina, Eric Hambro, Edward Grefenstette, and Roberta Raileanu. Understanding the effects of rlhf on llm generalisation and diversity. In The Twelfth International Conference on Learning Representations , 2024. Jongwoo Ko, Sungnyun Kim, Tianyi Chen, and Se-Young Yun. Distillm: Towards streamlined distillation for large language models. In Proceedings of the 41st International Conference on Machine Learning , 2024. 
+
+10 Gengsheng Li, Tianyu Yang, Junfeng Fang, Mingyang Song, Mao Zheng, Haiyun Guo, Dan Zhang, Jinqiao Wang, and Tat-Seng Chua. Unifying group-relative and self-distillation policy optimization via sample routing. 
+
+arXiv preprint arXiv:2604.02288 , 2026a. Yaxuan Li, Yuxin Zuo, Bingxiang He, Jinqian Zhang, Chaojun Xiao, Cheng Qian, Tianyu Yu, Huan-ang Gao, Wenkai Yang, Zhiyuan Liu, et al. Rethinking on-policy distillation of large language models: Phenomenology, mechanism, and recipe. arXiv preprint arXiv:2604.13016 , 2026b. Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harrison Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. 2023. Zicheng Lin, Tian Liang, Jiahao Xu, Qiuzhi Lin, Xing Wang, Ruilin Luo, Chufan Shi, Siheng Li, Yujiu Yang, and Zhaopeng Tu. Critical tokens matter: Token-level contrastive estimation enhances llm’s reasoning capability. 2024. Kevin Lu and Thinking Machines Lab. On-policy distillation. Thinking Machines Lab: Connectionism, 2025. URL https://thinkingmachines.ai/blog/on-policy-distillation .Changze Lv, Jie Zhou, Wentao Zhao, Jingwen Xu, Zisu Huang, Muzhao Tian, Shihan Dou, Tao Gui, Le Tian, Xiao Zhou, et al. Learning query-specific rubrics from human preferences for deepresearch report generation. 
+
+arXiv preprint arXiv:2602.03619 , 2026. James Martens. New insights and perspectives on the natural gradient method. Journal of Machine Learning Research , 21(146):1–76, 2020. Mathematical Association of America. AMC 12 2023 problems, 2023. https://artofproblemsolving. com/wiki/index.php/AMC_12_Problems_and_Solutions .Mathematical Association of America. AIME 2024 problems, 2024. https://artofproblemsolving.com/ wiki/index.php/AIME_Problems_and_Solutions .Mathematical Association of America. AIME 2025 problems, 2025. https://artofproblemsolving.com/ wiki/index.php/AIME_Problems_and_Solutions .Team Olmo, Allyson Ettinger, Amanda Bertsch, Bailey Kuehl, David Graham, David Heineman, Dirk Groen-eveld, Faeze Brahman, Finbarr Timbers, Hamish Ivison, et al. Olmo 3, 2025. Emiliano Penaloza, Dheeraj Vattikonda, Nicolas Gontier, Alexandre Lacoste, Laurent Charlin, and Massimo Caccia. Privileged information distillation for language models. arXiv preprint arXiv:2602.04942 , 2026. David Rein, Betty Li Hou, Asa Cooper Stickland, Jackson Petty, Richard Yuanzhe Pang, Julien Dirani, Julian Michael, and Samuel R Bowman. Gpqa: A graduate-level google-proof q&a benchmark. arXiv preprint arXiv:2311.12022 , 2023. Stéphane Ross, Geoffrey J. Gordon, and J. Andrew Bagnell. A reduction of imitation learning and structured prediction to no-regret online learning. In Proceedings of the Fourteenth International Conference on Artificial Intelligence and Statistics , volume 15 of Proceedings of Machine Learning Research , pages 627–635. PMLR, 2011. Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf. Distilbert, a distilled version of bert: smaller, faster, cheaper and lighter. In NeurIPS EMC2 Workshop , 2019. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. Idan Shenfeld, Mehul Damani, Jonas Hübotter, and Pulkit Agrawal. Self-distillation enables continual learning. 
+
+arXiv preprint arXiv:2601.19897 , 2026. Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin Wu, Wang Zhang, Ru Zhang, Yanghua Peng, Haibin Lin, and Chuan Wu. Hybridflow: A flexible and efficient rlhf framework. In Proceedings of the Twentieth European Conference on Computer Systems , pages 1279–1297, 2025. Wei Sun, Wen Yang, Pu Jian, Qianlong Du, Fuwei Cui, Shuo Ren, and Jiajun Zhang. Ktae: A model-free algorithm to key-tokens advantage estimation in mathematical reasoning. arXiv preprint arXiv:2505.16826 ,2025. Peiyi Wang, Lei Li, Zhihong Shao, Runxin Xu, Damai Dai, Yifei Li, Deli Chen, Yu Wu, and Zhifang Sui. Math-shepherd: Verify and reinforce llms step-by-step without human annotations. pages 9426–9439, 2024. 
+
+11 Shenzhi Wang, Le Yu, Chang Gao, Chujie Zheng, Shixuan Liu, Rui Lu, Kai Dang, Xionghui Chen, Jianxin Yang, Zhenru Zhang, et al. Beyond the 80/20 rule: High-entropy minority tokens drive effective reinforcement learning for llm reasoning. 2025. Yuqiao Wen, Zichao Li, Wenyu Du, and Lili Mou. F-divergence minimization for sequence-level knowledge distillation. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 10817–10834, 2023. Yuanda Xu, Hejian Sang, Zhengze Zhou, Ran He, Zhipeng Wang, and Alborz Geramifard. Tip: Token importance in on-policy distillation. arXiv preprint arXiv:2604.14084 , 2026. An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. Chenxu Yang, Chuanyu Qin, Qingyi Si, Minghui Chen, Naibin Gu, Dingyu Yao, Zheng Lin, Weiping Wang, Jiaqi Wang, and Nan Duan. Self-distilled rlvr. arXiv preprint arXiv:2604.03128 , 2026. Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, et al. Dapo: An open-source llm reinforcement learning system at scale. Advances in Neural Information Processing Systems , 38:113222–113244, 2026. Siyan Zhao, Zhihui Xie, Mengchen Liu, Jing Huang, Guan Pang, Feiyu Chen, and Aditya Grover. Self-distilled reasoner: On-policy self-distillation for large language models. arXiv preprint arXiv:2601.18734 , 2026. 
+
+A Notation and Preliminaries 
+
+Notation. Let πθ be a language model parameterized by θ. Given a problem x, y = ( y1, . . . , y T ) is generated autoregressively; R(x, y ) ∈ { 0, 1} is a binary verifier; c denotes privileged information (a verified reasoning trace, environment feedback, or coarse type label). The student is πS (· | x) := 
+
+πθ (· | x) and the privileged-context teacher is πT (· | x, c ) := πθ (· | x, c ) (same parametric family with different prompt). Our goal is to train πθ to maximize verifier reward without incurring the epistemic suppression and OOD degradation observed under all-token self-OPD [Kim et al., 2026, Yang et al., 2026]. 
+
+GRPO baseline and all-token self-OPD. Group Relative Policy Optimization [Shao et al., 2024] samples G rollouts {y(i)}Gi=1 ∼ πS (· | x) and assigns each rollout the sequence-level advantage 
+
+A(i) = ( R(i) − μG)/σ G; all tokens in y(i) share that advantage. When the group has uniform reward, A(i) ≡ 0 on every token (the dead-zone failure addressed by Prop. 19). All-token self-OPD [Hübotter et al., 2026, Zhao et al., 2026] densifies this signal by adding token-level KL guidance 
+
+D(πT (·| x, c, ˆy<t ) ∥ πS (·| x, ˆy<t )) whose support spans every response position regardless of semantic role, with gradients flowing only through πS .
+
+Forward and reverse KL. For a fixed rollout prefix, let qt := πT (· | x, c, ˆy<t ) be the teacher dis-tribution and pt := πS (· | x, ˆy<t ) be the student distribution. We call KL( qt∥pt) forward KL (FKL) and KL( pt∥qt) reverse KL (RKL), always relative to teacher-to-student distillation. Importantly, FKL and RKL are not interchangeable: their per-token gradients depend asymmetrically on pt and qt
+
+(formalized in Lemma 1, §4), so the divergence direction is itself a per-token-class design decision rather than a global hyperparameter. 
+
+Critical-span structure. For each rollout y we receive a span partition {1, . . . , |y|} = Ey ⊔K y ⊔N y
+
+from a privileged annotator (§3), where Ey (error spans , defined only on R=0 rollouts) and Ky (key spans , defined only on R=1 rollouts) jointly cover at most α = 0 .25 of response tokens; Ny contains all remaining (non-span) tokens. 
+
+B Deferred Proofs 
+
+We use the notation of §4 throughout. All distributions are on a finite vocabulary V unless stated otherwise. 12 B.1 Span-restricted decomposition Proposition 5 (Span-restricted decomposition) . The TRACE per-token loss in Eq. (1) satisfies 
+
+∇θ ˆL = ∇θ ˆLspan + ∇θ ˆLnonspan , with disjoint token support. Proof. By construction (Eq. 1), the per-token loss ℓt(θ) depends on θ only through πθ (· | x, y <t ) at position t. The partition Sy ⊔ N y = {1, . . . , |y|} is θ-independent (the span mask is provided by the annotator and treated as sg ). Hence 
+
+ˆL(θ) = 1
+
+|y|
+
+> |y|
+
+X
+
+> t=1
+
+ℓt(θ) = 1
+
+|y|
+
+X
+
+> t∈S y
+
+ℓt(θ)
+
+| {z }
+
+> ˆLspan
+
++ 1
+
+|y|
+
+X
+
+> t∈N y
+
+ℓt(θ)
+
+| {z }
+
+> ˆLnonspan
+
+,
+
+where the two sums have disjoint support sets. Linearity of ∇θ over the disjoint sum yields ∇ ˆL =
+
+∇ ˆLspan + ∇ ˆLnonspan .
+
+B.2 Proof of Lemma 1 
+
+Proof. For πθ (v) ∝ exp( ℓv ) with Z := P 
+
+> u
+
+exp( ℓu),
+
+∂π θ (v′)
+
+∂ℓ v
+
+= πθ (v′) ⊮[v = v′] − πθ (v), ∂ log πθ (v′)
+
+∂ℓ v
+
+= ⊮[v = v′] − πθ (v). (7) 
+
+Reverse KL. KL R(πT , π θ ) = KL( πθ ∥πT ) = P 
+
+> v′
+
+πθ (v′)(log πθ (v′) − log πT (v′)) . Differentiat-ing: 
+
+∂KL R
+
+∂ℓ v
+
+= X
+
+> v′
+
+∂π θ (v′)
+
+∂ℓ v
+
+(log πθ (v′) − log πT (v′)) + X
+
+> v′
+
+πθ (v′) ∂ log πθ (v′)
+
+∂ℓ v
+
+> (7)
+
+= X
+
+> v′
+
+πθ (v′) ⊮[v = v′] − πθ (v)r(v′) + X
+
+> v′
+
+πθ (v′) ⊮[v = v′] − πθ (v)
+
+= πθ (v)r(v) − πθ (v)¯ r + πθ (v) − πθ (v)= πθ (v) ·  r(v) − ¯r.
+
+This proves Eq. (4). 
+
+Forward KL. KL F (πT , π θ ) = KL( πT ∥πθ ) = − P 
+
+> v′
+
+πT (v′) log πθ (v′) + const . Differentiating: 
+
+∂KL F
+
+∂ℓ v
+
+= − X
+
+> v′
+
+πT (v′) ⊮[v = v′] − πθ (v) = −πT (v) + πθ (v) · 1 = πθ (v) − πT (v).
+
+This proves Eq. (4). 
+
+B.3 Reverse-KL pointwise pressure Lemma 6 (Reverse-KL pointwise pressure) . For any token v, if r(v) := log[ πθ (v)/π T (v)] > ¯r := 
+
+Eπθ [r], then one Euclidean gradient-descent step on KL R(πT , π θ ) with step size η > 0 satisfies 
+
+ℓ(+)  
+
+> v
+
+= ℓv − ηπ θ (v)( r(v) − ¯r) < ℓ v .Proof. Direct corollary of Eq. (4) : ∂KL R/∂ℓ v = πθ (v)( r(v) − ¯r) > 0 when r(v) > ¯r (since 
+
+πθ (v) > 0). One descent step decreases ℓv .
+
+Remark 7 (Precise “confident wrong” criterion) . The criterion is log[ πθ (v)/π T (v)] >
+
+Eπθ [log( πθ /π T )] , not simply πθ (v) > π T (v). The latter does not in general imply the former, since the student-mass-weighted average log-ratio depends on the full distribution shape. 
+
+13 B.4 Pointwise logit pressure on a token set Lemma 8 (Pointwise logit pressure) . Fix t and let U ⊆ V satisfy πθ (v) > π T (v) for all v ∈ U .A single Euclidean gradient-descent step on KL F (πT , π θ ) with step size η > 0 satisfies ℓ(+)  
+
+> v
+
+=
+
+ℓv − η(πθ (v) − πT (v)) < ℓ v for every v ∈ U .Proof. Direct corollary of Eq. (4) . For each v ∈ U, the hypothesis πθ (v) > πT (v) gives 
+
+∂KL F /∂ℓ v = πθ (v) − πT (v) > 0. A gradient-descent step with step size η > 0 updates 
+
+ℓ(+)  
+
+> v
+
+= ℓv − η(πθ (v) − πT (v)) < ℓ v .
+
+Remark 9. Lemma 8 characterizes only the direction of logit pressure; the corresponding probability mass change π(+)  
+
+> θ
+
+(v) − πθ (v) involves the centered effect across the full vocabulary ∂π θ (v)/∂ℓ u,which can be negative or positive depending on which other logits move. The corresponding mass dynamics are captured by the natural-gradient analysis of Lemma 10. 
+
+B.5 Distribution-space mass dynamics on a token set Lemma 10 (Natural-gradient mass dynamics) . Under simplex updates with the natural gradient (Fisher-information metric) of KL F (πT , π θ ), the mass πθ (U) moves monotonically toward πT (U).In particular, if πθ (U) > π T (U) initially, the mass strictly decreases toward πT (U).Proof. The natural gradient of a divergence D on the simplex with respect to the Fisher-information metric pre-conditions the Euclidean gradient. For D = KL F (πT , π θ ) = − P 
+
+> v
+
+πT (v) log πθ (v) + const , the natural-gradient flow on πθ in the simplex satisfies 
+
+dπ θ (v)
+
+dt = πT (v) − πθ (v),
+
+i.e., πθ (v) moves linearly toward πT (v) [Amari, 1998, Martens, 2020]. Summing over v ∈ U :
+
+dπ θ (U)
+
+dt = πT (U) − πθ (U),
+
+which is monotone toward πT (U), decreasing whenever πθ (U) > π T (U) initially. 
+
+Remark 11 (Why a natural gradient is needed) . Under Euclidean SGD on the logits (the standard implementation), πθ (U) does not generally decrease monotonically even when πθ (U) > π T (U)
+
+initially, because the softmax re-normalizes after each logit update. Lemma 10 characterizes the geometry-aware update on the simplex; we treat it as a complementary characterization, not as a description of standard SGD dynamics. The pointwise logit pressure of Lemma 8 is what holds universally under Euclidean SGD. 
+
+B.6 Proof of Proposition 3 
+
+Proof. For reference: Yang et al. [2026, Prop. 1] show the privileged-information-specific deviation 
+
+δt(θ; c) := − X
+
+> v
+
+ πT (v|x, c, y <t ) − ¯πT (v|x, y <t )∇θ log πS (v|x, y <t ) (8) has Ec[δt] = 0 and per-position privileged variance 
+
+Vt := X
+
+> v
+
+Var c[πT (v|x, c, y <t )] ≥ 0, (9) with Vt = 0 iff πT is independent of c at t.
+
+Step 1: Per-token bound on Ec[∥δt∥2]. Let av := πT (v|x, c, y <t ) − ¯πT (v|x, y <t ), so P 
+
+> v
+
+av =0 and δt = − P 
+
+> v
+
+av ∇θ log πS (v). The score-operator bound (3) applied to a gives ∥δt∥2 =
+
+P 
+
+> v
+
+av ∇θ log πS (v) 2 ≤ C2
+
+> s
+
+P 
+
+> v
+
+a2 
+
+> v
+
+, and taking expectation over c,
+
+Ec
+
+∥δt(θ; c)∥2 ≤ C2
+
+> s
+
+X
+
+> v
+
+Var c[πT (v | x, c, y <t )] = C2 
+
+> s
+
+· Vt.
+
+This step uses (3) to control the cross-vocabulary covariance terms that a per-token bound on 
+
+∥∇ log πS (v)∥ alone could not. 14 Step 2: Span-restricted per-step sum. Under TRACE, δt contributes only at t with mk,t = 1 
+
+(non-span tokens are trained by GRPO without privileged-context teacher): 
+
+Ec
+
+"
+
+1
+
+|yk|
+
+X
+
+> t
+
+mk,t ∥δt∥2
+
+#
+
+≤ C2
+
+> s
+
+|yk|
+
+X
+
+> t
+
+mk,t Vk,t .
+
+Step 3: Minibatch expectation. Taking expectation over the rollout yk and the span mask mk,
+
+E
+
+"
+
+1
+
+|yk|
+
+X
+
+> t
+
+mk,t ∥δt∥2
+
+#
+
+≤ C2 
+
+> s
+
+· E
+
+"
+
+1
+
+|yk|
+
+X
+
+> t
+
+mk,t Vk,t 
+
+#
+
+.
+
+We deliberately retain the joint expectation of coverage and span-positioned variance, since by construction the annotator selects high-impact spans and these positions need not have variance equal to the rollout average. 
+
+Step 4: Sum over training horizon. Multiplying by λ2 
+
+> k
+
+and summing yields the proposition statement: 
+
+EK =
+
+> K
+
+X
+
+> k=1
+
+λ2 
+
+> k
+
+· E
+
+"
+
+1
+
+|yk|
+
+X
+
+> t
+
+mk,t ∥δt∥2
+
+#
+
+≤ C2
+
+> sK
+
+X
+
+> k=1
+
+λ2 
+
+> k
+
+· E
+
+"
+
+1
+
+|yk|
+
+X
+
+> t
+
+mk,t Vk,t 
+
+#
+
+.
+
+Step 5: Bandwidth and duration corollaries. If the span mask covers at most α tokens per rollout (TRACE enforces α = 0 .25 ) and the masked average privileged variance is uniformly bounded 
+
+¯Vspan := Ey [|S y |−1 P 
+
+> t∈S y
+
+Vk,t ] ≤ ¯V , then 
+
+EK ≤ C2 
+
+> s
+
+α ¯V X
+
+> k
+
+λ2
+
+> k
+
+.
+
+If additionally λk = 0 for k > t start + Tdecay , then P 
+
+> k
+
+λ2 
+
+> k
+
+≤ Λ2 < ∞ regardless of total horizon, giving the finite-exposure rate EK = O(αΛ2).
+
+Remark 12 (Why the second-moment bound, not first?) . We bound EK = P 
+
+> k
+
+λ2
+
+> k
+
+E[∥δ∥2], i.e., the cumulative second moment, rather than the cumulative first moment P 
+
+> k
+
+λkE[∥δ∥]. The reason is that Yang et al. [2026] identify the second moment (variance) as the source of SGD noise / gradient drift, since Ec[δ] = 0 by construction. The first moment vanishes; only the variance can accumulate via path- dependent SGD. 
+
+B.7 Proof of Proposition 4 
+
+Proof. We work under binary span weights wt ∈ { 0, 1} (the main-method assumption of §3). Define the per-step span gradient under action profile (μE , μ K ) ∈ { 0, 1}2 as 
+
+gsel  
+
+> k
+
+= λk ·  μE gEk + μK gKk
+
+, gEk := 1 
+
+> |E yk|
+
+X
+
+> t∈E yk
+
+gRKL (t), gKk := 1 
+
+> |K yk|
+
+X
+
+> t∈K yk
+
+gFKL (t),
+
+i.e., per-set means of per-token RKL/FKL gradients matching Eq. 1. Empty span sets contribute 0 by the convention of §3. For each selected error-span position t ∈ E yk introduce a Bernoulli precision indicator ZEt ∈ { 0, 1} with Pr[ ZEt = 1] = qE ; analogously ZKt on Kyk with Pr[ ZKt = 1] = qK .By the alignment-margin assumption, 
+
+⟨gRKL (t), ˜g(t)⟩ ≥ ZEt · γE − (1 − ZEt ) · BE ,
+
+and analogously for gFKL (t). Taking expectation over ZEt : E[⟨gRKL (t), ˜g(t)⟩] ≥ qE γE −(1 −qE )BE .Averaging over t ∈ E yk under per-set normalization gives E[⟨gEk , ˜gk⟩] ≥ qE γE − (1 − qE )BE on rollouts with nonempty Eyk , and similarly for the K branch. With binary masks, the per-token mean and the per-token expectation coincide; the soft-weight case requires a separate E[wt | selected ] ≥
+
+wmin > 0 assumption to retain the same lower bound, which is why we restrict to wt ∈ { 0, 1}
+
+here. Taking a final expectation over the rollout-level token-fraction weights pE := E[|E yk |/|yk|]
+
+and pK := E[|K yk |/|yk|] (the expected per-rollout normalized batch fractions of error-span and 15 key-span selected tokens; rollouts with R=0 contribute to pE , those with R=1 to pK , and empty spans contribute zero), by linearity: 
+
+E⟨gsel  
+
+> k
+
+, ˜gk⟩ ≥ λk
+
+h
+
+μE pE
+
+ qE γE − (1 − qE )BE
+
+ + μK pK
+
+ qK γK − (1 − qK )BK
+
+i
+
+.
+
+The signal is positive whenever every active per-class bracket is positive. 
+
+Remark 13 (On the oracle direction) . ˜g is the unobservable verifier-grounded gradient. Prop. 4 is therefore a conditional signal-lower-bound: under the precision and alignment-margin assumptions, the selected KL direction has positive correlation with ˜g. We use this as the structural complement of the exposure bound (Prop. 3) to articulate the “useful guidance vs. leakage” trade-off, not as a formal optimality theorem for the trained network. 
+
+B.8 Per-token damping under teacher coverage gap Proposition 14 (Per-token damping) . Let wt = πT (yt|x, c, y <t )/π S (yt|x, y <t ) be RLSD’s positive-advantage reweighting factor. If πT (yt⋆ |c) ≤ δ and πS (yt⋆ ) ≥ p0 at some position t⋆, then 
+
+ˆAt⋆ := A · wt⋆ ≤ Aδ/p 0.
+
+The condition is local — one correct token with low teacher probability suffices — and is empirically common in math reasoning, where the privileged context is typically a single canonical solution and the student may sample valid alternatives. Independent of Yang et al. [2026]’s mutual-information ill-posedness; the two viewpoints are complementary. 
+
+Proof. By definition, 
+
+wt⋆ = πT (yt⋆ | x, c, y <t ⋆ )
+
+πS (yt⋆ | x, y <t ⋆ ) ≤ δp0
+
+,
+
+where the inequality applies hypotheses (1) and (2) of the proposition. Multiplying both sides by 
+
+A > 0: ˆAt⋆ = A · wt⋆ ≤ A · δ/p 0.
+
+Remark 15 (On the unclipped form) . The proposition is stated for the unclipped reweighting factor 
+
+wt = πT /π S . The actual RLSD implementation clips wt ∈ [1 − ϵw, 1 + ϵw] to bound per-token deviation. Under clipping, the damping is bounded below by 1 − ϵw rather than δ/p 0; the qualitative phenomenon — that wt still damps correct non-canonical tokens whenever πT (yt) < π S (yt) —persists but is bounded by the clip. 
+
+Remark 16 (Why this is not a global collapse theorem) . Prop. 14 is a per-token statement: at any single position satisfying (1)+(2), the reweighting factor damps the gradient on that token. We do not 
+
+prove that this damping aggregates to global collapse of the training objective. Per-token damping accumulating across many such positions is consistent with empirical reports of long-horizon RLSD instability, but we treat the global behavior as an empirical phenomenon rather than a theorem. 
+
+B.9 Idealized corner allocation Proposition 17 (Corner allocation, conditional on class-specific leakage regime) . Under (A1)– (A4) below, the optimal per-token allocation β∗(t) ∈ [0 , 1] ∪ {∅} under the utility Uβ (t; θ) := 
+
+⟨gβ (t), ˜g(t)⟩ − κ 1[β̸ = ∅] Vt satisfies: β∗(t) = 0 on Et when κ < κ E ; β∗(t) = 1 on Kt when 
+
+κ < κ K ; β∗(t) = ∅ on Nt when κ > κ N . A unified three-valued allocation (0 , 1, ∅) requires 
+
+κN < κ < min {κE , κ K }.
+
+For convenience we list the assumptions used in this proof: • (A1) Three-class decomposition. Every token belongs to exactly one of Et/Kt/Nt as defined in §4. • (A2) Endpoint-alignment margins. On Et, ⟨g0 − g1, ˜g⟩ ≥ γE > 0; on Kt, ⟨g1 − g0, ˜g⟩ ≥ 
+
+γK > 0.• (A3) Density floor on the supported vocabulary. On Nt, after top-K truncation and prob-ability flooring (the standard implementation route), min v min( πθ (v), π T (v)) ≥ pmin > 0
+
+on the shared support. We take this as an explicit assumption for the idealized corner statement; it does not follow automatically from top-K alone. 16 RKL                      
+
+> (=0)
+> FKL
+> (=1)
+> no-KL
+> (, discrete)
+> Utility  U (t; )
+> FKL
+> K
+> (a) t: teacher-supported key span
+> DEFAULT
+> RKL
+> (=0)
+> FKL
+> (=1)
+> no-KL
+> (, discrete)
+> KL action: [0, 1] continuous, discrete
+> Utility  U (t; )
+> optional RKL (A2)
+> E
+> (b) t: localized error span
+> RKL
+> (=0)
+> FKL
+> (=1)
+> no-KL
+> (, discrete)
+> Utility  U (t; )
+> no-KL
+> exposure cost Vtdominates
+> small KL signal
+> (c) t: non-span token
+> DEFAULT
+> Idealized Corner Geometry
+> Endpoint utilities over [0, 1] {}in the extended choice space
+> Interior KL mixing averages incompatible behaviors; TRACE treats divergence direction as a token-class action.
+
+Figure 5: Idealized corner geometry for the extended choice space β ∈ [0 , 1] ∪ {∅} . Under the conditional regime κN < κ < min {κE , κ K }, endpoint utilities motivate FKL on key spans (a), optional RKL on localized error spans (b), and no-KL on non-spans (c); γK , γ E are the alignment margins from Prop. 4. The figure illustrates utility geometry rather than a deployed-network optimality guarantee. RKL on Et is an optional routed action under high-precision error localization; in our strong-base math regime, the empirical default disables this action. • (A4) Leakage-cost lower bound. On Nt, Vt ≥ Vmin > 0.• (A5) Total-variation closeness on Nt. Non-span tokens are precisely those for which student and teacher distributions are close, ∥πθ (· | · ) − πT (· | · , c )∥TV ≤ ϵ for some ϵ > 0
+
+(this is implicit in the definition of Nt as “aligned” tokens, but we state it explicitly here since the gradient-magnitude argument in Step 4 relies on it). The GKD-inspired forward / reverse divergence family is 
+
+Lβ (t) := β · KL F (πT ∥πθ )( t) + (1 − β) · KL R(πT ∥πθ )( t), β ∈ [0 , 1] , (10) extended with β = ∅ denoting pure GRPO (no KL). 
+
+Step 1: Linearity of gβ and Uβ on [0 , 1] . By Eq. (10) , Linearity of ∇θ gives gβ (t; θ) = β ·
+
+g1(t; θ) + (1 − β) · g0(t; θ) on β ∈ [0 , 1] . Therefore ⟨gβ , ˜g⟩ = (1 − β)⟨g0, ˜g⟩ + β⟨g1, ˜g⟩ is affine in β,and the leakage term κ · 1[β̸ = ∅] · Vt is the constant κV t on the closed interval [0 , 1] . Hence Uβ (t; θ)
+
+is affine on [0 , 1] and attains its supremum at an endpoint, with the interior strictly suboptimal except on the measure-zero event where the slope ⟨g1 − g0, ˜g⟩ vanishes. 
+
+Step 2: Class Et — RKL endpoint selected by (A2). On Et, assumption (A2) directly gives 
+
+⟨g0 − g1, ˜g⟩ ≥ γE > 0, so U0 − U1 ≥ γE (the leakage term κV t cancels between the two KL endpoints). Combining with Step 1, β∗(t) = 0 when restricted to [0 , 1] . To show β = 0 also dominates β = ∅, we require U0 > U ∅, i.e., ⟨g0 − g∅, ˜g⟩ > κV t. This holds for any κ < κ (E)0 := 
+
+⟨g0 − g∅, ˜g⟩/V t on Et. Hence β∗(t) = 0 for κ < κ (E)0 . The structural intuition (not part of the proof) is that g0 pressures down the confident-error token v− proportionally to πθ (v−) · (r(v−) − ¯r)
+
+(Lemma 1), while g1 acts uniformly on every disagreement and may include teacher-noisy alternatives whose verifier alignment is unknown. 
+
+Step 3: Class Kt — FKL endpoint selected by (A2). Symmetrically, (A2) gives ⟨g1 − g0, ˜g⟩ ≥ 
+
+γK > 0, so U1 − U0 ≥ γK . Step 1 then yields β∗(t) = 1 on [0 , 1] . As before, β = 1 dominates 
+
+β = ∅ when κ < κ (K)0 := ⟨g1 − g∅, ˜g⟩/V t. Hence β∗(t) = 1 for κ < κ (K)0 . The structural intuition is that the forward-KL gradient at the teacher-supported correct token v+ scales linearly with the gap |πT (v+) − πθ (v+)| regardless of the student’s mass on v+, while the reverse-KL gradient at the same token scales as πθ (v+) which can be small in the under-allocation regime. 
+
+Step 4: Class Nt — no-KL dominates. On Nt, ∥πθ − πT ∥TV ≤ ϵ. We need an upper bound on KL in terms of TV. Pinsker’s inequality goes in the opposite direction (KL ≥ TV 2), so we use the standard bounded-density reverse Pinsker : for two distributions p, q on a finite space with 17 min v p(v) ≥ pmin > 0,
+
+KL( p∥q) ≤ χ2(p, q ) ≤ ∥p − q∥21
+
+pmin 
+
+≤ (2 ∥p − q∥TV )2
+
+pmin 
+
+= 4ϵ2
+
+pmin 
+
+= O(ϵ2).
+
+By symmetry the same O(ϵ2) bound holds for KL( q∥p) under min v q(v) ≥ pmin . We assume top-K truncation enforces this density floor on the supported vocabulary, which is the standard implementation choice for distillation losses. The KL gradient magnitudes inherit the same scaling, by direct application of the score-operator bound (3) to each KL coefficient vector. For FKL the coefficient at vocabulary entry v is 
+
+πθ (v) − πT (v), so ∥∇ θ KL F ∥2 ≤ C2
+
+> s
+
+P 
+
+> v
+
+(πθ (v) − πT (v)) 2 = O(ϵ2). For RKL the coeffi-cient is πθ (v)(log[ πθ (v)/π T (v)] − ¯r); under the density floor pmin on the supported vocabulary, 
+
+| log[ πθ (v)/π T (v)] | = O(ϵ/p min ), so ∥∇ θ KL R∥2 ≤ C2 
+
+> s
+
+· O(ϵ2/p 2min ). Both gradient magnitudes are O(ϵ) on Nt, so |⟨ gβ , ˜g⟩| ≤ ∥ gβ ∥ · ∥ ˜g∥ ≤ CN · ϵ for any β ∈ [0 , 1] , where CN depends only on 
+
+Cs, ∥˜g∥, and the density floor pmin (A3). The density floor on the supported vocabulary is taken as an explicit assumption for this idealized corner statement (top-K renormalization plus probability flooring is the standard implementation route). By (A4), the leakage cost satisfies κV t ≥ κV min .The condition U∅(t) > U β (t) for every β ∈ [0 , 1] is therefore implied by κV min > C N ϵ, i.e., 
+
+κ > κ (N )0 := CN ϵ/V min or ϵ < ϵ 0 := κV min /C N . Either form fixes the regime in which β∗(t) = ∅
+
+on Nt.
+
+Combining the three classes. Steps 2–3 give β∗(t) = 0 on Et when κ < κ E := ⟨g0 − g∅, ˜g⟩/V t,and β∗(t) = 1 on Kt when κ < κ K := ⟨g1 − g∅, ˜g⟩/V t. Step 4 gives β∗(t) = ∅ on Nt when 
+
+κ > κ N := CN ϵ/V min . The unified three-class allocation (0 , 1, ∅) on (Et, Kt, Nt) therefore holds whenever 
+
+κN < κ < min {κE , κ K }.
+
+This interval is non-empty only under the separation condition κN < min {κE , κ K }. We empha-size that κE , κ K , κ N are not absolute instance-independent constants: they are determined by the alignment margins, density-floor parameters, and approximation ϵ of the assumed class structure. 
+
+Remark 18 (Scope) . The proof is conditional on (A1)–(A4). It does not establish optimality for the trained network: in practice the annotator only approximates the three-class membership, the alignment direction ˜g is unobservable, and the density floor depends on the top-K truncation choice. The proposition is therefore an idealized interpretation that organizes Lemmas 1–10, Prop. 14, and Prop. 19 into a single optimization principle, not a formal optimality statement for the deployed training loop. 
+
+B.10 Signal preservation in GRPO dead zones Proposition 19 (Dead-zone signal preservation) . On a rollout group with R(x, y (i)) = 1 for all i, the GRPO advantage collapses to ˆA(i) ≡ 0 on every token. During the KL-active phase ( λk > 0), the 
+
+TRACE gradient on y(i) reduces to λk · ∇ θ
+
+P 
+
+> t∈K y(i)
+
+wt · KL F (sg( πT ) ∥ πθ ), non-zero whenever 
+
+πT̸ = πθ on some t ∈ K y(i) . After decay ( λk = 0 ), the method intentionally returns to GRPO and the dead zone applies. Proof. Part 1. Let G be a rollout group with R(x, y (i)) = 1 for all i ∈ { 1, . . . , |G|} . The group mean is μG = 1 and the group standard deviation is σG = 0 . Under the convention 0/0 = 0 used in practical GRPO implementations, the per-rollout advantage A(i) = ( R(i) − μG)/σ G = 0 /0 = 0 for every i.Token-level advantage A(i) 
+
+> t
+
+= A(i) = 0 for every t, hence the GRPO loss − P 
+
+> t
+
+A(i) 
+
+> t
+
+log πθ (y(i) 
+
+> t
+
+) has zero gradient. 
+
+Part 2. By Prop. 5, the TRACE gradient on y(i) decomposes additively into a span piece on Sy(i) and a non-span piece on Ny(i) . Part 1 zeroes the non-span GRPO piece on every token. On a correct rollout (R(x, y (i)) = 1 ), the annotator places spans only in Ky(i) (no error spans), so the span piece is purely a forward-KL term: P 
+
+> t∈K y(i)
+
+wt · ∇ θ KL F (sg( πT )∥πθ ). By Lemma 1 (Eq. (4) ), this gradient at logit 
+
+ℓv is πθ (v) − πT (v) for each vocabulary entry v, summed over t ∈ K y(i) . The result is non-zero whenever there exists a position t ∈ K y(i) and a token v with πθ (v | x, y <t )̸ = πT (v | x, c, y <t ) — a generic condition satisfied except on the measure-zero event of perfect distributional agreement. 18 C Experimental Details 
+
+C.1 Training Hyperparameters Common settings. All methods share: Qwen3-8B base, OpenThoughts-114k math subset (up to 30K problem–solution pairs), H100 GPUs, AdamW optimizer with weight decay 0.01 and gradient-clip norm 1.0, max prompt length 2048 , vLLM rollout at T = 0 .6, train batch size 32 with G = 8 
+
+rollouts per problem, mini-batch size 32 , learning rate 1×10 −5 with 10 -step linear warm-up, and 300 
+
+total training steps. Max response length is 32768 for Think-student training and 8192 for NoThink-student ablations. Method-specific deltas are listed in Tab. 4 (baselines) and Tab. 5 (TRACE); best-checkpoint indices used for Tab. 2 are TRACE step 250 , GRPO step 250 , SDPO step 35 , SRPO step 65 (collapse onset). Table 4: Method-specific hyperparameters for the four baselines. “—” marks parameters not appli-cable to the method. All baselines use AdamW with the common settings above and learning rate 
+
+1×10 −5.                                  
+
+> GRPO SDPO [Hübotter et al., 2026] SRPO [Li et al., 2026a] RLSD [Yang et al., 2026] Distillation divergence —JSD ( α=0 .5)FKL — (no KL grad) Distillation top-K—100 100 —Teacher / EMA —frozen (EMA 0)EMA 0.05 sync N=10
+> λschedule —constant constant 1.0→0over 50 steps Other DAPO ε=0 .2/0.28 , IS-clip 2correct-sibling rollouts entropy suppression β=1 log-ratio multiplier on GRPO advantage
+
+Table 5: TRACE-specific hyperparameters (default (μE , μ K ) = (0 , 1) , FKL on Ky only). 
+
+Category Parameter Value 
+
+Loss Distillation divergence (default) FKL on Ky
+
+Distillation top-K 100 Per-vocab KL clip ( τ ) 0.05 Coverage cap ( α) 0.25 DAPO εlow /ε high 0.2/0.28 
+
+Schedule KL warm-up start ( tstart ) 10 KL decay window ( Tdecay ) 30 Initial KL weight ( w0) 0.5 Teacher sync interval ( N ) 10 Routing Default (μE , μ K ) (0 , 1) 
+
+Thinking mode symmetric (student / teacher both Think) Annotator qwen3.5-plus , thinking disabled 
+
+C.2 Algorithm 
+
+Algorithm 1 gives the per-mini-batch update loop. The annotator πA runs once per rollout to produce span masks and a coarse type label, the teacher πT then forwards in thinking mode conditioned on 
+
+(x, c (i)), and the routed mixed-KL loss is added to the GRPO loss with weight λk during the warm-up / decay window; after step tstart + Tdecay the method reduces to pure GRPO. 19 Algorithm 1 TRACE (one mini-batch update) 
+
+Require: policy πθ , teacher πT , annotator πA, current step k 
+
+> 1:
+
+Sample G rollouts {ˆy(i)}Gi=1 ∼ πS (·| x); compute R(i) and GRPO advantages ˆA(i) 
+
+> 2:
+
+for each rollout ˆy(i) do  
+
+> 3:
+
+Eˆy(i) or Kˆy(i) , type label τ (i) ← πA(x, ˆy(i), R (i)) 
+
+> 4:
+
+Project character spans to token mask m(i), cap at α = 0 .25  
+
+> 5:
+
+end for  
+
+> 6:
+
+Forward πT in thinking mode on (x, c (i), ˆy(i)) with c(i) = τ (i) as private diagnostic prefix  
+
+> 7:
+
+Forward πS in thinking mode on ˆy(i) (symmetric Think configuration; asymmetric NoThink-student is reported in the asymmetric-thinking ablation, App. D.7)  
+
+> 8:
+
+Compute mixed-KL loss per Eq. (1) weighted by λk 
+
+> 9:
+
+Compute GRPO loss on non-span tokens, plus ρk· GRPO on span tokens (where ρk = (1 −
+
+λk/w 0) smoothly reintroduces GRPO during decay)  
+
+> 10:
+
+Update θ with L(k)total = L(N )GRPO + ρkL(S)GRPO + λk [ L(E)RKL + ηL(K)FKL ] 
+
+> 11:
+
+if k mod N == 0 then  
+
+> 12:
+
+θT ← θ ▷ periodic teacher sync  
+
+> 13:
+
+end if  
+
+> 14:
+
+if λk = 0 and ρk = 1 then  
+
+> 15:
+
+Skip teacher forward; method reduces to pure GRPO.  
+
+> 16:
+
+end if 
+
+20 C.3 Annotator and Teacher Prompts 
+
+The privileged annotator πA (default: qwen3.5-plus API) receives a (problem, rollout, verifier-outcome) triple and returns a JSON span specification. Annotator thinking mode is disabled; teacher thinking mode is enabled. The four prompt templates below are reproduced verbatim from the released code. 
+
+Annotator πA — wrong-rollout error-span prompt 
+
+You are a mathematics error locator. The student’s solution is shown as numbered segments 
+
+[0] , [1] , [2] , . . . Identify the segments that contain the root-cause reasoning errors. 
+
+Output (strict JSON): 
+
+{ error_spans: [ { segment_ids: [...], error_type } ] } error_type ∈ { missed_case , illegal_step , wrong_constraint , wrong_equivalence ,
+
+premature_conclusion , format_error , arithmetic_slip , sign_error , off_by_one }. 
+
+Rules. Each span is 1–3 consecutive segment_ids . Identify 0–3 spans, focusing on root-cause errors rather than downstream propagation of an upstream mistake. For omissions, select the segment immediately before the gap. Return an empty list if no segment can be confidently identified as root-causal — do not guess. Output only the JSON; do not explain, rewrite, or solve the problem. 
+
+Annotator πA — correct-rollout key-span prompt 
+
+You are a mathematics reasoning analyst. The student’s solution is shown as numbered segments [0] , [1] , [2] , . . . Identify the segments that carry the decisive reasoning steps — the critical decisions or insights that make this solution work. 
+
+Output (strict JSON): 
+
+{ key_spans: [ { segment_ids: [...], step_type } ] } step_type ∈ { case_split , boundary_check , invariant , substitution , constraint_use ,
+
+symmetry , construction_step , final_verification , key_formula , insight }. 
+
+Rules. Each span is 1–3 consecutive segment_ids . Identify 0–3 spans, skipping routine algebra, restatements, and final-answer formatting. Return an empty list if no segment is confidently critical — do not pad with low-importance steps. Output only the JSON; do not explain or solve the problem. 
+
+Teacher πT — wrong-rollout diagnostic prefix 
+
+{ problem } 
+
+[Private diagnostic context. Do not mention this context in the response.] 
+
+A sampled solution to this problem contains a local reasoning issue of the following type: 
+
+– { error_descriptions } 
+
+When solving, be especially careful around this type of issue. Do not reveal, quote, or locate the diagnostic context. Solve the problem independently and end with a boxed answer. 
+
+Teacher πT — correct-rollout diagnostic prefix 
+
+{ problem } 
+
+[Private diagnostic context. Do not mention this context in the response.] 
+
+A successful solution to this problem relies on reasoning steps of the following type: 
+
+– { step_descriptions } 
+
+When solving, make the corresponding reasoning explicit enough to support the answer, but do not use checklist language or refer to this context. End with a boxed answer. 
+
+21 The teacher therefore receives only the original problem x plus a coarse type label; no rollout text, span locations, or span content are passed in. As in standard on-policy distillation it then evaluates token logits causally on the sampled prefix ˆy<t .
+
+C.4 Span-to-Token Alignment 
+
+Given character-level spans returned by πA over the response text, we project to a token boolean mask 
+
+m ∈ { 0, 1}|ˆy| as follows: for each token yt we compute its character interval [c− 
+
+> t
+
+, c + 
+
+> t
+
+) by greedy alignment of single-token decodes against the original response (avoiding decode–re-encode round-trip drift); a token is marked if its interval intersects any span. We then enforce |{ t : mt = 1 }| ≤ α|ˆy|
+
+with α = 0 .25 by keeping the top-weight tokens. Pseudocode is in our released code. 
+
+C.5 Decoding Configurations 
+
+We use two decoding protocols: (i) main , the Qwen3 official thinking-mode protocol — 
+
+T =0 .6, p=0 .95 , k=20 , min p=0 , max_new_tokens = 38912 — used for all main results, the annotator-quality and asymmetric-thinking ablations, and OOD evaluation; and (ii) nonthinking ,max_new_tokens = 8192 with thinking mode disabled, used only for the NoThink-eval ablation (Tab. 10). 
+
+D Additional Results 
+
+D.1 Extended Related Work and Paradigm Comparison On-policy distillation lineage. MiniLLM [Hinton et al., 2015, Kim and Rush, 2016, Sanh et al., 2019, Ross et al., 2011, Gu et al., 2024] and GKD [Wen et al., 2023, Ko et al., 2024, Agarwal et al., 2023] establish on-policy KD with reverse / forward / JSD-mixed divergences and document the reward-hacking failure mode of the unstabilized recipe. SDPO [Hübotter et al., 2026] and follow-ups [Zhao et al., 2026, Shenfeld et al., 2026, Penaloza et al., 2026, Lu and Thinking Machines Lab, 2025] extend the recipe to large reasoning models with privileged-context teachers. 
+
+Long-horizon collapse and concurrent mitigations. RLHF studies connect alignment training to generalization and diversity shifts [Kirk et al., 2024]; Kim et al. [2026] attribute self-distillation collapse to suppression of epistemic verbalization; Yang et al. [2026] formalize an information-asymmetric ill-posedness with an irreducible mutual-information gap and propose RLSD which uses the teacher’s log-probability ratio as a magnitude multiplier within GRPO; Li et al. [2026a] propose SRPO with sample-level routing. TRACE departs from the GKD line by treating divergence direction as a per-token-class action (§3), and Prop. 17 (App. B.9) gives the idealized corner geometry that supports this routing. 
+
+Token-importance, process supervision, and rubrics. Li et al. [2026b] find ∼97% of mass concen-trates on shared student-teacher tokens, and token / step-level credit-assignment works [Kazemnejad et al., 2025, Lin et al., 2024, Xu et al., 2026] retain or upweight only sparse critical positions without performance loss. Process reward models [Lightman et al., 2023, Wang et al., 2024] and recent advantage-shaping works [Wang et al., 2025, Sun et al., 2025] provide token-level signals at the cost of training auxiliary networks. Rubric-as-signal methods [Lv et al., 2026] train a query-specific rubric generator using a single rubric per query shared across all responses; TRACE instead uses a 
+
+rollout-specific diagnostic prefix for KL-loss localization rather than scalar reward, requiring no extra reward model and no per-query rubric training. 
+
+Paradigm-axis comparison. Tab. 6 positions TRACE against related paradigms by signal type, teacher type, extra information, and KL support. 22 Table 6: Comparison of post-training paradigms. Bold marks TRACE’s distinctive choices. 
+
+Method Signal Teacher Extra info KL support SFT labels none gold response demo tokens GRPO verifier R none none no teacher KL OPD/GKD logits external / frozen info-symmetric all tokens SDPO logits self, EMA feedback + sibling all tokens SRPO R + logits self, EMA feedback + sibling branch-weighted RLSD R × ˜wt self, sync N =10 verified trace r all tokens 
+
+TRACE R + span KL self, sync N =10 coarse type only critical spans 
+
+D.2 Token-level Credit Assignment Case Study 
+
+Figure 6 visualizes token-level credit on a Diophantine case study ( 6a = 1 + 2 b + 3 c) for one incorrect and one correct rollout. Credit profiles are measured per-token update magnitudes for RLSD, SDPO, and TRACE (one optimization step on the same rollout, same seed); the right panels report concentration inside annotator spans versus outside. Rollout A — incorrect (R = 0) final answer: (1,1,1) and (2,3,3) ✗ misses (2,5,1) 
+
+RLSD 
+
+A ⋅ wt, A < 0 
+
+Mod 4: for a≥2, b≥2 ⇒ c odd. Mod 9 for a≥2: 6^a ≡ 0. If c≥2: 3^c ≡ 0, so 2^b ≡ 8 (mod 9). 
+
+Cycle of 2 mod 9 has period 6, so b ≡ 3 (mod 6). Combining for a≥2: b≡3 (mod 6) and c odd. 
+
+a=1: only (1,1,1). a=2 with b∈{3,9,…}: only b=3, giving (2,3,3). a≥3: mod 8 gives 4 ≢ 0, no 
+
+solutions. Final answer: (1,1,1) and (2,3,3). 
+
+SDPO 
+
+per-token KL 
+
+Mod 4: for a≥2, b≥2 ⇒ c odd. Mod 9 for a≥2: 6^a ≡ 0. If c≥2: 3^c ≡ 0, so 2^b ≡ 8 (mod 9). 
+
+Cycle of 2 mod 9 has period 6, so b ≡ 3 (mod 6). Combining for a≥2: b≡3 (mod 6) and c odd. 
+
+a=1: only (1,1,1). a=2 with b∈{3,9,…}: only b=3, giving (2,3,3). a≥3: mod 8 gives 4 ≢ 0, no 
+
+solutions. Final answer: (1,1,1) and (2,3,3). 
+
+TRACE 
+
+RKL on E y — ablation 
+
+Mod 4: for a≥2, b≥2 ⇒ c odd. Mod 9 for a≥2: 6^a ≡ 0. If c≥2: 3^c ≡ 0, so 2^b ≡ 8 (mod 9). 
+
+Cycle of 2 mod 9 has period 6, so b ≡ 3 (mod 6). Combining for a≥2: b≡3 (mod 6) and c odd. 
+
+a=1: only (1,1,1). a=2 with b∈{3,9,…}: only b=3, giving (2,3,3). a≥3: mod 8 gives 4 ≢ 0, no 
+
+solutions. Final answer: (1,1,1) and (2,3,3). 
+
+Rollout B — correct (R = 1) final answer: (1,1,1), (2,5,1), (2,3,3) ✓ recovers all three 
+
+RLSD 
+
+A ⋅ wt, A > 0 
+
+Test small a directly. a=1: 2^b+3^c=5 → (1,1,1). a=2: c=1 gives (2,5,1); c=3 gives (2,3,3). 
+
+Now bound a≥3 by modular arithmetic. Case c≥2 and a≥2: mod 9 ⇒ 2^b≡8, b≡3 (mod 6). For a≥3: 
+
+mod 8 ⇒ 1+0+3^c ∈ {2,4} ≢ 0. Case c=1: 6^a=4+2^b, mod 8 ⇒ b=2. But mod 3 ⇒ b odd, 
+
+contradicting b=2. Final answer: (1,1,1), (2,5,1), (2,3,3). 
+
+SDPO 
+
+per-token KL 
+
+Test small a directly. a=1: 2^b+3^c=5 → (1,1,1). a=2: c=1 gives (2,5,1); c=3 gives (2,3,3). 
+
+Now bound a≥3 by modular arithmetic. Case c≥2 and a≥2: mod 9 ⇒ 2^b≡8, b≡3 (mod 6). For a≥3: 
+
+mod 8 ⇒ 1+0+3^c ∈ {2,4} ≢ 0. Case c=1: 6^a=4+2^b, mod 8 ⇒ b=2. But mod 3 ⇒ b odd, 
+
+contradicting b=2. Final answer: (1,1,1), (2,5,1), (2,3,3). 
+
+TRACE 
+
+FKL on K y — default ours 
+
+Test small a directly. a=1: 2^b+3^c=5 → (1,1,1). a=2: c=1 gives (2,5,1); c=3 gives (2,3,3). 
+
+Now bound a≥3 by modular arithmetic. Case c≥2 and a≥2: mod 9 ⇒ 2^b≡8, b≡3 (mod 6). For a≥3: 
+
+mod 8 ⇒ 1+0+3^c ∈ {2,4} ≢ 0. Case c=1: 6^a=4+2^b, mod 8 ⇒ b=2. But mod 3 ⇒ b odd, 
+
+contradicting b=2. Final answer: (1,1,1), (2,5,1), (2,3,3). 
+
+concentration ratio 
+
+RLSD 1.1× 
+
+SDPO 1.1× 
+
+TRACE 8.5× 
+
+concentration ratio 
+
+RLSD 1.1× 
+
+SDPO 1.0× 
+
+TRACE 8.5× 
+
+Figure 6: Token-level credit assignment on the Diophantine case study. Black boxes denote annotator spans overlaid for all methods; only TRACE uses them as loss masks. Credit is normalized update magnitude, and the concentration ratio is mean credit inside boxes divided by outside. Rollout A shows the optional RKL-on-Ey
+
+ablation; Rollout B shows the default FKL-on-Ky configuration. 
+
+23 D.3 Annotator Quality Dynamics 0 50 100 150 200 250 300         
+
+> Training step
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> 0.70
+> Validation score (mean@16)
+> KL-active window
+> (t start =10 , T decay =30 )
+> (a) Full training trajectory
+> 020 40 60
+> Training step
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> 0.70
+> (b) Zoom: KL-active window
+> GRPO (reference) TRACE-online-self (current policy as annotator) TRACE-strong (qwen3.5-plus annotator)
+
+Figure 7: Annotator ablation dynamics (cf. Tab. 3). Validation mean@16 on OpenThoughts held-out. Shaded band in (a) marks the KL-active window (step 10–40); (b) zooms in. Online-self lags strong-API only during this window and stabilizes ∼1.5 pp below strong; both outperform GRPO throughout. EMA α = 0 .85 .
+
+D.4 Evaluation Protocol Sanity Checks 
+
+The Qwen3-8B base scores reported in the “base” row of Tab. 2 are independently re-graded with an 
+
+ensemble OR grader ( verl/math_dapo.py ∨ HF math-verify ∨ AIME-int compare ∨ normalized-string compare); across all five eval cells the strict-vs-ensemble difference is ≤ 0.03 pp, i.e. smaller than the bootstrap CI width on a problem set of this size. The headline strict-grader numbers are therefore not driven by grader choice. Tab. 7 reports cell-wise bootstrap 95% confidence intervals over problems for the main held-out results. These intervals are intended for calibration of benchmark uncertainty; because AIME contains only 30 problems, we avoid treating individual AIME-column gaps as standalone significance claims. Table 7: Cell-wise bootstrap 95% confidence intervals for Tab. 2. Each cell reports mean accuracy with a bootstrap interval over problem IDs. AVG is the unweighted mean over the five benchmark means.                                                                                               
+
+> Method MATH-500 AIME 24 AIME 25 AMC 23 GPQA-D AVG Qwen3-8B base (ref.) 96 .80 [95 .48 ,98 .00] 76 .25 [62 .50 ,87 .92] 67 .50 [54 .17 ,80 .42] 95 .94 [92 .50 ,98 .75] 58 .27 [52 .21 ,64 .20] 78 .95 [75 .04 ,82 .86]
+> GRPO 97 .30 [96 .03 ,98 .45] 77 .08 [62 .71 ,89 .38] 68 .96 [54 .58 ,82 .08] 96 .56 [92 .19 ,99 .38] 53 .85 [48 .04 ,59 .66] 78 .75 [74 .67 ,82 .83]
+> SDPO 95 .13 [93 .65 ,96 .48] 52 .50 [38 .33 ,66 .67] 41 .25 [26 .04 ,56 .67] 91 .41 [84 .69 ,96 .25] 39 .90 [34 .85 ,44 .95] 64 .04 [59 .58 ,68 .50]
+> SRPO 96 .48 [95 .13 ,97 .65] 69 .17 [54 .58 ,82 .08] 54 .17 [39 .58 ,67 .50] 93 .12 [87 .50 ,97 .50] 37 .31 [32 .32 ,42 .42] 70 .05 [65 .87 ,74 .23]
+> RLSD 96 .68 [95 .35 ,97 .90] 75 .42 [61 .67 ,87 .08] 68 .54 [55 .21 ,81 .46] 97 .03 [93 .12 ,99 .38] 57 .26 [51 .58 ,62 .82] 78 .99 [74 .96 ,82 .98]
+> TRACE (RKL on Ey)97 .48 [96 .18 ,98 .55] 78 .54 [64 .17 ,90 .42] 70 .42 [56 .25 ,83 .33] 97 .81 [94 .38 ,99 .69] 56 .44 [50 .06 ,62 .69] 80 .14 [76 .08 ,84 .15]
+> TRACE (FKL on Ky)97 .83 [96 .65 ,98 .83] 80 .21 [66 .67 ,92 .50] 73 .54 [59 .58 ,86 .25] 97 .66 [94 .06 ,99 .69] 58 .33 [52 .53 ,64 .14] 81 .51 [77 .57 ,85 .45]
+
+D.5 SDPO/SRPO Re-Implementation Sweep 
+
+Tab. 8 lists the configurations we tried for the SDPO and SRPO baselines. Official training code is not publicly released, so the entries are our re-implementations of the published objectives. Each row gives the values explored and which value was selected for the headline rows of Tab. 2; the per-cell training curves are released with the code. 
+
+Transfer caveat. The original SDPO and SRPO gains are reported on scientific / code / chemistry benchmarks with different feedback channels; our setting is long-horizon math RLVR with Qwen3 Think rollouts. We therefore treat the SDPO and SRPO rows of Tab. 2 as faithful re-implementations under our setting, not as claims about the original authors’ exact systems. The gap to the original reports is plausibly due to the change in domain, feedback channel, base model, and long-horizon Think-mode generation; we do not isolate a single cause. The same all-token collapse on Qwen3-1.7B (Fig. 3) further weakens a base-model-specific implementation-artifact explanation: the failure mode reproduces across two scales and >12 swept configurations. 24 Table 8: SDPO/SRPO re-implementation sweep on Qwen3-8B + OpenThoughts math. Selection is by OpenThoughts validation, never by the held-out benchmarks of Tab. 2. “Best” lists the configuration that maximized validation reward before the collapse onset documented in App. D.6.                            
+
+> Factor Values tested Best
+> Learning rate {10 −6,5×10 −6,10 −5}1×10 −5
+> Batch size {32 ,256 }32
+> EMA rate {0,0.05 }SDPO 0/ SRPO 0.05
+> Distillation top-K{20 ,100 }100
+> Divergence {FKL ,RKL ,JSD }SDPO JSD ( α=0 .5) / SRPO FKL Thinking mode symmetric / asymmetric asymmetric (both modes collapse) Per-vocab KL clip {0,0.05 }0.05
+
+Across the sweep, two failure symptoms (length collapse, entropy rise; Fig. 8) appear within 150–200 steps; the third (validation collapse) is the headline observation of §5.2. Best-checkpoint numbers from the surviving early window are what enter Tab. 2. The gap to the original SDPO/SRPO reports is plausibly due to the change in domain (math vs scientific / code), feedback channel, base model (Qwen3-8B), and long-horizon Think-mode generation; we do not isolate a single cause. 25 D.6 Three-Symptom Failure Pattern of All-Token Self-OPD Baselines 0 50 100 150 200 250 300                            
+
+> Training step
+> 1000
+> 2000
+> 3000
+> 4000
+> 5000
+> Response length (tokens)
+> (a) Symptom 1: Response length collapse
+> TRACE (FKL on y, ours)
+> TRACE (RKL on y, ablation)
+> GRPO
+> RLSD
+> SDPO
+> SRPO
+> 050 100 150 200 250 300
+> Training step
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> 1.8
+> Per-token actor entropy (nats)
+> (b) Symptom 2: Per-token entropy rise
+> TRACE (FKL on y, ours)
+> TRACE (RKL on y, ablation)
+> GRPO
+> RLSD
+> SDPO
+> SRPO
+> 050 100 150 200 250 300 350 400
+> Training step
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> Entropy (nats)
+> feedback
+> loop ignites
+> (k 250 )
+> (c) SRPO mechanism: EMA teacher student feedback loop
+> SRPO actor entropy
+> SRPO EMA teacher entropy
+> 050 100 150 200 250 300 350 400
+> Training step
+> 0.000
+> 0.005
+> 0.010
+> 0.015
+> 0.020
+> 0.025
+> Distillation loss
+> residual signal persists
+> through teacher collapse
+> (d) SRPO suppression engages but cannot eliminate residual signal
+> hybrid_distill_loss
+> entropy_weight (suppression factor)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Entropy-weighting factor
+> Three-symptom failure pattern of all-token self-OPD baselines, and the SRPO inner mechanism
+
+Figure 8: Three-symptom failure pattern of all-token self-OPD baselines, and the SRPO inner mechanism. (a) Response length over training. SDPO collapses from 2027 → 1042 tokens (min 528) and SRPO from 1873 → 759 (min 460), reaching ∼25% of their starting length; TRACE, RLSD, and GRPO maintain or grow response length. (b) Per-token actor entropy. SDPO climbs to 1.74 nats (4.4× the GRPO baseline) and SRPO to 1.03 nats; TRACE (FKL) stays at 0.43 nats, comparable to GRPO/RLSD. The two symptoms together — collapsed length with elevated per-token entropy on the surviving short responses — match the description in Gu et al. [2024] of unstabilized on-policy distillation. (c) SRPO actor entropy and EMA teacher entropy plotted in lock-step; teacher entropy tracks actor entropy throughout training (gap < 0.1 nat at every step), with both climbing rapidly past step 250. This is the EMA feedback loop predicted by Kim et al. [2026]: student errors are absorbed into the next teacher snapshot, which then amplifies them. (d) SRPO’s entropy-aware suppression weight does decrease from 0.85 → 0.39 as teacher entropy rises, but never approaches zero; the residual hybrid_distill_loss continues to be applied throughout the collapse phase, indicating that SRPO’s stabilization mechanism slows but cannot eliminate the feedback amplification observed in (c). EMA smoothing α = 0 .80 ; raw values shown faintly. Step 250 marks the inflection point at which the feedback loop accelerates. 
+
+D.7 Asymmetric vs Symmetric Thinking 
+
+We ablate the SDPO-style asymmetric thinking configuration — teacher in Think mode but student in NoThink mode during training — against the default symmetric thinking configuration of TRACE (both in Think mode). Eval protocol matches the main paper: think-mode decoding T =0 .6, p=0 .95 ,
+
+k=20 , max_new_tokens = 38912 ; avg@8 on MATH-500 / GPQA-Diamond, avg@16 on AIME / AMC. All trained methods at best-checkpoint. Under asymmetric training, TRACE (FKL on 
+
+Ky ) underperforms GRPO by ∼3 pp on think-mode math but retains a positive +2 .9 pp gap on GPQA-Diamond OOD — a dissociation we interpret as the asymmetric configuration suppressing in-distribution thinking-mode surface-form imitation while preserving the OOD signal; symmetric thinking (Tab. 2) recovers in-distribution math without losing the OOD gain. 26 Table 9: Asymmetric thinking ablation. Training: teacher Think, student NoThink; eval: think-mode. GRPO row matches Tab. 2 (the asymmetric/symmetric distinction does not apply to GRPO since it has no teacher).                                                     
+
+> Method (asymmetric training) MATH-500 AIME 24 AIME 25 AMC 23 GPQA-D AVG Qwen3-8B base, Thinking ON (ref.) 96.80 76.25 67.50 95.94 58.27 78.95 + GRPO 97.30 77.08 68.96 96.56 53.85 78.75
+> + RLSD 95.85 73.75 65.42 95.31 56.88 77.44 + TRACE (FKL on Ky)94.88 70.83 62.50 94.06 56.69 75.79 + TRACE (RKL on Ey, ablation) 93.95 68.33 60.42 93.12 56.44 74.45 + SRPO 96.62 68.75 52.71 92.50 35.54 69.22 + SDPO 94.88 50.42 38.75 90.62 38.26 62.59
+
+D.8 NoThink-Eval Robustness Under Asymmetric Training 
+
+We further evaluate the asymmetric-training checkpoints under a NoThink decoding budget (max_new_tokens = 8192 , Thinking off, avg@8 ); this matches the student’s training mode and isolates content quality from chain-of-thought verbosity. TRACE (FKL on Ky ) attains the high-est AVG and exceeds GRPO by +2 .22 pp; SDPO and SRPO collapse further once thinking-token padding is removed. The result rules out a padding-only explanation for the asymmetric variant ;the corresponding NoThink check on the main symmetric-Think checkpoints is not included in this submission. Table 10: NoThink-eval ablation under asymmetric training. max_new_tokens = 8192 , Thinking OFF, avg@8 . Best per column bold .                                                    
+
+> Method (NoThink eval) MATH-500 AIME 24 AIME 25 AMC 23 GPQA-D AVG Qwen3-8B base, Thinking OFF (ref.) 84.20 27.08 19.17 68.12 48.11 49.34 + GRPO 91.47 43.75 29.58 80.00 48.86 58.73 + RLSD 90.88 43.33 33.75 82.50 45.22 59.14 + SDPO 78.85 15.83 11.67 58.75 28.66 38.75 + SRPO 62.52 8.33 5.00 40.94 36.49 30.66 + TRACE (RKL on Ey, ablation) 86.88 26.67 25.83 80.00 48.36 53.55
+> + TRACE (FKL on Ky)92.25 42.08 36.25 87.81 46.34 60.95
+
+D.9 Negative Results Generic rubrics and free-form critique (negative). A pre-TRACE exploration phase tested query-level rubric generators (Rubric-ARM-style [Lv et al., 2026]) and free-form LLM critique as alternative teacher conditioning. Both underperformed span-localized routing in our setup while incurring substantially higher annotator cost (per-query rubric generation is G× more expensive than the per-rollout type-label approach). The negative finding motivated the per-rollout type-label design adopted in TRACE. 
+
+All-token forward KL plus decay (negative). We further tested whether the same FKL signal applied to all response tokens, with the same decay schedule, would suffice. Under matched warm-up and decay, full-token FKL still degraded GPQA-Diamond OOD relative to the span-localized variant by step 100 , indicating that span localization (not just decay) is necessary. 27
