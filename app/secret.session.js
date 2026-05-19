@@ -1064,26 +1064,19 @@
       const providerInputs = Array.from(
         document.querySelectorAll('input[name="secret-setup-provider"]'),
       );
-      const platoSection = document.getElementById('secret-setup-plato-section');
-      const customSection = document.getElementById('secret-setup-custom-section');
-      const platoInput = document.getElementById('secret-setup-plato');
-      const platoVerifyBtn = document.getElementById('secret-setup-plato-verify');
-      const platoTestBtn = document.getElementById('secret-setup-plato-test');
-      const platoStatusEl = document.getElementById('secret-setup-plato-status');
-      const platoModelsWrap = document.getElementById('secret-setup-plato-models');
-      const customApiKeyInput = document.getElementById('secret-setup-custom-api-key');
-      const customBaseUrlInput = document.getElementById('secret-setup-custom-base-url');
-      const customModel1Input = document.getElementById('secret-setup-custom-model-1');
-      const customModel2Input = document.getElementById('secret-setup-custom-model-2');
-      const customModel3Input = document.getElementById('secret-setup-custom-model-3');
-      const platoModelSelect = document.getElementById('secret-setup-plato-model-select');
+      const llmApiKeyInput = document.getElementById('secret-setup-llm-api-key');
+      const llmBaseUrlInput = document.getElementById('secret-setup-llm-base-url');
+      const llmModel1Input = document.getElementById('secret-setup-llm-model-1');
+      const llmModel2Input = document.getElementById('secret-setup-llm-model-2');
+      const llmModel3Input = document.getElementById('secret-setup-llm-model-3');
+      const llmTestBtn = document.getElementById('secret-setup-llm-test');
+      const llmStatusEl = document.getElementById('secret-setup-llm-status');
+      const platoPresetBtn = document.getElementById('secret-setup-preset-plato');
       const deepseekPresetBtn = document.getElementById('secret-setup-preset-deepseek');
       const glmPresetBtn = document.getElementById('secret-setup-preset-glm');
       const minimaxPresetBtn = document.getElementById('secret-setup-preset-minimax');
       const kimiPresetBtn = document.getElementById('secret-setup-preset-kimi');
       const openaiPresetBtn = document.getElementById('secret-setup-preset-openai');
-      const customTestBtn = document.getElementById('secret-setup-custom-test');
-      const customStatusEl = document.getElementById('secret-setup-custom-status');
       const errorEl = document.getElementById('secret-setup-error');
       const backBtn = document.getElementById('secret-setup-back');
       const closeBtn = document.getElementById('secret-setup-close');
@@ -1094,65 +1087,28 @@
         !githubVerifyBtn ||
         !githubStatusEl ||
         !providerInputs.length ||
-        !platoSection ||
-        !customSection ||
-        !platoInput ||
-        !platoVerifyBtn ||
-        !platoTestBtn ||
-        !platoStatusEl ||
-        !platoModelsWrap ||
-        !platoModelSelect ||
-        !customApiKeyInput ||
-        !customBaseUrlInput ||
-        !customModel1Input ||
-        !customModel2Input ||
-        !customModel3Input ||
+        !llmApiKeyInput ||
+        !llmBaseUrlInput ||
+        !llmModel1Input ||
+        !llmModel2Input ||
+        !llmModel3Input ||
+        !llmTestBtn ||
+        !llmStatusEl ||
         !deepseekPresetBtn ||
         !glmPresetBtn ||
         !minimaxPresetBtn ||
         !kimiPresetBtn ||
         !openaiPresetBtn ||
-        !customTestBtn ||
-        !customStatusEl ||
         !errorEl ||
         !backBtn ||
         !closeBtn ||
         !genBtn
       ) {
+        console.error('Missing required elements for secret setup step 2');
         return;
       }
 
-      platoModelSelect.innerHTML = platoSummaryModels
-        .map((item) => `<option value="${item.value}">${item.label}</option>`)
-        .join('');
-
-      githubInput.value = initialGithubToken;
-      platoInput.value = initialApiKey;
-      customApiKeyInput.value =
-        currentProviderType === 'openai-compatible'
-        ? normalizeText(currentChatEntry.apiKey || '')
-        : '';
-      customBaseUrlInput.value =
-        currentProviderType === 'openai-compatible' ? initialCustomBaseUrl : '';
-      customModel1Input.value = initialCustomModels[0] || '';
-      customModel2Input.value = initialCustomModels[1] || '';
-      customModel3Input.value = initialCustomModels[2] || '';
-
-      providerInputs.forEach((input) => {
-        input.checked = input.value === currentProviderType;
-      });
-      platoModelSelect.value = initialPlatoModel || 'gpt-5-chat';
-      if (!platoModelSelect.value) {
-        platoModelSelect.value = 'gpt-5-chat';
-      }
-
       let githubOk = !!initialGithubToken;
-      let platoOk = !!initialApiKey;
-      let customOk =
-        currentProviderType === 'openai-compatible'
-        && !!initialCustomApiKey
-        && !!initialCustomBaseUrl
-        && initialCustomModels.length > 0;
 
       const setErrorText = (text, color) => {
         if (!errorEl) return;
@@ -1161,19 +1117,12 @@
       };
 
       const selectedProvider = () => {
-        const checked = providerInputs.find((input) => input.checked);
-        return checked ? checked.value : 'plato';
-      };
-
-      const selectedPlatoModel = () => {
-        return normalizeText(platoModelSelect.value || '');
+        // 对于融合后的界面，始终返回 'openai-compatible'
+        return 'openai-compatible';
       };
 
       const syncProviderSections = () => {
-        const provider = selectedProvider();
-        platoSection.style.display = 'block';
-        customSection.style.display =
-          provider === 'openai-compatible' ? 'block' : 'none';
+        // 融合后的界面不需要切换显示
       };
 
       const resetGithubStatus = () => {
@@ -1182,60 +1131,46 @@
         githubStatusEl.style.color = '#999';
       };
 
-      const resetPlatoStatus = () => {
-        platoOk = false;
-        platoStatusEl.innerHTML =
-          '将通过 <code>/v1/token/quota</code> 和一次 <code>hello world</code> 请求检查配置可用性。';
-        platoStatusEl.style.color = '#999';
+      let llmOk = false;
+
+      const resetLlmStatus = () => {
+        llmOk = false;
+        llmStatusEl.innerHTML = '将发送 <code>hello world</code> 请求检查接口与模型是否可用。';
+        llmStatusEl.style.color = '#999';
       };
 
-      const resetCustomStatus = () => {
-        customOk = false;
-        customStatusEl.innerHTML =
-          '将依次用已填写模型发送 <code>hello world</code>，检查接口与模型是否可用。';
-        customStatusEl.style.color = '#999';
-      };
-
-      const applyOpenAICompatiblePreset = (presetKey) => {
+      const applyPreset = (presetKey) => {
         const preset = getOpenAICompatiblePreset(presetKey);
         if (!preset) return;
-        providerInputs.forEach((input) => {
-          input.checked = input.value === 'openai-compatible';
-        });
-        syncProviderSections();
-        // 同时填写工作流 LLM 和聊天配置
-        platoInput.value = '';
-        customApiKeyInput.value = '';
-        customBaseUrlInput.value = preset.baseUrl || '';
-        customModel1Input.value = preset.models[0] || '';
-        customModel2Input.value = preset.models[1] || '';
-        customModel3Input.value = preset.models[2] || '';
-        resetCustomStatus();
-        resetPlatoStatus();
-        customApiKeyInput.focus();
+        llmBaseUrlInput.value = preset.baseUrl || '';
+        llmModel1Input.value = preset.models[0] || '';
+        llmModel2Input.value = preset.models[1] || '';
+        llmModel3Input.value = preset.models[2] || '';
+        resetLlmStatus();
+        llmApiKeyInput.focus();
         setErrorText(
           `已填入 ${preset.label} 预设，请补充 API Key 后点击”测试当前配置”。`,
           '#666',
         );
       };
 
-      const validateCustomDraft = () => {
-        const apiKey = normalizeText(customApiKeyInput.value);
-        const baseUrl = normalizeBaseUrlForStorage(customBaseUrlInput.value);
+      const validateLlmDraft = () => {
+        const apiKey = normalizeText(llmApiKeyInput.value);
+        const baseUrl = normalizeBaseUrlForStorage(llmBaseUrlInput.value);
         const models = sanitizeModelList(
           [
-            customModel1Input.value,
-            customModel2Input.value,
-            customModel3Input.value,
+            llmModel1Input.value,
+            llmModel2Input.value,
+            llmModel3Input.value,
           ],
           3,
         );
 
         if (!apiKey) {
-          throw new Error('请先输入 OpenAI-compatible API Key。');
+          throw new Error('请先输入 API Key。');
         }
         if (!baseUrl) {
-          throw new Error('请先输入 OpenAI-compatible Base URL。');
+          throw new Error('请先输入 Base URL。');
         }
         if (!/^https?:\/\//i.test(baseUrl)) {
           throw new Error('Base URL 需要以 http:// 或 https:// 开头。');
@@ -1251,45 +1186,17 @@
       };
 
       const collectProviderDraft = () => {
-        const provider = selectedProvider();
-        const apiKey = normalizeText(platoInput.value);
-        const model = selectedPlatoModel();
-        if (!apiKey) {
-          throw new Error('请先输入 API Key。');
-        }
-        if (!model) {
-          throw new Error('请选择用于工作流总结的大模型。');
-        }
-        if (provider === 'plato') {
-          return {
-            providerType: 'plato',
-            summaryApiKey: apiKey,
-            summaryBaseUrl: getDefaultPlatoBaseUrl(),
-            summaryModel: model,
-            chatModels: defaultPlatoModels,
-            rewriteModel: 'gemini-3-flash-preview',
-            filterModel: 'gemini-3-flash-preview-nothinking',
-            skipRerank: false,
-            reranker: {
-              apiKey,
-              baseUrl: getDefaultPlatoBaseUrl(),
-              model: 'qwen3-reranker-4b',
-            },
-          };
-        }
-
-        const customDraft = validateCustomDraft();
-        // openai-compatible 模式下，使用自定义配置作为工作流 LLM
+        const draft = validateLlmDraft();
         return {
           providerType: 'openai-compatible',
-          summaryApiKey: customDraft.apiKey,
-          summaryBaseUrl: customDraft.baseUrl,
-          summaryModel: customDraft.models[0] || model,
-          chatModels: customDraft.models,
-          chatApiKey: customDraft.apiKey,
-          chatBaseUrl: customDraft.baseUrl,
-          rewriteModel: customDraft.models[0] || model,
-          filterModel: customDraft.models[0] || model,
+          summaryApiKey: draft.apiKey,
+          summaryBaseUrl: draft.baseUrl,
+          summaryModel: draft.models[0],
+          chatModels: draft.models,
+          chatApiKey: draft.apiKey,
+          chatBaseUrl: draft.baseUrl,
+          rewriteModel: draft.models[0],
+          filterModel: draft.models[0],
           skipRerank: true, // OpenAI-compatible 模式跳过 rerank
           reranker: {
             enabled: false,
@@ -1298,26 +1205,10 @@
       };
 
       const buildPingEntries = () => {
-        const provider = selectedProvider();
-        if (provider === 'plato') {
-          const apiKey = normalizeText(platoInput.value);
-          const model = selectedPlatoModel();
-          if (!apiKey || !model) {
-            throw new Error('请先填写 API Key 并选择总结模型。');
-          }
-          return [
-            {
-              apiKey,
-              baseUrl: getDefaultPlatoBaseUrl(),
-              model,
-            },
-          ];
-        }
-
-        const customDraft = validateCustomDraft();
-        return customDraft.models.map((model) => ({
-          apiKey: customDraft.apiKey,
-          baseUrl: customDraft.baseUrl,
+        const draft = validateLlmDraft();
+        return draft.models.map((model) => ({
+          apiKey: draft.apiKey,
+          baseUrl: draft.baseUrl,
           model,
         }));
       };
@@ -1330,50 +1221,50 @@
         });
       };
 
+      // 初始化值
       if (initialGithubToken) {
         githubStatusEl.textContent = '已载入当前加密配置；如更换 GitHub Token，保存前请重新验证。';
         githubStatusEl.style.color = '#666';
       }
       if (initialApiKey) {
-        platoStatusEl.textContent = '已载入当前加密配置；如更换 API Key 或模型，建议重新验证或点击测试按钮。';
-        platoStatusEl.style.color = '#666';
+        llmApiKeyInput.value = initialApiKey;
+        llmBaseUrlInput.value = initialCustomBaseUrl;
+        llmModel1Input.value = initialCustomModels[0] || '';
+        llmModel2Input.value = initialCustomModels[1] || '';
+        llmModel3Input.value = initialCustomModels[2] || '';
+        llmStatusEl.textContent = '已载入当前加密配置；如更换配置，建议重新点击测试。';
+        llmStatusEl.style.color = '#666';
+        llmOk = true;
       }
-      if (currentProviderType === 'openai-compatible' && initialCustomApiKey && initialCustomBaseUrl) {
-        customStatusEl.textContent = '已载入当前加密配置；如更换 Base URL / 模型，建议重新点击测试。';
-        customStatusEl.style.color = '#666';
-      }
-
-      syncProviderSections();
 
       bindResetOnInput([githubInput], resetGithubStatus);
-      bindResetOnInput([platoInput, platoModelSelect], resetPlatoStatus);
       bindResetOnInput(
-        [customApiKeyInput, customBaseUrlInput, customModel1Input, customModel2Input, customModel3Input],
-        resetCustomStatus,
+        [llmApiKeyInput, llmBaseUrlInput, llmModel1Input, llmModel2Input, llmModel3Input],
+        resetLlmStatus,
       );
-      providerInputs.forEach((input) => {
-        input.addEventListener('change', () => {
-          syncProviderSections();
-          setErrorText(
-            '所有密钥信息将加密写入 GitHub Secrets（用于 GitHub Actions），并同步生成本地 secret.private 备份。',
-            '#999',
-          );
+
+      // 添加 BLT 预设按钮事件
+      const platoPresetBtn = document.getElementById('secret-setup-preset-plato');
+      if (platoPresetBtn) {
+        platoPresetBtn.addEventListener('click', () => {
+          applyPreset('plato');
         });
-      });
+      }
+
       deepseekPresetBtn.addEventListener('click', () => {
-        applyOpenAICompatiblePreset('deepseek');
+        applyPreset('deepseek');
       });
       glmPresetBtn.addEventListener('click', () => {
-        applyOpenAICompatiblePreset('glm');
+        applyPreset('glm');
       });
       minimaxPresetBtn.addEventListener('click', () => {
-        applyOpenAICompatiblePreset('minimax');
+        applyPreset('minimax');
       });
       kimiPresetBtn.addEventListener('click', () => {
-        applyOpenAICompatiblePreset('kimi');
+        applyPreset('kimi');
       });
       openaiPresetBtn.addEventListener('click', () => {
-        applyOpenAICompatiblePreset('openai');
+        applyPreset('openai');
       });
 
       backBtn.addEventListener('click', () => {
@@ -1430,73 +1321,19 @@
         }
       });
 
-      platoVerifyBtn.addEventListener('click', async () => {
-        const key = normalizeText(platoInput.value);
-        if (!key) {
-          platoStatusEl.textContent = '请先输入 API Key。';
-          platoStatusEl.style.color = '#c00';
-          platoOk = false;
-          return;
-        }
-        platoVerifyBtn.disabled = true;
-        platoStatusEl.textContent = '正在验证 API Key...';
-        platoStatusEl.style.color = '#666';
+      llmTestBtn.addEventListener('click', async () => {
+        llmTestBtn.disabled = true;
         try {
-          const resp = await fetch('https://api.bltcy.ai/v1/token/quota', {
-            method: 'GET',
-            headers: {
-              Authorization: `Bearer ${key}`,
-            },
-          });
-          if (!resp.ok) {
-            throw new Error(`HTTP ${resp.status}`);
-          }
-          const data = await resp.json().catch(() => null);
-          const quota = data && typeof data.quota === 'number' ? data.quota : 0;
-          const used = -quota;
-          platoStatusEl.textContent = `✅ 验证成功：已用额度约 ${used.toFixed(2)}。如需更稳妥，可继续点击“测试当前配置”。`;
-          platoStatusEl.style.color = '#28a745';
-          platoOk = true;
+          const models = await pingChatModels(buildPingEntries(), llmStatusEl);
+          llmStatusEl.textContent = `✅ 配置可用：${models.join(', ')}`;
+          llmStatusEl.style.color = '#28a745';
+          llmOk = true;
         } catch (e) {
-          platoStatusEl.textContent = `❌ 验证失败：${e.message || e}`;
-          platoStatusEl.style.color = '#c00';
-          platoOk = false;
+          llmStatusEl.textContent = `❌ 测试失败：${e.message || e}`;
+          llmStatusEl.style.color = '#c00';
+          llmOk = false;
         } finally {
-          platoVerifyBtn.disabled = false;
-        }
-      });
-
-      platoTestBtn.addEventListener('click', async () => {
-        platoTestBtn.disabled = true;
-        platoVerifyBtn.disabled = true;
-        try {
-          const models = await pingChatModels(buildPingEntries(), platoStatusEl);
-          platoStatusEl.textContent = `✅ 配置可用：${models.join(', ')}`;
-          platoStatusEl.style.color = '#28a745';
-          platoOk = true;
-        } catch (e) {
-          platoStatusEl.textContent = `❌ 测试失败：${e.message || e}`;
-          platoStatusEl.style.color = '#c00';
-          platoOk = false;
-        } finally {
-          platoTestBtn.disabled = false;
-          platoVerifyBtn.disabled = false;
-        }
-      });
-
-      customTestBtn.addEventListener('click', async () => {
-        customTestBtn.disabled = true;
-        try {
-          const models = await pingChatModels(buildPingEntries(), customStatusEl);
-          customStatusEl.textContent = `✅ 配置可用：${models.join(', ')}`;
-          customStatusEl.style.color = '#28a745';
-          customOk = true;
-        } catch (e) {
-          customStatusEl.textContent = `❌ 测试失败：${e.message || e}`;
-          customStatusEl.style.color = '#c00';
-          customOk = false;
-        } finally {
-          customTestBtn.disabled = false;
+          llmTestBtn.disabled = false;
         }
       });
 
@@ -1515,11 +1352,10 @@
           return;
         }
 
-        if (providerDraft.providerType === 'plato' && !platoOk) {
-          setErrorText('请先验证柏拉图 API Key，或点击”测试当前配置”。', '#c00');
+        if (!llmOk) {
+          setErrorText('请先点击”测试当前配置”，确认 LLM 配置可用。', '#c00');
           return;
         }
-        if (providerDraft.providerType === 'openai-compatible' && !customOk) {
           setErrorText('请先点击”测试当前配置”，确认 OpenAI-compatible 配置可用。', '#c00');
           return;
         }
