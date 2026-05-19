@@ -476,6 +476,25 @@
         throw new Error('总结模型配置不完整，无法写入 GitHub Secrets。');
       }
 
+      // 自动推断 provider 并添加前缀
+      const normalizedBaseUrlLower = summarizedBaseUrl.toLowerCase();
+      let llmModelForEnv = summarizedModel;
+      if (normalizedBaseUrlLower.includes('deepseek')) {
+        llmModelForEnv = 'deepseek/' + summarizedModel;
+      } else if (normalizedBaseUrlLower.includes('minimaxi')) {
+        llmModelForEnv = 'minimax/' + summarizedModel;
+      } else if (normalizedBaseUrlLower.includes('siliconflow')) {
+        llmModelForEnv = 'siliconflow/' + summarizedModel;
+      } else if (normalizedBaseUrlLower.includes('bigmodel')) {
+        llmModelForEnv = 'glm/' + summarizedModel;
+      } else if (normalizedBaseUrlLower.includes('moonshot')) {
+        llmModelForEnv = 'kimi/' + summarizedModel;
+      } else if (normalizedBaseUrlLower.includes('openai')) {
+        llmModelForEnv = 'openai/' + summarizedModel;
+      } else if (normalizedBaseUrlLower.includes('bltcy') || normalizedBaseUrlLower.includes('gptbest')) {
+        llmModelForEnv = 'blt/' + summarizedModel;
+      }
+
       const secretNameSummKey = 'Summarized_LLM_API_KEY';
       const secretNameSummUrl = 'Summarized_LLM_BASE_URL';
       const secretNameSummModel = 'Summarized_LLM_MODEL';
@@ -540,7 +559,7 @@
         { name: secretNameBltRewriteModel, value: rewriteModel || summarizedModel },
         { name: secretNameSkipRerank, value: skipRerank ? 'true' : 'false' },
         // 新的统一 LLM 配置变量（支持 MiniMax 等多 provider）
-        { name: secretNameLlmModel, value: summarizedModel },
+        { name: secretNameLlmModel, value: llmModelForEnv },
         { name: secretNameLlmApiKey, value: summarizedApiKey },
         { name: secretNameLlmBaseUrl, value: summarizedBaseUrl },
       ];
