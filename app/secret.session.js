@@ -465,8 +465,9 @@
       const summarizedApiKey = normalizeText(safeOptions.summarizedApiKey || '');
       const summarizedBaseUrl = normalizeBaseUrlForStorage(safeOptions.summarizedBaseUrl || '');
       const summarizedModel = normalizeText(safeOptions.summarizedModel || '');
-      const filterModel = normalizeText(safeOptions.filterModel || summarizedModel);
-      const rewriteModel = normalizeText(safeOptions.rewriteModel || summarizedModel);
+      // filterModel 和 rewriteModel 使用 summarizedModel（用户选择的第一个模型），不使用旧的值
+      const filterModel = summarizedModel;
+      const rewriteModel = summarizedModel;
       const skipRerank = !!safeOptions.skipRerank;
       const rerankerApiKey = normalizeText(safeOptions.rerankerApiKey || '');
       const rerankerBaseUrl = normalizeBaseUrlForStorage(safeOptions.rerankerBaseUrl || '');
@@ -555,8 +556,8 @@
         { name: secretNameBltBase, value: summarizedBaseUrl },
         { name: secretNameLlmPrimaryBase, value: summarizedBaseUrl },
         { name: secretNameBltSummaryModel, value: summarizedModel },
-        { name: secretNameBltFilterModel, value: filterModel || summarizedModel },
-        { name: secretNameBltRewriteModel, value: rewriteModel || summarizedModel },
+        { name: secretNameBltFilterModel, value: summarizedModel },
+        { name: secretNameBltRewriteModel, value: summarizedModel },
         { name: secretNameSkipRerank, value: skipRerank ? 'true' : 'false' },
         // 新的统一 LLM 配置变量（支持 MiniMax 等多 provider）
         { name: secretNameLlmModel, value: llmModelForEnv },
