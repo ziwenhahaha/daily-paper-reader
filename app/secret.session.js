@@ -1140,7 +1140,7 @@
         llmModel3Input.value = preset.models[2] || '';
         resetLlmStatus();
         llmApiKeyInput.focus();
-        const msg = '已填入 ' + preset.label + ' 预设，请补充 API Key 后点击”测试当前配置”。';
+        const msg = '已填入 ' + preset.label + ' 预设，请补充 API Key 后点击"测试当前配置"。';
         setErrorText(msg, '#666');
       };
 
@@ -1342,10 +1342,10 @@
         }
 
         if (!llmOk) {
-          setErrorText('请先点击”测试当前配置”，确认 LLM 配置可用。', '#c00');
+          setErrorText('请先点击"测试当前配置"，确认 LLM 配置可用。', '#c00');
           return;
         }
-          setErrorText('请先点击”测试当前配置”，确认 OpenAI-compatible 配置可用。', '#c00');
+          setErrorText('请先点击"测试当前配置"，确认 OpenAI-compatible 配置可用。', '#c00');
           return;
         }
 
@@ -1568,7 +1568,7 @@
     };
 
     // 统一渲染两种模式的 UI（仅使用新的两步初始化向导 / 解锁界面）
-    // 同时在此处挂钩后台管理面板的“密钥配置”按钮入口，利用当前闭包中的 renderInitStep1/renderInitStep2
+    // 同时在此处挂钩后台管理面板的"密钥配置"按钮入口，利用当前闭包中的 renderInitStep1/renderInitStep2
     try {
       window.DPRSecretSetup = window.DPRSecretSetup || {};
       window.DPRSecretSetup.openStep2 = function () {
@@ -1588,7 +1588,7 @@
     }
 
     if (hasSecretFile) {
-      // 已有 secret.private：展示“解锁 / 游客”界面
+      // 已有 secret.private：展示"解锁 / 游客"界面
       renderUnlockUI();
     } else {
       // 不存在 secret.private：进入初始化两步向导
@@ -1606,7 +1606,7 @@
       };
     };
 
-    // 默认视为锁定状态，直到用户选择“解锁 / 游客”
+    // 默认视为锁定状态，直到用户选择"解锁 / 游客"
     window.DPR_ACCESS_MODE = FORCE_GUEST_MODE ? 'guest' : 'locked';
 
     if (FORCE_GUEST_MODE) {
@@ -1618,7 +1618,7 @@
 
     if (!overlay) return;
 
-    // 检查是否已经存在 secret.private（用于区分“解锁”与“初始化”）
+    // 检查是否已经存在 secret.private（用于区分"解锁"与"初始化"）
     (async () => {
       try {
         const resp = await fetch(SECRET_FILE_URL, {
@@ -1661,7 +1661,7 @@
               } catch {
                 // ignore
               }
-              // 自动解锁成功时，仍然初始化一次 overlay，以便后台“密钥配置”按钮可以直接打开第二步向导
+              // 自动解锁成功时，仍然初始化一次 overlay，以便后台"密钥配置"按钮可以直接打开第二步向导
               // 注意：此时不移除 hidden 类，浮层保持隐藏，仅注册 DPRSecretSetup.openStep2 等入口
               try {
                 setupOverlay(true);
@@ -1687,7 +1687,7 @@
           openSecretOverlay(overlay);
         }
       } catch {
-        // 请求失败时按“文件不存在”处理：始终进入初始化向导
+        // 请求失败时按"文件不存在"处理：始终进入初始化向导
         window.DPR_ACCESS_MODE = 'locked';
         setupOverlay(false);
         openSecretOverlay(overlay);
