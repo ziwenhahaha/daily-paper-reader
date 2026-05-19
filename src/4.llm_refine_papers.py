@@ -309,7 +309,7 @@ def build_repeated_user_prompt(query: str) -> str:
 
 
 def call_filter(
-    client: BltClient,
+    client: LLMClient,
     all_requirements: List[Dict[str, str]],
     docs: List[Dict[str, str]],
     debug_dir: str,

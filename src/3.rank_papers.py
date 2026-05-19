@@ -238,7 +238,7 @@ def rrf_merge(scores: Dict[int, float], rank_idx: int, orig_idx: int) -> None:
 
 
 def process_file(
-  reranker: BltClient,
+  reranker: LLMClient,
   input_path: str,
   output_path: str,
   top_n: Optional[int],

@@ -893,7 +893,7 @@
       }, 100);
     };
 
-    // 初始化向导：第 2 步（支持 柏拉图 / OpenAI-compatible 两种模式）
+    // 初始化向导：第 2 步（支持 多种 LLM provider）
     const renderInitStep2 = (password) => {
       setStep2Modal(true);
       const currentSecret =
@@ -946,7 +946,7 @@
       modal.innerHTML = `
         <h2 style="margin-top:0;">🛡️ 新配置指引 · 第二步</h2>
         <div class="secret-setup-step2-grid" style="font-size:13px;">
-          <div class="secret-setup-step2-col">
+          <div class="secret-setup-step2-col" style="width:100%;">
             <div class="secret-setup-step2-block">
               <div class="secret-setup-step2-title">GitHub Token（必填）</div>
               <p class="secret-setup-step2-note">
@@ -969,129 +969,72 @@
               </div>
             </div>
 
-            <div id="secret-setup-plato-section" class="secret-setup-step2-block">
-              <div class="secret-setup-step2-title">工作流 / Reranker 专用 BLT（必填）</div>
-              <p class="secret-setup-step2-note">
-                BLT 用于 query enrich、LLM refine、总结与 reranker，是工作流硬依赖。
-              </p>
-              <div class="secret-setup-input-row multi-actions">
-                <input
-                  id="secret-setup-plato"
-                  type="password"
-                  autocomplete="off"
-                  placeholder="BLT API Key，例如：sk-xxxx"
-                  style="width:100%; box-sizing:border-box; padding:6px 8px; font-size:13px;"
-                />
-                <button id="secret-setup-plato-verify" type="button" class="secret-gate-btn secondary">
-                  验证
-                </button>
-                <button id="secret-setup-plato-test" type="button" class="secret-gate-btn secondary">
-                  测试
-                </button>
-              </div>
-              <div id="secret-setup-plato-status" style="min-height:18px; font-size:12px; color:#999; margin-bottom:8px;">
-                将通过 <code>/v1/token/quota</code> 和一次 <code>hello world</code> 请求检查配置可用性。
-              </div>
-
-              <div style="font-weight:500; margin-bottom:4px; display:flex; align-items:center; gap:4px;">
-                用于工作流总结 / 过滤的大模型
-                <span class="secret-model-tip">!
-                  <span class="secret-model-tip-popup">
-                    按照 Thinking（思考模式）的高负载场景估算：<br/>
-                    <br/>
-                    总结：15k 输入 + 4k 输出（含思考）<br/>
-                    提问：16.1k 输入 + 2k 输出（含思考）<br/>
-                    <br/>
-                    模型 · 约价（单次）：<br/>
-                    - Gemini 3 Flash：总结 ¥0.0195，提问 ¥0.0141（不到 2 分钱，100 篇论文约 2 元）<br/>
-                    - DeepSeek V3：总结 ¥0.0294，提问 ¥0.0267（不到 3 分钱，长输出性价比极高）<br/>
-                    - GPT-5：总结 ¥0.0588，提问 ¥0.0401（约 6 分钱）<br/>
-                    - Gemini 3 Pro：总结 ¥0.0780，提问 ¥0.0562（约 8 分钱，一篇论文不到 1 毛钱）
-                  </span>
-                </span>
-              </div>
-              <div id="secret-setup-plato-models" style="font-size:13px;">
-                <select id="secret-setup-plato-model-select" class="secret-setup-select"></select>
-              </div>
-            </div>
-          </div>
-
-          <div class="secret-setup-step2-col">
             <div class="secret-setup-step2-block">
-              <div class="secret-setup-step2-title">聊天模型来源</div>
+              <div class="secret-setup-step2-title">LLM 配置（工作流 + 聊天共用）</div>
               <p class="secret-setup-step2-note">
-                BLT 是工作流必填项；OpenAI-compatible 入口已重新开放，但仍属于实验性能力，仅作为聊天区模型来源。
-              </p>
-              <label class="secret-setup-provider-choice">
-                <input type="radio" name="secret-setup-provider" value="plato" />
-                <span><strong>聊天区也使用 BLT</strong>工作流总结、过滤、reranker 与聊天区统一使用柏拉图（BLTCY）模型。</span>
-              </label>
-              <label class="secret-setup-provider-choice">
-                <input type="radio" name="secret-setup-provider" value="openai-compatible" />
-                <span><strong>聊天区使用 OpenAI-compatible（实验性）</strong>工作流总结与 reranker 仍强制使用 BLT，最多 3 个自定义模型仅用于聊天区。</span>
-              </label>
-            </div>
-
-            <div id="secret-setup-custom-section" class="secret-setup-step2-block">
-              <div class="secret-setup-step2-title">OpenAI-compatible 聊天配置</div>
-              <p class="secret-setup-step2-note">
-                预设会自动填写 <code>Base URL</code> 与推荐模型；API Key 仍需你自行输入。这里的模型仅供聊天区使用。
+                选择 provider 预设，自动填入 Base URL 和推荐模型。API Key 需自行填写。<br/>
+                此配置将同时用于工作流（query enrich、LLM refine、总结）和聊天区。
               </p>
               <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
+                <button id="secret-setup-preset-plato" type="button" class="secret-gate-btn secondary">
+                  BLT（推荐）
+                </button>
                 <button id="secret-setup-preset-deepseek" type="button" class="secret-gate-btn secondary">
-                  填入 DeepSeek 预设
+                  DeepSeek
                 </button>
                 <button id="secret-setup-preset-glm" type="button" class="secret-gate-btn secondary">
-                  填入 GLM 预设
+                  GLM
                 </button>
                 <button id="secret-setup-preset-minimax" type="button" class="secret-gate-btn secondary">
-                  填入 MiniMax 预设
+                  MiniMax
                 </button>
                 <button id="secret-setup-preset-kimi" type="button" class="secret-gate-btn secondary">
-                  填入 Kimi 预设
+                  Kimi
                 </button>
                 <button id="secret-setup-preset-openai" type="button" class="secret-gate-btn secondary">
-                  填入 OpenAI 预设
+                  OpenAI
                 </button>
               </div>
               <input
-                id="secret-setup-custom-api-key"
+                id="secret-setup-llm-api-key"
                 type="password"
                 autocomplete="off"
-                placeholder="聊天 API Key"
+                placeholder="API Key"
                 style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
               />
               <input
-                id="secret-setup-custom-base-url"
+                id="secret-setup-llm-base-url"
                 type="text"
                 autocomplete="off"
-                placeholder="聊天 Base URL，例如 https://api.openai.com/v1"
+                placeholder="Base URL，例如 https://api.openai.com/v1"
                 style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
               />
               <input
-                id="secret-setup-custom-model-1"
+                id="secret-setup-llm-model-1"
                 type="text"
                 autocomplete="off"
-                placeholder="聊天模型 1（默认）"
+                placeholder="模型 1（默认，用于工作流）"
                 style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
               />
               <input
-                id="secret-setup-custom-model-2"
+                id="secret-setup-llm-model-2"
                 type="text"
                 autocomplete="off"
-                placeholder="聊天模型 2（可选）"
+                placeholder="模型 2（可选，用于聊天）"
                 style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
               />
               <input
-                id="secret-setup-custom-model-3"
+                id="secret-setup-llm-model-3"
                 type="text"
                 autocomplete="off"
-                placeholder="聊天模型 3（可选）"
+                placeholder="模型 3（可选，用于聊天）"
                 style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
               />
-              <button id="secret-setup-custom-test" type="button" class="secret-gate-btn secondary secret-setup-step2-actions">
+              <button id="secret-setup-llm-test" type="button" class="secret-gate-btn secondary secret-setup-step2-actions">
                 测试当前配置
               </button>
+              <div id="secret-setup-llm-status" style="min-height:18px; font-size:12px; color:#999; margin-top:4px;"></div>
+            </div>
               <div id="secret-setup-custom-status" style="min-height:18px; font-size:12px; color:#999; margin-top:6px;">
                 将依次用已填写聊天模型发送 <code>hello world</code>，检查接口与模型是否可用。
               </div>
@@ -1260,15 +1203,18 @@
           input.checked = input.value === 'openai-compatible';
         });
         syncProviderSections();
+        // 同时填写工作流 LLM 和聊天配置
+        platoInput.value = '';
         customApiKeyInput.value = '';
         customBaseUrlInput.value = preset.baseUrl || '';
         customModel1Input.value = preset.models[0] || '';
         customModel2Input.value = preset.models[1] || '';
         customModel3Input.value = preset.models[2] || '';
         resetCustomStatus();
+        resetPlatoStatus();
         customApiKeyInput.focus();
         setErrorText(
-          `已填入 ${preset.label} 预设，请补充 API Key 后点击“测试当前配置”。`,
+          `已填入 ${preset.label} 预设，请补充 API Key 后点击”测试当前配置”。`,
           '#666',
         );
       };
@@ -1309,7 +1255,7 @@
         const apiKey = normalizeText(platoInput.value);
         const model = selectedPlatoModel();
         if (!apiKey) {
-          throw new Error('请先输入 BLT API Key。');
+          throw new Error('请先输入 API Key。');
         }
         if (!model) {
           throw new Error('请选择用于工作流总结的大模型。');
@@ -1333,21 +1279,20 @@
         }
 
         const customDraft = validateCustomDraft();
+        // openai-compatible 模式下，使用自定义配置作为工作流 LLM
         return {
           providerType: 'openai-compatible',
-          summaryApiKey: apiKey,
-          summaryBaseUrl: getDefaultPlatoBaseUrl(),
-          summaryModel: model,
+          summaryApiKey: customDraft.apiKey,
+          summaryBaseUrl: customDraft.baseUrl,
+          summaryModel: customDraft.models[0] || model,
           chatModels: customDraft.models,
           chatApiKey: customDraft.apiKey,
           chatBaseUrl: customDraft.baseUrl,
-          rewriteModel: 'gemini-3-flash-preview',
-          filterModel: 'gemini-3-flash-preview-nothinking',
-          skipRerank: false,
+          rewriteModel: customDraft.models[0] || model,
+          filterModel: customDraft.models[0] || model,
+          skipRerank: true, // OpenAI-compatible 模式跳过 rerank
           reranker: {
-            apiKey,
-            baseUrl: getDefaultPlatoBaseUrl(),
-            model: 'qwen3-reranker-4b',
+            enabled: false,
           },
         };
       };
@@ -1358,7 +1303,7 @@
           const apiKey = normalizeText(platoInput.value);
           const model = selectedPlatoModel();
           if (!apiKey || !model) {
-            throw new Error('请先填写柏拉图 API Key 并选择总结模型。');
+            throw new Error('请先填写 API Key 并选择总结模型。');
           }
           return [
             {
@@ -1488,13 +1433,13 @@
       platoVerifyBtn.addEventListener('click', async () => {
         const key = normalizeText(platoInput.value);
         if (!key) {
-          platoStatusEl.textContent = '请先输入柏拉图 API Key。';
+          platoStatusEl.textContent = '请先输入 API Key。';
           platoStatusEl.style.color = '#c00';
           platoOk = false;
           return;
         }
         platoVerifyBtn.disabled = true;
-        platoStatusEl.textContent = '正在验证柏拉图 API Key...';
+        platoStatusEl.textContent = '正在验证 API Key...';
         platoStatusEl.style.color = '#666';
         try {
           const resp = await fetch('https://api.bltcy.ai/v1/token/quota', {
@@ -1571,15 +1516,11 @@
         }
 
         if (providerDraft.providerType === 'plato' && !platoOk) {
-          setErrorText('请先验证柏拉图 API Key，或点击“测试当前配置”。', '#c00');
-          return;
-        }
-        if (providerDraft.providerType === 'openai-compatible' && !platoOk) {
-          setErrorText('请先验证 BLT API Key，工作流总结与 reranker 必须使用 BLT。', '#c00');
+          setErrorText('请先验证柏拉图 API Key，或点击”测试当前配置”。', '#c00');
           return;
         }
         if (providerDraft.providerType === 'openai-compatible' && !customOk) {
-          setErrorText('请先点击“测试当前配置”，确认 OpenAI-compatible 配置可用。', '#c00');
+          setErrorText('请先点击”测试当前配置”，确认 OpenAI-compatible 配置可用。', '#c00');
           return;
         }
 

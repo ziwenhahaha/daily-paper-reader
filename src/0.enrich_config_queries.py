@@ -106,7 +106,7 @@ def build_rewrite_prompt(query: str) -> List[Dict[str, str]]:
   ]
 
 
-def call_llm_json(client: BltClient, messages: List[Dict[str, str]], schema_name: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+def call_llm_json(client: LLMClient, messages: List[Dict[str, str]], schema_name: str, schema: Dict[str, Any]) -> Dict[str, Any]:
   resp = client.chat_structured(
     messages,
     schema_name=schema_name,

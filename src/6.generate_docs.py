@@ -41,7 +41,7 @@ _api_key_env = os.getenv("LLM_API_KEY")
 if _model_env:
     LLM_CLIENT = ClientFactory.from_env()
 elif os.getenv("BLT_API_KEY"):
-    LLM_CLIENT = BltClient(api_key=os.getenv("BLT_API_KEY"), model=os.getenv("BLT_SUMMARY_MODEL", "gemini-3-flash-preview"))
+    LLM_CLIENT = ClientFactory.from_env()
 
 DEFAULT_DOCS_CONCURRENCY = 4
 
