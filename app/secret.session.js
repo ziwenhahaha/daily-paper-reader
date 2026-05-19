@@ -1345,9 +1345,6 @@
           setErrorText('请先点击"测试当前配置"，确认 LLM 配置可用。', '#c00');
           return;
         }
-          setErrorText('请先点击"测试当前配置"，确认 OpenAI-compatible 配置可用。', '#c00');
-          return;
-        }
 
         const nowIso = new Date().toISOString();
         const plainConfig = {
