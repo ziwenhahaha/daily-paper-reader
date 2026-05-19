@@ -20,7 +20,12 @@ ARCHIVE_DIR = os.path.join(ROOT_DIR, "archive", TODAY_STR)
 RANKED_DIR = os.path.join(ARCHIVE_DIR, "rank")
 CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 
-DEFAULT_FILTER_MODEL = os.getenv("BLT_FILTER_MODEL") or "gemini-3-flash-preview-nothinking"
+DEFAULT_FILTER_MODEL = (
+    os.getenv("MINIMAX_FILTER_MODEL")
+    or os.getenv("LLM_MODEL")
+    or os.getenv("BLT_FILTER_MODEL")
+    or "MiniMax-M2.7"
+)
 DEFAULT_FILTER_CONCURRENCY = 4
 MAX_FILTER_RETRIES = 3
 
