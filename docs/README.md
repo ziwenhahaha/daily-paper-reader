@@ -7,115 +7,102 @@
 
 ## 每次日报
 - 最新运行日期：2026-04-20 ~ 2026-05-19
-- 运行时间：2026-05-19 05:59:05 UTC
+- 运行时间：2026-05-19 08:04:10 UTC
 - 运行状态：成功
-- 本次总论文数：20
-- 精读区：9
+- 本次总论文数：17
+- 精读区：6
 - 速读区：11
 
 ### 今日简报（AI）
-<think>The user wants a summary based on the data. The user says:
+<think>用户需要我作为日报编辑，输出3句以内、吸引人、简洁但具体的中文总结。必须基于给定的推荐数据，不要编造论文信息。
 
-"日报日期：2026-04-20 ~ 2026-05-19
-状态：成功
-总数：20 篇
-精读：9 篇
-速读：11 篇
-精读列表（含分数）：["《Power Distribution Bridges Sampling, Self-Reward RL, and Self-Distillation》（9.0/10）", "《Strat-Reasoner: Reinforcing Strategic Reasoning of LLMs in Multi-Agent Games》（9.0/10）"]
-速读列表（含分数）：["《Stratagem: Learning Transferable Reasoning via Trajectory-Modulated Game Self-Play》（8.0/10）", "《Randomly Initialized Networks Can Learn from Peer-to-Peer Consensus》（8.0/10）", "《Guiding Distribution Matching Distillation with Gradient-Based Reinforcement Learning》（8.0/10）"]"
+数据摘要：
+- 日报日期：2026-04-20 ~ 2026-05-19
+- 状态：成功
+- 总数：17篇
+- 精读：6篇
+- 速读：11篇
+- 精读列表中提到两篇9.0/10的论文：
+  1. 《Preference-Based Self-Distillation: Beyond KL Matching via Reward Regularization》（9.0/10）
+  2. 《Reason to Play: Behavioral and Brain Alignment Between Frontier LRMs and Human Game Learners》（9.0/10）
 
-Then: "请按以下格式输出：
+格式要求：
 1) 一句概括今天做了什么，适合标题感官。
-2) 一句给出最值得看的 1~2 个方向/结论。
+2) 一句给出最值得看的1~2个方向/结论。
 3) 一句给出下步建议（面向普通读者）。
-直接输出 1-3 行文本，不要 Markdown 标题，也不要 JSON。"
 
-We need to respond in Chinese, three lines, each line separate a single sentence. We must not output markdown titles or JSON. Should not include bullet points. Should be plain text lines.
+需要直接输出1-3行文本，不要Markdown标题，也不要JSON。
 
-Line 1: summary of what was done for the day (or period). The period is 2026-04-20 ~ 2026-05-19 (like a month). "成功" status means successful. We can say "本期完成20篇论文阅读，其中精读9篇，速读11篇" or something. But "today" is ambiguous; maybe "本期" is okay.
+让我组织一下：
+1. 第一句（标题感官）：概括本期日报的工作，比如"精读2篇9分论文，速读11篇前沿研究"之类的
+2. 第二句（方向/结论）：基于精读列表，给出最值得看的方向，比如强化学习偏好、自蒸馏、LRM人类行为对齐等
+3. 第三句（下步建议）：给普通读者的建议，比如关注偏好学习在LLM中的应用等
 
-Line 2: The most noteworthy directions/conclusions (1~2). We can say two key insights: Self-reward RL and self-distillation; strategic reasoning in multi-agent games; and transferable reasoning via game self-play. So we can mention the best-scored papers: The two 9.0/10 papers. So maybe "重点关注自奖励强化学习与自蒸馏实现的高效采样，以及策略推理在多智能体博弈中的提升" etc.
 
-Line 3: Suggest next steps for ordinary readers: "建议关注上述高分论文的实际应用，尝试将自奖励和自蒸馏方法用于自己的模型" etc. Something like that.
+现在我需要将这个思路转化为具体的输出内容。
+</think>
 
-We need to keep each line concise, within a sentence, not too long. Possibly about 20-30 characters each? The instruction: "一句概括今天做了什么，适合标题感官。" So we can produce a concise title-like sentence: "本月完成20篇论文阅读，含9篇精读、11篇速读" Something like that.
+精读2篇9分论文，探索偏好学习与前沿LRM认知对齐新进展
 
-Line 2: "最值得关注的两大方向为自奖励强化学习结合自蒸馏的采样优化，以及在多智能体博弈中提升LLM策略推理的框架。" That's maybe okay.
+偏好驱动自蒸馏和LRM游戏学习行为对齐是当前值得重点关注的两大方向
 
-Line 3: "普通读者可从阅读高分论文的摘要与实验结果入手，尝试在项目中引入自奖励机制或策略推理模块。" That is a suggestion.
-
-Make sure not to include any Markdown or JSON. So output exactly three lines:
-
-Line 1: "本月完成20篇论文阅读，其中9篇精读、11篇速读。"
-Line 2: "最值得关注的方向是自奖励强化学习与自蒸馏实现的高效采样，以及多智能体博弈中LLM策略推理的提升。"
-Line 3: "普通读者可先阅读这两篇9分论文的摘要和实验，尝试将自奖励或策略推理机制引入自己的模型。"
-
-Check the length: Line</think>
+建议读者优先关注偏好学习方法在提升LLM对齐效率中的应用潜力
 - 详情：[/20260420-20260519/README](/20260420-20260519/README)
 
 ### 精读区论文标签
-1. [Power Distribution Bridges Sampling, Self-Reward RL, and Self-Distillation](/20260420-20260519/2605.04542v1-power-distribution-bridges-sampling-self-reward-rl-and-self-distillation)  
+1. [Preference-Based Self-Distillation: Beyond KL Matching via Reward Regularization](/20260420-20260519/2605.05040v1-preference-based-self-distillation-beyond-kl-matching-via-reward-regularization)  
    标签：评分：9.0/10、query:rlg
-   evidence：幂分布连接自奖励强化学习与自蒸馏
-2. [Strat-Reasoner: Reinforcing Strategic Reasoning of LLMs in Multi-Agent Games](/20260420-20260519/2605.04906v1-strat-reasoner-reinforcing-strategic-reasoning-of-llms-in-multi-agent-games)  
+   evidence：基于奖励正则化的强化学习自蒸馏方法
+2. [Reason to Play: Behavioral and Brain Alignment Between Frontier LRMs and Human Game Learners](/20260420-20260519/2605.08019v1-reason-to-play-behavioral-and-brain-alignment-between-frontier-lrms-and-human-game-learners)  
    标签：评分：9.0/10、query:rlg
-   evidence：多智能体游戏AI基于强化学习的策略推理
-3. [Skill1: Unified Evolution of Skill-Augmented Agents via Reinforcement Learning](/20260420-20260519/2605.06130v2-skill1-unified-evolution-of-skill-augmented-agents-via-reinforcement-learning)  
+   evidence：人工智能通过强化学习和大推理模型学习玩游戏
+3. [Learning from Language Feedback via Variational Policy Distillation](/20260420-20260519/2605.15113v1-learning-from-language-feedback-via-variational-policy-distillation)  
    标签：评分：9.0/10、query:rlg
-   evidence：统一强化学习框架协同进化技能选择利用和蒸馏
-4. [Evidence Over Plans: Online Trajectory Verification for Skill Distillation](/20260420-20260519/2605.09192v1-evidence-over-plans-online-trajectory-verification-for-skill-distillation)  
+   evidence：变分策略蒸馏从语言反馈中共同演化师生策略
+4. [Self-Distilled Agentic Reinforcement Learning](/20260420-20260519/2605.15155v1-self-distilled-agentic-reinforcement-learning)  
    标签：评分：9.0/10、query:rlg
-   evidence：使用后验蒸馏指数的在线轨迹验证技能蒸馏
-5. [TRACE: Distilling Where It Matters via Token-Routed Self On-Policy Alignment](/20260420-20260519/2605.10194v1-trace-distilling-where-it-matters-via-token-routed-self-on-policy-alignment)  
+   evidence：用于LLM智能体的自蒸馏强化学习
+5. [AMR-SD: Asymmetric Meta-Reflective Self-Distillation for Token-Level Credit Assignment](/20260420-20260519/2605.18529v1-amr-sd-asymmetric-meta-reflective-self-distillation-for-token-level-credit-assignment)  
    标签：评分：9.0/10、query:rlg
-   evidence：RLVR中策略自我教学的在策略自蒸馏方法
-6. [Rebellious Student: Reversing Teacher Signals for Reasoning Exploration with Self-Distilled RLVR](/20260420-20260519/2605.10781v1-rebellious-student-reversing-teacher-signals-for-reasoning-exploration-with-self-distilled-rlvr)  
-   标签：评分：9.0/10、query:rlg
-   evidence：大语言模型后训练中自蒸馏的强化学习框架
-7. [Learning to Foresee: Unveiling the Unlocking Efficiency of On-Policy Distillation](/20260420-20260519/2605.11739v2-learning-to-foresee-unveiling-the-unlocking-efficiency-of-on-policy-distillation)  
-   标签：评分：9.0/10、query:rlg
-   evidence：在线策略蒸馏通过预见机制提升训练效率
-8. [Learning from Language Feedback via Variational Policy Distillation](/20260420-20260519/2605.15113v1-learning-from-language-feedback-via-variational-policy-distillation)  
-   标签：评分：9.0/10、query:rlg
-   evidence：用于语言反馈强化学习的变分策略蒸馏
-9. [Self-Distilled Agentic Reinforcement Learning](/20260420-20260519/2605.15155v1-self-distilled-agentic-reinforcement-learning)  
-   标签：评分：9.0/10、query:rlg
-   evidence：自蒸馏智能体强化学习结合OPSD与门控辅助目标
+   evidence：用于强化学习的自蒸馏方法结合令牌级信用分配
+6. [Revac: A Social Deduction Reasoning Agent](/20260420-20260519/2604.19523v1-revac-a-social-deduction-reasoning-agent)  
+   标签：评分：8.0/10、query:rlg
+   evidence：玩 Mafia 社交推理游戏的AI智能体
 
 ### 速读区论文标签
-1. [Stratagem: Learning Transferable Reasoning via Trajectory-Modulated Game Self-Play](/20260420-20260519/2604.17696v1-stratagem-learning-transferable-reasoning-via-trajectory-modulated-game-self-play)  
+1. [Lyapunov-Certified Direct Switching Theory for Q-Learning](/20260420-20260519/2604.19569v1-lyapunov-certified-direct-switching-theory-for-q-learning)  
    标签：评分：8.0/10、query:rlg
-   evidence：游戏Agent自博弈训练,轨迹推理机制
-2. [Randomly Initialized Networks Can Learn from Peer-to-Peer Consensus](/20260420-20260519/2604.18390v1-randomly-initialized-networks-can-learn-from-peer-to-peer-consensus)  
+   evidence：基于Lyapunov函数的Q学习收敛性分析
+2. [Near-Future Policy Optimization](/20260420-20260519/2604.20733v1-near-future-policy-optimization)  
    标签：评分：8.0/10、query:rlg
-   evidence：在自监督表示学习中分离自蒸馏效应
-3. [Guiding Distribution Matching Distillation with Gradient-Based Reinforcement Learning](/20260420-20260519/2604.19009v1-guiding-distribution-matching-distillation-with-gradient-based-reinforcement-learning)  
+   evidence：混合离线轨迹的强化学习策略优化
+3. [Sample-efficient Neuro-symbolic Proximal Policy Optimization](/20260420-20260519/2604.25534v1-sample-efficient-neuro-symbolic-proximal-policy-optimization)  
    标签：评分：8.0/10、query:rlg
-   evidence：结合强化学习与蒸馏的RL引导扩散蒸馏方法
-4. [Lever: Inference-Time Policy Reuse under Support Constraints](/20260420-20260519/2604.20174v2-lever-inference-time-policy-reuse-under-support-constraints)  
+   evidence：用于游戏智能体的神经符号PPO方法
+4. [StratFormer: Adaptive Opponent Modeling and Exploitation in Imperfect-Information Games](/20260420-20260519/2604.25796v1-stratformer-adaptive-opponent-modeling-and-exploitation-in-imperfect-information-games)  
    标签：评分：8.0/10、query:rlg
-   evidence：推理时强化学习策略复用与组合
-5. [LiteResearcher: A Scalable Agentic RL Training Framework for Deep Research Agent](/20260420-20260519/2604.17931v1-literesearcher-a-scalable-agentic-rl-training-framework-for-deep-research-agent)  
+   evidence：Transformer元智能体在学习建模并利用不完全信息博弈中的对手
+5. [Stratagem: Learning Transferable Reasoning via Trajectory-Modulated Game Self-Play](/20260420-20260519/2604.17696v1-stratagem-learning-transferable-reasoning-via-trajectory-modulated-game-self-play)  
    标签：评分：7.0/10、query:rlg
-   evidence：用于AI智能体的可扩展智能体RL训练框架
-6. [Agent-World: Scaling Real-World Environment Synthesis for Evolving General Agent Intelligence](/20260420-20260519/2604.18292v1-agent-world-scaling-real-world-environment-synthesis-for-evolving-general-agent-intelligence)  
+   evidence：游戏自我对弈培养语言模型可迁移推理能力
+6. [Efficient Federated RLHF via Zeroth-Order Policy Optimization](/20260420-20260519/2604.17747v1-efficient-federated-rlhf-via-zeroth-order-policy-optimization)  
    标签：评分：7.0/10、query:rlg
-   evidence：用于智能体智能的自我进化训练场
-7. [StepPO: Step-Aligned Policy Optimization for Agentic Reinforcement Learning](/20260420-20260519/2604.18401v1-steppo-step-aligned-policy-optimization-for-agentic-reinforcement-learning)  
+   evidence：联邦RLHF策略优化
+7. [LiteResearcher: A Scalable Agentic RL Training Framework for Deep Research Agent](/20260420-20260519/2604.17931v1-literesearcher-a-scalable-agentic-rl-training-framework-for-deep-research-agent)  
    标签：评分：7.0/10、query:rlg
-   evidence：面向智能体强化学习的步对齐策略优化
-8. [Mask World Model: Predicting What Matters for Robust Robot Policy Learning](/20260420-20260519/2604.19683v2-mask-world-model-predicting-what-matters-for-robust-robot-policy-learning)  
+   evidence：可扩展的智能体RL训练框架
+8. [LiteResearcher: A Scalable Agentic RL Training Framework for Deep Research Agent](/20260420-20260519/2604.17931v2-literesearcher-a-scalable-agentic-rl-training-framework-for-deep-research-agent)  
    标签：评分：7.0/10、query:rlg
-   evidence：机器人策略学习的世界模型
-9. [Training LLM Agents for Spontaneous, Reward-Free Self-Evolution via World Knowledge Exploration](/20260420-20260519/2604.18131v1-training-llm-agents-for-spontaneous-reward-free-self-evolution-via-world-knowledge-exploration)  
+   evidence：可扩展的智能体强化学习训练框架，用于LLM研究智能体
+9. [AJ-Bench: Benchmarking Agent-as-a-Judge for Environment-Aware Evaluation](/20260420-20260519/2604.18240v1-aj-bench-benchmarking-agent-as-a-judge-for-environment-aware-evaluation)  
    标签：评分：6.0/10、query:rlg
-   evidence：LLM智能体的免奖励自我进化训练
-10. [AJ-Bench: Benchmarking Agent-as-a-Judge for Environment-Aware Evaluation](/20260420-20260519/2604.18240v1-aj-bench-benchmarking-agent-as-a-judge-for-environment-aware-evaluation)  
+   evidence：环境中LLM智能体的强化学习训练
+10. [ClawEnvKit: Automatic Environment Generation for Claw-Like Agents](/20260420-20260519/2604.18543v1-clawenvkit-automatic-environment-generation-for-claw-like-agents)  
    标签：评分：6.0/10、query:rlg
-   evidence：面向环境感知评估的智能体裁判基准
-11. [ClawEnvKit: Automatic Environment Generation for Claw-Like Agents](/20260420-20260519/2604.18543v1-clawenvkit-automatic-environment-generation-for-claw-like-agents)  
+   evidence：用于智能体训练的自动环境生成
+11. [Distillation Traps and Guards: A Calibration Knob for LLM Distillability](/20260420-20260519/2604.18963v1-distillation-traps-and-guards-a-calibration-knob-for-llm-distillability)  
    标签：评分：6.0/10、query:rlg
-   evidence：面向智能体训练的自动化环境生成
+   evidence：通过强化微调校准实现LLM知识蒸馏
 
 
 <div class="dpr-home-promo-card">
