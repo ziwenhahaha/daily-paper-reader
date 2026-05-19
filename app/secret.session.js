@@ -1140,10 +1140,8 @@
         llmModel3Input.value = preset.models[2] || '';
         resetLlmStatus();
         llmApiKeyInput.focus();
-        setErrorText(
-          `已填入 ${preset.label} 预设，请补充 API Key 后点击”测试当前配置”。`,
-          '#666',
-        );
+        const msg = '已填入 ' + preset.label + ' 预设，请补充 API Key 后点击”测试当前配置”。';
+        setErrorText(msg, '#666');
       };
 
       const validateLlmDraft = () => {
