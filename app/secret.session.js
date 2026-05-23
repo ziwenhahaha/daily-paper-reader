@@ -2,7 +2,6 @@
 (function () {
   const STORAGE_KEY_MODE = 'dpr_secret_access_mode_v1'; // 已不再使用，仅保留兼容
   const STORAGE_KEY_PASS = 'dpr_secret_password_v1';
-  const STORAGE_KEY_LOCAL_SECRET = 'dpr_local_secret_private_v1';
   const SECRET_FILE_URL = 'secret.private';
   const SECRET_OVERLAY_ANIMATION_MS = 280;
   const FORCE_GUEST_DOMAIN_TOKEN = 'ziwenhahaha';
@@ -12,82 +11,6 @@
     return normalized.includes(FORCE_GUEST_DOMAIN_TOKEN);
   };
   const FORCE_GUEST_MODE = isForceGuestDomain(window && window.location && window.location.hostname);
-  const isLocalDebugHost = () => {
-    const host = String((window.location && window.location.hostname) || '').toLowerCase();
-    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
-  };
-
-  const getLocalApiUrl = (path) => {
-    const base = String(window.DPR_LOCAL_API_BASE || '').trim().replace(/\/$/, '');
-    if (base) return `${base}${path}`;
-    const protocol = String((window.location && window.location.protocol) || 'http:');
-    const hostname = String((window.location && window.location.hostname) || '127.0.0.1');
-    return `${protocol}//${hostname}:8567${path}`;
-  };
-
-  function loadLocalSecretPayload() {
-    if (!isLocalDebugHost()) return null;
-    try {
-      if (!window.localStorage) return null;
-      const raw = window.localStorage.getItem(STORAGE_KEY_LOCAL_SECRET);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      return parsed && parsed.payload ? parsed.payload : parsed;
-    } catch (e) {
-      console.error('[SECRET] 读取本地 secret.private 失败：', e);
-      return null;
-    }
-  }
-
-  function saveLocalSecretPayload(payload) {
-    if (!isLocalDebugHost()) return false;
-    try {
-      if (!window.localStorage) return false;
-      window.localStorage.setItem(
-        STORAGE_KEY_LOCAL_SECRET,
-        JSON.stringify({ payload, savedAt: new Date().toISOString() }),
-      );
-      return true;
-    } catch (e) {
-      console.error('[SECRET] 保存本地 secret.private 失败：', e);
-      return false;
-    }
-  }
-
-  async function loadLocalSecretPayloadFromDisk() {
-    if (!isLocalDebugHost()) return null;
-    const res = await fetch(getLocalApiUrl('/api/local/secret'), { cache: 'no-store' });
-    if (!res.ok) return null;
-    const data = await res.json().catch(() => null);
-    if (!data || !data.ok || !data.exists || !data.payload) return null;
-    return data.payload;
-  }
-
-  async function saveLocalSecretPayloadToDisk(payload) {
-    if (!isLocalDebugHost()) return false;
-    const res = await fetch(getLocalApiUrl('/api/local/secret'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ payload }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) {
-      throw new Error((data && data.error) || `写入本地 secret.private 失败：HTTP ${res.status}`);
-    }
-    saveLocalSecretPayload(payload);
-    return true;
-  }
-
-  async function loadLocalSecretPayloadPreferred() {
-    if (!isLocalDebugHost()) return null;
-    try {
-      const diskPayload = await loadLocalSecretPayloadFromDisk();
-      if (diskPayload) return diskPayload;
-    } catch (e) {
-      console.warn('[SECRET] 读取本地磁盘 secret.private 失败，回退 localStorage：', e);
-    }
-    return loadLocalSecretPayload();
-  }
 
   const setAccessMode = (mode, detail) => {
     window.DPR_ACCESS_MODE = mode;
@@ -265,78 +188,32 @@
     if (typeof utils.inferProviderType === 'function') {
       return utils.inferProviderType(secret);
     }
-    return 'deepseek';
+    const summary = resolveSummaryLLM(secret);
+    if (!summary) return 'plato';
+    return /bltcy\.ai|gptbest\.vip/i.test(summary.baseUrl) ? 'plato' : 'openai-compatible';
   };
-  const getDefaultDeepSeekBaseUrl = () => {
+  const getDefaultPlatoBaseUrl = () => {
     const utils = getLLMUtils();
-    return normalizeBaseUrlForStorage(utils.DEFAULT_DEEPSEEK_BASE_URL || 'https://api.deepseek.com');
+    return normalizeBaseUrlForStorage(utils.DEFAULT_PLATO_BASE_URL || 'https://api.bltcy.ai/v1');
   };
-  const getDefaultDeepSeekChatModels = () => {
+  const getDefaultPlatoChatModels = () => {
     const utils = getLLMUtils();
-      const defaults = Array.isArray(utils.DEFAULT_DEEPSEEK_CHAT_MODELS)
-        ? utils.DEFAULT_DEEPSEEK_CHAT_MODELS
+      const defaults = Array.isArray(utils.DEFAULT_PLATO_CHAT_MODELS)
+        ? utils.DEFAULT_PLATO_CHAT_MODELS
         : [
-            'deepseek-v4-flash',
-            'deepseek-v4-pro',
+            'gemini-3-flash-preview-thinking-1000',
+            'deepseek-v3.2',
+            'gpt-5-chat',
+            'gemini-3-pro-preview',
           ];
     return sanitizeModelList(defaults, 99);
   };
-  const RERANKER_PROFILES = [
-    {
-      value: 'public-zwwen-rerank',
-      label: '公益 Rerank（zwwen.online）',
-      provider: 'public_zwwen',
-      model: 'Qwen/Qwen3-Reranker-0.6B',
-      baseUrl: 'https://zwwen.online/rerank',
-      requiresApiKey: false,
-      testApiKey: '26932a86d772001af60cbd9d2c162bfda3a90e094f797f3d6806f6077478b27a',
-      note: '默认推荐；使用 zwwen.online 公益 rerank 服务。',
-    },
-    {
-      value: 'local-qwen3-0.6b',
-      label: '本地 Qwen3-Reranker-0.6B',
-      provider: 'local',
-      model: 'Qwen/Qwen3-Reranker-0.6B',
-      baseUrl: '',
-      requiresApiKey: false,
-      note: '无需 reranker API Key，GitHub Actions 在 CPU 上加载本地模型。',
-    },
-    {
-      value: 'siliconflow-qwen3-0.6b',
-      label: '硅基流动 Qwen3-Reranker-0.6B',
-      provider: 'siliconflow',
-      model: 'Qwen/Qwen3-Reranker-0.6B',
-      baseUrl: 'https://api.siliconflow.cn/v1/rerank',
-      requiresApiKey: true,
-      note: '速度快、成本低；需要硅基流动 API Key。',
-    },
-  ];
-  const DEFAULT_RERANKER_PROFILE =
-    RERANKER_PROFILES.find((item) => item.value === 'public-zwwen-rerank') ||
-    RERANKER_PROFILES[0];
-  const findRerankerProfile = (value) => {
-    const normalized = normalizeText(value || '').toLowerCase().replace(/_/g, '-');
-    return (
-      RERANKER_PROFILES.find((item) => item.value === normalized) ||
-      DEFAULT_RERANKER_PROFILE
-    );
-  };
-  const resolveRerankerConfig = (secret) => {
-    const safeSecret = secret && typeof secret === 'object' ? secret : {};
-    const reranker = safeSecret.rerankerLLM || {};
-    const provider = normalizeText(reranker.provider || reranker.type || '');
-    const model = normalizeText(reranker.model || '');
-    const inferredProfile =
-      reranker.profile ||
-      '';
-    const profile = findRerankerProfile(inferredProfile);
-    return {
-      profile: profile.value,
-      provider: provider || profile.provider,
-      model: model || profile.model,
-      apiKey: normalizeText(reranker.apiKey || ''),
-      baseUrl: normalizeBaseUrlForStorage(reranker.baseUrl || profile.baseUrl || ''),
-    };
+  const getOpenAICompatiblePreset = (key) => {
+    const utils = getLLMUtils();
+    if (typeof utils.getOpenAICompatiblePreset === 'function') {
+      return utils.getOpenAICompatiblePreset(key);
+    }
+    return null;
   };
   const buildConnectivityTestPayload = (baseUrl, model) => {
     const utils = getLLMUtils();
@@ -584,33 +461,39 @@
       };
 
       const safeOptions = options && typeof options === 'object' ? options : {};
+      const providerType = normalizeText(safeOptions.providerType || '').toLowerCase() || 'plato';
       const summarizedApiKey = normalizeText(safeOptions.summarizedApiKey || '');
       const summarizedBaseUrl = normalizeBaseUrlForStorage(safeOptions.summarizedBaseUrl || '');
       const summarizedModel = normalizeText(safeOptions.summarizedModel || '');
-      const filterModel = normalizeText(safeOptions.filterModel || summarizedModel);
-      const rewriteModel = normalizeText(safeOptions.rewriteModel || summarizedModel);
+      // filterModel 和 rewriteModel 使用 summarizedModel（用户选择的第一个模型），不使用旧的值
+      const filterModel = summarizedModel;
+      const rewriteModel = summarizedModel;
       const skipRerank = !!safeOptions.skipRerank;
-      const localRerankModel = normalizeText(
-        safeOptions.localRerankModel || 'Qwen/Qwen3-Reranker-0.6B',
-      );
-      const rerankerProfile = normalizeText(
-        safeOptions.rerankerProfile || DEFAULT_RERANKER_PROFILE.value,
-      );
-      const rerankerProvider = normalizeText(
-        safeOptions.rerankerProvider || DEFAULT_RERANKER_PROFILE.provider,
-      );
-      const rerankerModel = normalizeText(
-        safeOptions.rerankerModel ||
-          (rerankerProvider === 'local' ? localRerankModel : DEFAULT_RERANKER_PROFILE.model),
-      );
       const rerankerApiKey = normalizeText(safeOptions.rerankerApiKey || '');
       const rerankerBaseUrl = normalizeBaseUrlForStorage(safeOptions.rerankerBaseUrl || '');
+      const rerankerModel = normalizeText(safeOptions.rerankerModel || '');
 
       if (!summarizedApiKey || !summarizedBaseUrl || !summarizedModel) {
         throw new Error('总结模型配置不完整，无法写入 GitHub Secrets。');
       }
-      if (!rerankerProfile || !rerankerProvider || !rerankerModel) {
-        throw new Error('Reranker 配置不完整，无法写入 GitHub Secrets。');
+
+      // 自动推断 provider 并添加前缀
+      const normalizedBaseUrlLower = summarizedBaseUrl.toLowerCase();
+      let llmModelForEnv = summarizedModel;
+      if (normalizedBaseUrlLower.includes('deepseek')) {
+        llmModelForEnv = 'deepseek/' + summarizedModel;
+      } else if (normalizedBaseUrlLower.includes('minimaxi')) {
+        llmModelForEnv = 'minimax/' + summarizedModel;
+      } else if (normalizedBaseUrlLower.includes('siliconflow')) {
+        llmModelForEnv = 'siliconflow/' + summarizedModel;
+      } else if (normalizedBaseUrlLower.includes('bigmodel')) {
+        llmModelForEnv = 'glm/' + summarizedModel;
+      } else if (normalizedBaseUrlLower.includes('moonshot')) {
+        llmModelForEnv = 'kimi/' + summarizedModel;
+      } else if (normalizedBaseUrlLower.includes('openai')) {
+        llmModelForEnv = 'openai/' + summarizedModel;
+      } else if (normalizedBaseUrlLower.includes('bltcy') || normalizedBaseUrlLower.includes('gptbest')) {
+        llmModelForEnv = 'blt/' + summarizedModel;
       }
 
       const secretNameSummKey = 'Summarized_LLM_API_KEY';
@@ -619,20 +502,21 @@
       const secretNameSummaryApiKey = 'SUMMARY_API_KEY';
       const secretNameSummaryBaseUrl = 'SUMMARY_BASE_URL';
       const secretNameSummaryModel = 'SUMMARY_MODEL';
-      const secretNameDeepSeekKey = 'DEEPSEEK_API_KEY';
-      const secretNameDeepSeekBase = 'DEEPSEEK_BASE_URL';
-      const secretNameDeepSeekModel = 'DEEPSEEK_MODEL';
+      const secretNameBltKey = 'BLT_API_KEY';
+      const secretNameBltBase = 'BLT_PRIMARY_BASE_URL';
       const secretNameLlmPrimaryBase = 'LLM_PRIMARY_BASE_URL';
+      const secretNameBltSummaryModel = 'BLT_SUMMARY_MODEL';
+      const secretNameBltFilterModel = 'BLT_FILTER_MODEL';
+      const secretNameBltRewriteModel = 'BLT_REWRITE_MODEL';
       const secretNameSkipRerank = 'DPR_SKIP_RERANK';
-      const secretNameLocalRerankModel = 'LOCAL_RERANK_MODEL';
-      const secretNameRerankProfile = 'RERANK_PROFILE';
-      const secretNameRerankProvider = 'RERANK_PROVIDER';
-      const secretNameRerankModel = 'RERANK_MODEL';
-      const secretNameRerankApiKey = 'RERANK_API_KEY';
-      const secretNameRerankBaseUrl = 'RERANK_API_BASE_URL';
-      const secretNameSiliconFlowKey = 'SILICONFLOW_API_KEY';
-      const secretNameSiliconFlowUrl = 'SILICONFLOW_RERANK_URL';
-      const secretNameSiliconFlowInterval = 'SILICONFLOW_RERANK_MIN_INTERVAL_SECONDS';
+      const secretNameRerankKey = 'Reranker_LLM_API_KEY';
+      const secretNameRerankUrl = 'Reranker_LLM_BASE_URL';
+      const secretNameRerankModel = 'Reranker_LLM_MODEL';
+      // 新的统一 LLM 配置变量
+      const secretNameLlmModel = 'LLM_MODEL';
+      const secretNameLlmApiKey = 'LLM_API_KEY';
+      const secretNameLlmBaseUrl = 'LLM_BASE_URL';
+      const secretNameMinimaxApiKey = 'MINIMAX_API_KEY';
 
       const putSecret = async (name, encrypted) => {
         const body = {
@@ -668,38 +552,23 @@
         { name: secretNameSummaryApiKey, value: summarizedApiKey },
         { name: secretNameSummaryBaseUrl, value: summarizedBaseUrl },
         { name: secretNameSummaryModel, value: summarizedModel },
-        { name: secretNameDeepSeekKey, value: summarizedApiKey },
-        { name: secretNameDeepSeekBase, value: summarizedBaseUrl },
-        { name: secretNameDeepSeekModel, value: summarizedModel },
+        { name: secretNameBltKey, value: summarizedApiKey },
+        { name: secretNameBltBase, value: summarizedBaseUrl },
         { name: secretNameLlmPrimaryBase, value: summarizedBaseUrl },
+        { name: secretNameBltSummaryModel, value: summarizedModel },
+        { name: secretNameBltFilterModel, value: summarizedModel },
+        { name: secretNameBltRewriteModel, value: summarizedModel },
         { name: secretNameSkipRerank, value: skipRerank ? 'true' : 'false' },
-        { name: secretNameLocalRerankModel, value: localRerankModel },
-        { name: secretNameRerankProfile, value: rerankerProfile },
-        { name: secretNameRerankProvider, value: rerankerProvider },
-        { name: secretNameRerankModel, value: rerankerModel },
+        // 新的统一 LLM 配置变量（支持 MiniMax 等多 provider）
+        { name: secretNameLlmModel, value: llmModelForEnv },
+        { name: secretNameLlmApiKey, value: summarizedApiKey },
+        { name: secretNameLlmBaseUrl, value: summarizedBaseUrl },
       ];
-      if (rerankerProvider !== 'local') {
-        if (rerankerApiKey) {
-          secrets.push({ name: secretNameRerankApiKey, value: rerankerApiKey });
-        }
-        if (rerankerBaseUrl) {
-          secrets.push({ name: secretNameRerankBaseUrl, value: rerankerBaseUrl });
-        }
-      }
-      if (rerankerProvider === 'siliconflow') {
-        if (rerankerApiKey) {
-          secrets.push({ name: secretNameSiliconFlowKey, value: rerankerApiKey });
-        }
-        secrets.push({
-          name: secretNameSiliconFlowUrl,
-          value: rerankerBaseUrl || 'https://api.siliconflow.cn/v1/rerank',
-        });
-        secrets.push({ name: secretNameSiliconFlowInterval, value: '8' });
-      }
-      if (!skipRerank && rerankerProvider !== 'local' && rerankerApiKey && rerankerBaseUrl && rerankerModel) {
+
+      if (!skipRerank && rerankerApiKey && rerankerBaseUrl && rerankerModel) {
         secrets.push(
-          { name: secretNameRerankApiKey, value: rerankerApiKey },
-          { name: secretNameRerankBaseUrl, value: rerankerBaseUrl },
+          { name: secretNameRerankKey, value: rerankerApiKey },
+          { name: secretNameRerankUrl, value: rerankerBaseUrl },
           { name: secretNameRerankModel, value: rerankerModel },
         );
       }
@@ -1011,15 +880,11 @@
         unlockBtn.disabled = true;
         guestBtn.disabled = true;
         try {
-          const localPayload = await loadLocalSecretPayloadPreferred();
-          let payload = localPayload;
-          if (!payload) {
-            const resp = await fetch(SECRET_FILE_URL, { cache: 'no-store' });
-            if (!resp.ok) {
-              throw new Error(`获取 secret.private 失败，HTTP ${resp.status}`);
-            }
-            payload = await resp.json();
+          const resp = await fetch(SECRET_FILE_URL, { cache: 'no-store' });
+          if (!resp.ok) {
+            throw new Error(`获取 secret.private 失败，HTTP ${resp.status}`);
           }
+          const payload = await resp.json();
           const secret = await decryptSecret(pwd, payload);
           // 将解密后的配置保存在内存中，不落盘，同时记住密码以便下次自动解锁
           window.decoded_secret_private = secret;
@@ -1048,39 +913,60 @@
       }, 100);
     };
 
-    // 初始化向导：第 2 步（仅保留 DeepSeek API）
+    // 初始化向导：第 2 步（支持 多种 LLM provider）
     const renderInitStep2 = (password) => {
       setStep2Modal(true);
       const currentSecret =
         window.decoded_secret_private && typeof window.decoded_secret_private === 'object'
           ? window.decoded_secret_private
           : {};
+      const currentProviderType = inferProviderType(currentSecret);
       const currentSummaryLLM = resolveSummaryLLM(currentSecret) || {};
       const currentChatEntry =
         Array.isArray(currentSecret.chatLLMs) && currentSecret.chatLLMs.length
           ? currentSecret.chatLLMs[0] || {}
           : {};
-      const currentReranker = resolveRerankerConfig(currentSecret);
+      const defaultPlatoModels = getDefaultPlatoChatModels();
+      const platoSummaryModels = [
+        {
+          value: 'gpt-5-chat',
+          label: 'GPT-5 Chat · 通用高质量对话',
+        },
+        {
+          value: 'gemini-3-flash-preview-thinking-1000',
+          label: 'Gemini 3 Flash（思考版，推荐）',
+        },
+        {
+          value: 'deepseek-v3.2',
+          label: 'DeepSeek V3.2 · 深度思考',
+        },
+        {
+          value: 'gemini-3-pro-preview',
+          label: 'Gemini 3 Pro（更强思考能力）',
+        },
+      ];
 
       const initialGithubToken = normalizeText(
         currentSecret.github && currentSecret.github.token,
       );
       const initialApiKey = normalizeText(currentSummaryLLM.apiKey || '');
-      const initialDeepSeekModel =
-        normalizeText(currentSummaryLLM.model || '') || 'deepseek-v4-flash';
-      const deepseekSummaryModels = getDefaultDeepSeekChatModels().map((model) => ({
-        value: model,
-        label: model === 'deepseek-v4-flash'
-          ? 'DeepSeek V4 Flash · 默认推荐'
-          : model === 'deepseek-v4-pro'
-            ? 'DeepSeek V4 Pro · 高性能模型'
-            : model,
-      }));
+      const initialCustomApiKey = normalizeText(currentChatEntry.apiKey || '');
+      const initialCustomBaseUrl = normalizeBaseUrlForStorage(
+        currentChatEntry.baseUrl || '',
+      );
+      const initialPlatoModel =
+        normalizeText(currentSummaryLLM.model || '') || 'gpt-5-chat';
+      const initialCustomModels = sanitizeModelList(
+        currentProviderType === 'openai-compatible'
+          ? (currentChatEntry.models || [])
+          : [],
+        3,
+      );
 
       modal.innerHTML = `
         <h2 style="margin-top:0;">🛡️ 新配置指引 · 第二步</h2>
         <div class="secret-setup-step2-grid" style="font-size:13px;">
-          <div class="secret-setup-step2-col">
+          <div class="secret-setup-step2-col" style="width:100%;">
             <div class="secret-setup-step2-block">
               <div class="secret-setup-step2-title">GitHub Token（必填）</div>
               <p class="secret-setup-step2-note">
@@ -1103,90 +989,71 @@
               </div>
             </div>
 
-            <div id="secret-setup-deepseek-section" class="secret-setup-step2-block">
-              <div class="secret-setup-step2-title">DeepSeek API（必填）</div>
-              <p class="secret-setup-step2-note">
-                DeepSeek 用于 query enrich、LLM refine、总结与聊天；Reranker 可在右侧单独选择。
-              </p>
-              <div class="secret-setup-input-row multi-actions">
-                <input
-                  id="secret-setup-deepseek"
-                  type="password"
-                  autocomplete="off"
-                  placeholder="DeepSeek API Key，例如：sk-xxxx"
-                  style="width:100%; box-sizing:border-box; padding:6px 8px; font-size:13px;"
-                />
-                <button id="secret-setup-deepseek-test" type="button" class="secret-gate-btn secondary">
-                  测试
-                </button>
-                <button id="secret-setup-deepseek-verify" type="button" class="secret-gate-btn secondary" style="display:none;">
-                  验证
-                </button>
-              </div>
-              <div id="secret-setup-deepseek-status" style="min-height:18px; font-size:12px; color:#999; margin-bottom:8px;">
-                将通过一次 <code>hello world</code> 请求检查 DeepSeek 配置可用性。
-              </div>
-
-              <div style="font-weight:500; margin-bottom:4px; display:flex; align-items:center; gap:4px;">
-                用于工作流总结 / 过滤的大模型
-                <span class="secret-model-tip">!
-                  <span class="secret-model-tip-popup">
-                    当前只保留 DeepSeek 官方 API。<br/>
-                    Reranker API Key 与 DeepSeek 分开配置。
-                  </span>
-                </span>
-              </div>
-              <div id="secret-setup-deepseek-models" style="font-size:13px;">
-                <select id="secret-setup-deepseek-model-select" class="secret-setup-select"></select>
-              </div>
-            </div>
-          </div>
-
-          <div class="secret-setup-step2-col">
             <div class="secret-setup-step2-block">
-              <div class="secret-setup-step2-title">Reranker</div>
+              <div class="secret-setup-step2-title">LLM 配置（工作流 + 聊天共用）</div>
               <p class="secret-setup-step2-note">
-                Step 3 使用 Qwen3 reranker 对候选论文重排。请选择本地模型或远端服务。
+                选择 provider 预设，自动填入 Base URL 和推荐模型。API Key 需自行填写。<br/>
+                此配置将同时用于工作流（query enrich、LLM refine、总结）和聊天区。
               </p>
-              <select id="secret-setup-reranker-profile" class="secret-setup-select" style="margin-bottom:8px;"></select>
-              <div id="secret-setup-reranker-remote-fields" style="display:none;">
-                <div class="secret-setup-input-row" style="margin-bottom:6px;">
-                  <input
-                    id="secret-setup-reranker-api-key"
-                    type="password"
-                    autocomplete="off"
-                    placeholder="Reranker API Key"
-                    style="width:100%; box-sizing:border-box; padding:6px 8px; font-size:13px;"
-                  />
-                </div>
-                <div class="secret-setup-input-row" style="margin-bottom:6px;">
-                  <input
-                    id="secret-setup-reranker-base-url"
-                    type="text"
-                    autocomplete="off"
-                    placeholder="Rerank Base URL，例如 https://api.siliconflow.cn/v1/rerank"
-                    style="width:100%; box-sizing:border-box; padding:6px 8px; font-size:13px;"
-                  />
-                </div>
-                <button id="secret-setup-reranker-test" type="button" class="secret-gate-btn secondary secret-setup-step2-actions">
-                  测试 Reranker
+              <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
+                <button id="secret-setup-preset-plato" type="button" class="secret-gate-btn secondary">
+                  BLT（推荐）
                 </button>
-                <div id="secret-setup-reranker-test-status" style="min-height:18px; font-size:12px; color:#999; margin-top:6px;">
-                  将发送一次最小 rerank 请求验证 API Key、Base URL 与模型是否可用。
-                </div>
+                <button id="secret-setup-preset-deepseek" type="button" class="secret-gate-btn secondary">
+                  DeepSeek
+                </button>
+                <button id="secret-setup-preset-glm" type="button" class="secret-gate-btn secondary">
+                  GLM
+                </button>
+                <button id="secret-setup-preset-minimax" type="button" class="secret-gate-btn secondary">
+                  MiniMax
+                </button>
+                <button id="secret-setup-preset-kimi" type="button" class="secret-gate-btn secondary">
+                  Kimi
+                </button>
+                <button id="secret-setup-preset-openai" type="button" class="secret-gate-btn secondary">
+                  OpenAI
+                </button>
               </div>
-              <div id="secret-setup-reranker-status" style="font-size:12px; color:#666; line-height:1.6;"></div>
-              <input type="radio" name="secret-setup-provider" value="deepseek" checked style="display:none;" />
-            </div>
-
-            <div id="secret-setup-custom-section" style="display:none;">
-              <input id="secret-setup-custom-api-key" type="hidden" />
-              <input id="secret-setup-custom-base-url" type="hidden" />
-              <input id="secret-setup-custom-model-1" type="hidden" />
-              <input id="secret-setup-custom-model-2" type="hidden" />
-              <input id="secret-setup-custom-model-3" type="hidden" />
-              <button id="secret-setup-custom-test" type="button" style="display:none;"></button>
-              <div id="secret-setup-custom-status" style="display:none;"></div>
+              <input
+                id="secret-setup-llm-api-key"
+                type="password"
+                autocomplete="off"
+                placeholder="API Key"
+                style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
+              />
+              <input
+                id="secret-setup-llm-base-url"
+                type="text"
+                autocomplete="off"
+                placeholder="Base URL，例如 https://api.openai.com/v1"
+                style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
+              />
+              <input
+                id="secret-setup-llm-model-1"
+                type="text"
+                autocomplete="off"
+                placeholder="模型 1（默认，用于工作流）"
+                style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
+              />
+              <input
+                id="secret-setup-llm-model-2"
+                type="text"
+                autocomplete="off"
+                placeholder="模型 2（可选，用于聊天）"
+                style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
+              />
+              <input
+                id="secret-setup-llm-model-3"
+                type="text"
+                autocomplete="off"
+                placeholder="模型 3（可选，用于聊天）"
+                style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
+              />
+              <button id="secret-setup-llm-test" type="button" class="secret-gate-btn secondary secret-setup-step2-actions">
+                测试当前配置
+              </button>
+              <div id="secret-setup-llm-status" style="min-height:18px; font-size:12px; color:#999; margin-top:4px;"></div>
             </div>
           </div>
         </div>
@@ -1210,29 +1077,19 @@
       const githubInput = document.getElementById('secret-setup-github-token');
       const githubVerifyBtn = document.getElementById('secret-setup-github-verify');
       const githubStatusEl = document.getElementById('secret-setup-github-status');
-      const providerInputs = Array.from(
-        document.querySelectorAll('input[name="secret-setup-provider"]'),
-      );
-      const deepseekSection = document.getElementById('secret-setup-deepseek-section');
-      const deepseekInput = document.getElementById('secret-setup-deepseek');
-      const deepseekVerifyBtn = document.getElementById('secret-setup-deepseek-verify');
-      const deepseekTestBtn = document.getElementById('secret-setup-deepseek-test');
-      const deepseekStatusEl = document.getElementById('secret-setup-deepseek-status');
-      const deepseekModelSelect = document.getElementById('secret-setup-deepseek-model-select');
-      const customApiKeyInput = document.getElementById('secret-setup-custom-api-key');
-      const customBaseUrlInput = document.getElementById('secret-setup-custom-base-url');
-      const customModel1Input = document.getElementById('secret-setup-custom-model-1');
-      const customModel2Input = document.getElementById('secret-setup-custom-model-2');
-      const customModel3Input = document.getElementById('secret-setup-custom-model-3');
-      const customTestBtn = document.getElementById('secret-setup-custom-test');
-      const customStatusEl = document.getElementById('secret-setup-custom-status');
-      const rerankerProfileSelect = document.getElementById('secret-setup-reranker-profile');
-      const rerankerRemoteFields = document.getElementById('secret-setup-reranker-remote-fields');
-      const rerankerApiKeyInput = document.getElementById('secret-setup-reranker-api-key');
-      const rerankerBaseUrlInput = document.getElementById('secret-setup-reranker-base-url');
-      const rerankerTestBtn = document.getElementById('secret-setup-reranker-test');
-      const rerankerTestStatusEl = document.getElementById('secret-setup-reranker-test-status');
-      const rerankerStatusEl = document.getElementById('secret-setup-reranker-status');
+      const llmApiKeyInput = document.getElementById('secret-setup-llm-api-key');
+      const llmBaseUrlInput = document.getElementById('secret-setup-llm-base-url');
+      const llmModel1Input = document.getElementById('secret-setup-llm-model-1');
+      const llmModel2Input = document.getElementById('secret-setup-llm-model-2');
+      const llmModel3Input = document.getElementById('secret-setup-llm-model-3');
+      const llmTestBtn = document.getElementById('secret-setup-llm-test');
+      const llmStatusEl = document.getElementById('secret-setup-llm-status');
+      const platoPresetBtn = document.getElementById('secret-setup-preset-plato');
+      const deepseekPresetBtn = document.getElementById('secret-setup-preset-deepseek');
+      const glmPresetBtn = document.getElementById('secret-setup-preset-glm');
+      const minimaxPresetBtn = document.getElementById('secret-setup-preset-minimax');
+      const kimiPresetBtn = document.getElementById('secret-setup-preset-kimi');
+      const openaiPresetBtn = document.getElementById('secret-setup-preset-openai');
       const errorEl = document.getElementById('secret-setup-error');
       const backBtn = document.getElementById('secret-setup-back');
       const closeBtn = document.getElementById('secret-setup-close');
@@ -1242,64 +1099,28 @@
         !githubInput ||
         !githubVerifyBtn ||
         !githubStatusEl ||
-        !providerInputs.length ||
-        !deepseekSection ||
-        !deepseekInput ||
-        !deepseekVerifyBtn ||
-        !deepseekTestBtn ||
-        !deepseekStatusEl ||
-        !deepseekModelSelect ||
-        !customApiKeyInput ||
-        !customBaseUrlInput ||
-        !customModel1Input ||
-        !customModel2Input ||
-        !customModel3Input ||
-        !customTestBtn ||
-        !customStatusEl ||
-        !rerankerProfileSelect ||
-        !rerankerRemoteFields ||
-        !rerankerApiKeyInput ||
-        !rerankerBaseUrlInput ||
-        !rerankerTestBtn ||
-        !rerankerTestStatusEl ||
-        !rerankerStatusEl ||
+        !llmApiKeyInput ||
+        !llmBaseUrlInput ||
+        !llmModel1Input ||
+        !llmModel2Input ||
+        !llmModel3Input ||
+        !llmTestBtn ||
+        !llmStatusEl ||
+        !deepseekPresetBtn ||
+        !glmPresetBtn ||
+        !minimaxPresetBtn ||
+        !kimiPresetBtn ||
+        !openaiPresetBtn ||
         !errorEl ||
         !backBtn ||
         !closeBtn ||
         !genBtn
       ) {
+        console.error('Missing required elements for secret setup step 2');
         return;
       }
 
-      deepseekModelSelect.innerHTML = deepseekSummaryModels
-        .map((item) => `<option value="${item.value}">${item.label}</option>`)
-        .join('');
-
-      githubInput.value = initialGithubToken;
-      deepseekInput.value = initialApiKey;
-
-      providerInputs.forEach((input) => {
-        input.checked = input.value === 'deepseek';
-      });
-      deepseekModelSelect.value = initialDeepSeekModel || 'deepseek-v4-flash';
-      if (!deepseekModelSelect.value) {
-        deepseekModelSelect.value = 'deepseek-v4-flash';
-      }
-      rerankerProfileSelect.innerHTML = RERANKER_PROFILES
-        .map(
-          (item) =>
-            `<option value="${item.value}">${item.label}</option>`,
-        )
-        .join('');
-      rerankerProfileSelect.value = currentReranker.profile || DEFAULT_RERANKER_PROFILE.value;
-      if (!rerankerProfileSelect.value) {
-        rerankerProfileSelect.value = DEFAULT_RERANKER_PROFILE.value;
-      }
-      rerankerApiKeyInput.value = currentReranker.apiKey || '';
-      rerankerBaseUrlInput.value = currentReranker.baseUrl || '';
-
       let githubOk = !!initialGithubToken;
-      let deepseekOk = !!initialApiKey;
 
       const setErrorText = (text, color) => {
         if (!errorEl) return;
@@ -1307,52 +1128,13 @@
         errorEl.style.color = color || '#999';
       };
 
-      const selectedDeepSeekModel = () => {
-        return normalizeText(deepseekModelSelect.value || '');
+      const selectedProvider = () => {
+        // 对于融合后的界面，始终返回 'openai-compatible'
+        return 'openai-compatible';
       };
-      const selectedRerankerProfile = () => {
-        return findRerankerProfile(rerankerProfileSelect.value);
-      };
-      const rerankerRequiresApiKey = (profile) => {
-        return profile.provider !== 'local' && profile.requiresApiKey !== false;
-      };
-      const syncRerankerFields = () => {
-        const profile = selectedRerankerProfile();
-        const isRemote = profile.provider !== 'local';
-        const requiresApiKey = rerankerRequiresApiKey(profile);
-        const previousProfile = findRerankerProfile(
-          rerankerBaseUrlInput.getAttribute('data-reranker-profile') || '',
-        );
-        const currentBaseUrl = normalizeText(rerankerBaseUrlInput.value || '');
-        rerankerRemoteFields.style.display = isRemote ? 'block' : 'none';
-        if (isRemote) {
-          rerankerApiKeyInput.closest('.secret-setup-input-row').style.display = requiresApiKey ? 'block' : 'none';
-          rerankerApiKeyInput.disabled = !requiresApiKey;
-          rerankerApiKeyInput.placeholder = requiresApiKey
-            ? 'Reranker API Key'
-            : '公益 Reranker 无需 API Key';
-          if (!requiresApiKey) {
-            rerankerApiKeyInput.value = '';
-          }
-        } else {
-          rerankerApiKeyInput.closest('.secret-setup-input-row').style.display = 'none';
-          rerankerApiKeyInput.disabled = true;
-          rerankerApiKeyInput.value = '';
-        }
-        if (
-          isRemote &&
-          (!currentBaseUrl || currentBaseUrl === previousProfile.baseUrl)
-        ) {
-          rerankerBaseUrlInput.value = profile.baseUrl || '';
-        }
-        if (!isRemote) {
-          rerankerBaseUrlInput.value = '';
-        }
-        rerankerBaseUrlInput.setAttribute('data-reranker-profile', profile.value);
-        rerankerStatusEl.textContent = `${profile.note} 模型：${profile.model}`;
-      };
+
       const syncProviderSections = () => {
-        deepseekSection.style.display = 'block';
+        // 融合后的界面不需要切换显示
       };
 
       const resetGithubStatus = () => {
@@ -1361,95 +1143,84 @@
         githubStatusEl.style.color = '#999';
       };
 
-      const resetDeepSeekStatus = () => {
-        deepseekOk = false;
-        deepseekStatusEl.innerHTML =
-          '将通过一次 <code>hello world</code> 请求检查 DeepSeek 配置可用性。';
-        deepseekStatusEl.style.color = '#999';
+      let llmOk = false;
+
+      const resetLlmStatus = () => {
+        llmOk = false;
+        llmStatusEl.innerHTML = '将发送 <code>hello world</code> 请求检查接口与模型是否可用。';
+        llmStatusEl.style.color = '#999';
       };
-      const resetCustomStatus = () => {
-        customStatusEl.innerHTML =
-          '将依次用已填写聊天模型发送 <code>hello world</code>，检查接口与模型是否可用。';
-        customStatusEl.style.color = '#999';
+
+      const applyPreset = (presetKey) => {
+        const preset = getOpenAICompatiblePreset(presetKey);
+        if (!preset) return;
+        llmBaseUrlInput.value = preset.baseUrl || '';
+        llmModel1Input.value = preset.models[0] || '';
+        llmModel2Input.value = preset.models[1] || '';
+        llmModel3Input.value = preset.models[2] || '';
+        resetLlmStatus();
+        llmApiKeyInput.focus();
+        const msg = '已填入 ' + preset.label + ' 预设，请补充 API Key 后点击"测试当前配置"。';
+        setErrorText(msg, '#666');
       };
-      const resetRerankerTestStatus = () => {
-        const profile = selectedRerankerProfile();
-        rerankerTestStatusEl.textContent = rerankerRequiresApiKey(profile)
-          ? '将发送一次最小 rerank 请求验证 API Key、Base URL 与模型是否可用。'
-          : '将发送一次最小 rerank 请求验证 Base URL 与模型是否可用。';
-        rerankerTestStatusEl.style.color = '#999';
-      };
-      const buildRerankerDraft = (fallbackApiKey, fallbackBaseUrl) => {
-        const profile = selectedRerankerProfile();
-        const typedApiKey = normalizeText(rerankerApiKeyInput.value || '');
-        const typedBaseUrl = normalizeBaseUrlForStorage(
-          rerankerBaseUrlInput.value || profile.baseUrl || '',
+
+      const validateLlmDraft = () => {
+        const apiKey = normalizeText(llmApiKeyInput.value);
+        const baseUrl = normalizeBaseUrlForStorage(llmBaseUrlInput.value);
+        const models = sanitizeModelList(
+          [
+            llmModel1Input.value,
+            llmModel2Input.value,
+            llmModel3Input.value,
+          ],
+          3,
         );
-        const apiKey = typedApiKey;
-        const baseUrl = typedBaseUrl;
-        const requiresApiKey = rerankerRequiresApiKey(profile);
 
-        if (requiresApiKey && !apiKey) {
-          throw new Error(`选择 ${profile.label} 时需要填写 Reranker API Key。`);
+        if (!apiKey) {
+          throw new Error('请先输入 API Key。');
         }
-        if (profile.provider !== 'local' && !baseUrl) {
-          throw new Error(`请选择 ${profile.label} 时需要填写 Rerank Base URL。`);
+        if (!baseUrl) {
+          throw new Error('请先输入 Base URL。');
         }
-
+        if (!/^https?:\/\//i.test(baseUrl)) {
+          throw new Error('Base URL 需要以 http:// 或 https:// 开头。');
+        }
+        if (!models.length) {
+          throw new Error('请至少填写 1 个模型名称。');
+        }
         return {
-          profile: profile.value,
-          type: profile.provider,
-          provider: profile.provider,
-          model: profile.model,
-          apiKey: requiresApiKey ? apiKey : '',
-          testApiKey: profile.testApiKey || '',
-          baseUrl: profile.provider === 'local' ? '' : baseUrl,
+          apiKey,
+          baseUrl,
+          models,
         };
-      };
-      const buildRerankEndpoint = (baseUrl) => {
-        const raw = normalizeBaseUrlForStorage(baseUrl || '');
-        if (!raw) return '';
-        if (/\/rerank$/i.test(raw)) return raw;
-        if (/\/v\d+$/i.test(raw)) return `${raw}/rerank`;
-        return `${raw}/v1/rerank`;
       };
 
       const collectProviderDraft = () => {
-        const apiKey = normalizeText(deepseekInput.value);
-        const model = selectedDeepSeekModel();
-        if (!apiKey) {
-          throw new Error('请先输入 DeepSeek API Key。');
-        }
-        if (!model) {
-          throw new Error('请选择用于工作流总结的大模型。');
-        }
-        const reranker = buildRerankerDraft(apiKey, getDefaultDeepSeekBaseUrl());
+        const draft = validateLlmDraft();
         return {
-          providerType: 'deepseek',
-          summaryApiKey: apiKey,
-          summaryBaseUrl: getDefaultDeepSeekBaseUrl(),
-          summaryModel: model,
-          chatModels: getDefaultDeepSeekChatModels(),
-          skipRerank: false,
+          providerType: 'openai-compatible',
+          summaryApiKey: draft.apiKey,
+          summaryBaseUrl: draft.baseUrl,
+          summaryModel: draft.models[0],
+          chatModels: draft.models,
+          chatApiKey: draft.apiKey,
+          chatBaseUrl: draft.baseUrl,
+          rewriteModel: draft.models[0],
+          filterModel: draft.models[0],
+          skipRerank: true, // OpenAI-compatible 模式跳过 rerank
           reranker: {
-            ...reranker,
+            enabled: false,
           },
         };
       };
 
       const buildPingEntries = () => {
-        const apiKey = normalizeText(deepseekInput.value);
-        const model = selectedDeepSeekModel();
-        if (!apiKey || !model) {
-          throw new Error('请先填写 DeepSeek API Key 并选择模型。');
-        }
-        return [
-          {
-            apiKey,
-            baseUrl: getDefaultDeepSeekBaseUrl(),
-            model,
-          },
-        ];
+        const draft = validateLlmDraft();
+        return draft.models.map((model) => ({
+          apiKey: draft.apiKey,
+          baseUrl: draft.baseUrl,
+          model,
+        }));
       };
 
       const bindResetOnInput = (elements, resetFn) => {
@@ -1460,98 +1231,49 @@
         });
       };
 
+      // 初始化值
       if (initialGithubToken) {
         githubStatusEl.textContent = '已载入当前加密配置；如更换 GitHub Token，保存前请重新验证。';
         githubStatusEl.style.color = '#666';
       }
       if (initialApiKey) {
-        deepseekStatusEl.textContent = '已载入当前 DeepSeek 配置；如更换 API Key 或模型，建议点击测试按钮。';
-        deepseekStatusEl.style.color = '#666';
+        llmApiKeyInput.value = initialApiKey;
+        llmBaseUrlInput.value = initialCustomBaseUrl;
+        llmModel1Input.value = initialCustomModels[0] || '';
+        llmModel2Input.value = initialCustomModels[1] || '';
+        llmModel3Input.value = initialCustomModels[2] || '';
+        llmStatusEl.textContent = '已载入当前加密配置；如更换配置，建议重新点击测试。';
+        llmStatusEl.style.color = '#666';
+        llmOk = true;
       }
 
-      syncProviderSections();
-      syncRerankerFields();
-      resetRerankerTestStatus();
-
       bindResetOnInput([githubInput], resetGithubStatus);
-      bindResetOnInput([deepseekInput, deepseekModelSelect], resetDeepSeekStatus);
       bindResetOnInput(
-        [customApiKeyInput, customBaseUrlInput, customModel1Input, customModel2Input, customModel3Input],
-        resetCustomStatus,
+        [llmApiKeyInput, llmBaseUrlInput, llmModel1Input, llmModel2Input, llmModel3Input],
+        resetLlmStatus,
       );
-      bindResetOnInput([rerankerApiKeyInput, rerankerBaseUrlInput], resetRerankerTestStatus);
-      rerankerProfileSelect.addEventListener('change', syncRerankerFields);
-      rerankerProfileSelect.addEventListener('change', resetRerankerTestStatus);
-      rerankerTestBtn.addEventListener('click', async () => {
-        let draft = null;
-        try {
-          draft = buildRerankerDraft('', '');
-        } catch (e) {
-          rerankerTestStatusEl.textContent = `❌ ${e.message || e}`;
-          rerankerTestStatusEl.style.color = '#c00';
-          return;
-        }
-        if (draft.provider === 'local') {
-          rerankerTestStatusEl.textContent = '当前选择为本地 reranker，无需远端测试。';
-          rerankerTestStatusEl.style.color = '#666';
-          return;
-        }
-        const endpoint = buildRerankEndpoint(draft.baseUrl);
-        if (!endpoint) {
-          rerankerTestStatusEl.textContent = '❌ 请填写 Rerank Base URL。';
-          rerankerTestStatusEl.style.color = '#c00';
-          return;
-        }
-        rerankerTestBtn.disabled = true;
-        rerankerTestStatusEl.textContent = '正在测试远端 Reranker...';
-        rerankerTestStatusEl.style.color = '#666';
-        try {
-          const headers = {
-            'Content-Type': 'application/json',
-          };
-          const authApiKey = draft.apiKey || draft.testApiKey || '';
-          if (authApiKey) {
-            headers.Authorization = `Bearer ${authApiKey}`;
-          }
-          const res = await fetch(endpoint, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-              model: draft.model,
-              query: 'Which paper is about neural machine translation?',
-              documents: [
-                'Attention Is All You Need introduces the Transformer architecture for sequence modeling.',
-                'A recipe for sourdough bread with flour and water.',
-              ],
-              top_n: 1,
-              return_documents: false,
-            }),
-          });
-          if (!res.ok) {
-            const text = await res.text().catch(() => '');
-            throw new Error(`HTTP ${res.status} ${res.statusText}${text ? ` - ${text.slice(0, 180)}` : ''}`);
-          }
-          const data = await res.json().catch(() => null);
-          if (!data || !Array.isArray(data.results)) {
-            throw new Error('响应缺少 results 字段。');
-          }
-          rerankerTestStatusEl.textContent = `✅ Reranker 可用：返回 ${data.results.length} 条结果。`;
-          rerankerTestStatusEl.style.color = '#28a745';
-        } catch (e) {
-          rerankerTestStatusEl.textContent = `❌ 测试失败：${e.message || e}`;
-          rerankerTestStatusEl.style.color = '#c00';
-        } finally {
-          rerankerTestBtn.disabled = false;
-        }
-      });
-      providerInputs.forEach((input) => {
-        input.addEventListener('change', () => {
-          syncProviderSections();
-          setErrorText(
-            'DeepSeek 密钥将加密写入 GitHub Secrets（用于 GitHub Actions），并同步生成本地 secret.private 备份。',
-            '#999',
-          );
+
+      // 添加 BLT 预设按钮事件
+      if (platoPresetBtn) {
+        platoPresetBtn.addEventListener('click', () => {
+          applyPreset('plato');
         });
+      }
+
+      deepseekPresetBtn.addEventListener('click', () => {
+        applyPreset('deepseek');
+      });
+      glmPresetBtn.addEventListener('click', () => {
+        applyPreset('glm');
+      });
+      minimaxPresetBtn.addEventListener('click', () => {
+        applyPreset('minimax');
+      });
+      kimiPresetBtn.addEventListener('click', () => {
+        applyPreset('kimi');
+      });
+      openaiPresetBtn.addEventListener('click', () => {
+        applyPreset('openai');
       });
 
       backBtn.addEventListener('click', () => {
@@ -1608,53 +1330,25 @@
         }
       });
 
-      deepseekVerifyBtn.addEventListener('click', async () => {
-        const key = normalizeText(deepseekInput.value);
-        if (!key) {
-          deepseekStatusEl.textContent = '请先输入 DeepSeek API Key。';
-          deepseekStatusEl.style.color = '#c00';
-          deepseekOk = false;
-          return;
-        }
-        deepseekVerifyBtn.disabled = true;
-        deepseekStatusEl.textContent = '正在测试 DeepSeek 配置...';
-        deepseekStatusEl.style.color = '#666';
+      llmTestBtn.addEventListener('click', async () => {
+        llmTestBtn.disabled = true;
         try {
-          const models = await pingChatModels(buildPingEntries(), deepseekStatusEl);
-          deepseekStatusEl.textContent = `✅ 配置可用：${models.join(', ')}`;
-          deepseekStatusEl.style.color = '#28a745';
-          deepseekOk = true;
+          const models = await pingChatModels(buildPingEntries(), llmStatusEl);
+          llmStatusEl.textContent = `✅ 配置可用：${models.join(', ')}`;
+          llmStatusEl.style.color = '#28a745';
+          llmOk = true;
         } catch (e) {
-          deepseekStatusEl.textContent = `❌ 验证失败：${e.message || e}`;
-          deepseekStatusEl.style.color = '#c00';
-          deepseekOk = false;
+          llmStatusEl.textContent = `❌ 测试失败：${e.message || e}`;
+          llmStatusEl.style.color = '#c00';
+          llmOk = false;
         } finally {
-          deepseekVerifyBtn.disabled = false;
-        }
-      });
-
-      deepseekTestBtn.addEventListener('click', async () => {
-        deepseekTestBtn.disabled = true;
-        deepseekVerifyBtn.disabled = true;
-        try {
-          const models = await pingChatModels(buildPingEntries(), deepseekStatusEl);
-          deepseekStatusEl.textContent = `✅ 配置可用：${models.join(', ')}`;
-          deepseekStatusEl.style.color = '#28a745';
-          deepseekOk = true;
-        } catch (e) {
-          deepseekStatusEl.textContent = `❌ 测试失败：${e.message || e}`;
-          deepseekStatusEl.style.color = '#c00';
-          deepseekOk = false;
-        } finally {
-          deepseekTestBtn.disabled = false;
-          deepseekVerifyBtn.disabled = false;
+          llmTestBtn.disabled = false;
         }
       });
 
       genBtn.addEventListener('click', async () => {
         const githubToken = normalizeText(githubInput.value);
-        const localOnly = isLocalDebugHost();
-        if (!localOnly && (!githubToken || !githubOk)) {
+        if (!githubToken || !githubOk) {
           setErrorText('请先填写并通过验证 GitHub Token。', '#c00');
           return;
         }
@@ -1667,8 +1361,8 @@
           return;
         }
 
-        if (providerDraft.providerType === 'deepseek' && !deepseekOk) {
-          setErrorText('请先点击“测试当前配置”，确认 DeepSeek 配置可用。', '#c00');
+        if (!llmOk) {
+          setErrorText('请先点击"测试当前配置"，确认 LLM 配置可用。', '#c00');
           return;
         }
 
@@ -1690,9 +1384,6 @@
           },
           rerankerLLM: providerDraft.reranker
             ? {
-                profile: providerDraft.reranker.profile || 'local-qwen3-0.6b',
-                provider: providerDraft.reranker.provider || providerDraft.reranker.type || 'local',
-                type: providerDraft.reranker.type || providerDraft.reranker.provider || 'local',
                 apiKey: providerDraft.reranker.apiKey,
                 baseUrl: providerDraft.reranker.baseUrl,
                 model: providerDraft.reranker.model,
@@ -1702,84 +1393,73 @@
               },
           chatLLMs: [
             {
-              apiKey: providerDraft.summaryApiKey,
-              baseUrl: providerDraft.summaryBaseUrl,
+              apiKey: providerDraft.providerType === 'openai-compatible'
+                ? providerDraft.chatApiKey
+                : providerDraft.summaryApiKey,
+              baseUrl: providerDraft.providerType === 'openai-compatible'
+                ? providerDraft.chatBaseUrl
+                : providerDraft.summaryBaseUrl,
               models: providerDraft.chatModels,
             },
           ],
         };
 
         try {
-          setErrorText(localOnly ? '正在生成本地加密配置...' : '正在准备写入 GitHub Secrets...', '#666');
+          setErrorText('正在准备写入 GitHub Secrets...', '#666');
           genBtn.disabled = true;
 
-          if (!localOnly) {
-            const secretsOk = await saveSummarizeSecretsToGithub(
-              githubToken,
-              {
-                providerType: providerDraft.providerType,
-                summarizedApiKey: providerDraft.summaryApiKey,
-                summarizedBaseUrl: providerDraft.summaryBaseUrl,
-                summarizedModel: providerDraft.summaryModel,
-                filterModel: providerDraft.filterModel,
-                rewriteModel: providerDraft.rewriteModel,
-                skipRerank: providerDraft.skipRerank,
-                localRerankModel: 'Qwen/Qwen3-Reranker-0.6B',
-                rerankerProfile: providerDraft.reranker && providerDraft.reranker.profile,
-                rerankerProvider: providerDraft.reranker && providerDraft.reranker.provider,
-                rerankerModel: providerDraft.reranker && providerDraft.reranker.model,
-                rerankerApiKey: providerDraft.reranker && providerDraft.reranker.apiKey,
-                rerankerBaseUrl: providerDraft.reranker && providerDraft.reranker.baseUrl,
-              },
-              (current, total, secretName) => {
-                setErrorText(`(${current}/${total}) 正在上传 GitHub Secret：${secretName}...`, '#666');
-              },
+          const secretsOk = await saveSummarizeSecretsToGithub(
+            githubToken,
+            {
+              providerType: providerDraft.providerType,
+              summarizedApiKey: providerDraft.summaryApiKey,
+              summarizedBaseUrl: providerDraft.summaryBaseUrl,
+              summarizedModel: providerDraft.summaryModel,
+              filterModel: providerDraft.filterModel,
+              rewriteModel: providerDraft.rewriteModel,
+              skipRerank: providerDraft.skipRerank,
+              rerankerApiKey: providerDraft.reranker && providerDraft.reranker.apiKey,
+              rerankerBaseUrl: providerDraft.reranker && providerDraft.reranker.baseUrl,
+              rerankerModel: providerDraft.reranker && providerDraft.reranker.model,
+            },
+            (current, total, secretName) => {
+              setErrorText(`(${current}/${total}) 正在上传 GitHub Secret：${secretName}...`, '#666');
+            },
+          );
+          if (!secretsOk) {
+            setErrorText(
+              '❌ 写入 GitHub Secrets 失败，请检查网络、Token 权限（需 Classic PAT + repo/workflow/gist）或稍后重试。',
+              '#c00',
             );
-            if (!secretsOk) {
-              setErrorText(
-                '❌ 写入 GitHub Secrets 失败，请检查网络、Token 权限（需 Classic PAT + repo/workflow/gist）或稍后重试。',
-                '#c00',
-              );
-              return;
-            }
+            return;
           }
 
-          setErrorText(localOnly ? '正在保存到浏览器本地...' : 'GitHub Secrets 上传完成，正在生成加密配置 secret.private...', '#666');
+          setErrorText('GitHub Secrets 上传完成，正在生成加密配置 secret.private...', '#666');
           const payload = await createEncryptedSecret(password, plainConfig);
           window.decoded_secret_private = plainConfig;
           setMode('full');
 
-          if (localOnly) {
-            try {
-              await saveLocalSecretPayloadToDisk(payload);
-            } catch (e) {
-              console.error(e);
-              setErrorText('❌ 保存到本地 secret.private 失败，请确认本地后端已启动。', '#c00');
-              return;
-            }
-          } else {
-            const blob = new Blob([JSON.stringify(payload, null, 2)], {
-              type: 'application/json',
-            });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'secret.private';
-            document.body.appendChild(a);
-            a.click();
-            setTimeout(() => {
-              document.body.removeChild(a);
-              URL.revokeObjectURL(url);
-            }, 0);
+          const blob = new Blob([JSON.stringify(payload, null, 2)], {
+            type: 'application/json',
+          });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'secret.private';
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }, 0);
 
-            setErrorText('正在将 secret.private 推送到 GitHub 仓库根目录...', '#666');
-            const commitOk = await saveSecretPrivateToGithubRepo(githubToken, payload);
-            if (!commitOk) {
-              setErrorText(
-                '⚠️ 已生成本地 secret.private，但自动推送到 GitHub 仓库失败，请稍后手动提交或检查 Token/网络。',
-                '#c00',
-              );
-            }
+          setErrorText('正在将 secret.private 推送到 GitHub 仓库根目录...', '#666');
+          const commitOk = await saveSecretPrivateToGithubRepo(githubToken, payload);
+          if (!commitOk) {
+            setErrorText(
+              '⚠️ 已生成本地 secret.private，但自动推送到 GitHub 仓库失败，请稍后手动提交或检查 Token/网络。',
+              '#c00',
+            );
           }
 
           hide();
@@ -1905,7 +1585,7 @@
     };
 
     // 统一渲染两种模式的 UI（仅使用新的两步初始化向导 / 解锁界面）
-    // 同时在此处挂钩后台管理面板的“密钥配置”按钮入口，利用当前闭包中的 renderInitStep1/renderInitStep2
+    // 同时在此处挂钩后台管理面板的"密钥配置"按钮入口，利用当前闭包中的 renderInitStep1/renderInitStep2
     try {
       window.DPRSecretSetup = window.DPRSecretSetup || {};
       window.DPRSecretSetup.openStep2 = function () {
@@ -1925,7 +1605,7 @@
     }
 
     if (hasSecretFile) {
-      // 已有 secret.private：展示“解锁 / 游客”界面
+      // 已有 secret.private：展示"解锁 / 游客"界面
       renderUnlockUI();
     } else {
       // 不存在 secret.private：进入初始化两步向导
@@ -1943,7 +1623,7 @@
       };
     };
 
-    // 默认视为锁定状态，直到用户选择“解锁 / 游客”
+    // 默认视为锁定状态，直到用户选择"解锁 / 游客"
     window.DPR_ACCESS_MODE = FORCE_GUEST_MODE ? 'guest' : 'locked';
 
     if (FORCE_GUEST_MODE) {
@@ -1955,19 +1635,15 @@
 
     if (!overlay) return;
 
-    // 检查是否已经存在 secret.private（用于区分“解锁”与“初始化”）
+    // 检查是否已经存在 secret.private（用于区分"解锁"与"初始化"）
     (async () => {
       try {
-        const localPayload = await loadLocalSecretPayloadPreferred();
-        let resp = null;
-        let hasSecret = Boolean(localPayload);
-        if (!hasSecret) {
-          resp = await fetch(SECRET_FILE_URL, {
-            method: 'GET',
-            cache: 'no-store',
-          });
-        }
-        if (!hasSecret && resp && resp.ok) {
+        const resp = await fetch(SECRET_FILE_URL, {
+          method: 'GET',
+          cache: 'no-store',
+        });
+        let hasSecret = false;
+        if (resp.ok) {
           try {
             // 不再依赖 content-type，只要能成功解析为 JSON，就认为是合法的 secret.private
             await resp.clone().json();
@@ -1985,17 +1661,15 @@
           const savedPwd = loadSavedPassword();
           if (savedPwd) {
             try {
-              const payload = localPayload || (await (async () => {
-                const resp2 = await fetch(SECRET_FILE_URL, {
-                  cache: 'no-store',
-                });
-                if (!resp2.ok) {
-                  throw new Error(
-                    `获取 secret.private 失败，HTTP ${resp2.status}`,
-                  );
-                }
-                return resp2.json();
-              })());
+              const resp2 = await fetch(SECRET_FILE_URL, {
+                cache: 'no-store',
+              });
+              if (!resp2.ok) {
+                throw new Error(
+                  `获取 secret.private 失败，HTTP ${resp2.status}`,
+                );
+              }
+              const payload = await resp2.json();
               const secret = await decryptSecret(savedPwd, payload);
               window.decoded_secret_private = secret;
               // 这里不在 setupOverlay 作用域内，直接标记全局访问模式为 full 并广播事件
@@ -2004,7 +1678,7 @@
               } catch {
                 // ignore
               }
-              // 自动解锁成功时，仍然初始化一次 overlay，以便后台“密钥配置”按钮可以直接打开第二步向导
+              // 自动解锁成功时，仍然初始化一次 overlay，以便后台"密钥配置"按钮可以直接打开第二步向导
               // 注意：此时不移除 hidden 类，浮层保持隐藏，仅注册 DPRSecretSetup.openStep2 等入口
               try {
                 setupOverlay(true);
@@ -2030,7 +1704,7 @@
           openSecretOverlay(overlay);
         }
       } catch {
-        // 请求失败时按“文件不存在”处理：始终进入初始化向导
+        // 请求失败时按"文件不存在"处理：始终进入初始化向导
         window.DPR_ACCESS_MODE = 'locked';
         setupOverlay(false);
         openSecretOverlay(overlay);

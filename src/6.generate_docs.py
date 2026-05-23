@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Tuple
 
 import fitz  # PyMuPDF
 import requests
-from llm import DeepSeekClient
+from llm import ClientFactory, LLMClient
 
 SCRIPT_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
@@ -34,23 +34,20 @@ CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 TODAY_STR = str(os.getenv("DPR_RUN_DATE") or "").strip() or datetime.now(timezone.utc).strftime("%Y%m%d")
 RANGE_DATE_RE = re.compile(r"^(\d{8})-(\d{8})$")
 
-# LLM 配置（使用 llm.py 内的 DeepSeek 客户端）
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or os.getenv("SUMMARY_API_KEY")
-DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL") or os.getenv("SUMMARY_BASE_URL") or "https://api.deepseek.com"
-DEEPSEEK_MODEL = os.getenv("SUMMARY_MODEL") or os.getenv("DEEPSEEK_MODEL") or "deepseek-v4-flash"
+# LLM 配置（使用 llm.py 内的 ClientFactory）
 LLM_CLIENT = None
-if DEEPSEEK_API_KEY:
-    LLM_CLIENT = DeepSeekClient(
-        api_key=DEEPSEEK_API_KEY,
-        model=DEEPSEEK_MODEL,
-        base_url=DEEPSEEK_BASE_URL,
-    )
+_model_env = os.getenv("LLM_MODEL")
+_api_key_env = os.getenv("LLM_API_KEY")
+if _model_env:
+    LLM_CLIENT = ClientFactory.from_env()
+elif os.getenv("BLT_API_KEY"):
+    LLM_CLIENT = ClientFactory.from_env()
 
 DEFAULT_DOCS_CONCURRENCY = 4
 
 
 def call_llm_text(
-    client: DeepSeekClient,
+    client: LLMClient,
     messages: List[Dict[str, str]],
     temperature: float,
     max_tokens: int,
@@ -67,7 +64,7 @@ def call_llm_text(
 
 
 def call_llm_structured_json(
-    client: DeepSeekClient,
+    client: LLMClient,
     messages: List[Dict[str, str]],
     schema_name: str,
     schema: Dict[str, Any],
@@ -523,7 +520,7 @@ def upsert_glance_block_in_text(md_text: str, glance: str) -> str:
 
 def generate_deep_summary(md_file_path: str, txt_file_path: str, max_retries: int = 3) -> str | None:
     if LLM_CLIENT is None:
-        log("[WARN] 未配置 DEEPSEEK_API_KEY 或 SUMMARY_API_KEY，跳过精读总结。")
+        log("[WARN] 未配置 BLT_API_KEY，跳过精读总结。")
         return None
     if not os.path.exists(md_file_path):
         return None
@@ -1638,6 +1635,54 @@ def process_paper(
     return paper_id, title
 
 
+def resolve_paper_id_to_md_path(docs_dir: str, paper_id: str) -> str:
+    """
+    根据 paper_id 反推 md 文件路径。
+    paper_id 格式: YYYYMM/DD/basename 或 YYYYMMDD/basename
+    """
+    parts = str(paper_id or "").strip().split("/")
+    if len(parts) < 2:
+        return ""
+    if RANGE_DATE_RE.match(parts[0]):
+        # YYYYMMDD/basename 格式
+        md_path = os.path.join(docs_dir, parts[0], f"{'/'.join(parts[1:])}.md")
+    else:
+        # YYYYMM/DD/basename 格式
+        if len(parts) >= 3:
+            md_path = os.path.join(docs_dir, parts[0], parts[1], f"{'/'.join(parts[2:])}.md")
+        else:
+            md_path = ""
+    return md_path
+
+
+def filter_entries_by_existing_files(
+    docs_dir: str,
+    deep_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
+    quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
+) -> Tuple[List[Tuple[str, str, List[Tuple[str, str]]]], List[Tuple[str, str, List[Tuple[str, str]]]]]:
+    """
+    过滤掉 docs 目录下不存在的论文条目，保持 sidebar 与实际文件同步。
+    """
+    filtered_deep: List[Tuple[str, str, List[Tuple[str, str]]]] = []
+    filtered_quick: List[Tuple[str, str, List[Tuple[str, str]]]] = []
+
+    for paper_id, title, tags in deep_entries:
+        md_path = resolve_paper_id_to_md_path(docs_dir, paper_id)
+        if md_path and os.path.exists(md_path):
+            filtered_deep.append((paper_id, title, tags))
+        else:
+            log(f"[INFO] 过滤已删除论文（精读区）: {paper_id}")
+
+    for paper_id, title, tags in quick_entries:
+        md_path = resolve_paper_id_to_md_path(docs_dir, paper_id)
+        if md_path and os.path.exists(md_path):
+            filtered_quick.append((paper_id, title, tags))
+        else:
+            log(f"[INFO] 过滤已删除论文（速读区）: {paper_id}")
+
+    return filtered_deep, filtered_quick
+
+
 def update_sidebar(
     sidebar_path: str,
     date_str: str,
@@ -1645,6 +1690,7 @@ def update_sidebar(
     quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
     paper_evidence_by_id: Dict[str, str],
     date_label: str | None = None,
+    docs_dir: str | None = None,
 ) -> None:
     def build_sidebar_item_payload(
         paper_id: str,
@@ -1680,6 +1726,12 @@ def update_sidebar(
         if safe_evidence:
             payload["evidence"] = safe_evidence
         return html.escape(json.dumps(payload, ensure_ascii=False), quote=True)
+
+    # 过滤掉 docs 目录下不存在的论文条目，保持 sidebar 与实际文件同步
+    if docs_dir:
+        filtered_deep, filtered_quick = filter_entries_by_existing_files(docs_dir, deep_entries, quick_entries)
+        deep_entries = filtered_deep
+        quick_entries = filtered_quick
 
     effective_label = (date_label or "").strip() or format_date_str(date_str)
     # 用隐藏 marker 做稳定定位，避免“展示标题”变更导致无法覆盖更新
@@ -2639,6 +2691,7 @@ def main() -> None:
             quick_entries,
             sidebar_evidence_by_id,
             date_label=args.sidebar_date_label,
+            docs_dir=docs_dir,
         )
         log_substep("6.5", "更新侧边栏", "END")
     else:

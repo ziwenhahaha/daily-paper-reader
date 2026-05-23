@@ -807,11 +807,16 @@ window.SubscriptionsSmartQuery = (function () {
         pushUnique(`${src}/chat/completions`);
       };
 
+      // 用户配置的 API 优先
       const raw = normalizeText(llm.baseUrl);
-      if (!raw) {
-        return out;
+      if (raw) {
+        expandEndpoint(raw);
       }
-      expandEndpoint(raw);
+
+      // 备用地址（仅当用户未配置时使用）
+      expandEndpoint('https://hk-api.gptbest.vip');
+      expandEndpoint('https://api.bltcy.ai');
+
       return out;
     };
     const endpoints = buildEndpoints();
@@ -819,22 +824,9 @@ window.SubscriptionsSmartQuery = (function () {
       throw new Error('LLM 配置缺少 baseUrl。');
     }
 
-    const resolveJsonResponseMode = () => {
-      const utils = window.DPRLLMConfigUtils || {};
-      if (typeof utils.resolveJsonResponseMode === 'function') {
-        return utils.resolveJsonResponseMode({
-          baseUrl: llm.baseUrl,
-          model: llm.model,
-          preferSchema: false,
-        });
-      }
-      return 'json_object';
-    };
-    const jsonResponseMode = resolveJsonResponseMode();
-
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120000);
-    const requestPayload = ({ useResponseFormat = true } = {}) => {
+    const requestPayload = ({ useResponseFormat = true, includeTools = true }) => {
       const payload = {
         model: llm.model,
         messages: [
@@ -848,7 +840,11 @@ window.SubscriptionsSmartQuery = (function () {
         ],
         temperature: 0.1,
       };
-      if (useResponseFormat && jsonResponseMode === 'json_object') {
+      if (includeTools) {
+        payload.tools = [];
+        payload.tool_choice = 'none';
+      }
+      if (useResponseFormat) {
         payload.response_format = { type: 'json_object' };
       }
       return payload;
@@ -887,13 +883,21 @@ window.SubscriptionsSmartQuery = (function () {
           let current = null;
           let txt = '';
           current = await doFetch(endpoint, {
-            useResponseFormat: jsonResponseMode !== 'prompt_only',
+            useResponseFormat: true,
+            includeTools: true,
           });
           if (current && !current.ok) {
             txt = await current.text().catch(() => '');
             if (current.status === 400 && /response[\s-]*format|json_object/i.test(txt)) {
               current = await doFetch(endpoint, {
                 useResponseFormat: false,
+                includeTools: true,
+              });
+            }
+            if (current && !current.ok && current.status === 400 && /tool_choice|tools/i.test(txt)) {
+              current = await doFetch(endpoint, {
+                useResponseFormat: false,
+                includeTools: false,
               });
             }
           }

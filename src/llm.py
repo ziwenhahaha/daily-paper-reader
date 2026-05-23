@@ -10,7 +10,7 @@ import requests
 统一的 LLM 客户端封装。
 
 提供商/模型命名规则：'provider/model'，provider 大小写不敏感，model 保留大小写与路径。
-当前运行链路仅支持 DeepSeek；本地 reranker 不走 LLM API。
+当前支持：deepseek、siliconflow、ollama、blt、cstcloud（科技云）。
 """
 
 # 单次实验级别的全局 token 统计（需由调用方在实验开始前手动 reset）
@@ -23,7 +23,8 @@ GLOBAL_TOKENS = {
 # 单次实验级别的全局时间统计（秒）
 GLOBAL_TIME_SECONDS: float = 0.0
 
-DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+PRIMARY_LLM_BASE_URL = "https://api.gptbest.vip/v1"
+DEFAULT_BLT_BASE_URL = "https://api.bltcy.ai/v1"
 
 
 def reset_global_tokens():
@@ -133,28 +134,21 @@ class LLMClient:
     def _provider_name(self, base_url: str | None = None) -> str:
         try:
             url = (base_url or self.base_url or '').lower()
-            model = str(self.model or '').strip().lower()
             if 'deepseek' in url:
                 return 'deepseek'
-            if model.startswith('deepseek-'):
-                return 'deepseek'
+            if 'siliconflow' in url or 'siliconflow.cn' in url:
+                return 'siliconflow'
+            if 'gptbest' in url:
+                return 'blt'
+            if 'bltcy' in url or 'blt' in url:
+                return 'blt'
+            if 'ollama' in url or 'localhost' in url:
+                return 'ollama'
+            if 'cstcloud' in url or 'uni-api.cstcloud.cn' in url:
+                return 'cstcloud'
         except Exception:
             pass
         return 'llm'
-
-    @staticmethod
-    def _is_authentication_error(exc: Exception) -> bool:
-        response = getattr(exc, "response", None)
-        status_code = getattr(response, "status_code", None)
-        if status_code in (401, 403):
-            return True
-        message = str(exc or "").lower()
-        return any(token in message for token in (
-            "authentication fails",
-            "invalid api key",
-            "authorization required",
-            "unauthorized",
-        ))
 
     @staticmethod
     def _extract_text_content(value: Any) -> str:
@@ -282,154 +276,6 @@ class LLMClient:
     def build_json_object_response_format() -> Dict[str, str]:
         return {"type": "json_object"}
 
-    def _structured_response_format_names(
-        self,
-        allow_json_object_fallback: bool,
-    ) -> List[str]:
-        """
-        按主请求端点选择结构化输出格式。
-
-        DeepSeek 官方 JSON Output 稳定入口是 json_object，因此默认不发送 json_schema。
-        可用 DPR_LLM_STRUCTURED_FORMAT/LLM_STRUCTURED_FORMAT 覆盖：
-        - json_schema: 强制 json_schema，允许时再回退 json_object
-        - json_object: 强制 json_object
-        - auto: 使用默认判断
-        """
-        if not allow_json_object_fallback:
-            return ["json_schema"]
-
-        override = (
-            os.getenv("DPR_LLM_STRUCTURED_FORMAT")
-            or os.getenv("LLM_STRUCTURED_FORMAT")
-            or ""
-        ).strip().lower().replace("-", "_")
-        if override in ("prompt_only", "prompt", "none", "text"):
-            return ["prompt_only"]
-        if override in ("json_object", "object", "json"):
-            return ["json_object", "prompt_only"]
-        if override in ("json_schema", "schema", "structured"):
-            return ["json_schema", "json_object", "prompt_only"]
-
-        return ["json_object", "prompt_only"]
-
-    @staticmethod
-    def _messages_contain_json_instruction(messages: List[Dict[str, str]]) -> bool:
-        for message in messages or []:
-            if not isinstance(message, dict):
-                continue
-            content = message.get("content")
-            if isinstance(content, str) and "json" in content.lower():
-                return True
-        return False
-
-    @classmethod
-    def _ensure_json_instruction(
-        cls,
-        messages: List[Dict[str, str]],
-        format_name: str,
-    ) -> List[Dict[str, str]]:
-        if format_name not in ("json_object", "prompt_only"):
-            return messages
-        if cls._messages_contain_json_instruction(messages):
-            return messages
-        return [
-            {
-                "role": "system",
-                "content": "Output valid JSON only. Do not output Markdown, code fences, or explanatory text.",
-            },
-            *(messages or []),
-        ]
-
-    @classmethod
-    def _validate_json_schema_subset(
-        cls,
-        value: Any,
-        schema: Dict[str, Any],
-        path: str = "$",
-    ) -> str | None:
-        if not isinstance(schema, dict):
-            return None
-
-        expected_type = schema.get("type")
-        expected_types = expected_type if isinstance(expected_type, list) else [expected_type]
-        expected_types = [item for item in expected_types if isinstance(item, str)]
-
-        def type_matches(type_name: str) -> bool:
-            if type_name == "object":
-                return isinstance(value, dict)
-            if type_name == "array":
-                return isinstance(value, list)
-            if type_name == "string":
-                return isinstance(value, str)
-            if type_name == "number":
-                return isinstance(value, (int, float)) and not isinstance(value, bool)
-            if type_name == "integer":
-                return isinstance(value, int) and not isinstance(value, bool)
-            if type_name == "boolean":
-                return isinstance(value, bool)
-            if type_name == "null":
-                return value is None
-            return True
-
-        if expected_types and not any(type_matches(type_name) for type_name in expected_types):
-            return f"{path}: expected type {expected_types}, got {type(value).__name__}"
-
-        enum_values = schema.get("enum")
-        if isinstance(enum_values, list) and value not in enum_values:
-            return f"{path}: value is not in enum"
-
-        if expected_type == "object" or isinstance(value, dict):
-            if not isinstance(value, dict):
-                return f"{path}: expected object"
-            properties = schema.get("properties")
-            properties = properties if isinstance(properties, dict) else {}
-            required = schema.get("required")
-            required = required if isinstance(required, list) else []
-            for key in required:
-                if isinstance(key, str) and key not in value:
-                    return f"{path}.{key}: missing required field"
-            if schema.get("additionalProperties") is False:
-                extra = sorted(set(value.keys()) - set(properties.keys()))
-                if extra:
-                    return f"{path}: unexpected fields {extra}"
-            for key, child_schema in properties.items():
-                if key not in value:
-                    continue
-                err = cls._validate_json_schema_subset(value[key], child_schema, f"{path}.{key}")
-                if err:
-                    return err
-
-        if expected_type == "array" or isinstance(value, list):
-            if not isinstance(value, list):
-                return f"{path}: expected array"
-            item_schema = schema.get("items")
-            if isinstance(item_schema, dict):
-                for idx, item in enumerate(value):
-                    err = cls._validate_json_schema_subset(item, item_schema, f"{path}[{idx}]")
-                    if err:
-                        return err
-
-        return None
-
-    def _build_response_format_by_name(
-        self,
-        format_name: str,
-        schema_name: str,
-        schema: Dict[str, Any],
-        strict: bool,
-    ) -> Dict[str, Any] | None:
-        if format_name == "json_schema":
-            return self.build_json_schema_response_format(
-                schema_name=schema_name,
-                schema=schema,
-                strict=strict,
-            )
-        if format_name == "json_object":
-            return self.build_json_object_response_format()
-        if format_name == "prompt_only":
-            return None
-        raise ValueError(f"未知结构化输出格式: {format_name}")
-
     @staticmethod
     def _is_structured_output_unsupported_error(error: Exception) -> bool:
         response = getattr(error, "response", None)
@@ -480,13 +326,16 @@ class LLMClient:
         统一 Chat Completions 请求。
 
         :param messages: OpenAI 格式的消息列表
-        :param response_format: 可选，结构化输出配置（DeepSeek JSON mode）
+        :param response_format: 可选，结构化输出配置（柏拉图支持）
         """
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
         model_name = self.model
+        # MiniMax API 不接受 provider 前缀
+        if '/' in model_name:
+            model_name = model_name.split('/', 1)[1]
         if 'qwen3' in model_name.lower():
             if '/think' in model_name:
                 self.kwargs['enable_thinking'] = True
@@ -534,9 +383,9 @@ class LLMClient:
                     print("API 响应无法解析为 JSON，原始文本预览:", response.text[:500])
                     raise
 
-                debug_raw = os.getenv("LLM_DEBUG_RAW") == "1"
-                if debug_raw:
-                    print("[DEBUG] LLM 原始响应包:", response.text)
+                debug_raw = os.getenv("BLT_DEBUG_RAW") == "1" or os.getenv("LLM_DEBUG_RAW") == "1"
+                if debug_raw and self._provider_name(req_base) == "blt":
+                    print("[DEBUG] BLT 原始响应包:", response.text)
 
                 if isinstance(response_data, dict) and 'error' in response_data:
                     err = response_data.get('error') or {}
@@ -630,19 +479,6 @@ class LLMClient:
 
             except Exception as e:
                 last_error = e
-                if self._is_authentication_error(e):
-                    print(
-                        "LLM 鉴权失败：当前 API Key 无效或无权限，请在本地配置中更新 DeepSeek API Key 后重试。"
-                    )
-                    if hasattr(e, "response") and e.response is not None:
-                        try:
-                            print("错误详情(JSON):", e.response.json())
-                        except ValueError:
-                            try:
-                                print("错误详情(TEXT):", e.response.text[:500])
-                            except Exception:
-                                pass
-                    raise
                 if response_format is not None and self._is_structured_output_unsupported_error(e):
                     raise
                 if attempt_idx < len(request_bases):
@@ -684,33 +520,26 @@ class LLMClient:
         strict: bool = True,
         allow_json_object_fallback: bool = True,
     ) -> Dict[str, Any]:
-        attempts: List[Tuple[str, Dict[str, Any] | None]] = [
+        attempts: List[Tuple[str, Dict[str, Any]]] = [
             (
-                format_name,
-                self._build_response_format_by_name(
-                    format_name=format_name,
+                "json_schema",
+                self.build_json_schema_response_format(
                     schema_name=schema_name,
                     schema=schema,
                     strict=strict,
                 ),
             )
-            for format_name in self._structured_response_format_names(
-                allow_json_object_fallback=allow_json_object_fallback,
-            )
         ]
+        if allow_json_object_fallback:
+            attempts.append(("json_object", self.build_json_object_response_format()))
 
         last_error: Exception | None = None
         for idx, (format_name, response_format) in enumerate(attempts):
             try:
-                request_messages = self._ensure_json_instruction(messages, format_name)
-                response = self.chat(messages=request_messages, response_format=response_format)
+                response = self.chat(messages=messages, response_format=response_format)
             except Exception as exc:
                 last_error = exc
-                if (
-                    idx + 1 < len(attempts)
-                    and response_format is not None
-                    and self._is_structured_output_unsupported_error(exc)
-                ):
+                if idx + 1 < len(attempts) and self._is_structured_output_unsupported_error(exc):
                     print(
                         f"[INFO] Structured Outputs 不受支持，回退到 {attempts[idx + 1][0]}。"
                     )
@@ -726,17 +555,6 @@ class LLMClient:
                         parsed = self.parse_json_content(content)
                     except Exception as exc:
                         parse_error = exc
-                    if parsed is not None and parse_error is None:
-                        schema_error = self._validate_json_schema_subset(parsed, schema)
-                        if schema_error:
-                            parse_error = ValueError(f"JSON schema validation failed: {schema_error}")
-
-            if parse_error is not None and idx + 1 < len(attempts):
-                print(
-                    f"[INFO] {format_name} 返回内容未通过 JSON 校验，"
-                    f"回退到 {attempts[idx + 1][0]}。"
-                )
-                continue
 
             structured = dict(response)
             structured["parsed"] = parsed
@@ -755,13 +573,150 @@ class LLMClient:
         top_n: Optional[int] = None,
         model: Optional[str] = None,
     ) -> dict:
-        """重排序接口不走远端 LLM API，请使用本地 reranker。"""
-        raise NotImplementedError("远端 rerank 已关闭，请使用 src/3.rank_papers.py 的本地 reranker。")
+        """重排序接口（默认不支持，只有 BLT 提供）。"""
+        raise NotImplementedError("rerank 仅支持 BltClient，请使用 BltClient 调用。")
 
 
 class DeepSeekClient(LLMClient):
-    def __init__(self, api_key: str, model: str, base_url: str = DEFAULT_DEEPSEEK_BASE_URL):
+    def __init__(self, api_key: str, model: str, base_url: str = "https://api.deepseek.com"):
         super().__init__(api_key=api_key, model=model, base_url=base_url)
+
+
+class SiliconflowClient(LLMClient):
+    def __init__(self, api_key: str, model: str, base_url: str = "https://api.siliconflow.cn/v1"):
+        super().__init__(api_key=api_key, model=model, base_url=base_url)
+
+
+class CSTCloudClient(LLMClient):
+    """CSTCloud（科技云）提供商，OpenAI Chat Completions 兼容接口。
+
+    默认基址：https://uni-api.cstcloud.cn/v1
+    使用示例：model="CSTCloud/gpt-oss-120b" 或 "CSTCloud/qwen3:235b"
+    建议环境变量：CSTCLOUD_API_KEY
+    """
+    def __init__(self, api_key: str, model: str, base_url: str = "https://uni-api.cstcloud.cn/v1"):
+        super().__init__(api_key=api_key, model=model, base_url=base_url)
+
+
+class MiniMaxClient(LLMClient):
+    """MiniMax API，OpenAI Chat Completions 兼容接口。
+
+    默认基址：https://api.minimaxi.com/v1
+    使用示例：model="minimax/MiniMax-M2.7"
+    建议环境变量：MINIMAX_API_KEY
+    """
+    def __init__(self, api_key: str, model: str, base_url: str = "https://api.minimaxi.com/v1"):
+        super().__init__(api_key=api_key, model=model, base_url=base_url)
+
+
+SliconflowClient = SiliconflowClient
+
+
+class OllamaClient(LLMClient):
+    def __init__(self, api_key: str, model: str, base_url: str = "http://localhost:11111/v1"):
+        super().__init__(api_key=api_key, model=model, base_url=base_url)
+
+
+class BltClient(LLMClient):
+    """BLT（柏拉图）网关，OpenAI Chat Completions 兼容接口。"""
+    def __init__(self, api_key: str, model: str, base_url: str = None):
+        legacy_base = base_url or os.getenv('BLT_API_BASE', DEFAULT_BLT_BASE_URL)
+        primary_base = (
+            os.getenv("LLM_PRIMARY_BASE_URL")
+            or os.getenv("BLT_PRIMARY_BASE_URL")
+            or os.getenv("GPTBEST_BASE_URL")
+            or PRIMARY_LLM_BASE_URL
+        ).strip() or PRIMARY_LLM_BASE_URL
+        super().__init__(api_key=api_key, model=model, base_url=primary_base)
+        self._base_urls = self._normalize_base_urls([primary_base, legacy_base])
+
+    def rerank(
+        self,
+        query: str,
+        documents: List[str],
+        top_n: Optional[int] = None,
+        model: Optional[str] = None,
+    ) -> dict:
+        """
+        调用柏拉图 Rerank 接口（/v1/rerank）。
+
+        :param query: 查询文本
+        :param documents: 待排序文档列表
+        :param top_n: 返回的 Top N（可选）
+        :param model: 重排模型名（可选，默认使用 self.model）
+        """
+        if not query:
+            raise ValueError("rerank: query 不能为空")
+        if not documents:
+            raise ValueError("rerank: documents 不能为空")
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload: Dict[str, Any] = {
+            "model": model or self.model,
+            "query": query,
+            "documents": documents,
+        }
+        if top_n is not None:
+            payload["top_n"] = int(top_n)
+
+        request_bases = self._iter_retry_bases(total_attempts=6)
+        last_error: Exception | None = None
+        for attempt_idx, req_base in enumerate(request_bases, start=1):
+            request_url = f"{req_base.rstrip('/')}/rerank"
+            try:
+                response = requests.post(request_url, headers=headers, json=payload, timeout=120)
+                response.raise_for_status()
+                try:
+                    response_data = response.json()
+                except ValueError:
+                    print("Rerank 响应无法解析为 JSON，原始文本预览:", response.text[:500])
+                    raise
+
+                if isinstance(response_data, dict) and 'error' in response_data:
+                    err = response_data.get('error') or {}
+                    print("Rerank 返回错误:", {
+                        'type': err.get('type'),
+                        'code': err.get('code'),
+                        'message': err.get('message') or err,
+                    })
+                    raise requests.exceptions.HTTPError(f"Rerank API error: {err}")
+
+                return response_data
+            except Exception as e:
+                last_error = e
+                if attempt_idx < len(request_bases):
+                    next_base = request_bases[attempt_idx] if attempt_idx < len(request_bases) else ''
+                    print(
+                        f"Rerank 请求失败（base={req_base}，第 {attempt_idx} 次），"
+                        f"将回退到 {next_base}"
+                    )
+                    continue
+                print(f"通过 requests 调用 Rerank API 时出错: {e}")
+                print("Rerank 请求摘要:", {
+                    "url": request_url,
+                    "model": payload.get("model"),
+                    "query_len": len(query or ""),
+                    "documents": len(documents),
+                    "top_n": payload.get("top_n"),
+                })
+                if e.response is not None:
+                    try:
+                        print("错误详情(JSON):", e.response.json())
+                    except ValueError:
+                        try:
+                            print("错误详情(TEXT):", e.response.text[:500])
+                        except Exception:
+                            pass
+                else:
+                    print("错误详情: 未收到服务端响应（可能是网络/SSL问题）。")
+                raise
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("rerank 未命中可用 base")
 
 
 def parse_provider_model(model_str: str) -> Tuple[str, str]:
@@ -770,10 +725,12 @@ def parse_provider_model(model_str: str) -> Tuple[str, str]:
 
     规则：第一个 '/' 之前为提供商（大小写不敏感），之后的全部为模型名（大小写敏感，允许包含 '/').
     示例：
-    - "deepseek/deepseek-v4-flash" -> ("deepseek", "deepseek-v4-flash")
+    - "deepseek/deepseek-chat" -> ("deepseek", "deepseek-chat")
+    - "SiliconFlow/Qwen/Qwen3-8B" -> ("siliconflow", "Qwen/Qwen3-8B")
+    - "ollama/llama3.1:8b" -> ("ollama", "llama3.1:8b")
     """
     if not isinstance(model_str, str) or '/' not in model_str:
-        raise ValueError("缺少模型提供商：请使用 'deepseek/model' 格式，例如 'deepseek/deepseek-v4-flash'")
+        raise ValueError("缺少模型提供商：请使用 'provider/model' 格式，例如 'CSTCloud/gpt-oss-120b'")
     provider, model = model_str.split('/', 1)
     return provider.lower(), model
 
@@ -792,16 +749,80 @@ class ClientFactory:
         """
         model_env = (os.getenv('LLM_MODEL') or '').strip()
         if not model_env:
-            raise ValueError("缺少必要环境变量: LLM_MODEL（格式为 'deepseek/model'）")
+            raise ValueError("缺少必要环境变量: LLM_MODEL（格式为 'provider/model'）")
 
         provider, model = parse_provider_model(model_env)
         api_key = (os.getenv('LLM_API_KEY') or '').strip() or None
         base_url = (os.getenv('LLM_BASE_URL') or '').strip() or None
 
+        return ClientFactory._create_client(provider, model, api_key, base_url)
+
+    @staticmethod
+    def from_model(model: str, api_key: str = None, base_url: str = None):
+        """
+        直接传入 model 名称和配置创建客户端。
+
+        参数：
+        - model：形如 'provider/model' 或直接是模型名（如 'MiniMax-M2.7'）
+        - api_key：API key
+        - base_url：API base URL
+        """
+        if not model:
+            raise ValueError("缺少 model 参数")
+
+        # 如果 model 包含 '/'，解析 provider
+        if '/' in model:
+            provider, actual_model = parse_provider_model(model)
+        else:
+            # 没有 provider 前缀，尝试根据 base_url 推断
+            actual_model = model
+            base_lower = (base_url or '').lower()
+            if 'minimaxi' in base_lower:
+                provider = 'minimax'
+            elif 'deepseek' in base_lower:
+                provider = 'deepseek'
+            elif 'siliconflow' in base_lower:
+                provider = 'siliconflow'
+            elif 'bigmodel' in base_lower:
+                provider = 'glm'
+            elif 'moonshot' in base_lower:
+                provider = 'kimi'
+            elif 'bltcy' in base_lower or 'gptbest' in base_lower:
+                provider = 'blt'
+            elif 'openai' in base_lower:
+                provider = 'openai'
+            else:
+                provider = 'openai-compatible'  # 默认
+
+        return ClientFactory._create_client(provider, actual_model, api_key, base_url)
+
+    @staticmethod
+    def _create_client(provider: str, model: str, api_key: str, base_url: str):
+        """根据 provider 创建对应的客户端"""
         if provider == 'deepseek':
-            base_url = base_url or DEFAULT_DEEPSEEK_BASE_URL
+            base_url = base_url or "https://api.deepseek.com"
             return DeepSeekClient(api_key=api_key or os.getenv('DEEPSEEK_API_KEY', ''), model=model, base_url=base_url)
-        raise ValueError(f"当前仅支持 DeepSeek API，请使用 'deepseek/模型名'，当前 provider={provider}")
+        if provider in ('siliconflow', 'silicon-flow', 'sflow'):
+            base_url = base_url or "https://api.siliconflow.cn/v1"
+            return SiliconflowClient(api_key=api_key or os.getenv('SILICONFLOW_API_KEY', ''), model=model, base_url=base_url)
+        if provider == 'ollama':
+            base_url = base_url or "http://localhost:11111/v1"
+            return OllamaClient(api_key=api_key or '', model=model, base_url=base_url)
+        if provider in ('blt', 'bltcy', 'plato'):
+            return BltClient(api_key=api_key or os.getenv('BLT_API_KEY', ''), model=model, base_url=base_url or os.getenv('BLT_API_BASE', 'https://api.bltcy.ai/v1'))
+        if provider in ('cstcloud', 'cst', 'cst-cloud', 'keji', 'keji-yun'):
+            return CSTCloudClient(api_key=api_key or os.getenv('CSTCLOUD_API_KEY', ''), model=model, base_url=base_url or 'https://uni-api.cstcloud.cn/v1')
+        if provider in ('minimax', 'minimaxi'):
+            base_url = base_url or "https://api.minimaxi.com/v1"
+            return MiniMaxClient(api_key=api_key or os.getenv('MINIMAX_API_KEY', ''), model=model, base_url=base_url)
+        if provider in ('glm', 'zhipu'):
+            base_url = base_url or "https://open.bigmodel.cn/api/coding/paas/v4"
+            return SiliconflowClient(api_key=api_key, model=model, base_url=base_url)
+        if provider in ('kimi', 'moonshot'):
+            base_url = base_url or "https://api.moonshot.ai/v1"
+            return SiliconflowClient(api_key=api_key, model=model, base_url=base_url)
+        # 默认使用通用 LLMClient
+        return LLMClient(api_key=api_key or '', model=model, base_url=base_url or '')
 
     @staticmethod
     def from_config(_config: dict | None = None):

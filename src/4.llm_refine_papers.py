@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List
 
-from llm import DeepSeekClient
+from llm import ClientFactory, LLMClient
 from subscription_plan import build_pipeline_inputs
 
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -18,15 +18,14 @@ ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 TODAY_STR = str(os.getenv("DPR_RUN_DATE") or "").strip() or datetime.now(timezone.utc).strftime("%Y%m%d")
 ARCHIVE_DIR = os.path.join(ROOT_DIR, "archive", TODAY_STR)
 RANKED_DIR = os.path.join(ARCHIVE_DIR, "rank")
-CONFIG_FILE = os.getenv("DPR_CONFIG_FILE") or os.path.join(ROOT_DIR, "config.yaml")
+CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 
 DEFAULT_FILTER_MODEL = (
-    os.getenv("DEEPSEEK_FILTER_MODEL")
-    or os.getenv("SUMMARY_MODEL")
-    or os.getenv("DEEPSEEK_MODEL")
-    or "deepseek-v4-flash"
+    os.getenv("MINIMAX_FILTER_MODEL")
+    or os.getenv("LLM_MODEL")
+    or os.getenv("BLT_FILTER_MODEL")
+    or "MiniMax-M2.7"
 )
-DEFAULT_DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL") or os.getenv("SUMMARY_BASE_URL") or "https://api.deepseek.com"
 DEFAULT_FILTER_CONCURRENCY = 4
 MAX_FILTER_RETRIES = 3
 
@@ -56,9 +55,8 @@ def save_json(data: Dict[str, Any], path: str) -> None:
     log(f"[INFO] saved: {path}")
 
 
-def load_config(config_path: str | None = None) -> Dict[str, Any]:
-    path = str(config_path or CONFIG_FILE).strip() or CONFIG_FILE
-    if not os.path.exists(path):
+def load_config() -> Dict[str, Any]:
+    if not os.path.exists(CONFIG_FILE):
         return {}
     try:
         import yaml  # type: ignore
@@ -66,7 +64,7 @@ def load_config(config_path: str | None = None) -> Dict[str, Any]:
         log("[WARN] PyYAML not installed, skip config.yaml.")
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
             return data if isinstance(data, dict) else {}
     except Exception as exc:
@@ -316,7 +314,7 @@ def build_repeated_user_prompt(query: str) -> str:
 
 
 def call_filter(
-    client: DeepSeekClient,
+    client: LLMClient,
     all_requirements: List[Dict[str, str]],
     docs: List[Dict[str, str]],
     debug_dir: str,
@@ -598,14 +596,18 @@ def recover_filter_results(
     )
 
 
-def _make_filter_client(api_key: str, model: str, max_output_tokens: int) -> DeepSeekClient:
-    client = DeepSeekClient(api_key=api_key, model=model, base_url=DEFAULT_DEEPSEEK_BASE_URL)
+def _make_filter_client(model: str, max_output_tokens: int) -> LLMClient:
+    client = ClientFactory.from_model(
+        model=model,
+        api_key=os.getenv('LLM_API_KEY') or os.getenv('MINIMAX_API_KEY'),
+        base_url=os.getenv('LLM_BASE_URL') or os.getenv('MINIMAX_BASE_URL'),
+    )
     client.kwargs.update({"temperature": 0.1, "max_tokens": max_output_tokens})
     return client
 
 
 def _make_filter_runner(
-    client: DeepSeekClient,
+    client: LLMClient,
     all_requirements: List[Dict[str, str]],
     debug_dir: str,
     base_tag: str,
@@ -676,13 +678,12 @@ def merge_filter_result(
 def _filter_batch(
     batch_idx: int,
     batch: List[Dict[str, str]],
-    api_key: str,
     all_requirements: List[Dict[str, str]],
     filter_model: str,
     max_output_tokens: int,
     debug_dir: str,
 ) -> tuple[int, List[Dict[str, str]], List[Dict[str, Any]]]:
-    client = _make_filter_client(api_key, filter_model, max_output_tokens)
+    client = _make_filter_client(filter_model, max_output_tokens)
     runner = _make_filter_runner(
         client,
         all_requirements=all_requirements,
@@ -704,7 +705,6 @@ def _filter_batch(
 def process_file(
     input_path: str,
     output_path: str,
-    config_path: str | None,
     min_star: int,
     batch_size: int,
     max_chars: int,
@@ -724,7 +724,7 @@ def process_file(
         log("[WARN] missing papers or queries, skip.")
         return
 
-    config = load_config(config_path)
+    config = load_config()
     user_requirements = build_user_requirements(config, queries)
     if not user_requirements:
         log("[WARN] no user requirements built from config/queries, skip.")
@@ -732,9 +732,9 @@ def process_file(
         return
     paper_map = build_paper_map(papers)
 
-    api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("SUMMARY_API_KEY")
-    if not api_key:
-        raise RuntimeError("missing DEEPSEEK_API_KEY or SUMMARY_API_KEY")
+    model_env = os.getenv("LLM_MODEL")
+    if not model_env:
+        raise RuntimeError("缺少 LLM_MODEL 环境变量，请设置为 'provider/model' 格式，例如 'minimax/MiniMax-M2.7'")
 
     group_start(f"Step 4 - llm refine {os.path.basename(input_path)}")
     log(
@@ -797,7 +797,6 @@ def process_file(
                 _filter_batch,
                 idx,
                 batch,
-                api_key,
                 user_requirements,
                 filter_model,
                 max_output_tokens,
@@ -823,7 +822,7 @@ def process_file(
             if _norm_text(doc.get("id"))
         }
         recovery_docs = list(recovery_map.values())
-        recovery_client = _make_filter_client(api_key, filter_model, max_output_tokens)
+        recovery_client = _make_filter_client(filter_model, max_output_tokens)
         log(
             f"[WARN] start missing-doc recovery: failed_batches_docs={len(failed_docs)} "
             f"| missing_after_merge={len(missing_docs)} | recover_docs={len(recovery_docs)}"
@@ -880,12 +879,6 @@ def main() -> None:
         help="output JSON path.",
     )
     parser.add_argument(
-        "--config",
-        type=str,
-        default=CONFIG_FILE,
-        help="config YAML path for user requirements.",
-    )
-    parser.add_argument(
         "--min-star",
         type=int,
         default=4,
@@ -932,14 +925,9 @@ def main() -> None:
     if not os.path.isabs(output_path):
         output_path = os.path.abspath(os.path.join(ROOT_DIR, output_path))
 
-    config_path = args.config
-    if not os.path.isabs(config_path):
-        config_path = os.path.abspath(os.path.join(ROOT_DIR, config_path))
-
     process_file(
         input_path=input_path,
         output_path=output_path,
-        config_path=config_path,
         min_star=args.min_star,
         batch_size=args.batch_size,
         max_chars=args.max_chars,

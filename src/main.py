@@ -21,10 +21,11 @@ except Exception:  # pragma: no cover
 
 SRC_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.abspath(os.path.join(SRC_DIR, ".."))
-CONFIG_FILE = os.getenv("DPR_CONFIG_FILE") or os.path.join(ROOT_DIR, "config.yaml")
+CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 LONG_RANGE_DAYS_THRESHOLD = 10
 MAIN_DEFAULT_DAYS = 9
 SKIMS_FETCH_DAYS_THRESHOLD = 11
+BLT_PROVIDER_BASE_KEYWORDS = ("bltcy.ai", "gptbest.vip", "blt", "gptbest")
 
 
 def run_step(label: str, args: list[str], env: dict[str, str] | None = None) -> None:
@@ -187,6 +188,31 @@ def _read_env_text(*names: str) -> str:
     return ""
 
 
+def _looks_like_blt_base(base_url: str) -> bool:
+    lowered = str(base_url or "").strip().lower()
+    return any(keyword in lowered for keyword in BLT_PROVIDER_BASE_KEYWORDS)
+
+
+def should_skip_rerank() -> tuple[bool, str]:
+    primary_base = _read_env_text(
+        "LLM_PRIMARY_BASE_URL",
+        "BLT_PRIMARY_BASE_URL",
+        "GPTBEST_BASE_URL",
+        "BLT_API_BASE",
+        "LLM_BASE_URL",
+    )
+    if not primary_base:
+        # 如果没有配置 base_url，且使用的是 MiniMax 等非 BLT provider，默认跳过 rerank
+        llm_model = os.getenv("LLM_MODEL") or ""
+        if not llm_model.startswith("blt") and not llm_model.startswith("plato"):
+            return True, ""
+        return False, ""
+    if _looks_like_blt_base(primary_base):
+        return False, primary_base
+    # 非 BLT provider（如 MiniMax）跳过 rerank
+    return True, primary_base
+
+
 def score_to_stars(score: float) -> int:
     if score >= 0.9:
         return 5
@@ -281,20 +307,29 @@ def prepare_rerank_fallback(input_path: str, output_path: str) -> bool:
 
 def resolve_summary_step_env() -> dict[str, str]:
     env = os.environ.copy()
-    summary_api_key = _read_env_text("SUMMARY_API_KEY", "DEEPSEEK_API_KEY")
-    summary_base_url = _read_env_text("SUMMARY_BASE_URL", "DEEPSEEK_BASE_URL")
-    summary_model = _read_env_text("SUMMARY_MODEL", "DEEPSEEK_MODEL")
+    # 优先使用新的统一环境变量
+    llm_model = _read_env_text("LLM_MODEL")
+    llm_api_key = _read_env_text("LLM_API_KEY")
+    llm_base_url = _read_env_text("LLM_BASE_URL")
+    # 兼容旧的 BLT/SUMMARY 环境变量
+    summary_api_key = _read_env_text("SUMMARY_API_KEY", "BLT_SUMMARY_API_KEY")
+    summary_base_url = _read_env_text("SUMMARY_BASE_URL", "BLT_SUMMARY_BASE_URL")
+    summary_model = _read_env_text("SUMMARY_MODEL", "BLT_SUMMARY_MODEL")
 
-    if summary_api_key:
-        env["SUMMARY_API_KEY"] = summary_api_key
-        env["DEEPSEEK_API_KEY"] = summary_api_key
+    if llm_api_key:
+        env["LLM_API_KEY"] = llm_api_key
+    if llm_base_url:
+        env["LLM_BASE_URL"] = llm_base_url
+    if llm_model:
+        env["LLM_MODEL"] = llm_model
+    elif summary_api_key:
+        env["BLT_API_KEY"] = summary_api_key
     if summary_base_url:
-        env["LLM_PRIMARY_BASE_URL"] = summary_base_url
-        env["SUMMARY_BASE_URL"] = summary_base_url
-        env["DEEPSEEK_BASE_URL"] = summary_base_url
+        env["LLM_BASE_URL"] = summary_base_url
+        env["BLT_PRIMARY_BASE_URL"] = summary_base_url
+        env["BLT_API_BASE"] = summary_base_url
     if summary_model:
-        env["SUMMARY_MODEL"] = summary_model
-        env["DEEPSEEK_MODEL"] = summary_model
+        env["BLT_SUMMARY_MODEL"] = summary_model
     return env
 
 
@@ -675,10 +710,19 @@ def main() -> None:
     )
     if trace_ids:
         print_trace_retrieval("RRF", rrf_path, trace_ids)
-    run_step(
-        "Step 3 - Rerank",
-        [python, os.path.join(SRC_DIR, "3.rank_papers.py")],
-    )
+    skip_rerank, rerank_base = should_skip_rerank()
+    if skip_rerank:
+        print(
+            f"[INFO] Step 3 - Rerank 已跳过：当前主 LLM base 不属于柏拉图/BLT，"
+            f"缺少稳定 /rerank 能力。base={rerank_base}",
+            flush=True,
+        )
+        prepare_rerank_fallback(rrf_path, rerank_path)
+    else:
+        run_step(
+            "Step 3 - Rerank",
+            [python, os.path.join(SRC_DIR, "3.rank_papers.py")],
+        )
     if trace_ids:
         print_trace_retrieval("RERANK", rerank_path, trace_ids)
     run_step(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# 使用本地 Qwen3 Reranker 对候选论文做重排序（简化版）。
+# 使用柏拉图 Rerank API 对候选论文做重排序（简化版）。
 
 import argparse
 import json
@@ -7,6 +7,8 @@ import os
 import random
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+from llm import ClientFactory
 
 SCRIPT_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
@@ -26,112 +28,6 @@ GLOBAL_POOL_GUARANTEED_MIN = 5
 GLOBAL_POOL_GUARANTEED_MAX = 20
 GLOBAL_POOL_RRF_MIN = 60
 GLOBAL_POOL_RRF_MAX = 300
-DEFAULT_LOCAL_RERANK_MODEL = "Qwen/Qwen3-Reranker-0.6B"
-DEFAULT_LOCAL_RERANK_BATCH_SIZE = 8
-RERANK_PROFILE_CONFIGS: Dict[str, Dict[str, str]] = {
-  "public-zwwen-rerank": {
-    "provider": "public_zwwen",
-    "model": "Qwen/Qwen3-Reranker-0.6B",
-    "base_url": "https://zwwen.online/rerank",
-  },
-  "local-qwen3-0.6b": {
-    "provider": "local",
-    "model": "Qwen/Qwen3-Reranker-0.6B",
-  },
-  "siliconflow-qwen3-0.6b": {
-    "provider": "siliconflow",
-    "model": "Qwen/Qwen3-Reranker-0.6B",
-    "base_url": "https://api.siliconflow.cn/v1/rerank",
-  },
-}
-
-
-def _env_int(name: str, default: Optional[int] = None) -> Optional[int]:
-  value = str(os.getenv(name) or "").strip()
-  if not value:
-    return default
-  try:
-    return int(value)
-  except ValueError:
-    return default
-
-
-def _normalize_rerank_profile(value: str) -> str:
-  text = str(value or "").strip().lower().replace("_", "-")
-  aliases = {
-    "local": "local-qwen3-0.6b",
-    "local-0.6b": "local-qwen3-0.6b",
-    "qwen3-0.6b-local": "local-qwen3-0.6b",
-    "siliconflow": "siliconflow-qwen3-0.6b",
-    "siliconflow-0.6b": "siliconflow-qwen3-0.6b",
-    "sf-0.6b": "siliconflow-qwen3-0.6b",
-    "public": "public-zwwen-rerank",
-    "public-rerank": "public-zwwen-rerank",
-    "public-zwwen": "public-zwwen-rerank",
-    "zwwen": "public-zwwen-rerank",
-  }
-  return aliases.get(text, text)
-
-
-def _normalize_rerank_provider(value: str) -> str:
-  text = str(value or "").strip().lower().replace("_", "-")
-  if text in {"", "local", "hf", "huggingface"}:
-    return "local"
-  if text in {"siliconflow", "sf"}:
-    return "siliconflow"
-  if text in {"public", "public-zwwen", "public-zwwen-rerank", "zwwen"}:
-    return "public_zwwen"
-  if text in {"remote"}:
-    return "siliconflow"
-  return text
-
-
-def _resolve_rerank_profile_config(profile: str) -> Dict[str, str]:
-  normalized = _normalize_rerank_profile(profile)
-  return dict(RERANK_PROFILE_CONFIGS.get(normalized) or {})
-
-
-def resolve_default_rerank_model() -> str:
-  profile_config = _resolve_rerank_profile_config(os.getenv("RERANK_PROFILE", ""))
-  if profile_config.get("model"):
-    return profile_config["model"]
-  provider = _normalize_rerank_provider(os.getenv("RERANK_PROVIDER") or "public_zwwen")
-  if provider == "local":
-    return os.getenv("LOCAL_RERANK_MODEL") or os.getenv("RERANK_MODEL") or DEFAULT_LOCAL_RERANK_MODEL
-  return os.getenv("RERANK_MODEL") or DEFAULT_LOCAL_RERANK_MODEL
-
-
-def _resolve_remote_api_key(provider: str) -> str:
-  if provider in {"siliconflow", "public_zwwen"}:
-    return (
-      os.getenv("SILICONFLOW_API_KEY")
-      or os.getenv("RERANK_API_KEY")
-      or os.getenv("PUBLIC_RERANK_API_KEY")
-      or os.getenv("DPR_PUBLIC_SERVICE_API_KEY")
-      or "26932a86d772001af60cbd9d2c162bfda3a90e094f797f3d6806f6077478b27a"
-      or ""
-    ).strip()
-  return (os.getenv("RERANK_API_KEY") or "").strip()
-
-
-def _resolve_remote_base_url(provider: str, profile_config: Dict[str, str], explicit: str = "") -> str:
-  if explicit:
-    return explicit
-  if provider == "siliconflow":
-    return (
-      os.getenv("SILICONFLOW_RERANK_URL")
-      or os.getenv("RERANK_API_BASE_URL")
-      or profile_config.get("base_url")
-      or "https://api.siliconflow.cn/v1/rerank"
-    ).strip()
-  if provider == "public_zwwen":
-    return (
-      os.getenv("PUBLIC_RERANK_API_BASE_URL")
-      or os.getenv("RERANK_API_BASE_URL")
-      or profile_config.get("base_url")
-      or "https://zwwen.online/rerank"
-    ).strip()
-  return (os.getenv("RERANK_API_BASE_URL") or profile_config.get("base_url") or "").strip()
 
 
 def log(message: str) -> None:
@@ -145,129 +41,6 @@ def group_start(title: str) -> None:
 
 def group_end() -> None:
   print("::endgroup::", flush=True)
-
-
-class LocalQwenReranker:
-  """本地 Qwen3 reranker，按 yes/no token 概率为 query-document 打分。"""
-
-  def __init__(
-    self,
-    model_name: str = DEFAULT_LOCAL_RERANK_MODEL,
-    *,
-    device: str = "",
-    batch_size: int = DEFAULT_LOCAL_RERANK_BATCH_SIZE,
-    max_length: int = 8192,
-  ) -> None:
-    self.model_name = str(model_name or DEFAULT_LOCAL_RERANK_MODEL).strip()
-    self.batch_size = max(int(batch_size or DEFAULT_LOCAL_RERANK_BATCH_SIZE), 1)
-    self.max_length = max(int(max_length or 8192), 256)
-    try:
-      import torch  # type: ignore
-      from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
-    except Exception as exc:
-      raise RuntimeError(
-        "本地 reranker 需要 torch 与 transformers，请先安装 requirements.txt。"
-      ) from exc
-
-    self.torch = torch
-    self.device = str(device or "").strip() or ("cuda" if torch.cuda.is_available() else "cpu")
-    self.tokenizer = AutoTokenizer.from_pretrained(
-      self.model_name,
-      padding_side="left",
-      trust_remote_code=True,
-    )
-
-    model_kwargs: Dict[str, Any] = {"trust_remote_code": True}
-    if self.device == "cpu":
-      model_kwargs["dtype"] = torch.float32
-    try:
-      self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
-    except TypeError:
-      if "dtype" in model_kwargs:
-        model_kwargs["torch_dtype"] = model_kwargs.pop("dtype")
-      else:
-        model_kwargs.pop("torch_dtype", None)
-      self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
-    self.model.to(self.device)
-    self.model.eval()
-
-    self.token_false_id = self.tokenizer.convert_tokens_to_ids("no")
-    self.token_true_id = self.tokenizer.convert_tokens_to_ids("yes")
-    if self.token_false_id is None or self.token_true_id is None:
-      raise RuntimeError("Qwen3 reranker tokenizer 缺少 yes/no token，无法计算相关性。")
-
-    self.prefix = (
-      "<|im_start|>system\n"
-      "Judge whether the Document meets the requirements based on the Query and the Instruct provided. "
-      "Note that the answer can only be \"yes\" or \"no\"."
-      "<|im_end|>\n"
-      "<|im_start|>user\n"
-    )
-    self.suffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
-    self.prefix_tokens = self.tokenizer.encode(self.prefix, add_special_tokens=False)
-    self.suffix_tokens = self.tokenizer.encode(self.suffix, add_special_tokens=False)
-
-  @staticmethod
-  def _format_pair(query: str, document: str) -> str:
-    instruction = "Given an academic search query, retrieve papers that best satisfy the query."
-    return f"<Instruct>: {instruction}\n<Query>: {query}\n<Document>: {document}"
-
-  def _score_batch(self, query: str, documents: List[str]) -> List[float]:
-    pair_texts = [self._format_pair(query, doc) for doc in documents]
-    content_max_length = max(
-      self.max_length - len(self.prefix_tokens) - len(self.suffix_tokens),
-      32,
-    )
-    encoded = self.tokenizer(
-      pair_texts,
-      padding=False,
-      truncation=True,
-      max_length=content_max_length,
-      return_attention_mask=False,
-    )
-    input_ids = [
-      self.prefix_tokens + item + self.suffix_tokens
-      for item in encoded.get("input_ids", [])
-    ]
-    inputs = self.tokenizer.pad(
-      {"input_ids": input_ids},
-      padding=True,
-      return_tensors="pt",
-    )
-    inputs = {key: value.to(self.model.device) for key, value in inputs.items()}
-    with self.torch.no_grad():
-      logits = self.model(**inputs).logits[:, -1, :]
-      false_scores = logits[:, self.token_false_id]
-      true_scores = logits[:, self.token_true_id]
-      yes_no_scores = self.torch.stack([false_scores, true_scores], dim=1)
-      probs = self.torch.nn.functional.softmax(yes_no_scores, dim=1)[:, 1]
-    return [float(score) for score in probs.detach().cpu().tolist()]
-
-  def rerank(
-    self,
-    *,
-    query: str,
-    documents: List[str],
-    top_n: Optional[int] = None,
-    model: Optional[str] = None,
-  ) -> Dict[str, Any]:
-    query_text = str(query or "").strip()
-    if not query_text:
-      raise ValueError("rerank: query 不能为空")
-    if not documents:
-      raise ValueError("rerank: documents 不能为空")
-
-    results: List[Dict[str, Any]] = []
-    for start in range(0, len(documents), self.batch_size):
-      batch_docs = [str(doc or "") for doc in documents[start : start + self.batch_size]]
-      for offset, score in enumerate(self._score_batch(query_text, batch_docs)):
-        results.append({"index": start + offset, "relevance_score": float(score)})
-
-    results.sort(key=lambda item: item["relevance_score"], reverse=True)
-    if top_n is not None:
-      results = results[: max(int(top_n), 0)]
-    return {"results": results, "model": model or self.model_name}
-
 
 def build_token_encoder():
   try:
@@ -359,10 +132,6 @@ def _clamp_int(value: float | int, min_value: int, max_value: int) -> int:
 def resolve_global_pool_budget(
   total_papers: int,
   intent_query_count: int,
-  *,
-  lane_top_k_override: Optional[int] = None,
-  guaranteed_per_lane_override: Optional[int] = None,
-  global_limit_override: Optional[int] = None,
 ) -> Tuple[int, int, int]:
   """
   统一候选池预算：
@@ -372,29 +141,21 @@ def resolve_global_pool_budget(
   """
   total = max(int(total_papers or 0), 0)
   intent_count = max(int(intent_query_count or 0), 1)
-  if lane_top_k_override is not None and int(lane_top_k_override) > 0:
-    lane_top_k = int(lane_top_k_override)
-  elif total <= 0:
+  if total <= 0:
     lane_top_k = LANE_TOP_K_BASE
   else:
     blocks = (total - 1) // 1000
     lane_top_k = min(LANE_TOP_K_BASE + LANE_TOP_K_STEP * blocks, LANE_TOP_K_MAX)
-  if guaranteed_per_lane_override is not None and int(guaranteed_per_lane_override) >= 0:
-    guaranteed_per_lane = int(guaranteed_per_lane_override)
-  else:
-    guaranteed_per_lane = _clamp_int(
-      round(lane_top_k * 0.25),
-      GLOBAL_POOL_GUARANTEED_MIN,
-      GLOBAL_POOL_GUARANTEED_MAX,
-    )
-  if global_limit_override is not None and int(global_limit_override) > 0:
-    global_rrf_top = int(global_limit_override)
-  else:
-    global_rrf_top = _clamp_int(
-      lane_top_k * intent_count,
-      GLOBAL_POOL_RRF_MIN,
-      GLOBAL_POOL_RRF_MAX,
-    )
+  guaranteed_per_lane = _clamp_int(
+    round(lane_top_k * 0.25),
+    GLOBAL_POOL_GUARANTEED_MIN,
+    GLOBAL_POOL_GUARANTEED_MAX,
+  )
+  global_rrf_top = _clamp_int(
+    lane_top_k * intent_count,
+    GLOBAL_POOL_RRF_MIN,
+    GLOBAL_POOL_RRF_MAX,
+  )
   return lane_top_k, guaranteed_per_lane, global_rrf_top
 
 
@@ -447,17 +208,15 @@ def iter_batches(
   docs_with_idx: List[Tuple[int, str]],
   query_tokens: int,
   encoder,
-  max_docs_per_batch: Optional[int] = None,
 ) -> List[Tuple[List[int], List[str]]]:
   batches: List[Tuple[List[int], List[str]]] = []
-  batch_limit = max(int(max_docs_per_batch or BATCH_SIZE), 1)
   pos = 0
   while pos < len(docs_with_idx):
     total_tokens = query_tokens
     batch_docs: List[str] = []
     batch_indices: List[int] = []
 
-    while pos < len(docs_with_idx) and len(batch_docs) < batch_limit:
+    while pos < len(docs_with_idx) and len(batch_docs) < BATCH_SIZE:
       orig_idx, doc = docs_with_idx[pos]
       doc_tokens = estimate_tokens(doc, encoder)
       if total_tokens + doc_tokens > TOKEN_SAFETY and batch_docs:
@@ -474,31 +233,16 @@ def iter_batches(
   return batches
 
 
-def resolve_effective_rerank_batch_size(reranker: Any) -> int:
-  batch_size = BATCH_SIZE
-  max_documents = getattr(reranker, "max_documents_per_request", None)
-  if max_documents is None:
-    return batch_size
-  try:
-    remote_limit = max(int(max_documents), 1)
-  except (TypeError, ValueError):
-    return batch_size
-  return min(batch_size, remote_limit)
-
-
 def rrf_merge(scores: Dict[int, float], rank_idx: int, orig_idx: int) -> None:
   scores[orig_idx] = scores.get(orig_idx, 0.0) + 1.0 / (RRF_K + rank_idx)
 
 
 def process_file(
-  reranker: Any,
+  reranker: LLMClient,
   input_path: str,
   output_path: str,
   top_n: Optional[int],
   rerank_model: str,
-  rerank_lane_top_k: Optional[int] = None,
-  rerank_guaranteed_per_lane: Optional[int] = None,
-  rerank_global_pool_limit: Optional[int] = None,
 ) -> None:
   data = load_json(input_path)
   papers_list = data.get("papers") or []
@@ -526,9 +270,6 @@ def process_file(
   lane_top_k, guaranteed_per_lane, global_rrf_top = resolve_global_pool_budget(
     len(papers_list),
     len(queries),
-    lane_top_k_override=rerank_lane_top_k,
-    guaranteed_per_lane_override=rerank_guaranteed_per_lane,
-    global_limit_override=rerank_global_pool_limit,
   )
   global_candidate_ids = build_global_candidate_ids(
     all_queries,
@@ -539,7 +280,6 @@ def process_file(
   data["global_pool_lane_top_k"] = lane_top_k
   data["global_pool_limit"] = global_rrf_top
   data["global_pool_guaranteed_per_lane"] = guaranteed_per_lane
-  data["global_pool_effective_size"] = len(global_candidate_ids)
   if not global_candidate_ids:
     log("[WARN] 未能从任意 query 中构建统一候选池，跳过 rerank。")
     meta_generated_at = data.get("generated_at") or ""
@@ -548,13 +288,12 @@ def process_file(
     save_json(data, output_path)
     return
   encoder = build_token_encoder()
-  effective_batch_size = resolve_effective_rerank_batch_size(reranker)
   group_start(f"Step 3 - rerank {os.path.basename(input_path)}")
   log(
     f"[INFO] 开始 rerank：queries={len(queries)}（仅 intent/语义查询），papers={len(papers_list)}，"
     f"global_pool={len(global_candidate_ids)}（lane_top_k={lane_top_k}, "
     f"guaranteed_per_lane={guaranteed_per_lane}, global_top={global_rrf_top}），"
-    f"batch_size={effective_batch_size}，"
+    f"batch_size={BATCH_SIZE}，"
     f"max_chars={MAX_CHARS_PER_DOC}，token_safety={TOKEN_SAFETY}"
   )
 
@@ -570,12 +309,7 @@ def process_file(
     random.shuffle(docs_with_idx)
 
     query_tokens = estimate_tokens(q_text, encoder)
-    batches = iter_batches(
-      docs_with_idx,
-      query_tokens,
-      encoder,
-      max_docs_per_batch=effective_batch_size,
-    )
+    batches = iter_batches(docs_with_idx, query_tokens, encoder)
     log(
       f"[INFO] Query {q_idx}/{len(queries)} tag={q.get('tag') or ''} | candidates={len(top_ids)} "
       f"| batches={len(batches)} | query_tokens≈{query_tokens}"
@@ -654,7 +388,7 @@ def process_file(
 
 def main() -> None:
   parser = argparse.ArgumentParser(
-    description="步骤 3：使用本地 Qwen3 Reranker 对候选论文做重排序（简化版）。",
+    description="步骤 3：使用 BLT Rerank API 对候选论文做重排序（简化版）。",
   )
   parser.add_argument(
     "--input",
@@ -675,58 +409,10 @@ def main() -> None:
     help="最终保留的 Top N（默认保留全部候选）。",
   )
   parser.add_argument(
-    "--rerank-profile",
-    type=str,
-    default=os.getenv("RERANK_PROFILE", ""),
-    help="Rerank 预设：public-zwwen-rerank / local-qwen3-0.6b / siliconflow-qwen3-0.6b。",
-  )
-  parser.add_argument(
-    "--rerank-provider",
-    type=str,
-    default=os.getenv("RERANK_PROVIDER", ""),
-    help="Rerank provider：public_zwwen / local / siliconflow；默认由 --rerank-profile 推断。",
-  )
-  parser.add_argument(
     "--rerank-model",
     type=str,
-    default=os.getenv("RERANK_MODEL", ""),
-    help=f"Rerank 模型名称（默认 {DEFAULT_LOCAL_RERANK_MODEL}）。",
-  )
-  parser.add_argument(
-    "--rerank-api-base-url",
-    type=str,
-    default=os.getenv("RERANK_API_BASE_URL", ""),
-    help="远端 rerank API 地址；本地 reranker 会忽略。",
-  )
-  parser.add_argument(
-    "--rerank-device",
-    type=str,
-    default=os.getenv("LOCAL_RERANK_DEVICE", ""),
-    help="本地 Rerank 运行设备，例如 cpu/cuda；默认交给 sentence-transformers 自动判断。",
-  )
-  parser.add_argument(
-    "--rerank-batch-size",
-    type=int,
-    default=int(os.getenv("LOCAL_RERANK_BATCH_SIZE") or DEFAULT_LOCAL_RERANK_BATCH_SIZE),
-    help=f"本地 Rerank 推理 batch size（默认 {DEFAULT_LOCAL_RERANK_BATCH_SIZE}）。",
-  )
-  parser.add_argument(
-    "--rerank-lane-top-k",
-    type=int,
-    default=_env_int("DPR_RERANK_LANE_TOP_K"),
-    help="覆盖候选池 lane_top_k；默认按论文总量自动估算。",
-  )
-  parser.add_argument(
-    "--rerank-guaranteed-per-lane",
-    type=int,
-    default=_env_int("DPR_RERANK_GUARANTEED_PER_LANE"),
-    help="每条召回 lane 固定保留的候选数；可设 1 加速。",
-  )
-  parser.add_argument(
-    "--rerank-global-pool-limit",
-    type=int,
-    default=_env_int("DPR_RERANK_GLOBAL_POOL_LIMIT"),
-    help="全局 RRF 候选池上限；可设 80 加速。",
+    default=os.getenv("BLT_RERANK_MODEL") or os.getenv("RERANK_MODEL") or "qwen3-reranker-4b",
+    help="BLT Rerank 模型名称（默认 qwen3-reranker-4b）。",
   )
 
   args = parser.parse_args()
@@ -743,64 +429,17 @@ def main() -> None:
     log(f"[WARN] 输入文件不存在（今天可能没有新论文）：{input_path}，将跳过 Step 3。")
     return
 
-  profile_config = _resolve_rerank_profile_config(args.rerank_profile)
-  provider = _normalize_rerank_provider(
-    args.rerank_provider or profile_config.get("provider") or os.getenv("RERANK_PROVIDER") or "public_zwwen"
-  )
-  rerank_model = (
-    args.rerank_model
-    or profile_config.get("model")
-    or (
-      os.getenv("LOCAL_RERANK_MODEL")
-      if provider == "local"
-      else os.getenv("RERANK_MODEL")
-    )
-    or DEFAULT_LOCAL_RERANK_MODEL
-  )
-  log(
-    f"[INFO] reranker 配置：profile={args.rerank_profile or 'custom'}，provider={provider}，"
-    f"model={rerank_model}，global_pool_limit={args.rerank_global_pool_limit or 'auto'}，"
-    f"guaranteed_per_lane={args.rerank_guaranteed_per_lane if args.rerank_guaranteed_per_lane is not None else 'auto'}"
-  )
+  model_env = os.getenv("LLM_MODEL")
+  if not model_env:
+    raise RuntimeError("缺少 LLM_MODEL 环境变量，请设置为 'provider/model' 格式，例如 'minimax/MiniMax-M2.7'")
 
-  if provider == "local":
-    log(
-      f"[INFO] 加载本地 reranker：device={args.rerank_device or 'auto'}，"
-      f"batch_size={args.rerank_batch_size}"
-    )
-    reranker = LocalQwenReranker(
-      model_name=rerank_model,
-      device=args.rerank_device,
-      batch_size=args.rerank_batch_size,
-    )
-  elif provider in {"siliconflow", "public_zwwen"}:
-    try:
-      from reranker_api import SiliconFlowReranker  # type: ignore
-    except Exception as exc:
-      raise RuntimeError("远端 reranker 需要 src/reranker_api.py 可导入。") from exc
-
-    api_key = _resolve_remote_api_key(provider)
-    base_url = _resolve_remote_base_url(provider, profile_config, args.rerank_api_base_url)
-    if not api_key:
-      raise RuntimeError("远端 reranker 缺少 SILICONFLOW_API_KEY、PUBLIC_RERANK_API_KEY 或 RERANK_API_KEY。")
-    if not base_url:
-      raise RuntimeError("远端 reranker 缺少 API Base URL。")
-    log(f"[INFO] 使用远端 reranker：provider={provider} base_url={base_url}")
-    reranker = SiliconFlowReranker(
-      api_key=api_key,
-      base_url=base_url,
-    )
-  else:
-    raise RuntimeError(f"不支持的 reranker provider：{provider}")
+  reranker = ClientFactory.from_env()
   process_file(
     reranker=reranker,
     input_path=input_path,
     output_path=output_path,
     top_n=args.top_n,
-    rerank_model=rerank_model,
-    rerank_lane_top_k=args.rerank_lane_top_k,
-    rerank_guaranteed_per_lane=args.rerank_guaranteed_per_lane,
-    rerank_global_pool_limit=args.rerank_global_pool_limit,
+    rerank_model=args.rerank_model,
   )
 
 
