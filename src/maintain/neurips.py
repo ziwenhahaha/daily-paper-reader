@@ -6,13 +6,22 @@ import argparse
 import os
 import sys
 
-from common import TODAY_STR, cleanup_backend, default_raw_path, ensure_parent_dir, run_step
+from common import (
+    TODAY_STR,
+    cleanup_backend,
+    default_raw_path,
+    ensure_parent_dir,
+    format_years_token,
+    resolve_target_years,
+    run_step,
+)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="维护入口：NeurIPS 抓取 + Supabase 同步。")
     parser.add_argument("--year-end", type=int, default=2025)
     parser.add_argument("--year-count", type=int, default=3)
+    parser.add_argument("--years", type=str, default="")
     parser.add_argument("--run-date", type=str, default=TODAY_STR)
     parser.add_argument("--retention-days", type=int, default=3650)
     parser.add_argument("--raw-input", type=str, default="")
@@ -26,9 +35,13 @@ def main() -> None:
     os.environ["DPR_RUN_DATE"] = run_date
     cleanup_backend(backend_key="neurips", retention_days=args.retention_days, skip_cleanup=args.skip_cleanup)
 
-    start_year = int(args.year_end) - int(args.year_count) + 1
+    target_years = resolve_target_years(
+        years=args.years,
+        year_end=int(args.year_end),
+        year_count=int(args.year_count),
+    )
     raw_path = str(args.raw_input or "").strip() or default_raw_path(
-        f"neurips-openreview-{start_year}-{int(args.year_end)}",
+        f"neurips-openreview-{format_years_token(target_years)}",
         run_date,
     )
     if not os.path.isabs(raw_path):
@@ -38,10 +51,8 @@ def main() -> None:
     init_cmd = [
         sys.executable,
         os.path.join(os.path.dirname(__file__), "init_neurips.py"),
-        "--year-end",
-        str(int(args.year_end)),
-        "--year-count",
-        str(max(int(args.year_count or 1), 1)),
+        "--years",
+        ",".join(str(year) for year in target_years),
         "--date",
         run_date,
         "--raw-input",

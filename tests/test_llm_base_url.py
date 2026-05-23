@@ -31,6 +31,32 @@ class LlmBaseUrlTest(unittest.TestCase):
         return resp
 
     @patch("llm.requests.post")
+    def test_chat_auth_error_fails_without_retrying_other_bases(self, mock_post):
+        resp = MagicMock()
+        resp.status_code = 401
+        resp.json.return_value = {
+            "error": {
+                "message": "Authentication Fails, Your api key is invalid",
+                "type": "authentication_error",
+            }
+        }
+        err = Exception("401 Client Error: Authorization Required")
+        err.response = resp
+        resp.raise_for_status.side_effect = err
+        mock_post.return_value = resp
+
+        client = LLMClient(
+            api_key="bad-key",
+            model="deepseek-v4-flash",
+            base_url="https://api.deepseek.com,https://fallback.invalid",
+        )
+
+        with self.assertRaises(Exception):
+            client.chat([{"role": "user", "content": "hello"}])
+
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("llm.requests.post")
     def test_chat_appends_v1_when_base_is_root(self, mock_post):
         mock_post.return_value = self._mock_response()
         client = LLMClient(

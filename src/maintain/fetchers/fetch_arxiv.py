@@ -23,7 +23,7 @@ except Exception:  # pragma: no cover - 兼容 package 导入路径
 # 项目根目录（当前脚本位于 src/maintain/fetchers/ 下）
 SCRIPT_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
-CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
+CONFIG_FILE = os.getenv("DPR_CONFIG_FILE") or os.path.join(ROOT_DIR, "config.yaml")
 CRAWL_STATE_FILE = os.path.join(ROOT_DIR, "archive", "crawl_state.json")
 SEEN_IDS_FILE = os.path.join(ROOT_DIR, "archive", "arxiv_seen.json")
 

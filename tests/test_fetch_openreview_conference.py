@@ -33,6 +33,12 @@ class FetchOpenReviewConferenceTest(unittest.TestCase):
     def test_iter_target_years(self):
         self.assertEqual(self.mod.iter_target_years(2026, 3), [2024, 2025, 2026])
 
+    def test_resolve_target_years_prefers_explicit_years(self):
+        self.assertEqual(
+            self.mod.resolve_target_years(years="2025,2024", year_end=2026, year_count=3),
+            [2025, 2024],
+        )
+
     def test_build_venue_id_supports_aaai(self):
         self.assertEqual(
             self.mod.build_venue_id("AAAI", 2025),

@@ -5,6 +5,17 @@ import os
 from typing import Any, Dict, List, Tuple
 
 try:
+    from local_env import load_local_env
+except Exception:  # pragma: no cover - 兼容 package 导入路径
+    try:
+        from src.local_env import load_local_env
+    except Exception:  # pragma: no cover
+        load_local_env = None  # type: ignore[assignment]
+
+if load_local_env is not None:
+    load_local_env()
+
+try:
     import yaml  # type: ignore
 except Exception:  # pragma: no cover
     yaml = None
@@ -65,6 +76,34 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 def build_env_source_backend_overrides() -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
+
+    arxiv_backend: Dict[str, Any] = {}
+    if _norm(os.getenv("SUPABASE_URL")):
+        arxiv_backend["url"] = _norm(os.getenv("SUPABASE_URL"))
+    if _norm(os.getenv("SUPABASE_ANON_KEY")):
+        arxiv_backend["anon_key"] = _norm(os.getenv("SUPABASE_ANON_KEY"))
+    if _norm(os.getenv("SUPABASE_SCHEMA")):
+        arxiv_backend["schema"] = _norm(os.getenv("SUPABASE_SCHEMA"))
+    if _norm(os.getenv("SUPABASE_PAPERS_TABLE")):
+        arxiv_backend["papers_table"] = _norm(os.getenv("SUPABASE_PAPERS_TABLE"))
+    if _norm(os.getenv("SUPABASE_VECTOR_RPC")):
+        arxiv_backend["vector_rpc"] = _norm(os.getenv("SUPABASE_VECTOR_RPC"))
+    if _norm(os.getenv("SUPABASE_VECTOR_RPC_EXACT")):
+        arxiv_backend["vector_rpc_exact"] = _norm(os.getenv("SUPABASE_VECTOR_RPC_EXACT"))
+    if _norm(os.getenv("SUPABASE_BM25_RPC")):
+        arxiv_backend["bm25_rpc"] = _norm(os.getenv("SUPABASE_BM25_RPC"))
+    if _norm(os.getenv("SUPABASE_SYNC_TABLE")):
+        arxiv_backend["sync_table"] = _norm(os.getenv("SUPABASE_SYNC_TABLE"))
+    if _norm(os.getenv("SUPABASE_SYNC_SUCCESS_VALUE")):
+        arxiv_backend["sync_success_value"] = _norm(os.getenv("SUPABASE_SYNC_SUCCESS_VALUE"))
+    if _norm(os.getenv("DPR_ARXIV_ENABLED")):
+        arxiv_backend["enabled"] = _env_bool("DPR_ARXIV_ENABLED", True)
+    if _norm(os.getenv("DPR_ARXIV_USE_VECTOR_RPC")):
+        arxiv_backend["use_vector_rpc"] = _env_bool("DPR_ARXIV_USE_VECTOR_RPC", True)
+    if _norm(os.getenv("DPR_ARXIV_USE_BM25_RPC")):
+        arxiv_backend["use_bm25_rpc"] = _env_bool("DPR_ARXIV_USE_BM25_RPC", True)
+    if arxiv_backend:
+        out[ARXIV_SOURCE_KEY] = arxiv_backend
 
     if _env_bool("DPR_ENABLE_BIORXIV_BACKEND", False):
         backend: Dict[str, Any] = {
@@ -292,6 +331,10 @@ def resolve_source_backends(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]
                 shared=shared,
             )
 
+    legacy_supabase = cfg.get("supabase")
+    if ARXIV_SOURCE_KEY not in backends and isinstance(legacy_supabase, dict):
+        backends[ARXIV_SOURCE_KEY] = _normalize_legacy_supabase_entry(legacy_supabase)
+
     env_backends = build_env_source_backend_overrides()
     for source_key, override in env_backends.items():
         existing = backends.get(source_key) or {}
@@ -301,10 +344,6 @@ def resolve_source_backends(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]
             default_papers_table="papers",
             shared=shared,
         )
-
-    legacy_supabase = cfg.get("supabase")
-    if ARXIV_SOURCE_KEY not in backends and isinstance(legacy_supabase, dict):
-        backends[ARXIV_SOURCE_KEY] = _normalize_legacy_supabase_entry(legacy_supabase)
 
     return backends
 

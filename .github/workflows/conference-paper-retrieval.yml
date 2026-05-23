@@ -1,0 +1,195 @@
+name: conference-paper-retrieval
+
+on:
+  workflow_dispatch:
+    inputs:
+      conference:
+        description: "会议名：NIPS/NeurIPS 或 ICML"
+        required: true
+        default: "ICML"
+      years:
+        description: "年份列表，例如 2024,2025"
+        required: true
+        default: "2025"
+      top_k:
+        description: "BM25 / Embedding 每个查询候选数"
+        required: false
+        default: "50"
+      rrf_top_n:
+        description: "RRF 每个查询保留候选数"
+        required: false
+        default: "200"
+      run_rerank:
+        description: "是否继续运行 Qwen3 reranker（true/false）"
+        required: false
+        default: "true"
+      reranker_profile:
+        description: "Reranker：public-zwwen-rerank / local-qwen3-0.6b / siliconflow-qwen3-0.6b；留空使用 Secrets"
+        required: false
+        default: ""
+      run_llm_refine:
+        description: "是否继续运行 DeepSeek 相关性打分（true/false）"
+        required: false
+        default: "true"
+      llm_min_star:
+        description: "DeepSeek 打分前保留的 rerank 星级下限"
+        required: false
+        default: "4"
+      profile_tag:
+        description: "仅运行指定词条 tag；留空表示全量词条"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: conference-paper-retrieval
+  cancel-in-progress: false
+
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DPR_ENABLE_NEURIPS_BACKEND: "1"
+      DPR_NEURIPS_ENABLED: "1"
+      DPR_NEURIPS_PAPERS_TABLE: neurips_openreview_papers
+      DPR_NEURIPS_VECTOR_RPC_EXACT: match_neurips_openreview_papers_exact
+      DPR_NEURIPS_BM25_RPC: match_neurips_openreview_papers_bm25
+      DPR_ENABLE_ICML_BACKEND: "1"
+      DPR_ICML_ENABLED: "1"
+      DPR_ICML_PAPERS_TABLE: icml_openreview_papers
+      DPR_ICML_VECTOR_RPC_EXACT: match_icml_openreview_papers_exact
+      DPR_ICML_BM25_RPC: match_icml_openreview_papers_bm25
+      RERANK_PROFILE: ${{ secrets.RERANK_PROFILE }}
+      RERANK_PROVIDER: ${{ secrets.RERANK_PROVIDER }}
+      RERANK_MODEL: ${{ secrets.RERANK_MODEL }}
+      RERANK_API_KEY: ${{ secrets.RERANK_API_KEY }}
+      RERANK_API_BASE_URL: ${{ secrets.RERANK_API_BASE_URL }}
+      PUBLIC_RERANK_API_KEY: ${{ secrets.PUBLIC_RERANK_API_KEY }}
+      PUBLIC_RERANK_API_BASE_URL: ${{ secrets.PUBLIC_RERANK_API_BASE_URL || 'https://zwwen.online/rerank' }}
+      SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+      SILICONFLOW_RERANK_URL: ${{ secrets.SILICONFLOW_RERANK_URL }}
+      SILICONFLOW_RERANK_MIN_INTERVAL_SECONDS: ${{ secrets.SILICONFLOW_RERANK_MIN_INTERVAL_SECONDS || '8' }}
+      LOCAL_RERANK_MODEL: ${{ secrets.LOCAL_RERANK_MODEL || 'Qwen/Qwen3-Reranker-0.6B' }}
+      LOCAL_RERANK_DEVICE: cpu
+      LOCAL_RERANK_BATCH_SIZE: "4"
+      MKL_THREADING_LAYER: GNU
+      DPR_RERANK_GLOBAL_POOL_LIMIT: "120"
+      DPR_RERANK_GUARANTEED_PER_LANE: "2"
+      DPR_EMBED_API_TIMEOUT: "60"
+      DPR_EMBED_API_URL: ${{ secrets.DPR_EMBED_API_URL || 'https://zwwen.online/embed' }}
+      DPR_EMBED_API_KEY: ${{ secrets.DPR_EMBED_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+      DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Cache Python deps
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/uv
+            ~/.cache/torch
+          key: ${{ runner.os }}-dpr-conference-retrieval-v1-${{ hashFiles('requirements.txt') }}
+
+      - name: Install deps
+        run: |
+          python - <<'PY'
+          import re
+          lines = open("requirements.txt", "r", encoding="utf-8").read().splitlines()
+          lines = [l for l in lines if l.strip() and not re.match(r"^sqlite3\\b", l)]
+          open("/tmp/req.txt", "w", encoding="utf-8").write("\n".join(lines))
+          PY
+          python -m pip install --upgrade pip
+          python -m pip install uv
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.5.1+cpu"
+          uv pip install --system -r /tmp/req.txt
+
+      - name: Run conference retrieval pipeline
+        env:
+          HF_HOME: ${{ github.workspace }}/hf_cache
+          HUGGINGFACE_HUB_CACHE: ${{ github.workspace }}/hf_cache
+          HF_HUB_DISABLE_SYMLINKS: "1"
+          DPR_FILTER_PROFILE_TAG: ${{ github.event.inputs.profile_tag }}
+        run: |
+          set -euo pipefail
+
+          CONFERENCE="${{ github.event.inputs.conference }}"
+          YEARS="${{ github.event.inputs.years }}"
+          TOP_K="${{ github.event.inputs.top_k }}"
+          RRF_TOP_N="${{ github.event.inputs.rrf_top_n }}"
+          RUN_RERANK="${{ github.event.inputs.run_rerank }}"
+          RUN_LLM_REFINE="${{ github.event.inputs.run_llm_refine }}"
+          LLM_MIN_STAR="${{ github.event.inputs.llm_min_star }}"
+          RERANKER_PROFILE_INPUT="${{ github.event.inputs.reranker_profile }}"
+          RUN_DATE="$(date -u +%Y%m%d)"
+          if [ -n "$RERANKER_PROFILE_INPUT" ]; then
+            export RERANK_PROFILE="$RERANKER_PROFILE_INPUT"
+          fi
+
+          if [ -z "$TOP_K" ]; then
+            TOP_K="50"
+          fi
+          if [ -z "$RRF_TOP_N" ]; then
+            RRF_TOP_N="200"
+          fi
+
+          ARGS=(
+            --conferences "$CONFERENCE"
+            --years "$YEARS"
+            --top-k "$TOP_K"
+            --rrf-top-n "$RRF_TOP_N"
+            --output-dir "archive/${RUN_DATE}/filtered"
+            --embedding-device cpu
+            --embedding-batch-size 8
+          )
+          if [ "${RUN_RERANK:-false}" = "true" ]; then
+            ARGS+=(--run-rerank --rerank-device cpu --rerank-batch-size 4)
+          fi
+          if [ "${RUN_LLM_REFINE:-false}" = "true" ]; then
+            if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
+              echo "::error::run_llm_refine=true requires DEEPSEEK_API_KEY secret."
+              exit 1
+            fi
+            ARGS+=(--run-llm-refine --llm-min-star "${LLM_MIN_STAR:-4}" --llm-filter-concurrency 2)
+          fi
+
+          python src/conference_pipeline.py "${ARGS[@]}"
+
+      - name: Commit conference retrieval results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="${GITHUB_REF_NAME:-main}"
+
+          shopt -s nullglob
+          paths=(archive/*/filtered/conference-*.supabase.*.json archive/*/rank/conference-*.supabase.*.json)
+          if [ "${#paths[@]}" -eq 0 ]; then
+            echo "No conference output files to commit."
+            exit 0
+          fi
+
+          git add "${paths[@]}"
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "[chore] conference retrieval"
+          git fetch origin "$branch"
+          git rebase -X theirs "origin/$branch"
+          git push origin HEAD:"$branch"

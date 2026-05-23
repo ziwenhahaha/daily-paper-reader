@@ -73,10 +73,7 @@ window.PrivateDiscussionChat = (function () {
     ) {
       return 'deepseek';
     }
-    if (/bltcy\.ai|gptbest\.vip/i.test(normalizedBaseUrl)) {
-      return 'plato';
-    }
-    return 'generic-openai';
+    return 'unsupported';
   };
   const buildStreamingChatPayload = (baseUrl, model, messages) => {
     const utils = window.DPRLLMConfigUtils || {};
@@ -1164,7 +1161,6 @@ window.PrivateDiscussionChat = (function () {
       let resp = null;
 
       const baseUrl = (modelEntry && modelEntry.baseUrl ? modelEntry.baseUrl : '').trim();
-      const chatProfile = inferChatApiProfile(baseUrl, model);
       const primaryPayload = buildStreamingChatPayload(baseUrl, model, messages);
       const fallbackPayload = {
         model,

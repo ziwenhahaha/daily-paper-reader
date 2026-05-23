@@ -18,6 +18,8 @@ SCRIPT_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
 
+from maintain.common import format_years_token, resolve_target_years
+
 
 def log(message: str) -> None:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -280,14 +282,21 @@ def fetch_openreview_submissions(
     return out
 
 
-def resolve_output_path(conference: str, year_end: int, year_count: int, output: str) -> str:
+def resolve_output_path(
+    conference: str,
+    year_end: int,
+    year_count: int,
+    output: str,
+    years: Iterable[int] | None = None,
+) -> str:
     manual = _norm(output)
     if manual:
         if os.path.isabs(manual):
             return manual
         return os.path.abspath(os.path.join(ROOT_DIR, manual))
 
-    token = f"{_safe_slug(conference)}-openreview-{year_end - year_count + 1}-{year_end}"
+    target_years = list(years or iter_target_years(year_end, year_count))
+    token = f"{_safe_slug(conference)}-openreview-{format_years_token(target_years)}"
     return os.path.join(ROOT_DIR, "archive", TODAY_STR, "raw", f"{token}.json")
 
 
@@ -296,6 +305,7 @@ def main() -> None:
     parser.add_argument("--conference", type=str, default="NeurIPS", help="会议名，例如 NeurIPS / ICLR / ICML / AAAI。")
     parser.add_argument("--year-end", type=int, default=datetime.now(timezone.utc).year, help="结束年份，默认当前年。")
     parser.add_argument("--year-count", type=int, default=3, help="回溯几年，默认 3。")
+    parser.add_argument("--years", type=str, default="", help="显式年份列表，例如 2024,2025；设置后优先于 year-end/year-count。")
     parser.add_argument("--username", type=str, default=os.getenv("OPENREVIEW_USERNAME", ""))
     parser.add_argument("--password", type=str, default=os.getenv("OPENREVIEW_PASSWORD", ""))
     parser.add_argument("--output", type=str, default="", help="输出 JSON 文件路径。")
@@ -307,8 +317,8 @@ def main() -> None:
     if not username or not password:
         raise RuntimeError("缺少 OpenReview 凭证，请设置 OPENREVIEW_USERNAME / OPENREVIEW_PASSWORD。")
 
-    years = iter_target_years(args.year_end, args.year_count)
-    output_path = resolve_output_path(args.conference, args.year_end, args.year_count, args.output)
+    years = resolve_target_years(years=args.years, year_end=args.year_end, year_count=args.year_count)
+    output_path = resolve_output_path(args.conference, args.year_end, args.year_count, args.output, years=years)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     papers = fetch_openreview_submissions(

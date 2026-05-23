@@ -19,9 +19,9 @@ MODELSCOPE_ENDPOINT = "https://modelscope.cn/hf"
 _DEFAULT_RETRIES = 3
 _DEFAULT_HF_BACKOFF_RETRIES = 1
 _DEFAULT_REMOTE_TIMEOUT_SECONDS = 60
-_DEFAULT_REMOTE_EMBED_ENDPOINT = "https://embed.zwwen.online/embed"
+_DEFAULT_REMOTE_EMBED_ENDPOINT = os.getenv("DPR_EMBED_API_URL") or "https://zwwen.online/embed"
 # 当前服务使用固定 API key 接入。
-_DEFAULT_REMOTE_EMBED_API_KEY = "26932a86d772001af60cbd9d2c162bfda3a90e094f797f3d6806f6077478b27a"
+_DEFAULT_REMOTE_EMBED_API_KEY = os.getenv("DPR_EMBED_API_KEY") or "26932a86d772001af60cbd9d2c162bfda3a90e094f797f3d6806f6077478b27a"
 
 
 def _log_default(message: str) -> None:
@@ -30,6 +30,11 @@ def _log_default(message: str) -> None:
 
 def is_remote_embedding_enabled() -> bool:
   return bool(str(_DEFAULT_REMOTE_EMBED_ENDPOINT or "").strip())
+
+
+def is_local_embedding_fallback_enabled() -> bool:
+  value = str(os.getenv("DPR_EMBED_ALLOW_LOCAL_FALLBACK") or "").strip().lower()
+  return value in {"1", "true", "yes", "y", "on"}
 
 
 class RemoteSentenceTransformer:
@@ -50,6 +55,7 @@ class RemoteSentenceTransformer:
       ("huggingface", HUGGINGFACE_ENDPOINT),
       ("modelscope", MODELSCOPE_ENDPOINT),
     ),
+    allow_local_fallback: bool = False,
     log: Callable[[str], None] = _log_default,
   ):
     self.model_name = model_name
@@ -61,6 +67,7 @@ class RemoteSentenceTransformer:
     self.local_device = str(local_device or "cpu")
     self.local_retries = local_retries
     self.local_providers = local_providers
+    self.allow_local_fallback = bool(allow_local_fallback)
     self._local_model = None
     self._log = log
     self._remote_available = True
@@ -84,6 +91,13 @@ class RemoteSentenceTransformer:
     return headers
 
   def _get_local_model(self):
+    if not self.allow_local_fallback:
+      reason = self._remote_disabled_reason or "远程 embedding 请求失败"
+      raise RuntimeError(
+        f"{reason}；当前默认不安装/加载本地 embedding 模型。"
+        "请先检查 zwwen embedding 服务，或设置 DPR_EMBED_ALLOW_LOCAL_FALLBACK=1 "
+        "并安装 requirements-local-models.txt 后再启用本地 fallback。"
+      )
     if self._local_model is None:
       self._log(
         f"[WARN] 远程 embedding 不可用，回退本地模型：{self.model_name} "
@@ -216,6 +230,12 @@ class RemoteSentenceTransformer:
       merged = np.vstack(outputs) if outputs else np.zeros((0, 0), dtype=np.float32)
       return merged if convert_to_numpy else merged.tolist()
     except Exception as exc:
+      if not self.allow_local_fallback:
+        raise RuntimeError(
+          f"远程 embedding 请求失败：{exc}。当前默认依赖 zwwen 远程 embedding，"
+          "不会自动安装/加载本地 Torch 模型；如需本地 fallback，请设置 "
+          "DPR_EMBED_ALLOW_LOCAL_FALLBACK=1 并安装 requirements-local-models.txt。"
+        ) from exc
       self._log(f"[WARN] 远程 embedding 请求失败，将自动回退本地模型：{exc}")
       self._disable_remote(exc)
       return self._encode_via_local(
@@ -352,6 +372,7 @@ def load_sentence_transformer(
       local_device=device,
       local_retries=retries,
       local_providers=providers,
+      allow_local_fallback=is_local_embedding_fallback_enabled(),
       log=log,
     )
 

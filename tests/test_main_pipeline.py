@@ -58,23 +58,23 @@ class MainPipelineTest(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "BLT_API_KEY": "base-key",
-                "BLT_API_BASE": "https://api.bltcy.ai/v1",
+                "DEEPSEEK_API_KEY": "base-key",
+                "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
                 "SUMMARY_API_KEY": "summary-key",
                 "SUMMARY_BASE_URL": "https://summary.example.com/v1",
-                "SUMMARY_MODEL": "gpt-4.1-mini",
+                "SUMMARY_MODEL": "deepseek-v4-flash",
             },
             clear=True,
         ):
             env = self.mod.resolve_summary_step_env()
 
-        self.assertEqual(env["BLT_API_KEY"], "summary-key")
-        self.assertEqual(env["BLT_API_BASE"], "https://summary.example.com/v1")
-        self.assertEqual(env["BLT_PRIMARY_BASE_URL"], "https://summary.example.com/v1")
+        self.assertEqual(env["DEEPSEEK_API_KEY"], "summary-key")
+        self.assertEqual(env["SUMMARY_API_KEY"], "summary-key")
+        self.assertEqual(env["DEEPSEEK_BASE_URL"], "https://summary.example.com/v1")
         self.assertEqual(env["LLM_PRIMARY_BASE_URL"], "https://summary.example.com/v1")
-        self.assertEqual(env["BLT_SUMMARY_MODEL"], "gpt-4.1-mini")
+        self.assertEqual(env["DEEPSEEK_MODEL"], "deepseek-v4-flash")
 
-    def test_main_skips_rerank_for_non_blt_base_and_builds_fallback(self):
+    def test_main_runs_local_rerank_without_remote_rerank_base(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             src_dir = root / "src"
@@ -106,18 +106,10 @@ class MainPipelineTest(unittest.TestCase):
                 self.mod.main()
 
             labels = [item[0] for item in calls]
-            self.assertNotIn("Step 3 - Rerank", labels)
+            self.assertIn("Step 3 - Rerank", labels)
             self.assertIn("Step 4 - LLM refine", labels)
 
-            rerank_path = root / "archive" / token / "rank" / f"arxiv_papers_{token}.json"
-            self.assertTrue(rerank_path.exists())
-            data = json.loads(rerank_path.read_text(encoding="utf-8"))
-            ranked = data["queries"][0]["ranked"]
-            self.assertEqual([item["paper_id"] for item in ranked], ["p1", "p2", "p3"])
-            self.assertEqual(ranked[0]["star_rating"], 5)
-            self.assertGreaterEqual(ranked[1]["star_rating"], ranked[2]["star_rating"])
-
-    def test_main_keeps_rerank_in_blt_mode(self):
+    def test_main_keeps_local_rerank_in_deepseek_mode(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             src_dir = root / "src"
@@ -143,7 +135,7 @@ class MainPipelineTest(unittest.TestCase):
                 sys, "argv", ["main.py"]
             ), patch.dict(
                 os.environ,
-                {"LLM_PRIMARY_BASE_URL": "https://api.bltcy.ai/v1"},
+                {"LLM_PRIMARY_BASE_URL": "https://api.deepseek.com"},
                 clear=True,
             ):
                 self.mod.main()

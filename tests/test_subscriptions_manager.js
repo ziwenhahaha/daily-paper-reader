@@ -8,7 +8,10 @@ global.document = global.document || {
 
 require('../app/subscriptions.manager.js');
 
-const { normalizeSubscriptions } = global.window.SubscriptionsManager.__test;
+const {
+  normalizeSubscriptions,
+  isConferenceYearSelectable,
+} = global.window.SubscriptionsManager.__test;
 
 function buildBaseConfig() {
   return {
@@ -118,8 +121,19 @@ function testRunProfileQuickFetchPassesProfileTagToWorkflow() {
   assert.equal(calls[0].options.dispatchInputs.profile_tag, 'GENE');
 }
 
+function testConferenceCurrentYearDisabledForPendingSources() {
+  const currentYear = String(new Date().getFullYear());
+  const previousYear = String(new Date().getFullYear() - 1);
+
+  assert.equal(isConferenceYearSelectable('NIPS', currentYear), false);
+  assert.equal(isConferenceYearSelectable('ICML', currentYear), false);
+  assert.equal(isConferenceYearSelectable('NIPS', previousYear), true);
+  assert.equal(isConferenceYearSelectable('ICML', previousYear), true);
+}
+
 testNormalizeSubscriptionsAddsBiorxivBackend();
 testNormalizeSubscriptionsPreservesCustomBiorxivBackendFields();
 testRunProfileQuickFetchPassesProfileTagToWorkflow();
+testConferenceCurrentYearDisabledForPendingSources();
 
 console.log('subscriptions manager tests passed');

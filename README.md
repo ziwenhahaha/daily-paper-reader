@@ -36,7 +36,7 @@
 ## 📰 News
 
 - **2026-04-08** 🏷️ 推荐状态改为按 tag 独立维护：`carryover` 时间与历史 `seen_ids` 不再跨词条互相污染，单词条 `10 天` / `30 天` 抓取、回补与复跑更稳定。
-- **2026-04-08** 🧩 对齐密钥配置向导并暂时禁用 OpenAI-compatible 入口：保留更稳定的 BLT 默认链路，避免设置面板与 workflow 之间出现不兼容配置。
+- **2026-05-02** 🧩 收敛模型配置入口：工作流只保留 DeepSeek API，重排改为本地 `Qwen/Qwen3-Reranker-0.6B`。
 - **2026-03-28** 🧬 补齐多源论文维护链路：新增并打通 `bioRxiv`、`medRxiv`、`ChemRxiv` 以及多类会议论文的抓取、向量编码、Supabase 同步与检索 SQL，支持将多源论文纳入统一推荐与阅读流。
 - **2026-03-28** 🎯 后台管理支持按词条单独触发抓取：可对指定 tag 直接运行 `10 天`、`30 天速览`、`30 天标准` 等任务，便于灰度验证、单主题回补与问题排查。
 - **2026-03-28** 🛡️ 提升 embedding 与多源检索稳定性：修复多源 embedding 查询分组时机问题，并在远程 embedding 首次失败后对整轮任务熔断回退到本地模型，避免分片阶段反复超时。
@@ -102,9 +102,9 @@
 
 ### 1) 🔑 准备大模型 API Key
 
-当前 README 默认以 **柏拉图 API 平台** 为示例，建议先按默认配置跑通。
+当前 README 默认以 **DeepSeek 官方 API** 为示例，建议先按默认配置跑通。
 
-- 🌐 打开 [柏拉图 API 平台](https://api.bltcy.ai/)
+- 🌐 打开 [DeepSeek 平台](https://platform.deepseek.com/)
 - 📝 完成注册 / 登录
 - 🔐 充值并创建密钥
 
@@ -143,6 +143,68 @@ https://<你的用户名>.github.io/daily-paper-reader
 ```
 
 完成以上步骤后，后续大多数日常使用和配置都可以直接在网页端完成。后续教程参考：[daily-paper-reader 指引](https://ziwenhahaha.github.io/daily-paper-reader/#/tutorial/README)
+
+## 🧪 本地调试模式
+
+如果你在本机开发，不想点击按钮后触发 GitHub Actions，可以启动本地调试后端：
+
+```bash
+scripts/bootstrap_local.sh
+```
+
+这个脚本会自动创建 `.venv`、按需从 `.env.example` 生成 `.env`，然后启动本地后端。默认使用快速部署模式，不会下载 `torch` 等重依赖。启动完成后访问：
+
+```text
+http://127.0.0.1:8567
+```
+
+如果你已经准备好了 Python 环境，也可以只启动后端：
+
+```bash
+scripts/local_debug.sh
+```
+
+也可以手动指定监听地址和端口：
+
+```bash
+python src/local_debug_server.py --host 127.0.0.1 --port 8567
+```
+
+如果要一次性安装完整运行依赖，可以使用：
+
+```bash
+DPR_INSTALL_MODE=full scripts/bootstrap_local.sh
+```
+
+完整依赖模式默认先安装 **CPU 版 PyTorch**，避免普通本机部署时误下载 CUDA 大包。如果你确实需要自定义 PyTorch 源，可以设置：
+
+```bash
+DPR_INSTALL_MODE=full DPR_TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu scripts/bootstrap_local.sh
+```
+
+如果需要跳过依赖安装，可以使用：
+
+```bash
+DPR_SKIP_INSTALL=1 scripts/bootstrap_local.sh
+```
+
+在 `localhost / 127.0.0.1` 页面里点击“触发工作流”时，前端会自动调用本地后端 `/api/local/workflows/dispatch`，把 `daily-paper-reader.yml`、`conference-paper-retrieval.yml` 等映射为本地 Python 子进程执行，不会上 GitHub，也不会要求启用 Actions。运行日志会显示在工作流面板里，并保存在 `.local-runs/`。
+
+如果前端和本地后端不是同一个地址，可以在页面加载前设置：
+
+```html
+<script>
+  window.DPR_LOCAL_API_BASE = 'http://127.0.0.1:8567';
+</script>
+```
+
+如果要部署到自己的服务器上调试，请同时启动这个后端，并对内网或受信任网络开放端口：
+
+```bash
+DPR_LOCAL_HOST=0.0.0.0 DPR_LOCAL_PORT=8567 scripts/local_debug.sh
+```
+
+然后访问 `http://<服务器地址>:8567`。这样页面和后端同源，点击触发按钮会在服务器本机执行工作流命令，而不是调用 GitHub Actions。
 
 ## ❓ FAQ
 

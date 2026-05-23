@@ -13,14 +13,14 @@
 
 ### 📊 智能推荐流水线
 - **多路召回**：BM25（词法匹配）+ Qwen3-Embedding（语义理解）双引擎检索，RRF 融合扩大覆盖
-- **精准重排**：Qwen3-Reranker-4b 对候选集重排序，提升推荐准确度
+- **精准重排**：本地 Qwen3-Reranker-0.6B 对候选集重排序，提升推荐准确度
 - **LLM 评分**：自动生成双语证据（Evidence）、一句话总结（TLDR）及 0-10 分评分
 - **Carryover 机制**：高分论文跨日保留，避免遗漏重要成果
 
 ### 🎨 现代化阅读界面
 - **双语标题栏**：中英文标题智能布局，响应式适配
 - **论文速览卡片**：Motivation / Method / Result / Conclusion 四维快速浏览
-- **AI 精读总结**：自动生成结构化深度总结（需配置 BLT API）
+- **AI 精读总结**：自动生成结构化深度总结（需配置 DeepSeek API）
 - **私人研讨区**：基于 Gemini 的论文问答，支持上下文对话，本地 IndexedDB 存储记忆
 
 ### 🔧 站内后台管理
@@ -28,7 +28,7 @@
 - **智能订阅（LLM Query）**：用自然语言描述研究兴趣，自动扩展查询
 - **论文引用追踪**：通过 Semantic Scholar ID 订阅论文的新引用
 - **工作流触发**：站内一键刷新推荐结果，实时查看运行状态
-- **密钥配置**：本地加密存储 API Key，支持 BLT / Gemini 等多个提供商
+- **密钥配置**：本地加密存储 DeepSeek API Key
 
 ### 🎯 辅助功能
 - **Zotero 集成**：一键导入论文元数据，包含 AI 总结和聊天历史
@@ -62,26 +62,26 @@ Fork 后 Actions 默认暂停，需要手动激活：
 
 ---
 
-## 🔑 必须：配置柏拉图 BLT（用于重排/评分/总结）
+## 🔑 必须：配置 DeepSeek（用于评分/总结）
 
-本项目默认工作流会调用 BLT 来完成核心能力（否则流水线会在相关步骤失败/跳过，推荐质量与内容完整性都无法保证）：
-- Step 3 重排（Reranker）
+本项目默认工作流会调用 DeepSeek 来完成核心能力，Step 3 重排改为本地模型：
+- Step 3 本地重排（Qwen/Qwen3-Reranker-0.6B）
 - Step 4 LLM 精炼评分（双语证据 + 双语 TLDR）
-- Step 6 翻译/总结（可选能力，但默认实现依赖 BLT）
+- Step 6 翻译/总结（可选能力，默认实现依赖 DeepSeek）
 
 ### 1) 注册 / 充值 / 创建 API Key
-- 注册（带推荐码）：https://api.bltcy.ai/register?aff=wrM957407
+- 注册：https://platform.deepseek.com/
 - 充值：右上角头像 → 立即充值（建议先充 5 元体验）
 - 创建令牌：左侧 **令牌** → **新建令牌**（名称随意，默认即可）
 
-> 工作流默认会使用 `BLT_RERANK_MODEL=qwen3-reranker-4b`、`BLT_FILTER_MODEL=gemini-3-flash-preview-nothinking` 等（见 `/.github/workflows/daily-paper-reader.yml`）。
+> 工作流默认会使用 `LOCAL_RERANK_MODEL=Qwen/Qwen3-Reranker-0.6B` 与 DeepSeek chat 模型（见 `/.github/workflows/daily-paper-reader.yml`）。
 
 ---
 
 ## 🪪 必须：GitHub Token 申请（用于站内面板与 Gist 分享）
 
 站点前端会调用 GitHub API 来完成这些能力，因此需要 GitHub Token：
-- **一键写入仓库 Secrets**（保存 `BLT_API_KEY` 等）
+- **一键写入仓库 Secrets**（保存 `DEEPSEEK_API_KEY` 等）
 - **站内触发 Actions 工作流**（立即刷新 / 同步上游）
 - **生成 GitHub Gist 分享链接**（论文页面“分享”按钮）
 

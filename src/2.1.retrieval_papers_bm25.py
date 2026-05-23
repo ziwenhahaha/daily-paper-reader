@@ -39,8 +39,8 @@ from supabase_source import (
 
 # 当前脚本位于 src/ 下，config.yaml 在上一级目录
 SCRIPT_DIR = os.path.dirname(__file__)
-CONFIG_FILE = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "config.yaml"))
-ROOT_DIR = os.path.dirname(CONFIG_FILE)
+CONFIG_FILE = os.getenv("DPR_CONFIG_FILE") or os.path.abspath(os.path.join(SCRIPT_DIR, "..", "config.yaml"))
+ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 TODAY_STR = str(os.getenv("DPR_RUN_DATE") or "").strip() or datetime.now(timezone.utc).strftime("%Y%m%d")
 ARCHIVE_DIR = os.path.join(ROOT_DIR, "archive", TODAY_STR)
 RAW_DIR = os.path.join(ARCHIVE_DIR, "raw")

@@ -37,6 +37,46 @@ class RankGlobalPoolTest(unittest.TestCase):
             self.mod.resolve_global_pool_budget(10000, 4),
             (120, 20, 300),
         )
+        self.assertEqual(
+            self.mod.resolve_global_pool_budget(
+                10000,
+                4,
+                global_limit_override=80,
+                guaranteed_per_lane_override=1,
+            ),
+            (120, 1, 80),
+        )
+
+    def test_rerank_profile_resolves_remote_defaults(self):
+        self.assertEqual(
+            self.mod._normalize_rerank_profile("zwwen"),
+            "public-zwwen-rerank",
+        )
+        public = self.mod._resolve_rerank_profile_config("public-zwwen-rerank")
+        self.assertEqual(public["provider"], "public_zwwen")
+        self.assertEqual(public["base_url"], "https://zwwen.online/rerank")
+        self.assertEqual(
+            self.mod._normalize_rerank_profile("sf_0.6b"),
+            "siliconflow-qwen3-0.6b",
+        )
+        siliconflow = self.mod._resolve_rerank_profile_config("siliconflow-qwen3-0.6b")
+        self.assertEqual(siliconflow["provider"], "siliconflow")
+        self.assertEqual(
+            siliconflow["base_url"],
+            "https://api.siliconflow.cn/v1/rerank",
+        )
+
+    def test_default_rerank_model_uses_public_default(self):
+        with patch.dict(self.mod.os.environ, {}, clear=True):
+            self.assertEqual(
+                self.mod.resolve_default_rerank_model(),
+                "Qwen/Qwen3-Reranker-0.6B",
+            )
+        with patch.dict(self.mod.os.environ, {"RERANK_PROFILE": "local-qwen3-0.6b"}, clear=True):
+            self.assertEqual(
+                self.mod.resolve_default_rerank_model(),
+                "Qwen/Qwen3-Reranker-0.6B",
+            )
 
     def test_build_global_candidate_ids_keeps_lane_top_and_global_top(self):
         queries = [
@@ -137,6 +177,129 @@ class RankGlobalPoolTest(unittest.TestCase):
             self.assertEqual(saved.get("global_pool_lane_top_k"), 30)
             self.assertEqual(saved.get("global_pool_limit"), 60)
             self.assertEqual(saved.get("global_pool_guaranteed_per_lane"), 8)
+
+    def test_process_file_respects_fast_pool_budget(self):
+        payload = {
+            "generated_at": "2026-03-11T00:00:00+00:00",
+            "papers": [
+                {"id": f"p{i}", "title": f"Paper {i}", "abstract": "abstract"}
+                for i in range(1, 8)
+            ],
+            "queries": [
+                {
+                    "type": "keyword",
+                    "tag": "K",
+                    "paper_tag": "keyword:K",
+                    "query_text": "keyword lane",
+                    "sim_scores": {
+                        "p1": {"rank": 1, "score": 1.0},
+                        "p2": {"rank": 2, "score": 0.9},
+                        "p3": {"rank": 3, "score": 0.8},
+                    },
+                },
+                {
+                    "type": "intent_query",
+                    "tag": "I",
+                    "paper_tag": "query:I",
+                    "query_text": "intent lane",
+                    "sim_scores": {
+                        "p4": {"rank": 1, "score": 1.0},
+                        "p5": {"rank": 2, "score": 0.9},
+                        "p6": {"rank": 3, "score": 0.8},
+                    },
+                },
+            ],
+        }
+
+        class FakeReranker:
+            def rerank(self, **kwargs):
+                return {
+                    "results": [
+                        {"index": idx, "relevance_score": 1.0 / (idx + 1)}
+                        for idx, _doc in enumerate(kwargs.get("documents") or [])
+                    ]
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = pathlib.Path(tmp) / "input.json"
+            output_path = pathlib.Path(tmp) / "output.json"
+            input_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            with patch.object(self.mod.random, "shuffle", side_effect=lambda items: None):
+                self.mod.process_file(
+                    reranker=FakeReranker(),
+                    input_path=str(input_path),
+                    output_path=str(output_path),
+                    top_n=None,
+                    rerank_model="fake-model",
+                    rerank_guaranteed_per_lane=1,
+                    rerank_global_pool_limit=2,
+                )
+
+            saved = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved.get("global_pool_guaranteed_per_lane"), 1)
+            self.assertEqual(saved.get("global_pool_limit"), 2)
+            self.assertLessEqual(saved.get("global_pool_effective_size"), 4)
+
+    def test_process_file_caps_remote_reranker_batch_size(self):
+        payload = {
+            "generated_at": "2026-03-11T00:00:00+00:00",
+            "papers": [
+                {"id": f"p{i}", "title": f"Paper {i}", "abstract": "abstract"}
+                for i in range(66)
+            ],
+            "queries": [
+                {
+                    "type": "intent_query",
+                    "tag": "RL",
+                    "paper_tag": "query:RL",
+                    "query_text": "reinforcement learning",
+                    "sim_scores": {
+                        f"p{i}": {"rank": i + 1, "score": 1.0 / (i + 1)}
+                        for i in range(66)
+                    },
+                }
+            ],
+        }
+
+        test_case = self
+
+        class CappedReranker:
+            max_documents_per_request = 64
+
+            def __init__(self):
+                self.call_sizes = []
+
+            def rerank(self, **kwargs):
+                documents = kwargs.get("documents") or []
+                self.call_sizes.append(len(documents))
+                test_case.assertLessEqual(len(documents), self.max_documents_per_request)
+                return {
+                    "results": [
+                        {"index": idx, "relevance_score": 1.0 / (idx + 1)}
+                        for idx, _doc in enumerate(documents)
+                    ]
+                }
+
+        reranker = CappedReranker()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = pathlib.Path(tmp) / "input.json"
+            output_path = pathlib.Path(tmp) / "output.json"
+            input_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            with patch.object(self.mod.random, "shuffle", side_effect=lambda items: None):
+                self.mod.process_file(
+                    reranker=reranker,
+                    input_path=str(input_path),
+                    output_path=str(output_path),
+                    top_n=None,
+                    rerank_model="fake-model",
+                    rerank_global_pool_limit=66,
+                    rerank_guaranteed_per_lane=0,
+                )
+
+            self.assertEqual(reranker.call_sizes, [64, 2])
 
 
 if __name__ == "__main__":

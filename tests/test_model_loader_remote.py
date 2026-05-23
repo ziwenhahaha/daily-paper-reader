@@ -30,7 +30,7 @@ class RemoteSentenceTransformerTest(unittest.TestCase):
 
         model = RemoteSentenceTransformer(
             model_name="BAAI/bge-small-en-v1.5",
-            endpoint="https://embed.zwwen.online",
+            endpoint="https://zwwen.online/embed",
             api_key="test-key",
             timeout=30,
             default_batch_size=2,
@@ -54,7 +54,31 @@ class RemoteSentenceTransformerTest(unittest.TestCase):
 
     @patch("src.model_loader._load_local_sentence_transformer")
     @patch("src.model_loader.requests.post")
-    def test_remote_encode_falls_back_to_local_model_when_remote_fails(self, mock_post, mock_load_local):
+    def test_remote_encode_fails_fast_without_local_fallback(self, mock_post, mock_load_local):
+        mock_post.side_effect = requests.exceptions.Timeout("remote timeout")
+
+        model = RemoteSentenceTransformer(
+            model_name="BAAI/bge-small-en-v1.5",
+            endpoint="https://zwwen.online/embed",
+            api_key="test-key",
+            timeout=30,
+            default_batch_size=2,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "DPR_EMBED_ALLOW_LOCAL_FALLBACK"):
+            model.encode(
+                ["a"],
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+                batch_size=2,
+            )
+
+        self.assertEqual(mock_post.call_count, 1)
+        mock_load_local.assert_not_called()
+
+    @patch("src.model_loader._load_local_sentence_transformer")
+    @patch("src.model_loader.requests.post")
+    def test_remote_encode_falls_back_to_local_model_when_enabled(self, mock_post, mock_load_local):
         mock_post.side_effect = requests.exceptions.Timeout("remote timeout")
         local_model = MagicMock()
         local_model.encode.return_value = np.asarray([[0.1, 0.2]], dtype=np.float32)
@@ -62,17 +86,13 @@ class RemoteSentenceTransformerTest(unittest.TestCase):
 
         model = RemoteSentenceTransformer(
             model_name="BAAI/bge-small-en-v1.5",
-            endpoint="https://embed.zwwen.online",
+            endpoint="https://zwwen.online/embed",
             api_key="test-key",
             timeout=30,
             default_batch_size=2,
+            allow_local_fallback=True,
         )
-        arr = model.encode(
-            ["a"],
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            batch_size=2,
-        )
+        arr = model.encode(["a"], convert_to_numpy=True, normalize_embeddings=True, batch_size=2)
 
         self.assertEqual(mock_post.call_count, 1)
         mock_load_local.assert_called_once()
@@ -92,10 +112,11 @@ class RemoteSentenceTransformerTest(unittest.TestCase):
 
         model = RemoteSentenceTransformer(
             model_name="BAAI/bge-small-en-v1.5",
-            endpoint="https://embed.zwwen.online",
+            endpoint="https://zwwen.online/embed",
             api_key="test-key",
             timeout=30,
             default_batch_size=2,
+            allow_local_fallback=True,
         )
 
         arr1 = model.encode(["a"], convert_to_numpy=True, normalize_embeddings=True, batch_size=2)
@@ -119,7 +140,7 @@ class RemoteSentenceTransformerTest(unittest.TestCase):
         model = load_sentence_transformer("BAAI/bge-small-en-v1.5", device="cpu")
         self.assertTrue(getattr(model, "is_remote", False))
         self.assertEqual(model.model_name, "BAAI/bge-small-en-v1.5")
-        self.assertEqual(model.endpoint, "https://embed.zwwen.online/embed")
+        self.assertEqual(model.endpoint, "https://zwwen.online/embed")
         self.assertEqual(model.timeout, 45)
         self.assertEqual(
             model.api_key,
