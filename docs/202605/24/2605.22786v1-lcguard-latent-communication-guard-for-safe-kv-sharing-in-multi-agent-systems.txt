@@ -1,0 +1,891 @@
+Title: LCGuard: Latent Communication Guard for Safe KV Sharing in Multi-Agent Systems
+
+URL Source: https://arxiv.org/pdf/2605.22786v1
+
+Published Time: Fri, 22 May 2026 01:30:13 GMT
+
+Number of Pages: 26
+
+Markdown Content:
+# LCGuard: Latent Communication Guard for Safe KV Sharing in Multi-Agent Systems 
+
+Sadia Asif 1# Mohammad Mohammadi Amiri 1 Momin Abbas 2
+
+Prasanna Sattigeri 2 Karthikeyan Natesan Ramamurthy 21Rensselaer Polytechnic Institute 
+
+> 2
+
+IBM Research 
+
+# asifs@rpi.edu 
+
+# Abstract 
+
+Large language model (LLM)-based multi-agent systems increasingly rely on inter-mediate communication to coordinate complex tasks. While most existing systems communicate through natural language, recent work shows that latent commu-nication, particularly through transformer key-value (KV) caches, can improve efficiency and preserve richer task-relevant information. However, KV caches also encode contextual inputs, intermediate reasoning states, and agent-specific infor-mation, creating an opaque channel through which sensitive content may propagate across agents without explicit textual disclosure. To address this, we introduce 
+
+LCGuard (Latent Communication Guard), a framework for safe KV-based latent communication in multi-agent LLM systems. LCGuard treats shared KV caches as latent working memory and learns representation-level transformations before cache artifacts are transmitted across agents. We formalize representation-level sensitive information leakage operationally through reconstruction: a shared cache artifact is unsafe if an adversarial decoder can recover agent-specific sensitive inputs from it. This leads to an adversarial training formulation in which the adversary learns to reconstruct sensitive inputs, while LCGuard learns transforma-tions that preserve task-relevant semantics and reduce reconstructable information. Empirical evaluations across multiple model families and multi-agent benchmarks show that LCGuard consistently reduces reconstruction-based leakage and attack success rates while maintaining competitive task performance compared to standard KV-sharing baselines. 
+
+# 1 Introduction 
+
+Large language models (LLMs) are increasingly deployed in multi-agent systems (MAS), where multiple specialized agents collaborate through coordination, delegation, and intermediate information exchange to solve complex tasks [ 23 , 40 , 38 , 18 ]. Existing systems predominantly rely on text-based communication , in which each agent serializes its internal state into natural language and downstream agents reinterpret that text to continue reasoning [ 47 , 33 ]. While flexible and interpretable, this paradigm is inefficient and lossy: agents repeatedly decode, tokenize, and reconstruct semantic state across communication steps [11, 48]. Recent work has begun to move beyond text by enabling latent communication between agents [36 , 46 ]. In particular, transformer key-value (KV) caches and intermediate activations have emerged as promising communication substrates [ 15 , 36 , 48 ]. By directly transferring these representations, agents can avoid redundant computation and preserve richer semantic structure than text-based messages. Such approaches effectively treat KV caches as shared working memory , enabling tighter coupling between agents and improving efficiency in multi-stage reasoning. However, this shift introduces a fundamental and underexplored challenge. Unlike text, which is discrete and externally inspectable, KV caches are high-dimensional, semantically dense represen-
+
+> Preprint.
+> arXiv:2605.22786v1 [cs.AI] 21 May 2026
+
+tations that encode contextual inputs, intermediate reasoning states, and attention structure. Prior work shows that internal model representations can retain substantial information about their inputs, even when that information is not explicitly decoded [ 30 ]. As a result, KV caches may implicitly contain information that never appears in textual outputs. When shared across agents, they form a high-bandwidth representation-space channel whose contents are difficult to inspect or constrain. This property changes the attack surface of multi-agent systems. When agents exchange KV caches, information is not merely transmitted; it is embedded , transformed , and propagated through internal representations. Sensitive inputs processed by one agent may persist in its KV cache, influence downstream computation, and remain recoverable after multiple stages of interaction. An adversary with access to shared caches, for example through compromised agents, logging infrastructure, or auxiliary models, can exploit this channel by training a decoder to reconstruct underlying inputs. Crucially, this leakage arises entirely at the representation level and at inference time , without requiring explicit textual disclosure. Existing approaches are not designed to address this phenomenon. Safety mechanisms in multi-agent systems typically operate over generated outputs or tool actions [ 41 , 2, 7, 29 ], and therefore do not constrain what is transmitted through latent representations. Meanwhile, prior work on KV-cache security focuses on isolation, eviction, or system-level controls in serving environments [ 8, 25 ], rather than on the information content of caches intentionally shared across agents; see Appendix A.8 for a broader discussion. Consequently, there is currently no principled framework for regulating what information is retained in KV representations before they are communicated in multi-agent systems. This leads to the central challenge: How can we enable efficient KV-based latent communication in multi-agent systems while limiting the recoverability of agent-specific private information from shared representations? 
+
+Figure 1: Multi-agent communication topologies: sequen-tial, hierarchical, and graph-based. Edges carry KV cache latent artifacts mij .To address this challenge, we intro-duce LCGuard (Latent Communica-tion Guard), a framework for con-trolling agent-specific sensitive infor-mation flow in KV-based latent com-munication. LCGuard learns com-munication functions that transform KV representations before transmis-sion, preserving task-relevant infor-mation while limiting the recoverabil-ity of sensitive inputs. We formal-ize representation-level sensitive in-formation leakage in terms of recon-structability: a communicated artifact is considered unsafe if an adversarial decoder can recover agent-specific inputs from it. This yields an adversarial optimization framework in which reconstruc-tion models attempt to infer sensitive inputs, while communication functions are learned to preserve downstream utility and suppress reconstructable information. We evaluate LCGuard across multiple model families, including Qwen3 (4B, 8B, 14B) [ 43 ], Gemma-2-9B [ 17 ] and LLaMA (3B, 8B) [ 37 ], under diverse multi-agent settings. Experiments on AgentLeak [ 12 ], MAGPIE [ 21 ] and PrivacyLens [ 35 ] benchmarks show that LCGuard consistently reduces reconstruction-based leakage while maintaining competitive task performance relative to standard KV-sharing baselines. 
+
+Contributions. Our main contributions are as follows: • We identify latent KV communication as an attack surface in multi-agent LLM systems, where shared working memory can implicitly propagate sensitive information. • We propose LCGuard , a representation-level framework that transforms KV caches before com-munication to regulate information flow across agents. • We introduce a reconstruction-based notion of leakage that captures the practical recoverability of agent-specific inputs from shared representations. • We formulate safe latent communication as a minimax optimization problem that balances task utility against information exposure. 2• We empirically demonstrate that LCGuard achieves a favorable privacy-utility tradeoff across multiple models and benchmarks. 
+
+# 2 Problem Setup and Threat Model 
+
+We consider multi-agent systems that communicate through latent representations derived from Transformer key-value (KV) caches. Such systems may exhibit different interaction patterns, includ-ing sequential, hierarchical, or general communication topologies (Figure 1). Our objective is to formalize this latent communication process at the representation level, with a focus on understanding how transmitted representations simultaneously support task performance and expose agent-specific sensitive information. Within this setting, we develop a general formulation that abstracts communication as the transmission of learned representations between agents, independent of any specific KV sharing protocol or interaction topology. We first introduce the notation and define the communicated artifacts that mediate interaction. We then formalize reconstruction-based leakage and present a threat model that captures adversarial inference from shared representations. This formulation provides the foundation for the LCGuard framework introduced in Section 3. 
+
+2.1 Preliminaries and Notation 
+
+We consider N agents {a1, . . . , a N }, where each agent ai is modeled as a Transformer parameterized by θi. For simplicity, we use ai to denote both the agent and its underlying model throughout the paper. Each agent receives: (i) a task input xi ∈ X , where X denotes the task input space, and (ii) an agent-specific (potentially sensitive) input si ∈ S , where S denotes the space of private or agent-specific attributes. These may include user context, retrieved documents, or intermediate outputs that should not be recoverable by other agents or adversaries. Given these inputs, the agent processes its sequence using a Transformer model and produces internal KV representations. We denote the aggregated key and value tensors for agent ai as 
+
+Ki ∈ RTi×dk , Vi ∈ RTi×dv , (1) where Ti is the number of processed tokens, and dk and dv denote the dimensionality of keys and values, respectively. We assume that communication between agents occurs entirely in the KV latent space, and no explicit text-based information is exchanged. Agents interact by transmitting representations derived from their internal states. For any pair of agents (ai, a j ), we define the communicated artifact from agent 
+
+ai to agent aj as 
+
+mij = gij (Ki, Vi), (2) where gij is a learnable transformation function, parameterized by ϕi, that determines what infor-mation is transmitted from agent ai to agent aj (See Appendix A.6.1 for further details about gij ). In particular, if gij is the identity function, the raw representations (Ki, Vi) are directly shared. For notational simplicity, we omit the explicit dependence on ϕi and use gij throughout the paper. We denote the collection of all communicated artifacts in the system as 
+
+M = {mij }i,j . (3) The downstream task is performed based on these communicated representations, and we define a system-level task loss function 
+
+Ltask (M) = E [− log p(y | M)] , (4) where y denotes the task output. 
+
+2.2 Threat Model 
+
+We consider an adversary whose objective is to infer agent-specific sensitive information from communicated latent representations. The adversary operates at the representation level and does not rely on explicit textual outputs, reflecting scenarios where internal communication channels are exposed through shared memory, logging infrastructure, or compromised agents. 
+
+Adversarial access. The adversary is assumed to observe a subset of communicated artifacts 
+
+Mobs ⊆ M. This captures a range of realistic settings, including partial access to communi-cation links, as well as global access to the entire communication stream. 3Adversarial knowledge. We assume the adversary has knowledge of the model family. However, the adversary does not have access to the sensitive inputs si at inference time and must rely solely on the observed artifacts Mobs to perform reconstruction. 
+
+Attack Objective. The adversary aims to recover si by minimizing the reconstruction loss 
+
+L(i)rec (Mobs ) using a learned decoder 
+
+Di : Mobs → bsi, (5) parameterized by ψi, where bsi denotes the reconstructed estimate of the sensitive input si, and 
+
+Mobs ⊆ M represents the set of observed communicated artifacts. The adversary aims to infer si by minimizing the reconstruction loss 
+
+L(i)rec (Mobs ) = E [− log p(si | Mobs )] . (6) Lower reconstruction loss indicates that the communicated representations received from agent ai
+
+encode more information about si, making it easier for the adversary to recover sensitive inputs. To quantify leakage relative to a baseline, we also define the prior reconstruction loss 
+
+L(i)prior = E [− log p(si)] , (7) which corresponds to the best achievable reconstruction performance without access to any communi-cated artifacts. 
+
+Remark 1. Leakage can be interpreted through the gap between the reconstruction loss L(i)rec (Mobs )
+
+and the prior loss L(i)prior , under the assumption of a sufficiently strong adversary that approximately minimizes the reconstruction objective. A larger gap indicates that the adversary is more successful in recovering si from the observed representations, implying higher leakage. Conversely, when the reconstruction loss approaches the prior loss, the adversary gains little advantage from Mobs ,indicating that the communicated representations provide minimal additional information about si
+
+and thus preserve privacy. 
+
+Local vs. system-level leakage. The formulation naturally captures different levels of exposure through the choice of Mobs . Local leakage corresponds to the case where the adversary observes a single communicated artifact, i.e., Mobs = mij for some (i, j ), measuring leakage at agent ai
+
+from an individual communication link between agents ai and aj . In contrast, system-level leakage corresponds to Mobs = M, where the adversary aggregates information across all communicated artifacts. This distinction highlights how information that may appear weakly encoded in indi-vidual transmissions can become significantly more recoverable when combined across multiple communication paths. This threat model captures inference-time leakage arising from KV based latent communication, where sensitive information may be implicitly encoded in intermediate representations even if it is never explicitly revealed in outputs. By focusing on reconstruction from communicated artifacts, the model reflects a strong and practical adversary that exploits representation-level signals rather than surface-level behavior. 
+
+2.3 Design Objective 
+
+Based on the formulation and threat model above, the goal is to design communication mechanisms that balance task performance captured by Ltask (M) and privacy captured through L(i)rec (Mobs ).Specifically, we seek communication functions {gij }i,j that produce transmitted representations 
+
+M which are: (i) informative enough to support downstream task performance i.e., minimizing 
+
+Ltask (M) , and (ii) minimally informative about sensitive inputs si i.e., maximizing L(i)rec (Mobs ) .This naturally leads to a tradeoff between utility and leakage. Task performance is captured through the task loss Ltask (M), while privacy risk is quantified via the reconstruction loss L(i)rec (Mobs ). The next section introduces LCGuard , which implements this objective as an optimization problem. 
+
+# 3 Methodology 
+
+We now introduce LCGuard , a framework for controlling agent specific sensitive information flow in latent multi-agent communication. LCGuard learns communication functions {gij }i,j that transform KV representations such that they preserve task-relevant information while limiting the recoverability of sensitive inputs {si}i. To achieve this, LCGuard adopts an adversarial learning framework in which communication functions and reconstruction models are jointly optimized with opposing objectives, enabling explicit control over the utility-privacy tradeoff. 43.1 Adversarial Learning Formulation 
+
+We model the interaction between communication and reconstruction as a two-player game. For each agent ai, the communication functions {gij }i,j are parameterized by ϕi, while an adversarial decoder 
+
+Di, parameterized by ψi, attempts to reconstruct the sensitive input si from the observed commu-nicated artifacts Mobs . The adversary is trained to minimize the reconstruction loss L(i)rec (Mobs ),thereby extracting as much information as possible from communicated representations. In contrast, the communication functions are trained to make this reconstruction task difficult by maximizing the reconstruction loss L(i)rec (Mobs ) while preserving task-relevant information. 
+
+3.2 Joint Optimization 
+
+The interaction between communication functions and adversarial decoders is formalized as a minimax optimization problem. Specifically, we jointly optimize the communication parameters 
+
+{ϕi}i and adversarial parameters {ψi}i as: 
+
+min 
+
+> {ϕi}i
+
+max 
+
+> {ψi}i
+
+β
+
+> N
+
+X
+
+> i=1
+
+L(i)rec (Mobs ) + Ltask (M), (8) where β > 0 controls the tradeoff between task utility and leakage suppression. Larger β values place greater emphasis on suppressing leakage, potentially at the cost of task performance, while smaller β values prioritize utility. In practice, we treat β as a tunable hyperparameter and analyze its effect through privacy-utility tradeoff curves (Appendix A.2.1). This objective balances two competing goals: reducing the reconstructability of sensitive inputs while maintaining task performance. The reconstruction term L(i)rec (Mobs ) captures privacy risk under the adversarial model, while the task loss Ltask (M) ensures that communicated representations remain useful for downstream prediction. 
+
+3.3 Training Procedure 
+
+We optimize Eq. (8) using alternating updates between communication functions and adversarial decoders: • Adversary step: Fix {ϕi}i and update {ψi}i to minimize L(i)rec (Mobs ), strengthening the recon-struction capability of the adversary. • Communication step: Fix {ψi}i and update {ϕi}i to minimize the joint objective, encourag-ing communication functions to suppress reconstructable information while maintaining task performance. This alternating optimization drives the system toward representations that are maximally useful for the task while being minimally informative about sensitive inputs. The effectiveness of leakage mitigation depends on the choice of observed artifacts Mobs used in the reconstruction objective, as discussed in Section 2. When Mobs = mij corresponds to a single communication link, the optimization primarily targets leakage localized to that interaction. In contrast, when Mobs = M includes all communicated artifacts, the objective accounts for information aggregated across multiple agents. This enables the learned communication functions to mitigate both local and compositional leakage depending on the adversarial observation setting. Full training details for both local and system-level settings are provided in Appendix A.1. 
+
+# 4 Experiments 
+
+We evaluate LCGuard in multi-agent LLM systems that communicate through latent KV repre-sentations. Our experiments are designed to answer three questions: (i) Does KV-based latent communication introduce reconstruction-based privacy leakage? (ii) Can LCGuard reduce leakage while preserving downstream task performance? (iii) How does the privacy-utility tradeoff vary across models, benchmarks, and communication topologies? 
+
+4.1 Experimental Setup 
+
+We evaluate LCGuard under the reconstruction-based threat model described in Section 2. Our experiments span multiple benchmarks, model families, and communication topologies to assess both task performance and reconstruction-based leakage. We additionally evaluate the inference-time efficiency of LCGuard relative to text-based communication and Vanilla KV sharing in Appendix A.4. 5Table 1: Qwen3-4B results across sequential (Seq) and hierarchical (Hier) communication topologies. Vanilla KV achieves highest helpfulness but suffers from high leakage and ASR. ADAPT improves privacy at the cost of utility. LCGuard provides the best tradeoff, with Full-System LCGuard achieving lowest ASR while maintaining strong helpfulness.                                                                                                                   
+
+> Topology Benchmark #Agents Method Privacy ↑Task ↑Help. ↑Leak ↓ASR ↓
+> Seq PrivacyLens 4Vanilla KV Sharing (LatentMAS) 0.420 0.720 0.780 0.580 0.871 PrivAct 0.820 0.700 0.612 0.180 0.845 ADAPT 0.850 0.420 0.285 0.150 0.332 Per-Agent LCGuard 0.773 0.671 0.650 0.226 0.259 Full-System LCGuard 0.801 0.710 0.710 0.199 0.216
+> AgentLeak 3Vanilla KV Sharing (LatentMAS) 0.250 0.640 0.760 0.750 0.880 PrivAct 0.551 0.531 0.431 0.449 0.790 ADAPT 0.810 0.330 0.270 0.190 0.413 Per-Agent LCGuard 0.762 0.582 0.630 0.238 0.291 Full-System LCGuard 0.819 0.629 0.700 0.181 0.259
+> Hier PrivacyLens 5Vanilla KV Sharing (LatentMAS) 0.395 0.710 0.755 0.610 0.873 PrivAct 0.798 0.690 0.485 0.202 0.820 ADAPT 0.833 0.408 0.270 0.167 0.301 Per-Agent LCGuard 0.781 0.680 0.600 0.219 0.272 Full-System LCGuard 0.835 0.700 0.685 0.165 0.238
+> AgentLeak 3Vanilla KV Sharing (LatentMAS) 0.230 0.630 0.735 0.770 0.891 PrivAct 0.534 0.562 0.371 0.466 0.752 ADAPT 0.800 0.312 0.255 0.200 0.394 Per-Agent LCGuard 0.762 0.572 0.610 0.238 0.265 Full-System LCGuard 0.823 0.591 0.675 0.177 0.224
+
+Benchmarks. We consider three multi-agent benchmarks with explicit privacy considerations. Pri-vacyLens [35 ] evaluates contextual privacy violations in agent behavior. AgentLeak [ 12 ] focuses on leakage through internal communication channels. MAGPIE [ 21 ] studies collaborative settings where private information is directly tied to task success. 
+
+Models. We evaluate across multiple open-weight LLM backbones, including Qwen3 (4B, 8B, 14B) [43], Gemma-2-9B [17] and LLaMA (3B, 8B) [37], covering different families and scales. 
+
+Baselines. We compare LCGuard against baselines spanning different privacy paradigms: Vanilla KV Sharing (LatentMAS [ 48 ] and KVComm [ 36 ]), which directly transmits latent representations without protection; PrivAct [ 7], which enforces policy-level privacy constraints; ADAPT [13 ], which injects noise for differential privacy; and Per-Agent LCGuard , a local variant that applies communication transformations independently at each agent, where Mobs = mij . Our full method is denoted as Full-System LCGuard , where Mobs = M. Detailed descriptions of all baselines, including implementation specifics, are provided in Appendix A.7. 
+
+Evaluation metrics. We evaluate both task performance and sensitive information leakage. Task Accuracy and Helpfulness measure downstream utility. Privacy Score , Leak Rate , and Attack Success Rate (ASR) quantify the extent to which sensitive inputs can be recovered from shared representations. We further analyze Reconstruction Difficulty as a diagnostic metric, which measures the difficulty of reconstructing sensitive inputs from shared representations relative to the prior loss (given in Section 2). Higher accuracy, helpfulness, and privacy are better, while lower leak rate and ASR indicate stronger protection. Detailed metric definitions, and ablation studies on adversary strength, the tradeoff parameter β, and reconstruction difficulty are provided in Appendix A.5 and Appendix A.2.1. We report results for sequential and hierarchical communication topologies on Qwen3-4B, LLaMA-3.1-8B, and Gemma-2-9B using the PrivacyLens and AgentLeak benchmarks in Section 5. Additional results, including other model variants, general graph settings, and MAGPIE evaluations, are deferred to Appendix A.3. 
+
+# 5 Results 
+
+Tables 1, 2, and 3 report results across PrivacyLens and AgentLeak under sequential and hierarchical communication. Figure 2 summarizes the ASR-helpfulness tradeoff across communication topologies 6Table 2: Gemma-9B results across sequential (Seq) and hierarchical (Hier) communication topologies. While stronger baselines increase both utility and leakage, LCGuard consistently reduces ASR and leakage while preserving high helpfulness. Full-System LCGuard performs best overall for privacy-utility tradeoff.                                                                                                                   
+
+> Topology Benchmark #Agents Method Privacy ↑Task ↑Help. ↑Leak ↓ASR ↓
+> Seq PrivacyLens 4Vanilla KV Sharing (LatentMAS) 0.440 0.740 0.805 0.560 0.885 PrivAct 0.835 0.715 0.640 0.165 0.830 ADAPT 0.870 0.440 0.305 0.130 0.315 Per-Agent LCGuard 0.790 0.690 0.675 0.210 0.245 Full-System LCGuard 0.825 0.725 0.735 0.175 0.205
+> AgentLeak 3Vanilla KV Sharing (LatentMAS) 0.270 0.660 0.785 0.730 0.895 PrivAct 0.582 0.560 0.455 0.418 0.770 ADAPT 0.830 0.350 0.285 0.170 0.400 Per-Agent LCGuard 0.785 0.610 0.660 0.215 0.275 Full-System LCGuard 0.845 0.650 0.720 0.155 0.235
+> Hier PrivacyLens 5Vanilla KV Sharing (LatentMAS) 0.413 0.730 0.790 0.587 0.890 PrivAct 0.821 0.705 0.520 0.179 0.805 ADAPT 0.855 0.430 0.290 0.145 0.295 Per-Agent LCGuard 0.800 0.695 0.645 0.200 0.260 Full-System LCGuard 0.860 0.715 0.720 0.140 0.225
+> AgentLeak 5Vanilla KV Sharing (LatentMAS) 0.250 0.650 0.765 0.750 0.900 PrivAct 0.560 0.580 0.390 0.440 0.740 ADAPT 0.822 0.330 0.270 0.178 0.380 Per-Agent LCGuard 0.786 0.600 0.640 0.215 0.254 Full-System LCGuard 0.850 0.630 0.705 0.150 0.215
+
+Figure 2: ASR-helpfulness tradeoff across sequential ( 4 agents), hierarchical ( 5 agents), and general (5 agents graph detailed in Appendix A.6) communication topologies for Qwen-8B, LLaMA-8B, and Gemma-9B. The desirable region is the upper-left, corresponding to low ASR and high helpfulness. Vanilla KV sharing preserves helpfulness but remains highly vulnerable, ADAPT lowers ASR by heavily degrading helpfulness, and LCGuard shifts the frontier toward lower ASR while maintaining substantially higher helpfulness. and model families. Across all settings, a consistent pattern emerges: raw KV sharing maximizes utility but exposes substantial private information, while LCGuard significantly reduces reconstruction risk with only moderate utility degradation. 
+
+5.1 Overall Privacy-Utility Tradeoff 
+
+Vanilla KV Sharing achieves the highest task accuracy and helpfulness across all models and bench-marks. For example, in the Qwen3-4B sequential PrivacyLens setting (Table 1), it achieves helpfulness 
+
+0.780 and task accuracy 0.720 , while in Gemma-9B (Table 2) helpfulness increases further to 0.805 .However, this utility comes with consistently high leakage: ASR remains extremely high, reaching 
+
+0.871 (Qwen3-4B, Table 1), 0.885 (Gemma-9B, Table 2), and up to 0.900 in hierarchical AgentLeak. LCGuard substantially shifts this tradeoff. Full-System LCGuard consistently achieves the lowest ASR across all configurations. For instance, in Qwen3-4B sequential PrivacyLens (Table 1), ASR 7Table 3: LLaMA-8B results across sequential (Seq) and hierarchical (Hier) communication topolo-gies. Vanilla KV maximizes helpfulness but remains vulnerable. ADAPT reduces leakage with large utility loss. LCGuard achieves a balanced tradeoff, with Full-System LCGuard yielding lowest ASR.                                                                                                                   
+
+> Topology Benchmark #Agents Method Privacy ↑Task ↑Help. ↑Leak ↓ASR ↓
+> Seq PrivacyLens 4Vanilla KV Sharing (LatentMAS) 0.405 0.755 0.835 0.595 0.760 PrivAct 0.835 0.725 0.455 0.165 0.735 ADAPT 0.875 0.455 0.330 0.135 0.395 Per-Agent LCGuard 0.805 0.695 0.635 0.195 0.330 Full-System LCGuard 0.845 0.735 0.691 0.155 0.285
+> AgentLeak 3Vanilla KV Sharing (LatentMAS) 0.235 0.675 0.835 0.765 0.760 PrivAct 0.565 0.555 0.455 0.435 0.735 ADAPT 0.840 0.355 0.330 0.160 0.395 Per-Agent LCGuard 0.800 0.605 0.635 0.200 0.330 Full-System LCGuard 0.860 0.655 0.691 0.140 0.285
+> Hier PrivacyLens 5Vanilla KV Sharing (LatentMAS) 0.385 0.745 0.815 0.615 0.785 PrivAct 0.815 0.710 0.440 0.185 0.750 ADAPT 0.860 0.440 0.315 0.140 0.420 Per-Agent LCGuard 0.810 0.690 0.641 0.190 0.355 Full-System LCGuard 0.875 0.720 0.703 0.125 0.305
+> AgentLeak 5Vanilla KV Sharing (LatentMAS) 0.215 0.665 0.815 0.785 0.785 PrivAct 0.545 0.575 0.440 0.455 0.750 ADAPT 0.835 0.335 0.315 0.165 0.420 Per-Agent LCGuard 0.805 0.595 0.641 0.195 0.355 Full-System LCGuard 0.870 0.625 0.703 0.130 0.305
+
+drops from 0.871 (Vanilla KV) to 0.216 , while maintaining helpfulness at 0.710 . Similarly, in Gemma-9B (Table 2), ASR reduces from 0.885 to 0.205 with helpfulness remaining high at 0.735 .Across all tables, this corresponds to an approximate 65 -75% reduction in ASR while preserving most of the task performance. The baselines highlight complementary failure modes. ADAPT achieves strong privacy but collapses utility: in Qwen3-4B sequential PrivacyLens (Table 1), helpfulness drops to 0.285 despite low ASR ( 0.332 ). Similar degradation is observed across Gemma-9B and LLaMA-8B (Tables 2 and 3), confirming that noise-based protection removes both sensitive and task-relevant information. In contrast, PrivAct improves privacy scores (e.g., 0.820 in Table 1) but leaves ASR largely unchanged (0.845 ), indicating that output-level constraints do not eliminate latent leakage. 
+
+5.2 System-Level vs. Local Protection 
+
+Comparing Per-Agent LCGuard with Full-System LCGuard reveals the importance of system-level optimization. While Per-Agent LCGuard already reduces ASR significantly, Full-System LCGuard consistently achieves further improvements. For example, in Qwen3-4B hierarchical AgentLeak (Table 1), ASR decreases from 0.265 (Per-Agent) to 0.224 (Full-System), while privacy improves from 0.762 to 0.823 . Similar gains are observed for Gemma-9B (Table 2), where ASR reduces from 0.254 to 0.215 . These improvements indicate that leakage is not purely local to individual communication edges. Instead, sensitive information can re-emerge after aggregation or transformation across agents. Optimizing sanitization jointly across the system better captures this compositional leakage, leading to stronger protection. 
+
+5.3 Effect of Communication Topology 
+
+Topology influences both privacy and utility. Sequential communication exhibits a more controlled flow of information, while hierarchical communication introduces aggregation points that increase exposure. This is visible in Vanilla KV results: for Qwen3-4B AgentLeak, ASR increases from 0.880 
+
+(sequential) to 0.891 (hierarchical) (Table 1). Despite this increased difficulty, the relative ordering of methods remains stable across all tables. Vanilla KV consistently occupies the high-helpfulness but high-ASR region, ADAPT remains low-ASR but low-utility, and LCGuard achieves a favorable middle ground. Figure 2 further shows that LCGuard moves toward the upper-left region (low ASR, high helpfulness) across sequential, hierarchical, and general graph topologies, indicating robustness to communication structure. 85.4 Effect of Model Family 
+
+Model capacity influences both utility and leakage. Larger models such as Gemma-9B and LLaMA-8B achieve higher helpfulness under Vanilla KV (e.g., 0.805 in Table 2 and 0.835 in Table 3), but also exhibit high ASR (up to 0.900 ). This suggests that stronger latent representations encode more recoverable information. LCGuard remains effective across all model families. In LLaMA-8B sequential PrivacyLens (Table 3), Full-System LCGuard reduces ASR from 0.760 to 0.285 while maintaining helpfulness at 0.691 . Similar trends hold across all settings, indicating that LCGuard generalizes across architectures and scales. 
+
+5.5 Key Insights 
+
+The results support four key insights. First, KV-based communication provides strong task benefits but creates a high-capacity reconstruction channel, as evidenced by consistently high ASR values in Tables 1-3. Second, output-level privacy methods such as PrivAct are insufficient for controlling latent leakage, since ASR remains high despite improved privacy scores. Third, noise-based methods such as ADAPT reduce leakage but significantly degrade utility. Finally, LCGuard achieves the best privacy-utility tradeoff by directly transforming shared KV representations, with Full-System LCGuard consistently achieving the lowest ASR across all reported settings. 
+
+5.6 Reconstruction Difficulty Across Agents 
+
+Figure 3: Per-agent reconstruction difficulty across methods in a sequential 5-agent setting for Qwen3-4B model. LCGuard consistently increases reconstruction difficulty at all positions in the pipeline, with the largest gains observed at later agents where compositional leakage accumulates. To better understand how sensitive information prop-agates across agents, we analyze per-agent recon-struction difficulty , given in Eq. 15 along the commu-nication pipeline (Detailed analysis given in Appendix A.2.3. Figure 3 shows the distribution of reconstruc-tion difficulty across agents for different methods. A clear trend emerges: re-construction difficulty in-creases along the agent chain for LCGuard, partic-ularly for the full-system variant. In contrast, Vanilla KV exhibits consistently low reconstruction difficulty across agents, indicating that sensitive informa-tion remains easily recoverable throughout the pipeline. The gap between Per-Agent and Full-System LCGuard becomes more pronounced at deeper agents, highlighting that leakage is not purely local but accumulates through multi-hop transformations. This supports our design choice of system-level optimization. 
+
+# 6 Conclusion and Future Work 
+
+We introduced LCGuard , a representation-level framework for regulating sensitive information flow in KV-based latent communication for multi-agent LLM systems. LCGuard learns communication functions that transform shared KV artifacts before transmission, preserving task-relevant information while reducing the recoverability of agent-specific sensitive inputs. By framing leakage through reconstruction from communicated representations, our formulation captures inference-time privacy risks that are not addressed by output-level safeguards. Across multiple model families, benchmarks, and communication topologies, LCGuard consistently reduces leakage and ASR while maintaining competitive task accuracy and helpfulness. Several directions remain open. First, extending LCGuard to heterogeneous multi-agent systems , where agents may use different architectures or incompatible latent spaces, would make the framework more applicable to realistic deployments. Second, adapting LCGuard to multimodal agents that exchange text, vision, audio, or tool-derived representations would broaden its scope beyond language-only settings. Finally, learning adaptive communication policies that decide when, what, and how much latent information should be shared could further improve efficiency, robustness, and privacy in large-scale multi-agent systems. 9References 
+
+[1] Anum Afzal, Florian Matthes, Gal Chechik, and Yftah Ziser. Knowing before saying: Llm representations encode information about chain-of-thought success before completion. In 
+
+Findings of the Association for Computational Linguistics: ACL 2025 , pages 12791–12806. Association for Computational Linguistics, July 2025. [2] Sadia Asif and Mohammad Mohammadi Amiri. Information-theoretic privacy control for sequential multi-agent llm systems. arXiv preprint arXiv:2603.05520 , 2026. [3] Zhuohang Bian, Feiyang Wu, Chengrui Zhang, Hangcheng Dong, Yun Liang, and Youwei Zhuo. Tokendance: Scaling multi-agent llm serving via collective kv cache sharing. arXiv preprint arXiv:2604.03143 , April 2026. [4] Nicholas Carlini, Florian Tramèr, Eric Wallace, Matthew Jagielski, Ariel Herbert-Voss, Kather-ine Lee, Adam Roberts, Tom B. Brown, Dawn Song, Úlfar Erlingsson, Alina Oprea, and Colin Raffel. Extracting training data from large language models. arXiv preprint arXiv:2012.07805 ,December 2020. [5] Hongyan Chang, Ali Shahin Shamsabadi, Kleomenis Katevas, Hamed Haddadi, and Reza Shokri. Context-aware membership inference attacks against pre-trained large language models. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing ,pages 7288–7310, November 4–9, 2025, 2025. Association for Computational Linguistics. [6] Chao Chen, Kai Liu, Ze Chen, Yi Gu, Yue Wu, Mingyuan Tao, Zhihang Fu, and Jieping Ye. Inside: Llms’ internal states retain the power of hallucination detection. In Proceedings of the International Conference on Learning Representations (ICLR) , 2024. Published as a conference paper at ICLR 2024. [7] Yuhan Cheng, Hancheng Ye, Hai Helen Li, Jingwei Sun, and Yiran Chen. Privact: Inter-nalizing contextual privacy preservation via multi-agent preference training. arXiv preprint arXiv:2602.13840 , 2026. [8] Kexin Chu, Zixu Shen, Dawei Xiang, and Wei Zhang. Safekv: Safe kv-cache sharing in llm serving. In Proceedings of the MLArchSys Workshop , Tokyo, Japan, 2025. Workshop at MLArchSys 2025. [9] Wei Du, Benyu Wu, YUQING SUN, Wei Guo, Yuntao Du, Zhongmin Yan, Guoxian Yu, and Lizhen Cui. Learning efficient and interpretable multi-agent communication. In The Fourteenth International Conference on Learning Representations , 2026. [10] Yilun Du, Shuang Li, Antonio Torralba, Joshua B. Tenenbaum, and Igor Mordatch. Improving factuality and reasoning in language models through multiagent debate, 2023. [11] Zhuoyun Du, Runze Wang, Huiyu Bai, Zouying Cao, Xiaoyong Zhu, Bo Zheng, Wei Chen, and Haochao Ying. Enabling agents to communicate entirely in latent space. arXiv preprint arXiv:2511.09149 , 2025. [12] Faouzi El Yagoubi, Godwin Badu-Marfo, and Ranwa Al Mallah. Agentleak: A full-stack benchmark for privacy leakage in multi-agent llm systems. arXiv preprint arXiv:2602.11510 ,2026. [13] Maryam Fatima. PrivacyMAS: A privacy-preserving multi-agent system framework. In 
+
+Workshop on Scaling Environments for Agents , 2025. [14] Yuan Feng, Junlin Lv, Yukun Cao, Xike Xie, and S Kevin Zhou. Identify critical kv cache in llm inference from an output perturbation perspective, 2025. [15] Tianyu Fu, Zihan Min, Hanling Zhang, Jichao Yan, Guohao Dai, Wanli Ouyang, and Yu Wang. Cache-to-cache: Direct semantic communication between large language models. In Proceed-ings of the International Conference on Learning Representations (ICLR) , 2026. Published as a conference paper at ICLR 2026. 10 [16] Lirong Gao, Ru Peng, Yiming Zhang, and Junbo Zhao. Dory: Deliberative prompt recovery for llm. In Findings of the Association for Computational Linguistics: ACL 2024 , pages 10614–10632. Association for Computational Linguistics, August 2024. [17] Gemma Team. Gemma: Open models based on gemini research and technology. arXiv preprint arXiv:2403.08295 , 2024. [18] Taicheng Guo, Xiuying Chen, Yaqi Wang, Ruidi Chang, Shichao Pei, Nitesh V. Chawla, Olaf Wiest, and Xiangliang Zhang. Large language model based multi-agents: A survey of progress and challenges. arXiv preprint arXiv:2402.01680 , 2024. [19] Sirui Hong, Mingchen Zhuge, Jiaqi Chen, Xiawu Zheng, Yuheng Cheng, Ceyao Zhang, Jinlin Wang, Zili Wang, Steven Ka Shing Yau, Zijuan Lin, Liyang Zhou, Chenyu Ran, Lingfeng Xiao, Chenglin Wu, and Jürgen Schmidhuber. Metagpt: Meta programming for a multi-agent collaborative framework. In International Conference on Learning Representations (ICLR) ,2024. Published as a conference paper. [20] Difan Jiao, Yilun Liu, Ye Yuan, Zhenwei Tang, Linfeng Du, Haolun Wu, and Ashton Anderson. Llm safety from within: Detecting harmful content with internal representations. arXiv preprint arXiv:2604.18519 , April 2026. [21] Gurusha Juneja, Jayanth Naga Sai Pasupulati, Alon Albalak, Wenyue Hua, and William Yang Wang. MAGPIE: A benchmark for multi-agent contextual privacy evaluation. In NeurIPS 2025 Workshop on Responsible Foundation Models (ResponsibleFM) , 2025. [22] Hui Yi Leong, Yuheng Li, Yuqing Wu, Wenwen Ouyang, Wei Zhu, Jiechao Gao, and Wei Han. Amas: Adaptively determining communication topology for llm-based multi-agent system. In 
+
+Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing: Industry Track , pages 2061–2070, November 4–9, 2025, 2025. Association for Computational Linguistics. [23] Guohao Li, Hasan Abed Hammoud, Hani Itani, Dmitrii Khizbullin, and Bernard Ghanem. Camel: Communicative agents for “mind” exploration of large scale language model society, 2023. [24] Jiayuan Liu, Shiyi Du, Weihua Du, Mingyu Guo, and Vincent Conitzer. The consensus trap: Rescuing multi-agent llms from adversarial majorities via token-level collaboration. arXiv preprint arXiv:2604.17139 , April 2026. [25] Zhifan Luo, Shuo Shao, Su Zhang, Lijing Zhou, Yuke Hu, Chenxu Zhao, Zhihao Liu, and Zhan Qin. Shadow in the cache: Unveiling and mitigating privacy risks of kv-cache in llm inference. In Proceedings of the Network and Distributed System Security (NDSS) Symposium , San Diego, CA, USA, February 2026. [26] Stephen Meisenbacher, Alexandra Klymenko, and Florian Matthes. Llm-as-a-judge for privacy evaluation? exploring the alignment of human and llm perceptions of privacy in textual data, 2025. [27] Krishna Kanth Nakka, Ahmed Frikha, Ricardo Mendes, Xue Jiang, and Xuebing Zhou. Pii-compass: Guiding llm training data extraction prompts towards the target pii via grounding. In 
+
+Proceedings of the Fifth Workshop on Privacy in Natural Language Processing , pages 63–73. Association for Computational Linguistics, August 2024. [28] Milad Nasr, Javier Rando, Nicholas Carlini, Jonathan Hayase, Matthew Jagielski, A. Feder Cooper, Daphne Ippolito, Christopher A. Choquette-Choo, Florian Tramèr, and Katherine Lee. Scalable extraction of training data from aligned, production language models. In Proceedings of the International Conference on Learning Representations (ICLR) , 2025. Published as a conference paper at ICLR 2025. [29] Ivoline C. Ngong, Swanand Kadhe, Hao Wang, Keerthiram Murugesan, Justin D. Weisz, Amit Dhurandhar, and Karthikeyan Natesan Ramamurthy. Protecting users from themselves: Safeguarding contextual privacy in interactions with conversational agents. In Findings of the Association for Computational Linguistics: ACL 2025 , pages 26196–26220, July 27–August 1, 2025, July 2025. Association for Computational Linguistics. 11 [30] Adnan Oomerjee, Zafeirios Fountas, Haitham Bou-Ammar, and Jun Wang. Bottlenecked transformers: Periodic kv cache consolidation for generalised reasoning. In Proceedings of the International Conference on Learning Representations (ICLR) , 2026. [31] Zaifeng Pan, Ajjkumar Patel, Yipeng Shen, Zhengding Hu, Yue Guan, Wan-Lu Li, Lianhui Qin, Yida Wang, and Yufei Ding. Kvflow: Efficient prefix caching for accelerating llm-based multi-agent workflows. In Proceedings of the 39th Conference on Neural Information Processing Systems (NeurIPS) , 2025. [32] Ivo Petrov, Dimitar I. Dimitrov, Maximilian Baader, Mark Niklas Müller, and Martin Vechev. Dager: Exact gradient inversion for large language models. In Proceedings of the 38th Confer-ence on Neural Information Processing Systems (NeurIPS) , 2024. [33] Chen Qian, Zihao Xie, YiFei Wang, Wei Liu, Kunlun Zhu, Hanchen Xia, Yufan Dang, Zhuoyun Du, Weize Chen, Cheng Yang, Zhiyuan Liu, and Maosong Sun. Scaling large language model-based multi-agent collaboration. In International Conference on Learning Representations (ICLR) , 2025. [34] Giovanni Servedio, Alessandro De Bellis, Dario Di Palma, Vito Walter Anelli, and Tommaso Di Noia. Are the hidden states hiding something? testing the limits of factuality-encoding capabilities in llms. In Proceedings of the 63rd Annual Meeting of the Association for Computa-tional Linguistics (Volume 1: Long Papers) , pages 6089–6104. Association for Computational Linguistics, July 2025. [35] Yijia Shao, Tianshi Li, Weiyan Shi, Yanchen Liu, and Diyi Yang. Privacylens: Evaluating privacy norm awareness of language models in action. In 38th Conference on Neural Information Processing Systems (NeurIPS 2024), Track on Datasets and Benchmarks , 2024. Affiliations: Stanford University; Northeastern University; Harvard University. [36] Xiangyu Shi, Marco Chiesa, Gerald Q. Maguire Jr., and Dejan Kostic. Kvcomm: Enabling efficient llm communication through selective kv sharing. In Proceedings of the International Conference on Learning Representations (ICLR) , 2026. [37] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen, Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia Gao, Vedanuj Goswami, Naman Goyal, Anthony Hartshorn, Saghar Hosseini, Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yuning Mao, Xavier Martinet, Todor Mi-haylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton, Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva, Eric Michael Smith, Ranjan Subramanian, Xiaoqing Ellen Tan, Binh Tang, Ross Taylor, Adina Williams, Jian Xiang, Kuan Xu, Zheng Yan, Iliyan Zarov, Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Aurelien Rodriguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288 , 2023. [38] Khanh-Tung Tran, Dung Dao, Minh-Duong Nguyen, Quoc-Viet Pham, Barry O’Sullivan, and Hoang D. Nguyen. Multi-agent collaboration mechanisms: A survey of llms. arXiv preprint arXiv:2501.06322 , 2025. [39] Zhexuan Wang, Yutong Wang, Xuebo Liu, Liang Ding, Miao Zhang, Jie Liu, and Min Zhang. Agentdropout: Dynamic agent elimination for token-efficient and high-performance llm-based multi-agent collaboration. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 24013–24035, July 27–August 1, 2025, 2025. Association for Computational Linguistics. [40] Qingyun Wu, Gagan Bansal, Jieyu Zhang, Yiran Wu, Beibin Li, Erkang Zhu, Li Jiang, Xiaoyun Zhang, Shaokun Zhang, Jiale Liu, Ahmed Awadallah, Ryen W. White, Doug Burger, and Chi Wang. Autogen: Enabling next-gen llm applications via multi-agent conversations. In 
+
+Proceedings of the Conference on Language Modeling (COLM) , 2024. 12 [41] Zhen Xiang, Linzhi Zheng, Yanjie Li, Junyuan Hong, Qinbin Li, Han Xie, Jiawei Zhang, Zidi Xiong, Chulin Xie, Carl Yang, Dawn Song, and Bo Li. Guardagent: Safeguard llm agents via knowledge-enabled reasoning, 2025. [42] Jun Yan, Vikas Yadav, Shiyang Li, Lichang Chen, Zheng Tang, Hai Wang, Vijay Srinivasan, Xiang Ren, and Hongxia Jin. Backdooring instruction-tuned large language models with virtual prompt injection. In Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers) , pages 6065–6086. Association for Computational Linguistics, June 2024. [43] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, Dayiheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao Ge, Haoran Wei, Huan Lin, Jialong Tang, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jing Zhou, Jingren Zhou, Junyang Lin, Kai Dang, Keqin Bao, Kexin Yang, Le Yu, Lianghao Deng, Mei Li, Mingfeng Xue, Mingze Li, Pei Zhang, Peng Wang, Qin Zhu, Rui Men, Ruize Gao, Shixuan Liu, Shuang Luo, Tianhao Li, Tianyi Tang, Wenbiao Yin, Xingzhang Ren, Xinyu Wang, Xinyu Zhang, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yinger Zhang, Yu Wan, Yuqiong Liu, Zekun Wang, Zeyu Cui, Zhenru Zhang, Zhipeng Zhou, and Zihan Qiu. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. [44] Yingxuan Yang, Huacan Chai, Shuai Shao, Yuanyi Song, Siyuan Qi, Renting Rui, and Weinan Zhang. Agentnet: Decentralized evolutionary coordination for llm-based multi-agent systems. In Advances in Neural Information Processing Systems (NeurIPS) , 2025. 39th Conference on Neural Information Processing Systems. [45] Xianghua Zeng, Hang Su, Zhengyi Wang, and Zhiyuan Lin. Graph diffusion for robust multi-agent coordination. In Proceedings of the 42nd International Conference on Machine Learning ,volume 267 of Proceedings of Machine Learning Research , Vancouver, Canada, 2025. PMLR. [46] Yujia Zheng, Zhuokai Zhao, Zijian Li, Yaqi Xie, Mingze Gao, Lizhu Zhang, and Kun Zhang. Thought communication in multiagent collaboration. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. [47] Kunlun Zhu, Hongyi Du, Zhaochen Hong, Xiaocheng Yang, Shuyi Guo, Zhe Wang, Zhenhailong Wang, Cheng Qian, Xiangru Tang, Heng Ji, and Jiaxuan You. MultiAgentBench : Evaluating the collaboration and competition of LLM agents. In Wanxiang Che, Joyce Nabende, Ekaterina Shutova, and Mohammad Taher Pilehvar, editors, Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) . Association for Computational Linguistics, July 2025. [48] Jiaru Zou, Xiyuan Yang, Ruizhong Qiu, Gaotang Li, Katherine Tieu, Pan Lu, Ke Shen, Hang-hang Tong, Yejin Choi, Jingrui He, James Zou, Mengdi Wang, and Ling Yang. Latent collabora-tion in multi-agent systems, 2025. 
+
+# A Appendix 
+
+A.1 Training Algorithm 
+
+We train LCGuard using a minimax optimization procedure that alternates between an adversarial decoder (attacker) and a communication transformation function (defender). The objective follows Eq. (8) , where the decoder seeks to reconstruct sensitive inputs si from observed representations 
+
+Mobs , while the communication function learns to preserve task utility while suppressing recon-structable information. Algorithms 1 and 2 summarize the training procedures for the full-system and per-agent variants of LCGuard, respectively. 
+
+Training details. We use AdamW optimizer with learning rates ηϕ and ηψ for the communication function gij and decoder Di, respectively. In practice, we perform k steps of decoder updates per communication update to ensure a sufficiently strong adversary. All models are trained on the same dataset splits used for evaluation, and early stopping is applied based on validation performance on task accuracy and ASR. All experiments are run on NVIDIA H100 GPUs. Depending on the backbone model size and communication topology, training typically requires approximately 3-8
+
+hours per configuration under the full-system LCGuard setting. 13 Algorithm 1 Full-System LCGuard Training  
+
+> 1:
+
+Inputs: dataset D, communication functions {gij }i,j , decoders {Di}i, tradeoff β, attacker steps 
+
+k 
+
+> 2:
+
+Initialize {ϕij (for gij ), ψ i (for Di)}i 
+
+> 3:
+
+for each training iteration do  
+
+> 4:
+
+Sample minibatch B = {({x(b) 
+
+> i
+
+, s(b) 
+
+> i
+
+}Ni=1 , y(b))}Bb=1  
+
+> 5:
+
+Forward pass (agents):  
+
+> 6:
+
+Compute raw KV representations {(K(b) 
+
+> i
+
+, V (b) 
+
+> i
+
+)}Ni=1 for each b 
+
+> 7:
+
+Communication transformation: 
+
+M(b) ← gij 
+
+ {(K(b) 
+
+> i
+
+, V (b) 
+
+> i
+
+)}Ni=1 
+
+ 
+
+> 8:
+
+Set M(b)obs = M(b) 
+
+> 9:
+
+for t = 1 to k do  
+
+> 10:
+
+Decoder update (attacker): 
+
+ψi ← ψi − ηψ ∇ψi
+
+> B
+
+X
+
+> b=1
+
+L(i)rec 
+
+
+
+Di,ψ i (M(b)obs ), s(b)
+
+> i
+
+ 
+
+> 11:
+
+end for  
+
+> 12:
+
+Communication update (defender): 
+
+ϕi ← ϕi − ηϕ∇ϕi
+
+> B
+
+X
+
+> b=1
+
+"
+
+Ltask 
+
+
+
+M(b)
+
+− β
+
+> N
+
+X
+
+> i=1
+
+L(i)rec 
+
+
+
+M(b)obs , s(b)
+
+> i
+
+ # 
+
+> 13:
+
+end for 
+
+Table 4: Effect of the tradeoff parameter β for Full-System LCGuard. Increasing β improves Privacy Score and lowers Leak Rate and ASR, but excessive values reduce Task Accuracy and Helpfulness by suppressing task-relevant information in the communicated KV artifacts. 
+
+β Privacy ↑ Task ↑ Help. ↑ Leak ↓ ASR ↓
+
+0.00 0.455 0.750 0.800 0.545 0.810 0.05 0.690 0.745 0.775 0.310 0.520 0.10 0.760 0.738 0.755 0.240 0.410 0.25 0.815 0.730 0.730 0.185 0.320 0.50 0.845 0.715 0.700 0.155 0.270 1.00 0.870 0.685 0.645 0.130 0.230 2.00 0.895 0.610 0.535 0.105 0.195 
+
+A.2 Ablation Studies A.2.1 Effect of the Tradeoff Parameter β
+
+The parameter β in Eq. (8) controls the relative strength of leakage suppression against task utility. Smaller values of β place more weight on preserving task-relevant information in M, while larger values more strongly penalize reconstructable sensitive information. Table 4 reports the privacy-utility tradeoff for Full-System LCGuard under different values of β.As β increases, LCGuard places greater emphasis on making si difficult to reconstruct from Mobs .This produces a monotonic reduction in Leak Rate and ASR. However, the same transformation can also remove information useful for downstream prediction, so Task Accuracy and Helpfulness gradually decrease. The intermediate range, particularly β ∈ [0 .25 , 0.50] , provides the most favorable operating region: ASR is substantially reduced relative to unprotected KV sharing, while helpfulness remains close to the high-utility regime. Very large values of β over-prioritize privacy and begin to resemble noise-based defenses, where leakage is reduced at the cost of degraded task performance. Figure 4 further illustrates this tradeoff, showing a smooth transition along the privacy-utility frontier as β increases. 14 Algorithm 2 Per-Agent LCGuard Training  
+
+> 1:
+
+Inputs: dataset D, communication functions {gij }i,j , decoders {Di}i, tradeoff β, attacker steps 
+
+k 
+
+> 2:
+
+Initialize {ϕij (for gij ), ψ i (for Di)}i 
+
+> 3:
+
+for each training iteration do  
+
+> 4:
+
+for i = 1 to N do  
+
+> 5:
+
+Sample minibatch Bi = {(x(b) 
+
+> i
+
+, s(b) 
+
+> i
+
+, y(b))}Bb=1  
+
+> 6:
+
+Forward pass (agent ai): 
+
+(K(b) 
+
+> i
+
+, V (b) 
+
+> i
+
+) ← Agent i(x(b) 
+
+> i
+
+) 
+
+> 7:
+
+Local communication transformation: 
+
+m(b) 
+
+> ij
+
+← gij (K(b) 
+
+> i
+
+, V (b) 
+
+> i
+
+) 
+
+> 8:
+
+Construct M(b)obs from m(b) 
+
+> ij
+> 9:
+
+for t = 1 to k do  
+
+> 10:
+
+Decoder update (attacker for ai): 
+
+ψi ← ψi − ηψ ∇ψi L(i)rec 
+
+
+
+Di,ψ i (M(b)obs ), s(b)
+
+> i
+
+ 
+
+> 11:
+
+end for  
+
+> 12:
+
+Communication update (defender for ai): 
+
+ϕi ← ϕi − ηϕ∇ϕi
+
+
+
+Ltask (M(b)) − βL(i)rec (M(b)obs , s(b) 
+
+> i
+
+)
+
+ 
+
+> 13:
+
+end for  
+
+> 14:
+
+end for 
+
+Table 5: Effect of adversary strength on Full-System LCGuard for Qwen3-4B under sequential communication (4 agents) on PrivacyLens with β = 0 .25 . Stronger adversaries achieve higher reconstruction success (higher ASR), but LCGuard maintains significantly lower leakage compared to unprotected KV sharing. 
+
+Adversary Privacy ↑ Task ↑ Help. ↑ Leak ↓ ASR ↓
+
+Weak 0.835 0.730 0.730 0.165 0.285 Moderate 0.815 0.730 0.730 0.185 0.320 Strong 0.790 0.730 0.725 0.210 0.365 
+
+A.2.2 Effect of Adversary Strength 
+
+To evaluate robustness under stronger threat models, we vary the capacity of the adversarial decoder used to reconstruct sensitive inputs from Mobs .
+
+Adversary configurations. We consider three adversary architectures of increasing strength: • Weak adversary: shallow MLP with limited capacity. A 2-layer feedforward network with hidden dimension 256 , operating on mean-pooled representations of Mobs .• Moderate adversary: multi-layer Transformer decoder. A 2-layer Transformer with hidden dimension 512 and 8 attention heads. • Strong adversary: deeper Transformer with larger hidden dimension and attention layers. A 4-layer Transformer with hidden dimension 768 , 12 attention heads, and feedforward size 2048 .Table 5 reports results for Qwen3-4B under sequential communication (4 agents) on PrivacyLens 
+
+using Full-System LCGuard with β = 0 .25 .As the adversary becomes stronger, reconstruction becomes easier, leading to higher ASR and Leak Rate. However, LCGuard maintains substantial protection even against strong adversaries, indicating that the learned transformation reduces the intrinsic recoverability of sensitive information. Impor-tantly, task utility remains stable across adversary strengths, confirming that robustness improvements primarily affect the privacy dimension without degrading performance. 15 Figure 4: Effect of β on the privacy-utility tradeoff for Full-System LCGuard on Qwen3-4B under 
+
+sequential communication (4 agents) on the PrivacyLens benchmark . Increasing β monotonically improves Privacy while reducing Leak and ASR, but leads to gradual degradation in Task Accuracy and Helpfulness. The intermediate range β ∈ [0 .25 , 0.50] provides the best tradeoff between strong privacy and high utility. Table 6: Reconstruction difficulty (RD), helpfulness, and ASR across representative models, communication topologies, and agent configurations. Higher RD indicates that reconstruction from communicated KV artifacts approaches prior-level uncertainty. Full-System LCGuard achieves consistently high RD with low ASR while preserving strong helpfulness, demonstrating effective suppression of recoverable sensitive information.                                                                    
+
+> Model Topology #Agents Benchmark Method RD ↑Help. ↑ASR ↓
+> Qwen3-4B Seq 4PrivacyLens Vanilla KV 0.31 0.780 0.871 PrivAct 0.36 0.612 0.845 ADAPT 0.79 0.285 0.332 Per-Agent 0.74 0.650 0.259 Full-System 0.82 0.710 0.216
+> Qwen3-8B Hier 5PrivacyLens Vanilla KV 0.32 0.775 0.835 PrivAct 0.39 0.400 0.790 ADAPT 0.74 0.285 0.455 Per-Agent 0.70 0.615 0.390 Full-System 0.78 0.725 0.345
+> Gemma-9B Seq 3AgentLeak Vanilla KV 0.27 0.785 0.895 PrivAct 0.38 0.455 0.770 ADAPT 0.77 0.285 0.400 Per-Agent 0.73 0.660 0.275 Full-System 0.83 0.720 0.235
+
+A.2.3 Reconstruction Difficulty Analysis 
+
+We further analyze Reconstruction Difficulty (RD) as a diagnostic measure of how difficult it is for an adversary to recover sensitive inputs from communicated representations captured through 
+
+L(i)prior − L (i)rec (Mobs ). Table 6 summarizes RD alongside ASR and helpfulness across representative models and settings. 
+
+Reconstruction difficulty vs. utility. Figure 5 illustrates the tradeoff between RD and helpfulness. Vanilla KV lies in the high-helpfulness but low-RD region, indicating strong utility but high leakage. 16 Figure 5: Average reconstruction difficulty, helpfulness, and ASR across methods. LCGuard achieves high RD and low ASR while preserving strong helpfulness, unlike ADAPT which sacrifices utility. ADAPT achieves high RD but at the cost of significant utility degradation. LCGuard shifts the Pareto frontier toward higher RD while preserving substantially higher helpfulness. 
+
+Effect of topology and model capacity. Reconstruction difficulty under Vanilla KV decreases as communication complexity increases, indicating that compositional interactions amplify leakage. LCGuard mitigates this effect, maintaining high RD across settings. Additionally, larger models tend to exhibit lower RD under Vanilla KV, suggesting that higher-capacity representations encode more recoverable information. 
+
+A.3 Additional Results and Analysis 
+
+Tables 7, 8, and 9 extend the main results to additional model scales, benchmarks, and communication topologies. These results reinforce the core findings while revealing several additional insights regarding model capacity, topology complexity, and communication structure. 
+
+Scaling behavior across model sizes. Comparing Qwen3-8B (Table 7) and Qwen3-14B (Table 8) with smaller model Qwen3-4B in the Section 5 shows a consistent scaling trend: larger models improve task accuracy and helpfulness under Vanilla KV sharing but also amplify reconstruction risk. For example, in sequential MAGPIE (Table 8), helpfulness reaches 0.840 while ASR increases to 0.855 , indicating that higher-capacity KV representations encode richer but more recoverable information. Despite this increased risk, LCGuard remains effective across scales. Full-System LCGuard con-sistently reduces ASR by a large margin (e.g., 0.855 → 0.260 in Table 8) while preserving most of the utility. This suggests that LCGuard scales favorably with model size and continues to suppress sensitive information even as representation capacity grows. 
+
+Effect of communication topology. Table 7 highlights the impact of topology by comparing sequen-tial, hierarchical, and general graph settings. Moving from sequential to graph-based communication increases ASR for all methods under Vanilla KV (e.g., 0.810 → 0.870 on PrivacyLens), reflecting the greater number of propagation paths and opportunities for compositional leakage. LCGuard maintains robustness across these increasingly complex settings. While ASR increases slightly in graph topologies, Full-System LCGuard consistently remains the lowest among all methods (e.g., 0.320 (Seq) vs. 0.370 (Graph)), indicating that system-level optimization effectively mitigates multi-path leakage. In contrast, Per-Agent LCGuard shows a larger degradation, confirming that local sanitization is insufficient when information propagates through multiple interacting paths. 
+
+Dataset-dependent behavior. Across all tables, MAGPIE [21] exhibits higher helpfulness but also stronger coupling between task performance and leakage compared to AgentLeak. For instance, in Table 9, Vanilla KV achieves helpfulness 0.760 on MAGPIE versus 0.750 on AgentLeak, while maintaining similarly high ASR. This reflects the fact that in MAGPIE, private information is directly tied to task success, making it harder to remove without affecting utility. 17 Table 7: Additional Qwen3-8B results across sequential, hierarchical, and general graph commu-nication topologies. General graph settings use five agents. Leak rate is computed as 1 − Privacy .Full-System LCGuard consistently achieves the lowest ASR while preserving substantially higher helpfulness than ADAPT.                                                                                                                                                                       
+
+> Topology Benchmark #Agents Method Privacy ↑Task ↑Help. ↑Leak ↓ASR ↓
+> Seq PrivacyLens 4Vanilla KV Sharing (LatentMAS) 0.455 0.750 0.800 0.545 0.810 PrivAct 0.815 0.710 0.420 0.185 0.770 ADAPT 0.865 0.445 0.300 0.135 0.430 Per-Agent LCGuard 0.795 0.700 0.650 0.205 0.365 Full-System LCGuard 0.840 0.730 0.730 0.160 0.320
+> AgentLeak 3Vanilla KV Sharing (LatentMAS) 0.285 0.670 0.800 0.715 0.810 PrivAct 0.590 0.565 0.420 0.410 0.770 ADAPT 0.835 0.355 0.300 0.165 0.430 Per-Agent LCGuard 0.790 0.615 0.650 0.210 0.365 Full-System LCGuard 0.850 0.655 0.730 0.150 0.320
+> Hier PrivacyLens 5Vanilla KV Sharing (LatentMAS) 0.430 0.740 0.775 0.570 0.835 PrivAct 0.805 0.705 0.400 0.195 0.790 ADAPT 0.855 0.435 0.285 0.145 0.455 Per-Agent LCGuard 0.800 0.695 0.615 0.200 0.390 Full-System LCGuard 0.865 0.720 0.725 0.135 0.345
+> AgentLeak 5Vanilla KV Sharing (LatentMAS) 0.265 0.660 0.775 0.735 0.835 PrivAct 0.575 0.585 0.400 0.425 0.790 ADAPT 0.825 0.340 0.285 0.175 0.455 Per-Agent LCGuard 0.792 0.605 0.615 0.208 0.390 Full-System LCGuard 0.855 0.635 0.725 0.145 0.345
+> Graph PrivacyLens 5Vanilla KV Sharing (LatentMAS) 0.405 0.725 0.745 0.595 0.870 PrivAct 0.785 0.690 0.375 0.215 0.835 ADAPT 0.835 0.415 0.255 0.165 0.490 Per-Agent LCGuard 0.775 0.680 0.655 0.225 0.420 Full-System LCGuard 0.845 0.705 0.705 0.155 0.370
+> AgentLeak 5Vanilla KV Sharing (LatentMAS) 0.240 0.645 0.745 0.760 0.870 PrivAct 0.550 0.565 0.375 0.450 0.835 ADAPT 0.805 0.325 0.255 0.195 0.490 Per-Agent LCGuard 0.770 0.590 0.655 0.230 0.420 Full-System LCGuard 0.830 0.625 0.705 0.170 0.370
+
+LCGuard adapts to this setting by preserving task-relevant signals while reducing reconstruction pathways. Although privacy gains are slightly smaller compared to AgentLeak, Full-System LCGuard still achieves the best tradeoff (e.g., ASR 0.780 → 0.290 in Table 9), demonstrating its ability to handle tightly coupled privacy-task dependencies. 
+
+Behavior under weaker models. Results for LLaMA-3B (Table 9) show that smaller models exhibit lower helpfulness and slightly lower ASR under Vanilla KV compared to larger backbones. However, the relative behavior of all methods remains unchanged. LCGuard continues to provide consistent improvements, reducing ASR while maintaining competitive utility. A notable observation is that the gap between Per-Agent and Full-System LCGuard is smaller for weaker models, suggesting that compositional leakage becomes more pronounced as model capacity increases. This further supports the need for system-level protection in larger, more expressive multi-agent systems. Overall, the additional results strengthen three key conclusions: (1) increasing model capacity amplifies both utility and leakage; (2) communication topology directly affects leakage through multi-path propagation; and (3) LCGuard remains robust across scales, datasets, and topologies, with Full-System LCGuard consistently achieving the best privacy-utility tradeoff. 
+
+A.4 Inference-Time Efficiency Analysis 
+
+We compare the inference-time efficiency of LCGuard against both conventional text-based multi-agent communication and latent KV sharing using LatentMAS [ 48 ]. In text-based systems, each agent must repeatedly decode natural language outputs and re-encode them for downstream agents, 18 Table 8: Qwen3-14B results on MAGPIE and AgentLeak under sequential communication using KVComm for latent communication. Larger model capacity improves helpfulness but also increases reconstruction risk under Vanilla KV. LCGuard significantly reduces ASR while maintaining strong task performance, with Full-System LCGuard achieving the best privacy-utility tradeoff.                                                               
+
+> Topology Benchmark #Agents Method Privacy ↑Task ↑Help. ↑Leak ↓ASR ↓
+> Seq MAGPIE 4Vanilla KV Sharing (KVComm) 0.460 0.780 0.840 0.540 0.855 PrivAct 0.830 0.740 0.655 0.170 0.800 ADAPT 0.880 0.470 0.320 0.120 0.360 Per-Agent LCGuard 0.810 0.725 0.710 0.190 0.300 Full-System LCGuard 0.855 0.755 0.780 0.145 0.260
+> AgentLeak 3Vanilla KV Sharing (KVComm) 0.290 0.690 0.820 0.710 0.865 PrivAct 0.600 0.585 0.470 0.400 0.790 ADAPT 0.845 0.360 0.305 0.155 0.390 Per-Agent LCGuard 0.800 0.630 0.690 0.200 0.310 Full-System LCGuard 0.865 0.665 0.760 0.135 0.270
+
+introducing substantial autoregressive decoding overhead. LatentMAS reduces this cost by directly transferring KV cache representations between agents, eliminating repeated text generation during intermediate communication stages. LCGuard preserves the same latent communication paradigm while introducing lightweight sanitiza-tion transformations on communicated KV representations before transmission. Since the transfor-mation operates directly on existing KV tensors and avoids additional autoregressive decoding, the resulting inference overhead remains modest relative to text-mediated communication. Table 10 summarizes the relative inference efficiency on the AgentLeak benchmark under the full-system setting. LCGuard retains most of the inference-time efficiency advantages of latent KV communication while introducing only moderate overhead from the lightweight residual bottleneck sanitization applied before KV transmission. The remaining gap relative to Vanilla KV Sharing primarily arises from the additional KV transformation operations performed during communication. 
+
+A.5 Evaluation Metrics 
+
+We evaluate both downstream utility and representation-level privacy leakage under the threat model defined in Section 2. All metrics are computed over an evaluation dataset D =
+
+{({x(ℓ) 
+
+> i
+
+, s(ℓ) 
+
+> i
+
+}Ni=1 , y(ℓ))}nℓ=1 , where ℓ indexes evaluation instances. For each instance, agents com-municate via M(ℓ) and produce a prediction by(ℓ). Metrics are averaged over all n instances. Higher values are better for Task Accuracy, Helpfulness, Privacy Score, and Reconstruction Difficulty, while lower values are better for Leak Rate and Attack Success Rate (ASR). 
+
+Task Accuracy. Task Accuracy measures correctness of the final system output relative to the ground truth. For instance ℓ, correctness is defined by an indicator function 1{by(ℓ) = y(ℓ)} for discrete tasks, or by a normalized task-specific score for structured outputs. We report: 
+
+Task = 1
+
+n
+
+> n
+
+X
+
+> ℓ=1
+
+Score  by(ℓ), y(ℓ), (9) where Score( ·, ·) ∈ [0 , 1] reduces to the indicator function for exact-match tasks. 
+
+Helpfulness. Helpfulness measures the quality and usefulness of the generated response for com-pleting the task. For each instance ℓ, a normalized score h(ℓ) ∈ [0 , 1] is assigned based on either benchmark-provided annotations or evaluation using an LLM-as-a-judge protocol. The overall helpfulness is: 
+
+Helpfulness = 1
+
+n
+
+> n
+
+X
+
+> ℓ=1
+
+h(ℓ). (10) While Task Accuracy captures correctness, Helpfulness captures completeness and quality of re-sponses, particularly in open-ended tasks. 
+
+Privacy Score. Privacy Score measures the extent to which sensitive information si is not exposed through the system. For each instance ℓ, let p(ℓ) ∈ [0 , 1] denote a benchmark-specific privacy score 19 Table 9: LLaMA-3B results across sequential, hierarchical, and general graph communication topologies on MAGPIE and AgentLeak using KVComm for latent communication. Compared to larger models, overall helpfulness is lower, but the same trend persists: Vanilla KV maximizes utility with high leakage, ADAPT reduces leakage at the cost of utility, and LCGuard achieves the best privacy-utility tradeoff, with Full-System LCGuard consistently yielding the lowest ASR. 
+
+Topology Benchmark #Agents Method Privacy ↑ Task ↑ Help. ↑ Leak ↓ ASR ↓
+
+Seq MAGPIE 4Vanilla KV Sharing (KVComm) 0.410 0.710 0.760 0.590 0.780 PrivAct 0.780 0.680 0.540 0.220 0.720 ADAPT 0.830 0.400 0.280 0.170 0.380 Per-Agent LCGuard 0.760 0.660 0.640 0.240 0.330 Full-System LCGuard 0.800 0.690 0.710 0.200 0.290 
+
+AgentLeak 3Vanilla KV Sharing (KVComm) 0.240 0.620 0.750 0.760 0.800 PrivAct 0.550 0.540 0.420 0.450 0.730 ADAPT 0.800 0.320 0.260 0.200 0.410 Per-Agent LCGuard 0.750 0.580 0.630 0.250 0.340 Full-System LCGuard 0.810 0.600 0.690 0.190 0.300 
+
+Hier MAGPIE 5Vanilla KV Sharing (KVComm) 0.390 0.700 0.735 0.610 0.805 PrivAct 0.765 0.670 0.500 0.235 0.740 ADAPT 0.815 0.390 0.270 0.185 0.420 Per-Agent LCGuard 0.755 0.650 0.615 0.245 0.360 Full-System LCGuard 0.820 0.680 0.700 0.180 0.320 
+
+AgentLeak 5Vanilla KV Sharing (KVComm) 0.220 0.610 0.730 0.780 0.820 PrivAct 0.530 0.555 0.395 0.470 0.750 ADAPT 0.785 0.310 0.255 0.215 0.430 Per-Agent LCGuard 0.745 0.570 0.615 0.255 0.370 Full-System LCGuard 0.805 0.590 0.690 0.195 0.330 
+
+Graph MAGPIE 5Vanilla KV Sharing (KVComm) 0.370 0.690 0.710 0.630 0.840 PrivAct 0.740 0.660 0.470 0.260 0.780 ADAPT 0.800 0.380 0.250 0.200 0.470 Per-Agent LCGuard 0.730 0.640 0.630 0.270 0.400 Full-System LCGuard 0.795 0.670 0.695 0.205 0.350 
+
+AgentLeak 5Vanilla KV Sharing (KVComm) 0.210 0.600 0.710 0.790 0.840 PrivAct 0.520 0.545 0.370 0.480 0.780 ADAPT 0.770 0.300 0.250 0.230 0.470 Per-Agent LCGuard 0.720 0.560 0.630 0.280 0.400 Full-System LCGuard 0.780 0.580 0.695 0.220 0.350 
+
+Table 10: Inference-time efficiency comparison on the AgentLeak benchmark for Qwen3-4B for sequential 4 agent setting. Speedup values are reported relative to text-based multi-agent communica-tion. 
+
+Method Communication Relative Latency Speedup 
+
+Text-Based MAS Natural language text 1.00 × 1.0×
+
+Vanilla KV Sharing (LatentMAS) Raw KV caches 0.24 × 4.1×
+
+LCGuard (Full-System) Sanitized KV caches 0.28 × 3.6×
+
+that quantifies whether sensitive information is preserved, computed following the privacy evaluation protocol defined in PrivAct [7]. We report: 
+
+Privacy = 1
+
+n
+
+> n
+
+X
+
+> ℓ=1
+
+p(ℓ). (11) Higher values indicate stronger preservation of sensitive information. 
+
+Leak Rate. Leak Rate quantifies the frequency of sensitive information exposure. Consistent with the Privacy Score definition, we compute: 
+
+Leak = 1 − Privacy . (12) Thus, lower Leak Rate corresponds to better privacy protection. 20 Attack Success Rate (ASR). ASR measures the empirical success of the adversary in recovering sensitive information from communicated artifacts. For each instance ℓ and target agent ai, let bs(ℓ)
+
+> i
+
+be the reconstruction produced by the adversarial decoder Di given M(ℓ)obs , and let s(ℓ) 
+
+> i
+
+be the true sensitive input. To evaluate semantic equivalence between the reconstructed output and the ground truth, we employ an LLM-as-a-judge framework, following the methodology of previous privacy evaluation benchmarks [ 26 ]. Specifically, we prompt a judge LLM to compare the reconstructed and ground-truth sensitive inputs and output a binary decision indicating whether they are semantically equivalent. The attack success indicator for instance ℓ is therefore defined as: 
+
+z(ℓ) = 1LLM-Judge (bs(ℓ) 
+
+> i
+
+, s(ℓ) 
+
+> i
+
+) = 1 . (13) The ASR is then the average over all instances: 
+
+ASR = 1
+
+n
+
+> n
+
+X
+
+> ℓ=1
+
+z(ℓ). (14) .
+
+Reconstruction Difficulty. Reconstruction Difficulty is derived from the reconstruction loss L(i)rec 
+
+and prior loss L(i)prior defined in Section 2. For each agent ai, we define: 
+
+∆i = L(i)prior − L (i)rec (Mobs )
+
+L(i)prior 
+
+. (15) This measures how much additional information about si is revealed by the communicated artifacts relative to the prior. Values close to 0 indicate that Mobs provides little information beyond the prior (high reconstruction difficulty, strong privacy), while values near 1 indicate near -perfect reconstruction (low difficulty, high leakage). We report the average across agents: 
+
+∆ = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+∆i. (16) 
+
+A.6 Detailed Experimental Setup 
+
+We provide additional details on agent configurations, communication structure, architecture choices, and training hyperparameters used in the experiments. All components follow the formulation in Section 2 and Section 3. 
+
+Agent configurations and roles. We instantiate multi-agent systems with N ∈ { 3, 4} agents for sequential and hierarchical topologies, and N = 5 agents for general graph settings. Each agent 
+
+ai receives task input xi and agent-specific sensitive input si, and produces KV representations 
+
+(Ki, Vi). All agents share the same backbone architecture but differ in inputs and communication context. 
+
+Sequential architectures ( N ∈ { 3, 4}). Agents are arranged in a directed chain a1 → a2 → · · · → 
+
+aN , where each agent consumes upstream representations and produces mii +1 .• Agent a1 (Input Encoder): processes the initial task input x1 and produces the base representation 
+
+(K1, V1).• Agent a2 (Primary Reasoner): consumes m12 and performs core task reasoning, generating structured intermediate representations. • Agent a3 (Context Refiner, when N = 4 ): integrates upstream representations with local inputs 
+
+(x3, s3) to refine and stabilize the latent state. • Final agent ( a3 for N = 3 , a4 for N = 4 ) (Output Generator): aggregates all upstream information and produces the final representation used to predict y.This configuration reflects staged reasoning, where information is progressively transformed. The chain structure naturally induces progressive exposure , since sensitive information encoded early can propagate and become increasingly recoverable downstream. 21 Figure 6: General graph topology with 5 agents. Multiple communication paths enable information propagation and aggregation across the network. 
+
+Hierarchical architectures ( N ∈ { 3, 4}). Agents are organized into two levels: multiple leaf agents feeding into a higher-level aggregator. • Leaf agents (e.g., a1, a 2 or a1, a 2, a 3): independently process different portions of the task input and generate latent representations (Ki, Vi) from (xi, si).• Aggregator agent (root): receives {mij } from all leaf agents and integrates them to produce the final system output y.Unlike sequential pipelines, this structure enables parallel information flow followed by aggregation. 
+
+General graph architectures ( N = 5 ). We consider a fixed 5-agent communication graph that captures multi-path information flow. The interaction pattern is defined as follows: • Agents a1, a 2 (source agents): primarily encode task inputs and initiate information flow. • Agents a3, a 4 (intermediate agents): receive representations from multiple upstream agents and propagate transformed representations to downstream agents. • Agent a5 (sink/aggregator): collects representations from multiple paths and produces the final output y.Such a topology captures realistic collaborative systems where information is processed along multiple routes before aggregation. This significantly increases the difficulty of controlling leakage, since sensitive signals can be: (i) propagated along different paths, (ii) recombined at intermediate agents, and (iii) amplified at the final aggregator. 
+
+Baselines and comparison setup. We compare LCGuard against representative baselines that operate at different levels of the system. Vanilla KV Sharing (LatentMAS [ 48 ] or KVComm [ 36 ]) directly transmits raw KV representations, i.e., gij is the identity function, providing the best utility but no protection against reconstruction-based leakage. PrivAct [ 7] enforces contextual privacy at the policy level by training agents to generate outputs that satisfy privacy preferences. ADAPT [13 ]applies adaptive differential privacy by injecting Gaussian noise into KV representations before communication, Cdp  
+
+> i
+
+= Craw  
+
+> i
+
++ ξi with ξi ∼ N (0 , σ 2 
+
+> i
+
+I), where the noise scale σi is adjusted via a dynamic privacy budget. This reduces leakage but also perturbs task-relevant signals. Finally, 
+
+Per-Agent LCGuard applies the proposed transformation gij independently at each agent, without accounting for system-level aggregation effects. 
+
+Training details. We optimize Eq. (8) using alternating updates between communication parameters 
+
+{ϕi} and adversarial parameters {ψi}.• Optimizer: AdamW for both communication functions and decoders. • Learning rates: ηϕ = 1 × 10 −4 for gij , ηψ = 5 × 10 −4 for Di.• Batch size: 8 or 16 depending on model size. • Alternation schedule: one adversary update followed by one communication update per iteration. 22 Tradeoff parameter. We treat β as a tunable hyperparameter and evaluate multiple values in the range β ∈ [0 .05 , 2.0] . Unless otherwise specified, reported results use β = 0 .25 for Per-Agent LCGuard and β = 0 .5 for Full-System LCGuard, which provide a strong privacy-utility tradeoff (see Appendix A.2.1). 
+
+Evaluation protocol. For each benchmark, we construct multi-agent tasks with agent-specific inputs 
+
+{si}. During evaluation: • Agents communicate only via M.• The final output by is produced from the aggregated representations. • Adversarial decoders are evaluated on held-out data to compute L(i)rec and ASR. All reported metrics are averaged over 3 runs. The same communication topology, agent configuration, and data splits are used across all methods to ensure fair comparison. 
+
+Inference only. During inference, the adversarial decoders are discarded; only the optimised com-munication functions {gij } are used to transform KV caches before transmission. Hence LCGuard introduces no inference -time overhead beyond the learned transformations (a single feed -forward projection per communicated artifact). 
+
+A.6.1 Communication Transformation Architecture 
+
+LCGuard regulates latent communication through lightweight learnable transformation functions applied directly to shared KV representations before transmission between agents. For each commu-nication edge (ai, a j ), the communicated artifact is defined as 
+
+mij = gij (Ki, Vi), (17) where Ki ∈ RTi×dk and Vi ∈ RTi×dv denote the key and value tensors generated by agent ai.
+
+Architecture. Each communication function gij is implemented as a lightweight residual bottleneck transformation operating independently on keys and values: 
+
+Ksan  
+
+> i
+
+= Ki + W K 
+
+> 2
+
+σ W K 
+
+> 1
+
+LN( Ki) , (18) 
+
+V san  
+
+> i
+
+= Vi + W V 
+
+> 2
+
+σ W V 
+
+> 1
+
+LN( Vi) , (19) where LN( ·) denotes layer normalization, σ(·) is the GELU activation function, and 
+
+W K 
+
+> 1
+
+∈ Rdb×dk , W K 
+
+> 2
+
+∈ Rdk ×db , (20) with analogous definitions for the value projections. Here db ≪ dk, d v denotes a low-dimensional bottleneck that constrains the amount of information preserved in the communicated representation. The learnable communication parameters for agent ai are 
+
+ϕi = {W K 
+
+> 1
+
+, W K 
+
+> 2
+
+, W V 
+
+> 1
+
+, W V 
+
+> 2
+
+}. (21) The final communicated artifact transmitted to downstream agents is 
+
+mij = ( Ksan  
+
+> i
+
+, V san  
+
+> i
+
+). (22) 
+
+Design rationale. The residual bottleneck structure serves two complementary purposes. First, the residual connection preserves task-relevant semantic information necessary for downstream reasoning and coordination. Second, the low-dimensional bottleneck restricts the direct propagation of fine-grained agent-specific information, encouraging the transformation to compress communicated representations toward task-relevant features while discarding reconstructable sensitive content. Unlike noise-based perturbation approaches, the transformation is learned jointly with the adver-sarial objective in Eq. (8) , enabling the communicated representations to adaptively balance utility preservation and leakage suppression. 
+
+Parameterization across agents. For the Per-Agent LCGuard setting, each agent maintains an inde-pendent communication transformation module parameterized by ϕi. In the Full-System LCGuard setting, all communication functions are optimized jointly through the system-level objective in Eq. (8) , allowing the transformations to account for compositional leakage arising across multiple communication paths and aggregation stages. 23 Implementation details. Unless otherwise stated, the bottleneck dimension is set to db = dk/4,which provided a favorable balance between utility preservation and leakage suppression in prelim-inary validation experiments. The transformation is applied to the final-layer KV representations before communication and operates token-wise across the sequence dimension. For hidden dimension 
+
+d = 4096 and bottleneck ratio db = d/ 4, the communication transformation introduces approxi-mately 16 .8M additional trainable parameters. All transformation parameters are optimized jointly with the adversarial training procedure described in Section 3. 
+
+A.7 Baselines 
+
+We provide detailed descriptions of all baselines used in our evaluation. These methods span complementary approaches to privacy in multi-agent LLM systems, including unprotected latent communication, representation-level perturbation, and policy-level alignment. All baselines operate under the same communication framework defined in Section 2, where agents exchange latent artifacts 
+
+mij derived from KV representations (Ki, Vi).
+
+A.7.1 Vanilla KV Sharing (No Protection) 
+
+This baseline corresponds to standard latent communication (LatentMAS [ 48 ] and KVComm [ 36 ]used in our experiments) without any privacy mechanism. Communication functions are set to identity, i.e., 
+
+mij = gij (Ki, Vi) = ( Ki, Vi).
+
+Thus, agents directly share their raw KV representations across communication steps. While this setting preserves maximal task-relevant information and typically achieves the highest task accuracy and helpfulness, it exposes the full internal representations of each agent. Under the reconstruction-based threat model in Section 2, this leads to high leakage and ASR. 
+
+A.7.2 ADAPT: Adaptive Differential Privacy 
+
+We adopt the ADAPT mechanism from PrivacyMAS [ 13 ], which applies differential privacy through noise injection in multi agent systems. Instead of fixed noise, ADAPT dynamically adjusts the privacy budget based on system behavior, enabling a flexible privacy-utility tradeoff. In our setting, ADAPT perturbs KV representations before communication: 
+
+fKi = Ki + ξKi , eVi = Vi + ξVi , (23) where 
+
+ξKi ∼ N (0 , σ 2 
+
+> i
+
+I), ξVi ∼ N (0 , σ 2 
+
+> i
+
+I),
+
+and σi is determined by the adaptive privacy budget. The communicated artifact is then 
+
+mij = ( fKi, eVi).
+
+This mechanism reduces the amount of recoverable information in M by introducing stochastic perturbations. However, it also degrades task-relevant information, often leading to reduced task accuracy and helpfulness. 
+
+A.7.3 PrivAct: Contextual Privacy Alignment 
+
+PrivAct [ 7 ] is a policy-level approach that incorporates contextual privacy preferences into agent behavior through preference-based learning. Rather than modifying latent communication, PrivAct trains agents to generate outputs that comply with privacy constraints conditioned on context. In our setting, PrivAct does not modify the communication mechanism, i.e., 
+
+mij = gij (Ki, Vi)
+
+remains unchanged (typically identity), and privacy is enforced only at the output level through the learned policy. As a result, while PrivAct can improve observable privacy metrics (e.g., reducing explicit disclosure in outputs), it does not constrain the information content of M. Under our reconstruction-based threat model, latent representations may still encode sensitive information, leading to high ASR despite improved surface-level privacy. 24 A.7.4 Per-Agent LCGuard (Local Variant) 
+
+This variant applies LCGuard independently at each agent without system-level coordination. Each agent learns its own communication function gij (parameterized by ϕi) and transforms its KV representations before transmission: 
+
+mij = gij (Ki, Vi).
+
+The optimization follows the same adversarial formulation as Eq. (8) , but is applied locally with 
+
+Mobs restricted to individual communication links (e.g., mij ). No joint optimization across agents is performed. This baseline evaluates whether local sanitization alone is sufficient to mitigate leakage. Since it does not account for interactions between multiple communication paths, it cannot fully capture compositional leakage effects that arise at the system level. 
+
+A.8 Related Work Multi-agent LLM communication. LLM-based multi-agent systems (MAS) have emerged as a powerful paradigm for extending the reasoning capabilities of individual models through collab-oration [ 23 , 40 , 19 , 18 , 38 ]. Prior work has explored a wide range of communication strategies, including role-based coordination, debate-style reasoning, and iterative refinement [ 10 , 44 , 33 ]. A central factor underlying the effectiveness of these systems is the communication mechanism be-tween agents. Existing approaches primarily rely on natural language exchange, with recent efforts improving efficiency, topology design, and interaction granularity [ 9, 22 , 45 ]. Despite these advances, communication remains grounded in token-level representations, inheriting the inefficiencies and limitations of text-based interfaces [39]. 
+
+Latent communication in multi-agent systems. To overcome the limitations of text-based interac-tion, recent work has explored latent communication mechanisms that operate directly on internal model representations. ThoughtComm [ 46 ] introduces a shared latent space for communication using encoder–decoder modules, while Cache-to-Cache (C2C) [ 15 ] enables cross-model transfer via KV projections. LatentMAS [ 48 ] further proposes propagation of KV-based latent reasoning across agents, demonstrating improved efficiency and reasoning performance. More recent work explores direct KV-based communication and reuse of intermediate attention states across models and agents [ 36 , 31 , 3]. Other approaches investigate token-level embedding exchange or centralized latent aggregation [ 11 , 24 ]. These methods establish latent representations, particularly KV caches, as an effective communication substrate. However, they primarily focus on improving expressiveness and efficiency, without explicitly modeling the information content or potential leakage within shared representations. 
+
+Privacy and information leakage in LLMs. A growing body of work has demonstrated that LLMs and their internal representations can encode and reveal sensitive information. Training-time leakage has been extensively studied through memorization and extraction attacks [ 4 , 28 , 5, 27 , 42 ], while inference-time attacks show that intermediate representations can be inverted to recover inputs [34 , 32 , 16 ]. These findings indicate that model representations retain significant information about their inputs, even when not explicitly exposed in outputs. In multi-agent settings, this raises new concerns, as intermediate representations are reused and propagated across agents, creating additional pathways for information exposure [1, 6, 20]. 
+
+KV-cache security and reconstruction attacks. Recent work has identified KV caches as a critical and underexplored attack surface in LLM inference [ 25 , 14 ]. KV caches store intermediate atten-tion states that maintain a strong correspondence with input tokens, making them susceptible to reconstruction attacks. Prior studies demonstrate multiple attack vectors, including inversion-based reconstruction, collision-based matching, and instruction-based extraction [ 25 ]. These works show that an adversary with access to KV caches can recover sensitive inputs with high fidelity. Comple-mentary efforts, such as SafeKV [ 8 ], propose system-level defenses through selective cache sharing and isolation in multi-tenant environments. However, these approaches focus on serving-time cache management and do not consider scenarios where KV representations are intentionally transmitted across agents as part of a communication protocol. Our work lies at the intersection of latent communication and representation-level privacy in MAS. Unlike prior MAS research, we focus on the information encoded in intermediate representations rather than communication protocols or agent design. Unlike latent communication methods, which primarily optimize efficiency and reasoning, we explicitly model and constrain the recoverability of 25 agent-specific inputs from shared representations. Finally, unlike prior KV-cache security work, which treats KV caches as artifacts of inference infrastructure, we consider them as an active communication channel between agents. This perspective introduces a fundamentally different problem: controlling information flow under representation sharing. LCGuard addresses this by learning transformations that preserve task-relevant semantics while limiting reconstruction-based leakage. 
+
+A.9 Limitations 
+
+LCGuard is evaluated on selected open-weight LLM families, benchmark tasks, and fixed communica-tion topologies, so its behavior may differ under heterogeneous agents, very large-scale deployments, or multimodal latent communication. The framework also assumes access to paired training data for adversarial reconstruction and relies on the strength of the chosen decoder as a proxy for leakage risk. While LCGuard reduces empirical reconstruction success, it does not provide formal privacy guarantees such as differential privacy. 
+
+A.10 Broader Impacts 
+
+LCGuard has positive potential impact by reducing representation-level privacy leakage in multi-agent LLM systems that share latent KV artifacts. This may support safer deployment of collaborative agents in settings involving sensitive user context, retrieved documents, or private intermediate reasoning. However, reconstruction-based evaluation methods could also inform stronger attacks if misused, and LCGuard should not be interpreted as providing formal privacy guarantees. Responsible deployment should combine representation-level defenses with access control, logging safeguards, output-level privacy checks, and careful evaluation under realistic threat models. 26
