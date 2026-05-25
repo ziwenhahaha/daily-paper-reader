@@ -6,164 +6,167 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-05-24
-- 运行时间：2026-05-24 20:53:35 UTC
+- 最新运行日期：2026-05-25
+- 运行时间：2026-05-25 20:31:47 UTC
 - 运行状态：成功
-- 本次总论文数：37
-- 精读区：22
+- 本次总论文数：33
+- 精读区：18
 - 速读区：15
 
 ### 今日简报（AI）
-<think>用户要求我作为日报编辑，输出3句以内的中文总结，基于给定的推荐数据。
+<think>好的，我需要帮用户生成日报编辑总结。首先回顾一下用户给的信息：
 
-给定的数据：
-- 日期：2026-05-24
+- 日期：2026-05-25
 - 状态：成功
-- 总数：37篇（精读22篇，速读15篇）
-- 精读列表中有两篇高分论文（9.0/10）：
-  1. 《MixSD: Mixed Contextual Self-Distillation for Knowledge Injection》
-  2. 《Leveraging Error Diversity in Group Rollouts for Reinforcement Learning》
-- 速读列表中有3篇论文（8.0/10）：
-  1. 《MixSD: Mixed Contextual Self-Distillation for Knowledge Injection》
-  2. 《Beyond Safety Filtering: Control Barrier Function-Informed Reinforcement Learning for Connected and Automated Vehicles》
-  3. 《Learning Multi-Timescale Abstractions for Hierarchical Combinatorial Planning》
+- 总数：33篇，其中精读18篇，速读15篇
+- 精读列表里有两篇论文：
+  1. 《From Imitation to Interaction: Mastering Game of Schnapsen with Shallow Reinforcement Learning》（9.0/10）
+  2. 《Learning Transferable Topology Priors for Multi-Agent LLM Collaboration Across Domains》（9.0/10）
+- 速读列表里有三篇论文：
+  1. 《NeuSymMS: A Hybrid Neuro-Symbolic Memory System for Persistent, Self-Curating LLM Agents》（8.0/10）
+  2. 《A real time lighting technique for procedurally generated 2d isometric game terrains》（8.0/10）
+  3. 《PEIRA: Learning Predictive Encoders through Inter-View Regressor Alignment》（8.0/10）
 
-需要按格式输出：
-1) 一句概括今天做了什么，适合标题感官
-2) 一句给出最值得看的1~2个方向/结论
-3) 一句给出下步建议（面向普通读者）
+需要输出三行文本，一行一个：
+1. 概括今天做了什么，适合标题感官。
+2. 最值得看的1~2个方向/结论。
+3. 下步建议（面向普通读者）。
 
-注意：
-- 不要编造论文信息
-- 3句以内
-- 吸引人、简洁但具体
-- 不要Markdown标题，不要JSON
+让我分析一下：
 
-让我构思：
+第一行：概括今天做了什么。可以提到完成了33篇论文的阅读，或者重点是交互式学习、多智能体协作、神经符号系统等。但既然是日报，应该给一个简洁的标题感描述。比如：“今日完成33篇论文阅读，涵盖交互学习、多智能体协作与游戏生成等领域。”
 
-1) 概括今天的工作：今天精选了37篇AI论文，其中2篇高分精读推荐（涉及知识注入和强化学习错误多样性）
+但用户要求一句话，简洁但具体。
 
+也许可以这样写：“完成33篇论文阅读，其中交互式强化学习与多智能体协作获最高评分（9.0/10）。”但我觉得应该更侧重做什么，而不是简单罗列数据。
 
-2) 最值得看的方向：我关注两个核心研究路径。首先是自蒸馏技术在知识注入中的创新应用，其次是群体Rollouts在强化学习中的错误多样性研究。这些方向可能带来算法性能的关键突破。
-</think>
+看精读论文的内容：第一个是关于从模仿到交互，用浅层强化学习掌握Schnapsen游戏；第二个是学习可迁移的拓扑先验，用于跨领域多智能体LLM协作。两个都是9.0分，很高分。
 
-今日精读22篇AI论文，关注知识注入与强化学习新范式；推荐MixSD自蒸馏方法及群体Rollouts错误多样性两项研究，或为模型压缩与策略优化提供新思路。
-- 详情：[/202605/24/README](/202605/24/README)
+第二行：最值得看的方向或结论。可以结合这两篇精读论文，提取关键点。比如，交互式学习可能是未来AI掌握复杂任务的方向，或者多智能体协作的可迁移性很重要。速读论文里，神经符号记忆系统可能也值得注意，但8.0分稍低。
+
+考虑到用户说“1~2个方向/结论”，我应该聚焦在精读的高分论文上。可以给出一个或两个关键点。比如：
+- 交互式学习通过浅层强化学习实现，可能比纯模仿更有效。
+- 多智能体LLM协作中，拓扑先验的可迁移性是关键。
+
+但需要简洁，所以可能选一个主要方向。或者这样：交互式强化学习在游戏中的应用，以及跨领域多智能体协作的可迁移拓扑方法。
+
+第三行：下步建议，面向普通读者。应该给出下一步可以关注什么，或者建议如何跟进。比如，建议关注交互式学习在更多任务中的应用，或者多智能体系统的进展。
+
+综合一下，让我组织语言：
+
+第一行：今日完成33篇论文阅读，重点探索交互式强化学习与多智能体协作新范式。
+第二行：交互式浅层强化学习或成游戏AI新方向，多智能体LLM的可迁移拓扑先验值得关注。
+第三行：建议关注交互式学习在真实场景中的应用，以及多智能体系统的协同效率提升。
+
+但需要检查是否符合要求：三句以内，吸引人、简洁但具体，不编造论文信息。
+
+第一行确实概括了今天做了什么：33篇论文阅读，重点是交互式强化学习与多智能体协作。但“精读”和“速读”的区分没有体现，不过核心是这些主题。
+
+第二行给出了方向：交互式浅</think>
+- 详情：[/202605/25/README](/202605/25/README)
 
 ### 精读区论文标签
-1. [MixSD: Mixed Contextual Self-Distillation for Knowledge Injection](/202605/24/2605.16865v2-mixsd-mixed-contextual-self-distillation-for-knowledge-injection)  
+1. [From Imitation to Interaction: Mastering Game of Schnapsen with Shallow Reinforcement Learning](/202605/25/2605.17162v1-from-imitation-to-interaction-mastering-game-of-schnapsen-with-shallow-reinforcement-learning)  
+   标签：评分：9.0/10、query:game-ai
+   evidence：RLBot通过强化学习掌握Schnapsen牌类游戏
+2. [Learning Transferable Topology Priors for Multi-Agent LLM Collaboration Across Domains](/202605/25/2605.17359v1-learning-transferable-topology-priors-for-multi-agent-llm-collaboration-across-domains)  
+   标签：评分：9.0/10、query:mas
+   evidence：多智能体LLM协作拓扑学习
+3. [HINT-SD: Targeted Hindsight Self-Distillation for Long-Horizon Agents](/202605/25/2605.17873v1-hint-sd-targeted-hindsight-self-distillation-for-long-horizon-agents)  
    标签：评分：9.0/10、query:self-distillation
-   evidence：MixSD通过混合模型自身的专家条件与朴素条件实现自蒸馏
-2. [Leveraging Error Diversity in Group Rollouts for Reinforcement Learning](/202605/24/2605.17333v1-leveraging-error-diversity-in-group-rollouts-for-reinforcement-learning)  
+   evidence：自我蒸馏方法训练LLM智能体
+4. [FedSDR: Federated Self-Distillation with Rectification](/202605/25/2605.18028v1-fedsdr-federated-self-distillation-with-rectification)  
+   标签：评分：9.0/10、query:self-distillation
+   evidence：联邦自蒸馏与模型压缩
+5. [A Brief Overview: On-Policy Self-Distillation In Large Language Models](/202605/25/2605.18141v1-a-brief-overview-on-policy-self-distillation-in-large-language-models)  
+   标签：评分：9.0/10、query:self-distillation
+   evidence：模型从自身学习的在线策略自蒸馏
+6. [A Brief Overview: On-Policy Self-Distillation In Large Language Models](/202605/25/2605.18141v2-a-brief-overview-on-policy-self-distillation-in-large-language-models)  
+   标签：评分：9.0/10、query:self-distillation
+   evidence：LLM自蒸馏框架，模型从自身学习
+7. [SD-Search: On-Policy Hindsight Self-Distillation for Search-Augmented Reasoning](/202605/25/2605.18299v1-sd-search-on-policy-hindsight-self-distillation-for-search-augmented-reasoning)  
+   标签：评分：9.0/10、query:self-distillation
+   evidence：搜索增强推理的on-policy后见自我蒸馏
+8. [DiPRL: Learning Discrete Programmatic Policies via Architecture Entropy Regularization](/202605/25/2605.18508v1-diprl-learning-discrete-programmatic-policies-via-architecture-entropy-regularization)  
    标签：评分：9.0/10、query:rl
-   evidence：错误多样性优势塑形技术，通过组内错误分布调制RLVR的优势信号
-3. [VerifyMAS: Hypothesis Verification for Failure Attribution in LLM Multi-Agent Systems](/202605/24/2605.17467v1-verifymas-hypothesis-verification-for-failure-attribution-in-llm-multi-agent-systems)  
-   标签：评分：9.0/10、query:mas
-   evidence：多智能体系统协调失败归因
-4. [The Capability Paradox: How Smarter Auditors Make Multi-Agent Systems Less Secure](/202605/24/2605.17480v1-the-capability-paradox-how-smarter-auditors-make-multi-agent-systems-less-secure)  
-   标签：评分：9.0/10、query:mas
-   evidence：多智能体系统安全研究揭示分布式智能体决策中的能力悖论
-5. [Learning Empirical Evidence Equilibria under Weak Environmental Coupling](/202605/24/2605.17848v2-learning-empirical-evidence-equilibria-under-weak-environmental-coupling)  
-   标签：评分：9.0/10、query:mas
-   evidence：有限理性下多智能体均衡与部分观测博弈
-6. [FedSDR: Federated Self-Distillation with Rectification](/202605/24/2605.18028v1-fedsdr-federated-self-distillation-with-rectification)  
-   标签：评分：9.0/10、query:self-distillation
-   evidence：带校正的联邦自蒸馏，通过模型理解空间投影解决幻觉问题
-7. [A Brief Overview: On-Policy Self-Distillation In Large Language Models](/202605/24/2605.18141v1-a-brief-overview-on-policy-self-distillation-in-large-language-models)  
-   标签：评分：9.0/10、query:self-distillation
-   evidence：大型语言模型中的在线策略自蒸馏
-8. [A Brief Overview: On-Policy Self-Distillation In Large Language Models](/202605/24/2605.18141v2-a-brief-overview-on-policy-self-distillation-in-large-language-models)  
-   标签：评分：9.0/10、query:self-distillation
-   evidence：大型语言模型的自蒸馏框架
-9. [The Dynamics of Policy Gradient in Social Dilemmas with Partner Selection](/202605/24/2605.18185v1-the-dynamics-of-policy-gradient-in-social-dilemmas-with-partner-selection)  
-   标签：评分：9.0/10、query:mas
-   evidence：伙伴选择的社会困境中多智能体策略梯度分析
-10. [AMR-SD: Asymmetric Meta-Reflective Self-Distillation for Token-Level Credit Assignment](/202605/24/2605.18529v1-amr-sd-asymmetric-meta-reflective-self-distillation-for-token-level-credit-assignment)  
-   标签：评分：9.0/10、query:self-distillation
-   evidence：面向Token级RL信用分配的自蒸馏方法
-11. [General Preference Reinforcement Learning](/202605/24/2605.18721v3-general-preference-reinforcement-learning)  
+   evidence：程序化强化学习算法设计
+9. [AMR-SD: Asymmetric Meta-Reflective Self-Distillation for Token-Level Credit Assignment](/202605/25/2605.18529v1-amr-sd-asymmetric-meta-reflective-self-distillation-for-token-level-credit-assignment)  
    标签：评分：9.0/10、query:rl
-   evidence：通用偏好强化学习解决开放式质量验证的强化学习问题
-12. [Learning to Hand Off: Provably Convergent Workflow Learning under Interface Constraints](/202605/24/2605.19140v1-learning-to-hand-off-provably-convergent-workflow-learning-under-interface-constraints)  
-   标签：评分：9.0/10、query:mas
-   evidence：多智能体去中心化Q学习用于工作流交接协调
-13. [GAE Falls Short in Imperfect-Information Self-Play Reinforcement Learning](/202605/24/2605.19235v1-gae-falls-short-in-imperfect-information-self-play-reinforcement-learning)  
+   evidence：用于RL令牌级信度分配的自蒸馏方法
+10. [SPIKE: An Adaptive Dual Controller Framework for Cost-Efficient Long-Horizon Game Agents](/202605/25/2605.18636v1-spike-an-adaptive-dual-controller-framework-for-cost-efficient-long-horizon-game-agents)  
+   标签：评分：9.0/10、query:game-ai
+   evidence：自适应双控制器框架用于游戏智能体
+11. [Post-Trained MoE Can Skip Half Experts via Self-Distillation](/202605/25/2605.18643v1-post-trained-moe-can-skip-half-experts-via-self-distillation)  
+   标签：评分：9.0/10、query:self-distillation
+   evidence：ZEDA框架通过自蒸馏将训练后的MoE模型动态化
+12. [GROW: Aligning GRPO with State-Action Modeling for Open-World VLM Agents](/202605/25/2605.20246v2-grow-aligning-grpo-with-state-action-modeling-for-open-world-vlm-agents)  
    标签：评分：9.0/10、query:rl
-   evidence：不完全信息博弈中的多智能体RL优势估计
-14. [EngiAI: A Multi-Agent Framework and Benchmark Suite for LLM-Driven Engineering Design](/202605/24/2605.19743v1-engiai-a-multi-agent-framework-and-benchmark-suite-for-llm-driven-engineering-design)  
+   evidence：面向VLM智能体的GRPO强化学习算法
+13. [AgentCo-op: Retrieval-Based Synthesis of Interoperable Multi-Agent Workflows](/202605/25/2605.20425v1-agentco-op-retrieval-based-synthesis-of-interoperable-multi-agent-workflows)  
    标签：评分：9.0/10、query:mas
-   evidence：用于工程设计评估的多智能体LLM框架
-15. [LLM Agents Make Collective Belief Dynamics Programmable: Challenges and Research Directions](/202605/24/2605.19915v1-llm-agents-make-collective-belief-dynamics-programmable-challenges-and-research-directions)  
-   标签：评分：9.0/10、query:mas
-   evidence：多智能体LLM模拟与协调信念动力学
-16. [FBOS-RL: Feedback-Driven Bi-Objective Synergistic Reinforcement Learning](/202605/24/2605.20256v1-fbos-rl-feedback-driven-bi-objective-synergistic-reinforcement-learning)  
+   evidence：多智能体工作流合成与协调框架
+14. [AVSD: Adaptive-View Self-Distillation by Balancing Consensus and Teacher-Specific Privileged Signals](/202605/25/2605.20643v1-avsd-adaptive-view-self-distillation-by-balancing-consensus-and-teacher-specific-privileged-signals)  
+   标签：评分：9.0/10、query:self-distillation
+   evidence：自蒸馏使用同一模型作为教师和学生
+15. [Distribution-Aware Reward: Reinforcement Learning over Predictive Distributions for LLM Regression](/202605/25/2605.20740v1-distribution-aware-reward-reinforcement-learning-over-predictive-distributions-for-llm-regression)  
    标签：评分：9.0/10、query:rl
-   evidence：反馈驱动的双目标强化学习
-17. [Consistently Informative Soft-Label Temperature for Knowledge Distillation](/202605/24/2605.20357v1-consistently-informative-soft-label-temperature-for-knowledge-distillation)  
+   evidence：分布感知奖励的强化学习训练方法
+16. [Self-Policy Distillation via Capability-Selective Subspace Projection](/202605/25/2605.22675v1-self-policy-distillation-via-capability-selective-subspace-projection)  
    标签：评分：9.0/10、query:self-distillation
-   evidence：软标签知识蒸馏的温度缩放方法
-18. [AVSD: Adaptive-View Self-Distillation by Balancing Consensus and Teacher-Specific Privileged Signals](/202605/24/2605.20643v1-avsd-adaptive-view-self-distillation-by-balancing-consensus-and-teacher-specific-privileged-signals)  
-   标签：评分：9.0/10、query:self-distillation
-   evidence：语言模型的自适应视图自蒸馏方法
-19. [When Are Teacher Tokens Reliable? Position-Weighted On-Policy Self-Distillation for Reasoning](/202605/24/2605.21606v1-when-are-teacher-tokens-reliable-position-weighted-on-policy-self-distillation-for-reasoning)  
-   标签：评分：9.0/10、query:self-distillation
-   evidence：推理模型的自蒸馏训练方法
-20. [Tailoring Teaching to Aptitude: Direction-Adaptive Self-Distillation for LLM Reasoning](/202605/24/2605.22263v1-tailoring-teaching-to-aptitude-direction-adaptive-self-distillation-for-llm-reasoning)  
-   标签：评分：9.0/10、query:self-distillation
-   evidence：方向自适应自蒸馏解决模型自我学习的自蒸馏方法
-21. [Abstraction for Offline Goal-Conditioned Reinforcement Learning](/202605/24/2605.22711v1-abstraction-for-offline-goal-conditioned-reinforcement-learning)  
-   标签：评分：9.0/10、query:rl
-   evidence：离线目标条件强化学习中的分层抽象
-22. [LCGuard: Latent Communication Guard for Safe KV Sharing in Multi-Agent Systems](/202605/24/2605.22786v1-lcguard-latent-communication-guard-for-safe-kv-sharing-in-multi-agent-systems)  
+   evidence：大语言模型自蒸馏方法
+17. [Steered Generation via Gradient-Based Optimization on Sparse Query Features](/202605/25/2605.23040v1-steered-generation-via-gradient-based-optimization-on-sparse-query-features)  
+   标签：评分：9.0/10、query:intervention
+   evidence：基于梯度的查询激活引导方法
+18. [ARMS: Automatic Reward Shaping for Sparse-Reward Multi-Agent Reinforcement Learning](/202605/25/2605.23562v1-arms-automatic-reward-shaping-for-sparse-reward-multi-agent-reinforcement-learning)  
    标签：评分：9.0/10、query:mas
-   evidence：LCGuard为基于LLM的多智能体系统提供安全的KV缓存潜在通信框架
+   evidence：多智能体强化学习与自动奖励塑造
 
 ### 速读区论文标签
-1. [MixSD: Mixed Contextual Self-Distillation for Knowledge Injection](/202605/24/2605.16865v1-mixsd-mixed-contextual-self-distillation-for-knowledge-injection)  
+1. [NeuSymMS: A Hybrid Neuro-Symbolic Memory System for Persistent, Self-Curating LLM Agents](/202605/25/2605.17596v1-neusymms-a-hybrid-neuro-symbolic-memory-system-for-persistent-self-curating-llm-agents)  
+   标签：评分：8.0/10、query:mas
+   evidence：具有神经符号记忆的LLM多智能体系统
+2. [A real time lighting technique for procedurally generated 2d isometric game terrains](/202605/25/2605.17666v1-a-real-time-lighting-technique-for-procedurally-generated-2d-isometric-game-terrains)  
+   标签：评分：8.0/10、query:game-ai
+   evidence：程序化生成游戏地形与光照技术
+3. [PEIRA: Learning Predictive Encoders through Inter-View Regressor Alignment](/202605/25/2605.17671v1-peira-learning-predictive-encoders-through-inter-view-regressor-alignment)  
    标签：评分：8.0/10、query:self-distillation
-   evidence：自蒸馏知识注入方法
-2. [Beyond Safety Filtering: Control Barrier Function-Informed Reinforcement Learning for Connected and Automated Vehicles](/202605/24/2605.16894v1-beyond-safety-filtering-control-barrier-function-informed-reinforcement-learning-for-connected-and-automated-vehicles)  
-   标签：评分：8.0/10、query:mas
-   evidence：控制屏障函数多智能体强化学习安全方法
-3. [Learning Multi-Timescale Abstractions for Hierarchical Combinatorial Planning](/202605/24/2605.17058v1-learning-multi-timescale-abstractions-for-hierarchical-combinatorial-planning)  
-   标签：评分：8.0/10、query:rl
-   evidence：分层强化学习用于组合规划
-4. [S-Bus: Automatic Read-Set Reconstruction for Multi-Agent LLM State Coordination](/202605/24/2605.17076v1-s-bus-automatic-read-set-reconstruction-for-multi-agent-llm-state-coordination)  
-   标签：评分：8.0/10、query:mas
-   evidence：多智能体LLM状态协调机制
-5. [SEMA-RAG: A Self-Evolving Multi-Agent Retrieval-Augmented Generation Framework for Medical Reasoning](/202605/24/2605.17101v1-sema-rag-a-self-evolving-multi-agent-retrieval-augmented-generation-framework-for-medical-reasoning)  
-   标签：评分：8.0/10、query:mas
-   evidence：自进化多智能体检索增强生成用于医学推理
-6. [VolTA-3D: Self-Supervised Learning for Brain MRI using 3D Volumetric Token Alignment](/202605/24/2605.16775v1-volta-3d-self-supervised-learning-for-brain-mri-using-3d-volumetric-token-alignment)  
+   evidence：师生自监督网络中的自蒸馏
+4. [Self-Distillation is Optimal Among Spectral Shrinkage Estimators in Spiked Covariance Models](/202605/25/2605.17778v1-self-distillation-is-optimal-among-spectral-shrinkage-estimators-in-spiked-covariance-models)  
+   标签：评分：8.0/10、query:self-distillation
+   evidence：自蒸馏理论基础
+5. [Balancing Knowledge Distillation for Imbalance Learning with Bilevel Optimization](/202605/25/2605.17839v1-balancing-knowledge-distillation-for-imbalance-learning-with-bilevel-optimization)  
+   标签：评分：8.0/10、query:self-distillation
+   evidence：知识蒸馏用于模型压缩
+6. [The Geometry of Projection Heads: Conditioning, Invariance, and Collapse](/202605/25/2605.17180v1-the-geometry-of-projection-heads-conditioning-invariance-and-collapse)  
    标签：评分：7.0/10、query:self-distillation
-   evidence：自监督学习与师生范式
-7. [WebGameBench: Requirement-to-Application Evaluation for Coding Agents via Browser-Native Games](/202605/24/2605.17637v1-webgamebench-requirement-to-application-evaluation-for-coding-agents-via-browser-native-games)  
+   evidence：自监督学习中投影头的几何理论
+7. [Step-wise Rubric Rewards for LLM Reasoning](/202605/25/2605.17291v1-step-wise-rubric-rewards-for-llm-reasoning)  
+   标签：评分：7.0/10、query:rl
+   evidence：逐步评分奖励解决LLM中可验证奖励的RL推理问题
+8. [FML-bench: A Controlled Study of AI Research Agent Strategies from the Perspective of Search Dynamics](/202605/25/2605.17373v1-fml-bench-a-controlled-study-of-ai-research-agent-strategies-from-the-perspective-of-search-dynamics)  
+   标签：评分：7.0/10、query:mas
+   evidence：研究智能体策略表现的AI研究智能体基准
+9. [WebGameBench: Requirement-to-Application Evaluation for Coding Agents via Browser-Native Games](/202605/25/2605.17637v1-webgamebench-requirement-to-application-evaluation-for-coding-agents-via-browser-native-games)  
    标签：评分：7.0/10、query:game-ai
-   evidence：浏览器原生游戏生成基准
-8. [Agent Bazaar: Enabling Economic Alignment in Multi-Agent Marketplaces](/202605/24/2605.17698v1-agent-bazaar-enabling-economic-alignment-in-multi-agent-marketplaces)  
-   标签：评分：7.0/10、query:mas
-   evidence：Agent Bazaar研究多智能体市场行为与LLM智能体经济对齐
-9. [Sometin Beta Pass Notin (SBPN): Improving Multilingual ASR for Nigerian Languages via Knowledge Distillation](/202605/24/2605.17710v1-sometin-beta-pass-notin-sbpn-improving-multilingual-asr-for-nigerian-languages-via-knowledge-distillation)  
+   evidence：用于评估编码智能体的游戏AI基准
+10. [Sometin Beta Pass Notin (SBPN): Improving Multilingual ASR for Nigerian Languages via Knowledge Distillation](/202605/25/2605.17710v1-sometin-beta-pass-notin-sbpn-improving-multilingual-asr-for-nigerian-languages-via-knowledge-distillation)  
    标签：评分：7.0/10、query:self-distillation
-   evidence：师生知识蒸馏压缩ASR模型
-10. [EXG: Self-Evolving Agents with Experience Graphs](/202605/24/2605.17721v1-exg-self-evolving-agents-with-experience-graphs)  
-   标签：评分：7.0/10、query:mas
-   evidence：基于经验图的自进化智能体
-11. [PersonaArena: Dynamic Simulation for Evaluating and Enhancing Persona-Level Role-Playing in Large Language Models](/202605/24/2605.17044v1-personaarena-dynamic-simulation-for-evaluating-and-enhancing-persona-level-role-playing-in-large-language-models)  
-   标签：评分：6.0/10、query:game-ai
-   evidence：用于大语言模型评估的动态多智能体模拟框架
-12. [SAPO: Step-Aligned Policy Optimization for Reasoning-Based Generative Recommendation](/202605/24/2605.17648v1-sapo-step-aligned-policy-optimization-for-reasoning-based-generative-recommendation)  
-   标签：评分：6.0/10、query:rl
-   evidence：强化学习算法用于推荐系统
-13. [A real time lighting technique for procedurally generated 2d isometric game terrains](/202605/24/2605.17666v1-a-real-time-lighting-technique-for-procedurally-generated-2d-isometric-game-terrains)  
-   标签：评分：6.0/10、query:game-ai
-   evidence：程序生成游戏地形实时光照技术
-14. [Self-supervised local learning rules learn the hidden hierarchical structure of high-dimensional data](/202605/24/2605.18557v1-self-supervised-local-learning-rules-learn-the-hidden-hierarchical-structure-of-high-dimensional-data)  
+   evidence：两阶段知识蒸馏过程
+11. [Rethinking Point Clouds as Sequences: A Causal Next-Token Predictive Learning Framework](/202605/25/2605.17566v1-rethinking-point-clouds-as-sequences-a-causal-next-token-predictive-learning-framework)  
    标签：评分：6.0/10、query:self-distillation
-   evidence：自监督对比学习规则
-15. [Latent Action Reparameterization for Efficient Agent Inference](/202605/24/2605.18597v1-latent-action-reparameterization-for-efficient-agent-inference)  
+   evidence：基于下一token预测的自监督点云预训练
+12. [NeuSymMS: A Hybrid Neuro-Symbolic Memory System for Persistent, Self-Curating LLM Agents](/202605/25/2605.17596v2-neusymms-a-hybrid-neuro-symbolic-memory-system-for-persistent-self-curating-llm-agents)  
    标签：评分：6.0/10、query:mas
-   evidence：用于高效LLM智能体决策的潜在动作空间
+   evidence：多智能体LLM系统，含智能体间协调机制
+13. [WebGameBench: Requirement-to-Application Evaluation for Coding Agents via Browser-Native Games](/202605/25/2605.17637v2-webgamebench-requirement-to-application-evaluation-for-coding-agents-via-browser-native-games)  
+   标签：评分：6.0/10、query:game-ai
+   evidence：浏览器原生游戏基准测试用于编码智能体
+14. [Agentic Cost-Aware Query Planning with Knowledge Distillation for Big Data Analytics](/202605/25/2605.17831v1-agentic-cost-aware-query-planning-with-knowledge-distillation-for-big-data-analytics)  
+   标签：评分：6.0/10、query:self-distillation
+   evidence：用于查询规划的知识蒸馏
+15. [Context Memorization for Efficient Long Context Generation](/202605/25/2605.18226v1-context-memorization-for-efficient-long-context-generation)  
+   标签：评分：6.0/10、query:intervention
+   evidence：无训练向量空间干预控制上下文前缀
 
 
 <div class="dpr-home-promo-card">
