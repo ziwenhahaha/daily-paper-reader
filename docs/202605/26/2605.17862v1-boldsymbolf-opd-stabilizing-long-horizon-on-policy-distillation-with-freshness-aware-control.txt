@@ -1,0 +1,1331 @@
+Title: f-OPD: Stabilizing Long-Horizon On-Policy Distillation with Freshness-Aware Control
+
+URL Source: https://arxiv.org/pdf/2605.17862v1
+
+Published Time: Tue, 19 May 2026 01:54:33 GMT
+
+Number of Pages: 21
+
+Markdown Content:
+# f -OPD: Stabilizing Long-Horizon On-Policy Distillation with Freshness-Aware Control 
+
+Xianwei Chen, Shimin Zhang, Jibin Wu ∗
+
+The Hong Kong Polytechnic University 
+
+## Abstract 
+
+Scaling on-policy distillation (OPD) for large language models (LLMs) confronts a fundamental tension: asynchronous execution is necessary for system efficiency, but structurally deviates from the ideal on-policy objective. To address this chal-lenge, we theoretically decompose the objective discrepancy into rollout drift 
+
+and supervision drift , capturing staleness in student rollout and teacher context, respectively. Building on this, we introduce a sample-level freshness score that quantifies the reliability of a buffered sample with respect to the on-policy objec-tive. Guided by this signal, we further propose f -OPD , a novel framework that adaptively regulates stale-sample influence and constrains policy drift accumulated under asynchronous training. Across reasoning, tool-use, and coding-agent tasks of increasing interaction horizon, f -OPD consistently achieves task performance comparable to synchronous optimization while largely retaining the throughput advantages of asynchronous execution. Our results establish the first recipe for achieving a performance–efficiency trade-off in OPD, paving the way for long-horizon agentic post-training at scale. 
+
+## 1 Introduction 
+
+The recent leap in large language models (LLMs) has been driven not only by pretraining but increasingly by advances in post-training. Over the past few years, paradigms such as supervised fine-tuning (SFT) and reinforcement learning (RL) have fundamentally reshaped how pretrained models are aligned, specialized, and deployed [ 1–3 ]. Most recently, on-policy distillation (OPD), by unifying on-policy learning with dense supervision, has emerged as a powerful technique, driving substantial gains in frontier LLMs [4–7]. A standard OPD pipeline consists of three tightly coupled processes: student policy rollout, teacher supervision for grading generated tokens, and student policy optimization. As shown in Fig. 1(a), these processes should be executed synchronously in principle so that each training step remains fully on-policy. Empirically, however, strict synchronization leads to substantial system under-utilization, especially in long-horizon settings where rollout and supervision become increasingly expensive. As a result, modern OPD systems [ 8– 10 ] widely adopt asynchronous mode (Fig. 1(b)) to improve throughput by overlapping different stages of the pipeline and executing them in parallel. However, this efficiency gain comes at the cost of staleness : buffered trajectories and their associated supervision may no longer match the current student policy when used for optimization. Such a mismatch in freshness can distort the effective on-policy objective, destabilize optimization, and ultimately degrade task performance. This creates a fundamental performance–efficiency trade-off in OPD: improving system utilization through asynchrony often deteriorates optimization fidelity, while preserving on-policy consistency requires sacrificing throughput.     
+
+> ∗Corresponding author, jibin.wu@polyu.edu.hk Preprint.
+> arXiv:2605.17862v1 [cs.LG] 18 May 2026 RG2 RG1 1
+> 121
+> 23
+
+…
+
+…32    
+
+> 4
+> 434
+> Teacher Supervision
+> Student Rollout Train Policy Update step
+
+(a) (b) 
+
+…RG1 RG2 RG3         
+
+> 123456789
+
+…1 2 3 4 5 6 7 8
+
+…1 42 3 5 6 7 8 9
+
+> freshness mismatch
+
+…
+
+…      
+
+> higher throughput
+> Synchronous OPD
+> Asynchronous OPD
+> 1.0 1.2 1.4 1.6
+> Relative Training Efficiency
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> Normalized Task Performance
+> Synchronous
+> Asynchronous
+> f-OPD (Ours)
+> Reasoning Tool-use Coding
+
+Figure 1: (a) System implementation of OPD under synchronous (top) and asynchronous (bottom) execution. While asynchronous OPD improves training throughput by pipelining computation across multiple resource groups (RGs), the resulting freshness mismatch compromises training fidelity. (b) Performance–efficiency trade-offs across reasoning, tool-use, and coding-agent tasks. Points denote five-seed means with standard deviations. While vanilla OPD executions struggle to simultaneously balance performance and efficiency, f -OPD effectively bridges this gap by freshness-aware control. Unfortunately, this freshness mismatch introduced by asynchronous execution in OPD remains poorly understood and largely unaddressed. An intuitive way to mitigate it is to periodically refresh the replay buffer, preventing stale rollouts from continuously corrupting policy updates. Yet such a hard refresh introduces its own dilemma: refreshing too aggressively discards potentially useful learning signals, while refreshing too conservatively allows stale optimization to accumulate. This tension suggests that staleness should not be treated as a buffer-level binary (pick or drop) trigger for refreshing, but instead be quantified at the level of individual training samples. A natural online proxy for the staleness is policy update lag, which denotes the number of optimization steps elapsed since a sample was generated. However, lag alone is insufficient in OPD: samples with identical age can exhibit vastly different mismatches due to heterogeneous drift from both the student rollout policy and the teacher supervision. In this paper, we formulate the freshness mismatch in OPD as an objective discrepancy between asynchronous execution and its ideal on-policy counterpart. Through theoretical analysis, we show that this discrepancy is driven by two structurally distinct sources: rollout drift , arising from stale policy occupancy, and supervision drift , arising from outdated teacher conditioning. Based on this, we derive a fine-grained characterization of sample-level staleness and introduce a freshness score 
+
+that quantifies each sample’s fidelity to the on-policy objective. We further propose f -OPD , a freshness-aware framework that compensates for objective discrepancy while actively correcting the policy drift induced by staleness. Our main contributions are summarized as follows: • We formalize asynchronous OPD as optimization under freshness mismatch, and theoretically characterize the resulting objective discrepancy as arising jointly from both the student and teacher models. Based on this decomposition, we introduce a fine-grained metric for tracking sample-level fidelity to the on-policy distillation objective. • We propose f -OPD, a freshness-aware OPD framework that bridges the gap between efficient asynchronous execution and ideal on-policy optimization. • We conduct comprehensive experiments on a range of tasks, including reasoning, tool-use, and coding-agent tasks with progressively longer interaction horizons, and demonstrate that f -OPD consistently achieves a favorable balance between task quality and system throughput. 
+
+## 2 Related Work 
+
+LLM Post-training and On-Policy Distillation. Post-training has become the primary mechanism for eliciting task competence and interactive reasoning in LLMs. Existing paradigms exhibit comple-mentary trade-offs. SFT [ 11 ] optimizes forward-KL objectives over fixed datasets, offering highly 2stable token-level supervision but limited exploration beyond the training distribution. RL [ 2, 3], in contrast, learns from self-generated trajectories with reward-driven objectives, enabling stronger exploration [ 12 – 14 ] at the cost of unstable optimization and potential policy collapse. Positioned between these two paradigms, OPD [ 15 – 18 ] combines on-policy learning with distribution-level teacher supervision, inheriting RL’s exploratory capability while preserving the dense, stable learn-ing signal of distillation. Recent on-policy self-distillation [ 19 – 22 ] and online teacher-supervised variants [ 23 – 29 ] further demonstrate the promise of this paradigm for LLM post-training. Despite this broader progress, a central challenge remains unresolved: maintaining the statistical fidelity of on-policy optimization while achieving the system efficiency required for large-scale OPD training. 
+
+Asynchronous Systems and Freshness Mismatch. Asynchronous learning systems are widely adopted to improve utilization by decoupling data collection and optimization. Asynchronous reinforcement learning systems [ 30 , 31 ] have become a standard paradigm for scaling training by decoupling experience collection from policy optimization, enabling higher throughput, better resource utilization, and large-scale distributed execution. However, this decoupling also leads to stale trajectories when acting and learning evolve under inconsistent policy states. Similar staleness effects appear in distributed optimization and parallel training [ 32 , 33 ]. In policy-gradient methods, this mismatch can already be viewed through the classical on-policy/off-policy tension underlying REINFORCE [ 34 ], and it becomes especially visible in modern LLM-RL, where recent analyses link training collapse directly to training-inference mismatch [ 35 ]. Prior work further shows that such a mismatch can compound across sequential rollouts, motivating drift-control principles such as dataset aggregation and trust-region optimization [ 36 , 37 , 2 ]. More recent long-horizon RL work sharpens this connection by studying explicit trust-region masking [ 38 ] and by showing that decoupled PPO can separate the proximal policy used to control update size from the behavior policy used for off-policy correction, thereby making better use of stale data [ 39 ]. Our setting extends this line of work to teacher-supervised OPD, where freshness mismatch arises jointly from stale student rollouts and outdated teacher supervision. 
+
+## 3 Theoretical Analysis 
+
+Although the freshness mismatch arises mainly from systems-level asynchrony, it can be analyzed as an objective-level discrepancy. In this section, we formalize the gap between the ideal on-policy distillation objective and the objective optimized under an asynchronous pipeline, and show how this discrepancy arises from both the student and the teacher. 
+
+3.1 Objective Discrepancy under Different OPD Training Modes 
+
+We begin by distinguishing training objectives under synchronous and asynchronous training pipelines. Let πtθ denote the student policy at update step t, and let πteacher (· | x) denote the teacher distribution conditioned on prefix x. The ideal synchronous OPD objective is defined as 
+
+Jsync (πtθ ) = Ex∼dt
+
+ℓ πtθ (· | x), π teacher (· | x) , (1) where dt denotes the mixture distribution over trajectory prefixes induced by rolling out πtθ across token positions, and dth denotes the corresponding depth-h prefix distribution when depth-wise arguments are needed below. Under asynchronous execution, training proceeds on an active buffer Bt
+
+composed of samples generated and graded at current or earlier policy update steps. For each sample 
+
+i ∈ B t, let r(i) ≤ t denote the step at which the sample was produced, let xi denote the stored prefix, and let cr(i) 
+
+> i
+
+denote the teacher-conditioning context actually used when the sample was graded. The corresponding objective implemented by the asynchronous pipeline can be formulated as 
+
+Jasync (πtθ ) = Ei∼B t
+
+h
+
+ℓ πtθ (· | xi), π teacher (· | cr(i) 
+
+> i
+
+)i
+
+. (2) Since student rollout and teacher supervision may be conditioned on different information in the asynchronous pipeline, which is context-dependent, we distinguish them throughout this paper by notation. Specifically, x denotes the student-side prediction prefix, while c denotes the teacher-side conditioning context used to generate supervision. In the simplest prefix-only setting, c = x, whereas in general c̸ = x. Accordingly, xi denotes the stored sample prefix, cr(i) 
+
+> i
+
+the teacher context used at labeling time, and cti the teacher context that would be used if the same sample were relabeled at update step t. We then define the asynchronous objective discrepancy at t as 
+
+∆t = Jasync (πtθ ) − J sync (πtθ ) . (3) 33.2 Two-Fold Decomposition of the Asynchronous Objective Discrepancy 
+
+Unlike reward-estimation bias in off-policy RL, ∆t arises from optimizing on prefixes generated by older student policies and, potentially, on teacher supervision tied to outdated conditioning contexts. We next theoretically decompose these two sources of discrepancy under the following assumption. 
+
+Assumption 3.1 (Truncation and regularity) . We evaluate the distillation loss on a finite support where both student and teacher probabilities are bounded away from zero by a positive constant. On this domain, ℓ(·, ·) is nonnegative and Lipschitz with respect to total-variation distance. To isolate the student- and teacher-sides of freshness mismatch, we first introduce an intermediate distillation objective that pairs stale student rollouts with up-to-date teacher conditioning contexts: 
+
+eJasync (πtθ ) = Ex∼dr(i)
+
+ℓ πtθ (· | x), π teacher (· | x) , (4) where dr(i) denote the prefix distribution of sample i induced by the stale policy. We then define the buffer-level stale distributions by dstale ,t := Ei∼B t [dr(i)] and yield the following proposition for discrepancy decomposition. 
+
+Proposition 3.2 (Two-fold Decomposition for Asynchronous Objective Discrepancy) . Under As-sumption 3.1, there exist nonnegative constants Croll and Csup such that: 
+
+∆t ≤ Croll TV  dt, d stale ,t | {z }
+
+> rollout drift
+
++ Csup Ei∼B t
+
+h
+
+TV 
+
+
+
+πteacher (· | cti), π teacher (· | cr(i) 
+
+> i
+
+)
+
+i | {z }
+
+> supervision drift
+
+, (5) 
+
+where TV( ·, ·) denotes the total-variation distance. The detailed proof of decomposition is provided in the Appendix A.2. 
+
+By the convexity of TV( ·, ·):
+
+TV  dt, d stale ,t  ≤ Ei∼B t
+
+h
+
+TV 
+
+
+
+dt, d r(i)i 
+
+, (6) which recasts the rollout drift term in Eq. 5 into a buffer-level expectation to align with the supervision drift term. Thus, the objective discrepancy in asynchronous OPD is decomposed into two structurally distinct terms: rollout drift , arising when the active buffer reflects prefixes drawn from the older student policy rather than the current policy; and supervision drift , arising when teacher supervision is attached to outdated conditioning contexts that no longer align with the current contexts. 
+
+3.3 Diagnostics for Tracking Staleness 
+
+While the above decomposition identifies the sources of staleness and formally characterizes their contributions, the resulting drift terms are not directly observable during optimization. We therefore introduce sample-level diagnostics that empirically track them through the distributions of the student and teacher models. Specifically, for rollout drift, we use an on-support divergence evaluated on buffered prefixes: 
+
+δroll  
+
+> i
+
+= TV 
+
+
+
+πtθ (· | xi), π r(i) 
+
+> θ
+
+(· | xi)
+
+
+
+, Droll  
+
+> i
+
+= KL 
+
+
+
+πtθ (· | xi) ∥ πr(i) 
+
+> θ
+
+(· | xi)
+
+
+
+. (7) By Pinsker’s inequality, δroll  
+
+> i
+
+≤
+
+q 12 Droll  
+
+> i
+
+, so the empirical KL serves as a conservative upper bound on the corresponding total-variation distance. In sequential decision-making settings, however, even local policy drift can compound over time and amplify stale occupancy. We provide analysis for this effect in Proposition A.4. As for supervision drift, we can also derive an upper bound by Pinsker’s inequality as (see Appendix A.5 for details): 
+
+δsup  
+
+> i
+
+= TV 
+
+
+
+πteacher (· | cti), π teacher (· | cr(i) 
+
+> i
+
+)
+
+
+
+≤
+
+q 12 Dsup  
+
+> i
+
+, (8) where Dsup  
+
+> i
+
+= KL 
+
+
+
+πteacher (· | cti) ∥ πteacher (· | cr(i) 
+
+> i
+
+)
+
+
+
+denotes the divergence between the teacher distribution under the current and outdated contexts. In summary, Droll  
+
+> i
+
+and Dsup  
+
+> i
+
+serve as monotone surrogates rather than exact estimators of the discrepancy terms, but provide observable signals that can be incorporated into freshness-aware control. Together with policy update lag, we illustrate in Figure 2 (top) three complementary diagnostics for characterizing sample-level staleness. These diagnostics form the foundation for incorporating freshness-aware control into OPD optimization. 4Supervision drift   
+
+> context drift
+> cached context used target current context current target
+> Rollout drift
+> same response current policy rollout policy
+> Update lag
+> +3 updates
+> rollout policy current policy
+> ...
+> adaptive refresh
+> ...
+> Objective
+> rollout-anchored regularization
+> freshness weighting
+
+Figure 2: Systematic overview of f -OPD. Top : three sample-level diagnostics used to characterize staleness. Bottom : the overall f -OPD pipeline, where sample freshness is estimated from these diagnostics and integrated into OPD optimization through three complementary mechanisms. 
+
+## 4 Freshness-Aware Control for Long-Horizon OPD 
+
+Our analysis in Sec. 3 has decomposed asynchronous OPD staleness as rollout and supervision drift, and introduces the corresponding diagnostics Droll  
+
+> i
+
+and Dsup  
+
+> i
+
+. In this section, we define a sample-level freshness score based on these diagnostics, and further propose f -OPD with three complementary mechanisms for freshness-aware control. 
+
+4.1 Fine-Grained Sample Freshness Scoring 
+
+To evaluate how stale each buffered sample is, each buffer must retain enough provenance to replay the stale trajectory under both the current and stale policies, and to reconstruct the teacher-conditioning contexts used now and at the grading time. For each sample i, we maintain its actual rollout step 
+
+r(i), the stored prefix xi, and the token-level information {(yi,h , c r(i) 
+
+> i,h
+
+)}Hi
+
+> h=1
+
+, where Hi denotes the token length of sample i, yi,h is the token generated by student at position h, and cr(i) 
+
+> i,h
+
+is the teacher-conditioning context attached to that token when the sample was graded. Follow the previous introduction of distinction between x and c, we now refine the sample-level notation from Sec. 3 by lifting xi to token-level replay prefixes and cti to token-level current teacher contexts, since replay-based comparison is performed only at aligned token positions. We likewise refine the stored prefix into token-level replay prefixes 
+
+xi,h := ( xi, y i,<h ), (9) so that the diagnostics and losses below are evaluated on aligned token positions and later aggregated back to the sample level. Let Uroll  
+
+> i
+
+, Usup  
+
+> i
+
+⊆ { 1, . . . , H i} denote token positions for which replay yields valid and comparable conditioning. We assume that the aligned sets are nonempty whenever a sample is used to compute diagnostics or optimization losses. For each position, we use the replayed token prefix xi,h to compute token-level diagnostics: 
+
+
+
+Droll  
+
+> i
+
+= 1
+
+|U roll  
+
+> i
+
+|
+
+X
+
+> h∈U roll
+> i
+
+KL 
+
+
+
+πtθ (· | xi,h ) ∥ πr(i) 
+
+> θ
+
+(· | xi,h )
+
+
+
+,Dsup  
+
+> i
+
+= 1
+
+|U sup  
+
+> i
+
+|
+
+X
+
+> h∈U sup
+> i
+
+KL 
+
+
+
+πteacher (· | cti,h ) ∥ πteacher (· | cr(i) 
+
+> i,h
+
+)
+
+
+
+.
+
+(10) Moreover, each sample carries an update lag τi = t − r(i) ≥ 0, providing a coarse-grained online proxy (see Appendix A.3) for global freshness: older samples are generally less reliable and should eventually be discarded. The replay-based diagnostics Droll  
+
+> i
+
+and Dsup  
+
+> i
+
+therefore complement this coarse age signal with finer-grained sample-specific drift information, while the inverse-age factor 
+
+(τi + 1) −1 remains a cheap operational proxy for the budget over which rollout drift may have 5accumulated. We therefore describe the sample-level freshness of i at t with 
+
+fi = 1
+
+τi + 1 exp( − e∆ti), where e∆ti = α
+
+q
+
+Droll  
+
+> i
+
++ β
+
+q
+
+Dsup  
+
+> i
+
+≈ ∆ti. (11) Coefficients α, β ≥ 0 map the two diagnostics onto a common operational scale. Importantly, the approximation e∆ti to the discrepancy in Proposition 3.2 should be interpreted as a monotone surrogate that ranks samples by their predicted contribution to stale-objective bias, rather than as an exact estimator of that bias. The exp( ·) in freshness calculation thus smoothly and monotonically downweights high-staleness samples, reducing variance while preserving relative ordering. 
+
+4.2 f -OPD 
+
+Next, we provide a step-by-step derivation of f -OPD with freshness-aware control, starting from the vanilla sample-level distillation loss: 
+
+ℓti = 1
+
+|U sup  
+
+> i
+
+|
+
+X
+
+> h∈U sup
+> i
+
+ℓ πtθ (· | xi,h ), π teacher (· | cti,h ). (12) Building on the freshness score defined in Eq. 11, we first introduce freshness weighting by scaling each sample’s contribution to the distillation loss according to its fidelity to on-policy objective: 
+
+Lt 
+
+> distill
+
+= Ei∼B t
+
+h
+
+σ(fi − ξ) ℓti
+
+i
+
+, (13) where σ(·) is the ReLU function, so that a sample with the freshness score below the threshold ξ
+
+will be excluded from optimization. Weighting is a first layer of defense: it reduces further deviation caused by over-optimizing on stale samples. However, it does not explicitly constrain how far the current policy can deviate from the rollout policy associated with the surviving samples, nor can it repair a mismatch that is already present in an active buffer that has become globally stale. Moreover, replay-based diagnostics are meaningful only at token positions where the stale and current trajectories remain alignable. When the active buffer has low mean freshness, or when the aligned-position coverage ratios |U roll  
+
+> i
+
+|/H i and |U sup  
+
+> i
+
+|/H i become too small, the buffer no longer provides sufficiently reliable supervision or drift estimates. To address these limitations, we introduce two additional mechanisms. On the one hand, to enforce local consistency between the current and rollout policy, we incorporate rollout-anchored regulariza-tion into the objective. Specifically, the regularization term Ranchor  
+
+> i
+
+= Droll  
+
+> i
+
+uses the rollout-drift diagnostic from Eq. 10 as an observable surrogate for the stale-occupancy mismatch analyzed in Sec. 3.3. Notably, Ranchor  
+
+> i
+
+is also modulated by freshness weighting, since corrective regularization becomes less effective as sample fidelity deteriorates. On the other hand, we introduce adaptive refresh to monitor the aggregate freshness score and alignment statistics of the active buffer: 
+
+¯f t = 1
+
+|B t|
+
+X
+
+> i∈B t
+
+fi, ¯Mt, roll = 1
+
+|B t|
+
+X
+
+> i∈B t
+
+|U roll  
+
+> i
+
+|
+
+Hi
+
+, ¯Mt, sup = 1
+
+|B t|
+
+X
+
+> i∈B t
+
+|U sup  
+
+> i
+
+|
+
+Hi
+
+. (14) The buffer Bt is refreshed whenever it no longer satisfies the required freshness or alignment conditions, either due to degraded sample-mean freshness or insufficient aligned-support coverage: 
+
+¯f t ≤ κf , or ¯Mt, roll < κ roll , or ¯Mt, sup < κ sup , (15) where κf , κ roll , κ sup denote the corresponding thresholds. Combining the above three mechanisms, we propose f -OPD with a freshness-aware objective: 
+
+J (πtθ ) = Ei∼C (Bt)
+
+h
+
+σ(fi − ξ)  ℓti + λ Ranchor 
+
+> i
+
+i
+
+, (16) where λ adjusts the strength of rollout-anchored regularization, and C(Bt) denotes the refresh mechanism of renewing the active buffer to restore a more reliable supervision stream and more informative drift diagnostics for f -OPD. We provide pseudocode in Appendix Algorithm 1, which summarizes the complete procedure in an implementation-oriented form. 60 2 4 8
+
+> Async lag (updates)
+> 40
+> 60
+> 80
+> 100
+> Performance (% of lag=0)
+
+Relative task performance    
+
+> Reasoning Tool-use Coding
+> 0248
+> Async lag (updates)
+> 0
+> 1
+> 2
+> 3
+> ×10 −2
+
+Drift: rollout (left) / supervision (right)     
+
+> Rollout drift Supervision drift
+> 0100 200 300 400
+> Training step
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Mean token entropy
+
+Task-average entropy by lag 
+
+> lag = 0 lag = 2 lag = 8
+> 246810
+> ×10 −2
+
+Figure 3: Failure modes of vanilla OPD under increasing policy update lag. (a) Relative task performance degradation with lags. (b) Drift diagnostics: rollout drift on the left axis, and supervision drift on the right axis, both increasing with lag. (c) Token-level entropy dynamics, averaged uniformly over three tasks, for lag 0, 2, and 8 across training. Markers and curves show five-seed means; error bars and shaded bands denote a standard deviation. 
+
+## 5 Experiments 
+
+Our experiments highlight the challenge of balancing performance and efficiency in long-horizon OPD training, and demonstrate how the proposed f -OPD effectively navigates this trade-off with freshness-aware control. 
+
+5.1 Settings 
+
+We summarize the key experimental settings from the following three perspectives. 
+
+Protocols. We follow the student-teacher distillation setup introduced by Thinking Machines Lab [ 40 ]. For model selection across tasks, we use Qwen family models as student models, trained under frozen supervision from larger Qwen teacher models. Training is conducted under both synchronous and asynchronous pipeline. 
+
+Task taxonomies. We consider three task families with increasing interaction horizon: (i) short-horizon reasoning, where supervision is effectively single-shot; (ii) medium-horizon tool-use, where intermediate actions influence subsequent observations and supervision; and (iii) long-horizon coding agent, where errors compound across iterative edits and executions. DAPO-Math-17K [ 41 ] ( ∼17K samples) is adopted as the underlying prompt distribution for both short-horizon reasoning and medium-horizon tool-use. In the tool-use setting, those problems are wrapped in a deterministic ReTool-style code-interpreter harness [ 42 ]. For long-horizon coding-agent tasks, we use mini-SWE-agent [43] as the coding-agent scaffold on real repository-level software-engineering tasks. 
+
+Evaluations. We evaluate short-horizon reasoning on MATH500 [ 44 ], tool-use on a held-out olympiad-style set of 1,000 problems executed in the same harness, and coding agents on SWE-bench 0 100 200 300 400            
+
+> Training step
+> 65
+> 70
+> 75
+> 80
+> Performance
+> Reasoning
+> Sync. OPD Async. OPD
+> f-OPD
+> 0100 200 300 400
+> Training step
+> 60
+> 70
+> Tool-use
+> 0100 200 300 400
+> Training step
+> 20
+> 30
+> 40
+> Coding
+> Sync. OPD Async. OPD
+> f-OPD
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> Normalized throughput
+> 1.00x 1.61x 1.46x
+> Relative throughput
+
+Figure 4: (a–c) Training dynamics across tasks for synchronous OPD, asynchronous OPD, and 
+
+f -OPD. (d) Relative training throughput across tasks. 7Table 1: Comparison of f -OPD against representative post-training methods on the coding-agent task [45]. Relative throughput is normalized to synchronous OPD.                                                                           
+
+> Method Scale Throughput ↑Resolve ↑Post-patch reg. ↓Collapse ratio ↓
+> Supervised Fine-tuning
+> Vanilla SFT 8B 2.18 ×39.1 —0/5 SWE-Gym ∗[46] 32B —20.6 ——
+> Reinforcement Learning
+> Vanilla GRPO 8B 0.92 ×40.2 ——SA-SWE ∗[47] 32B —39.4 ——DeepSWE ∗[48] 32B —36.4 ——
+> On-Policy Distillation
+> Qwen3-Coder †[49] 30B —51.6 ——Sync. OPD 8B 1.00 ×41.8 1.6 0/5 Async. OPD 8B 1.61 ×26.8 12.1 3/5 Async. OPD + hard refresh 8B 1.15 ×35.1 6.6 1/5 Async. OPD + lag-only weighting 8B 1.54 ×34.9 7.6 2/5
+> f-OPD (ours) 8B 1.46 ×39 .42.6 0/5
+> ∗Results reported from publicly available sources. −Results not available. †Teacher model used for OPD.
+
+Verified [ 45 ]. For short-horizon reasoning, we report Avg@1 accuracy . For tool-use, we report Avg@4 accuracy under the ReTool-style harness, together with invalid tool rate (the fraction of episodes containing at least one invalid code-interpreter invocation) and peak-final drop (the performance drop from peak to final training). For coding agents, we report the SWE-bench Verified resolve rate 
+
+under a single-run, single-patch evaluation protocol, along with repeated-loop, premature-stop, and 
+
+post-patch regression rates (the performance of the patch drops from peak to final training). All reported metrics are averaged over five random seeds. Detailed experimental settings and additional implementation details are provided in Appendix B.1. 
+
+5.2 Failure Analysis of Vanilla OPD 
+
+Before evaluating the effectiveness of f -OPD, we first conduct a systematic failure analysis of vanilla OPD. Specifically, we investigate two questions: (i) how does increasing policy lag affect task performance under OPD training? and (ii) which factors are responsible for this degradation under increasing policy lag? To answer these questions, we evaluate four OPD variants across three tasks with manually controlled policy update lags of 0, 2, 4, and 8, spanning conditions from fully on-policy optimization to increasing asynchrony. As shown in Figure 3(a), all three tasks exhibit a clear and monotonic performance degradation as policy lag increases, confirming that policy staleness is inherently harmful to asynchronous OPD fidelity. Moreover, this degradation becomes substantially more severe as the interaction horizon grows. Particularly for the coding-agent task, performance drops by roughly 40% under a lag of 8. Figure 3(b) further reports the KL-based diagnostics of rollout and supervision drift. Both drifts grow systematically with policy lag and interaction horizon, and supervision drift scales more steeply with lag than rollout drift, highlighting the importance of controlling teacher-context staleness in long-horizon OPD. Interestingly, Figure 3(c) shows that, unlike synchronous training, asynchronous OPD exhibits progressively less stable task-averaged entropy dynamics as lag increases. The highest-lag setting ( lag = 8 , red) develops the widest late-training uncertainty band, indicating that some runs retain high-entropy exploration whereas others move toward partial collapse. This suggests that policy drift under asynchronous execution not only amplifies objective mismatch but also destabilizes generation dynamics, making entropy a practical early-warning signal for training instability. 
+
+5.3 Main Results of f -OPD 
+
+Our main results are organized into two parts. We first benchmark f -OPD against synchronous and asynchronous OPD baselines across the three tasks, measuring task quality (evaluation accuracy 8Table 2: Ablation results of the three freshness-aware control mechanisms in f -OPD on tool-use and coding-agent tasks.                                 
+
+> Method Tool-use Coding agent Acc. avg@4 Peak-final drop Resolve Post-patch regression Collapse ratio Synchronous OPD 74.8 2.7 41.8 1.6 0/5
+> Asynchronous OPD 61.6 10.4 26.8 7.4 3/5 + freshness weighting 70.8 4.3 36.5 4.4 1/5 + rollout-anchored regularization 73.2 3.4 38.1 3.2 1/5 + adaptive refresh ( f-OPD )74.4 3.1 39.4 2.6 0/5
+
+along training) and relative system throughput (completed training samples per wall-clock hour, normalized to synchronous OPD). Fig. 4 shows that f -OPD inherits the task quality of synchronous OPD and much of the throughput advantage of asynchronous OPD simultaneously, recovering the on-policy fidelity that vanilla asynchronous mode sacrifices without paying the full throughput cost of synchronous execution. Additionally, as shown in Appendix Figure 5, f -OPD maintains entropy dynamics comparable to synchronous training, demonstrating the stability brought by freshness-aware control. To assess f -OPD on the most demanding setting, we compare it against a broad spectrum of post-training methods on the long-horizon coding-agent task: SFT, RL, and two asynchronous OPD baselines with simplified freshness-aware control—one applying hard refresh to buffered samples, the other scoring sample freshness only by policy update lag (see Appendix B.1 for details). Methods reproduced by us share the same base model (Qwen3-8B). Results are reported in Table 1. SFT achieves the highest throughput but is bottlenecked by its reliance on high-quality offline trajectories, which are costly to scale in long-horizon agentic settings. RL is on-policy by design but suffers from low throughput due to long-tailed rollout latency. Synchronous OPD attains the strongest task quality among on-policy methods (41.8 resolve rate) but inherits the throughput penalty of synchronous execution. Vanilla asynchronous OPD delivers a 1.61 × throughput gain over synchronous OPD, but task quality collapses to a 26.8 resolve with a 60% collapse rate across runs. Simplified freshness-aware variants (hard refresh & lag-only weighting) mitigate this degradation only partially and remain well below the synchronous ceiling. In contrast, f -OPD attains a 1.46 × throughput gain while preserving 94% synchronous resolve and incurring only a 2.6-point post-patch regression, with no observed collapse. These results position f -OPD as a method that closes the performance–efficiency gap left open by both general-purpose post-training paradigms and vanilla asynchronous OPD variants. 
+
+5.4 Ablation Study 
+
+The effectiveness of f -OPD stems from the synergy of three principled mechanisms: freshness weight-ing , rollout-anchored regularization , and adaptive refresh . To isolate their individual contributions, we incrementally add each component on top of vanilla asynchronous OPD on the tool-use and coding-agent tasks (Table 2). Specifically, freshness weighting recovers most of the lost task quality (+9.2 avg@4 accuracy, +9.7 coding resolve) and reduces the collapse ratio to 1/5, confirming that down-weighting stale samples directly counters rollout drift. Rollout-anchored regularization further closes the gap by stabilizing per-update drift (+2.4 avg@4 accuracy, +1.6 coding resolve), while adaptive refresh delivers the final gains and eliminates collapse entirely. These results demonstrate that the three mechanisms address complementary axes of freshness rather than redundant ones. 
+
+## 6 Conclusion 
+
+In this paper, we systematically analyze the performance–efficiency trade-off of vanilla OPD under both synchronous and asynchronous execution. We identify the principal source of freshness mis-match in OPD from both the student rollout and the teacher context, and propose f -OPD to guide asynchronous optimization through freshness-aware control. Its effectiveness is established across tasks of varying interaction horizons, with the most pronounced gains on long-horizon coding agents. Looking ahead, we aim to scale f -OPD to larger foundation models, and a broader spectrum of general-purpose agentic tasks. 9References 
+
+[1] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen, Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia Gao, Vedanuj Goswami, Naman Goyal, Anthony Hartshorn, Saghar Hosseini, Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yuning Mao, Xavier Martinet, Todor Mihaylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton, Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva, Eric Michael Smith, Ranjan Subramanian, Xiaoqing Ellen Tan, Binh Tang, Ross Taylor, Adina Williams, Jian Xiang Kuan, Puxin Xu, Zheng Yan, Iliyan Zarov, Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Aurelien Rodriguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288 , 2023. [2] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. [3] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. [4] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. [5] DeepSeek-AI. Deepseek-v4: Towards highly efficient million-token context intelligence. https://hu ggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf , 2026. technical report. [6] Bangjun Xiao, Bingquan Xia, Bo Yang, Bofei Gao, Bowen Shen, Chen Zhang, Chenhong He, Chiheng Lou, Fuli Luo, Gang Wang, et al. Mimo-v2-flash technical report. arXiv preprint arXiv:2601.02780 , 2026. [7] Aohan Zeng, Xin Lv, Zhenyu Hou, Zhengxiao Du, Qinkai Zheng, Bin Chen, Da Yin, Chendi Ge, Chenghua Huang, Chengxing Xie, et al. Glm-5: from vibe coding to agentic engineering. arXiv preprint arXiv:2602.15763 , 2026. [8] Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin Wu, Wang Zhang, Ru Zhang, Yanghua Peng, Haibin Lin, and Chuan Wu. Hybridflow: A flexible and efficient rlhf framework. arXiv preprint arXiv:2409.19256 ,2024. [9] Zilin Zhu, Chengxing Xie, Xin Lv, and slime Contributors. slime: An llm post-training framework for rl scaling. https://github.com/THUDM/slime , 2025. GitHub repository, accessed 2026-05-06. [10] Nvidia. Nemo rl: A scalable and efficient post-training library. https://github.com/NVIDIA-NeMo/RL ,2025. GitHub repository. [11] Samy Bengio, Oriol Vinyals, Navdeep Jaitly, and Noam Shazeer. Scheduled sampling for sequence prediction with recurrent neural networks. Advances in neural information processing systems , 28, 2015. [12] Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, et al. Dapo: An open-source llm reinforcement learning system at scale. arXiv preprint arXiv:2503.14476 , 2025. [13] Ganqu Cui, Yuchen Zhang, Jiacheng Chen, Lifan Yuan, Zhi Wang, Yuxin Zuo, Haozhan Li, Yuchen Fan, Huayu Chen, Weize Chen, et al. The entropy mechanism of reinforcement learning for reasoning language models. arXiv preprint arXiv:2505.22617 , 2025. [14] Shimin Zhang, Xianwei Chen, Yufan Shen, Ziyuan Ye, and Jibin Wu. Relax: Reasoning with latent exploration for large reasoning models. arXiv preprint arXiv:2512.07558 , 2025. [15] Mingyang Song and Mao Zheng. A survey of on-policy distillation for large language models. arXiv preprint arXiv:2604.00626 , 2026. [16] Yuxian Gu, Li Dong, Furu Wei, and Minlie Huang. MiniLLM: On-policy distillation of large language models. In International Conference on Learning Representations , 2024. [17] Rishabh Agarwal, Nino Vieillard, Yongchao Zhou, Piotr Stanczyk, Sabela Ramos, Matthieu Geist, and Olivier Bachem. On-policy distillation of language models: Learning from self-generated mistakes. In 
+
+International Conference on Learning Representations , 2024. 
+
+10 [18] Yaxuan Li, Yuxin Zuo, Bingxiang He, Jinqian Zhang, Chaojun Xiao, Cheng Qian, Tianyu Yu, Huan-ang Gao, Wenkai Yang, Zhiyuan Liu, et al. Rethinking on-policy distillation of large language models: Phenomenology, mechanism, and recipe. arXiv preprint arXiv:2604.13016 , 2026. [19] Jonas Hübotter, Frederike Lübeck, Lejs Behric, Anton Baumann, Marco Bagatella, Daniel Marta, Ido Hakimi, Idan Shenfeld, Thomas Kleine Buening, Carlos Guestrin, et al. Reinforcement learning via self-distillation. arXiv preprint arXiv:2601.20802 , 2026. [20] Siyan Zhao, Zhihui Xie, Mengchen Liu, Jing Huang, Guan Pang, Feiyu Chen, and Aditya Grover. Self-distilled reasoner: On-policy self-distillation for large language models. arXiv preprint arXiv:2601.18734 ,2026. [21] Xinsen Zhang, Zhenkai Ding, Tianjun Pan, Run Yang, Chun Kang, Xue Xiong, and Jingnan Gu. Opsdl: On-policy self-distillation for long-context language models. arXiv preprint arXiv:2604.17535 , 2026. [22] Hejian Sang, Yuanda Xu, Zhengze Zhou, Ran He, Zhipeng Wang, and Jiachen Sun. Crisp: Compressed reasoning via iterative self-policy distillation. arXiv preprint arXiv:2603.05433 , 2026. [23] Jongwoo Ko, Sara Abdali, Young Jin Kim, Tianyi Chen, and Pashmina Cameron. Scaling reasoning efficiently via relaxed on-policy distillation. arXiv preprint arXiv:2603.11137 , 2026. [24] Tianzhu Ye, Li Dong, Xun Wu, Shaohan Huang, and Furu Wei. On-policy context distillation for language models. arXiv preprint arXiv:2602.12275 , 2026. [25] Wenkai Yang, Weijie Liu, Ruobing Xie, Kai Yang, Saiyong Yang, and Yankai Lin. Learning beyond teacher: Generalized on-policy distillation with reward extrapolation. arXiv preprint arXiv:2602.12125 ,2026. [26] Yuqian Fu, Haohuan Huang, Kaiwen Jiang, Yuanheng Zhu, and Dongbin Zhao. Revisiting on-policy distillation: Empirical failure modes and simple fixes. arXiv preprint arXiv:2603.25562 , 2026. [27] Tianzhu Ye, Li Dong, Zewen Chi, Xun Wu, Shaohan Huang, and Furu Wei. Black-box on-policy distillation of large language models. arXiv preprint arXiv:2511.10643 , 2025. [28] Woogyeol Jin, Taywon Min, Yongjin Yang, Swanand Ravindra Kadhe, Yi Zhou, Dennis Wei, Nathalie Baracaldo, and Kimin Lee. Entropy-aware on-policy distillation of language models. arXiv preprint arXiv:2603.07079 , 2026. Also available on OpenReview as SPOT 2026. [29] Dongxu Zhang, Zhichao Yang, Sepehr Janghorbani, Jun Han, Andrew Ressler II, Qian Qian, Gregory D. Lyng, Sanjit Singh Batra, and Robert E. Tillman. Fast and effective on-policy distillation from reasoning prefixes. arXiv preprint arXiv:2602.15260 , 2026. [30] Volodymyr Mnih, Adrià Puigdomènech Badia, Mehdi Mirza, Alex Graves, Timothy P. Lillicrap, Tim Harley, David Silver, and Koray Kavukcuoglu. Asynchronous methods for deep reinforcement learning. In 
+
+Proceedings of the 33rd International Conference on Machine Learning , 2016. [31] Lasse Espeholt, Hubert Soyer, Remi Munos, Karen Simonyan, Volodymir Mnih, Tom Ward, Yotam Doron, Vlad Firoiu, Tim Harley, Iain Dunning, Shane Legg, and Koray Kavukcuoglu. IMPALA: Scalable distributed deep-rl with importance weighted actor-learner architectures. In Proceedings of the 35th International Conference on Machine Learning , 2018. [32] Wei Zhang, Suyog Gupta, Xiangru Lian, and Ji Liu. Staleness-aware Async-SGD for distributed deep learning. In Proceedings of the Twenty-Fifth International Joint Conference on Artificial Intelligence , 2016. [33] Aaron Harlap, Deepak Narayanan, Amar Phanishayee, Vivek Seshadri, Nikhil Devanur, Greg Ganger, and Phil Gibbons. PipeDream: Fast and efficient pipeline parallel DNN training. In Proceedings of the 27th ACM Symposium on Operating Systems Principles , 2019. [34] Ronald J. Williams. Simple statistical gradient-following algorithms for connectionist reinforcement learning. Machine Learning , 8(3-4):229–256, 1992. doi: 10.1007/BF00992696. [35] Jiacai Liu, Yingru Li, Yuqian Fu, Jiawei Wang, Qian Liu, and Yu Shen. When speed kills stability: Demystifying RL collapse from the training-inference mismatch. https://richardli.xyz/rl-colla pse , September 2025. Research blog post, accessed 2026-05-06. [36] Stephane Ross, Geoffrey J. Gordon, and J. Andrew Bagnell. A reduction of imitation learning and structured prediction to no-regret online learning. In Proceedings of the Fourteenth International Conference on Artificial Intelligence and Statistics , 2011. 
+
+11 [37] John Schulman, Sergey Levine, Philipp Moritz, Michael I. Jordan, and Pieter Abbeel. Trust region policy optimization. In Proceedings of the 32nd International Conference on Machine Learning , 2015. [38] Yingru Li, Jiacai Liu, Jiawei Xu, Yuxuan Tong, Ziniu Li, Qian Liu, and Baoxiang Wang. Trust region masking for long-horizon LLM reinforcement learning. arXiv preprint arXiv:2512.23075 , 2025. [39] Jacob Hilton, Karl Cobbe, and John Schulman. Batch size-invariance for policy optimization. Advances in Neural Information Processing Systems , 35:17086–17098, 2022. Introduces decoupled PPO by separating the proximal policy for update control from the behavior policy for off-policy correction. [40] Kevin Lu and Thinking Machines Lab. On-policy distillation. https://thinkingmachines.ai/blog /on-policy-distillation/ , 2025. Thinking Machines Lab blog post, published 2025-10-27, accessed 2026-05-06. [41] BytedTsinghua-SIA. DAPO-Math-17k. https://huggingface.co/datasets/BytedTsinghua-SIA /DAPO-Math-17k , 2025. Hugging Face dataset repository, accessed 2026-05-06. [42] Jiazhan Feng, Shijue Huang, Xingwei Qu, Ge Zhang, Yujia Qin, Baoquan Zhong, Chengquan Jiang, Jinxin Chi, and Wanjun Zhong. ReTool: Reinforcement learning for strategic tool use in LLMs. arXiv preprint arXiv:2504.11536 , 2025. [43] John Yang, Carlos E. Jimenez, Alexander Wettig, Kilian Lieret, Shunyu Yao, Karthik R. Narasimhan, and Ofir Press. SWE-agent: Agent-computer interfaces enable automated software engineering. In Advances in Neural Information Processing Systems , 2024. URL https://arxiv.org/abs/2405.15793 .Recommended citation for mini-SWE-agent from the project repository. [44] Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the MATH dataset. In Proceedings of the Neural Information Processing Systems Track on Datasets and Benchmarks , 2021. [45] Carlos E. Jimenez, John Yang, Alexander Wettig, Shunyu Yao, Kexin Pei, Ofir Press, and Karthik Narasimhan. SWE-bench: Can language models resolve real-world GitHub issues? In International Conference on Learning Representations , 2024. [46] Jiayi Pan, Xingyao Wang, Graham Neubig, Navdeep Jaitly, Heng Ji, Alane Suhr, and Yizhe Zhang. Training software engineering agents and verifiers with SWE-Gym. In Proceedings of the 42nd International Conference on Machine Learning , 2025. arXiv:2412.21139. [47] Shiyi Cao, Dacheng Li, Fangzhou Zhao, Shuo Yuan, Sumanth R. Hegde, Connor Chen, Charlie Ruan, Tyler Griggs, Shu Liu, Eric Tang, Richard Liaw, Philipp Moritz, Matei Zaharia, Joseph E. Gonzalez, and Ion Stoica. Skyrl-agent: Efficient rl training for multi-turn llm agent. arXiv preprint arXiv:2511.16108 ,2025. [48] Michael Luo, Naman Jain, Jaskirat Singh, Sijun Tan, Colin Cai, Tarun Venkat, Manan Roongta, Li Erran Li, Raluca Ada Popa, Koushik Sen, Ion Stoica, Ameen Patel, Qingyang Wu, Alpay Ariyak, Shang Zhu, Ben Athiwaratkun, and Ce Zhang. Deepswe: Training a fully open-sourced, state-of-the-art coding agent by scaling rl. https://pretty-radio-b75.notion.site/DeepSWE-Training-a-Fully-Open-s ourced-State-of-the-Art-Coding-Agent-by-Scaling-RL-22281902c1468193aabbe9a8c59 bbe33 , 2025. Technical blog post, accessed 2026-05-06. [49] Ruisheng Cao, Mouxiang Chen, Jiawei Chen, Zeyu Cui, Yunlong Feng, Binyuan Hui, Yuheng Jing, Kaixin Li, Mingze Li, Junyang Lin, et al. Qwen3-coder-next technical report. arXiv preprint arXiv:2603.00729 ,2026. [50] Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde de Oliveira Pinto, Jared Kaplan, Harri Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, Alex Ray, Raul Puri, Gretchen Krueger, Michael Petrov, Heidy Khlaaf, Girish Sastry, Pamela Mishkin, Brooke Chan, Scott Gray, Nick Ryder, Mikhail Pavlov, Alethea Power, Lukasz Kaiser, Mohammad Bavarian, Clemens Winter, Philippe Tillet, Felipe Petroski Such, Dave Cummings, Matthias Plappert, Fotios Chantzis, Elizabeth Barnes, Ariel Herbert-Voss, William Hebgen Guss, Alex Nichol, Alex Paino, Nikolas Tezak, Jie Tang, Igor Babuschkin, Suchir Balaji, Shantanu Jain, William Saunders, Christopher Hesse, Andrew N. Carr, Jan Leike, Josh Achiam, Vedant Misra, Evan Morikawa, Alec Radford, Matthew Knight, Miles Brundage, Mira Murati, Katie Mayer, Peter Welinder, Bob McGrew, Dario Amodei, Sam McCandlish, Ilya Sutskever, and Wojciech Zaremba. Evaluating large language models trained on code. arXiv preprint arXiv:2107.03374 , 2021. [51] Jacob Austin, Augustus Odena, Maxwell Nye, Maarten Bosma, Henryk Michalewski, David Dohan, Ellen Jiang, Carrie Cai, Michael Terry, Quoc Le, and Charles Sutton. Program synthesis with large language models. arXiv preprint arXiv:2108.07732 , 2021. 
+
+12 [52] Xiao Liu, Hao Yu, Hanchen Zhang, Yifan Xu, Xuanyu Lei, Hanyu Lai, Yu Gu, Hangliang Ding, Kaiwen Men, Kejuan Yang, Shudan Zhang, Xiang Deng, Aohan Zeng, Zhengxiao Du, Chenhui Zhang, Sheng Shen, Tianjun Zhang, Yu Su, Huan Sun, Minlie Huang, Yuxiao Dong, and Jie Tang. AgentBench: Evaluating LLMs as agents. In International Conference on Learning Representations , 2024. [53] Shuyan Zhou, Frank F. Xu, Hao Zhu, Xuhui Zhou, Robert Lo, Abishek Sridhar, Xianyi Cheng, Tianyue Ou, Yonatan Bisk, Daniel Fried, Uri Alon, and Graham Neubig. WebArena: A realistic web environment for building autonomous agents. arXiv preprint arXiv:2307.13854 , 2024. [54] Jing Yu Koh, Robert Lo, Lawrence Jang, Vikram Duvvur, Ming Chong Lim, Po-Yu Huang, Graham Neubig, Shuyan Zhou, Ruslan Salakhutdinov, and Daniel Fried. VisualWebArena: Evaluating multimodal agents on realistic visual web tasks. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics , 2024. [55] An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan Li, Dayiheng Liu, Fei Huang, Haoran Wei, Huan Lin, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jingren Zhou, Junyang Lin, Kai Dang, Keming Lu, Keqin Bao, Kexin Yang, Le Yu, Mei Li, Mingfeng Xue, Pei Zhang, Qin Zhu, Rui Men, Runji Lin, Tianhao Li, Tianyi Tang, Tingyu Xia, Xingzhang Ren, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yu Wan, Yuqiong Liu, Zeyu Cui, Zhenru Zhang, and Zihan Qiu. Qwen2.5 technical report. arXiv preprint arXiv:2412.15115 , 2025. [56] John Yang, Kilian Lieret, Carlos E. Jimenez, Alexander Wettig, Kabir Khandpur, Yanzhe Zhang, Binyuan Hui, Ofir Press, Ludwig Schmidt, and Diyi Yang. SWE-smith: Scaling data for software engineering agents. In Advances in Neural Information Processing Systems , 2025. URL https://openreview.net /forum?id=63iVrXc8cC . Datasets and Benchmarks Track Spotlight. 
+
+13 A Additional Results for Theoretical Analysis 
+
+In thi section, we provide the formal assumptions and proof sketches that support the theoretical analysis in Sec. 3 on objective discrepancy between synchronous and asynchronous OPD. 
+
+A.1 Alternative Assumptions 
+
+We reuse the notation from Sections 3 and 4. The current student policy at update t is πtθ , the rollout step attached to sample i is r(i), and the active stale buffer is Bt. The ideal policy update objective is 
+
+Jsync (πtθ ) = Ex∼dt
+
+ℓ πtθ (· | x), π teacher (· | x) ,
+
+where dt denotes the mixture prefix distribution from Sec. 3. The stale-buffer objective is 
+
+Jasync (πtθ ) = Ei∼B t
+
+ℓ πtθ (· | xi), π teacher (· | cr(i) 
+
+> i
+
+) .
+
+The discrepancy of interest is 
+
+∆t = Jasync (πtθ ) − J sync (πtθ ) .
+
+For the subsequent proof sketches, we first supplement the following assumptions. 
+
+Assumption A.1 (Total-variation stability of the loss) . On the truncated support from Assumption 3.1, there exist constants Lπ , L q ≥ 0 such that for any predictive distributions p, p ′, q, q ′,
+
+|ℓ(p, q ) − ℓ(p′, q )| ≤ Lπ TV( p, p ′) and |ℓ(p, q ) − ℓ(p, q ′)| ≤ Lq TV( q, q ′).
+
+Assumption A.2 (Bounded one-step rollout drift on stale support) . For every update step s and every stale training unit x represented in the active buffer, 
+
+TV  πs+1  
+
+> θ
+
+(· | x), π sθ (· | x) ≤ εs(x).
+
+Assumptions 3.1, A.1 and A.2 are stronger than the unconstrained LLM setting and are introduced only to make a discrepancy analysis finite and interpretable. The resulting bounds should therefore be read as conservative control justifications rather than a complete optimization theory for asynchronous OPD. 
+
+A.2 Sketch of the Objective Discrepancy Decomposition 
+
+In this section, we sketch the argument behind Proposition 3.2. 
+
+Proof. Recall the intermediate objective defined in Eq. 4 
+
+eJasync (πtθ ) = Ex∼dstale ,t 
+
+ℓ πtθ (· | x), π teacher (· | x) ,
+
+where dstale ,t denotes the mixture stale-prefix distribution induced by the active buffer. Then we derive 
+
+∆t ≤ Jasync (πtθ ) − eJasync (πtθ ) + eJasync (πtθ ) − J sync (πtθ ) .
+
+The first term is a pure supervision-mismatch quantity. By Assumption A.1, 
+
+Jasync (πtθ ) − eJasync (πtθ ) ≤ Lq Ei∼B t
+
+TV 
+
+
+
+πteacher (· | cti), π teacher (· | cr(i) 
+
+> i
+
+)
+
+.
+
+The second term depends only on replacing the stale distributional occupancy with the current occupancy, while keeping the current policy and labels fixed. Because the loss is bounded on the truncated support, standard change-of-measure arguments give 
+
+eJasync (πtθ ) − J sync (πtθ ) ≤ Locc TV( dt, d stale ,t ),
+
+for some constant Locc depending only on the bounded support and loss normalization. Writing 
+
+dstale ,t = Ei∼B t [dr(i)], convexity of total variation further gives 
+
+TV( dt, d stale ,t ) ≤ Ei∼B t
+
+h
+
+TV( dt, d r(i))
+
+i
+
+.
+
+This is why the student-side discrepancy may also be interpreted as the buffer-average staleness induced by the sample-specific rollout steps. Combining the two inequalities yields Proposition 3.2. The consequence is important: the theoretical discrepancy is a two-term statement—rollout drift and supervision drift. 14 A.3 Relationship between Policy Update Lag and Rollout Drift 
+
+The following lemma shows that, under a mild step-wise smoothness assumption, the per-sample rollout drift can be upper-bounded by the number of update steps separating the rollout from the current student—an integer that is essentially free to track during training. 
+
+Lemma A.3 (Lag bounds rollout drift) . Under Assumption A.2, for every buffered sample i ∈ B t,
+
+δrollout  
+
+> i
+
+≤
+
+> t−1
+
+X
+
+> s=r(i)
+
+εs(xi),
+
+where the right-hand side accumulates over exactly τi := t − r(i) steps. Proof. By the triangle inequality for total variation, 
+
+δrollout  
+
+> i
+
+= TV 
+
+
+
+πtθ (· | xi), π r(i) 
+
+> θ
+
+(· | xi)
+
+
+
+≤
+
+> t−1
+
+X
+
+> s=r(i)
+
+TV  πs+1  
+
+> θ
+
+(· | xi), π sθ (· | xi) .
+
+Applying Assumption A.2 to each summand yields the claim. Update lag is not a divergence per se, but a budget: it bounds rather than measures policy drift, with the bound becoming looser as per-step errors accumulate. Hence, τi is incorporated in our computation of the sample-level freshness score in Eq. 11. 
+
+A.4 Rollout Drift Compounds with Horizon 
+
+We further analyze how rollout drift scales with horizon length, which is particularly important for practical OPD deployment in long-horizon agentic scenarios. 
+
+Proposition A.4 (Horizon compounding of rollout staleness) . Consider a finite-horizon setting with horizon H. Suppose that perturbing the policy on a prefix by total variation at most δ perturbs the next-step prefix distribution by at most Lδ . Then there exists a constant KH = O(HL ) such that 
+
+TV  dt, d stale ,t  ≤ KH Ei∼B t
+
+δroll 
+
+> i
+
+ ≤ KH Ei∼B t
+
+q 12 Droll 
+
+> i
+
+
+
+.
+
+The main-text horizon proposition can be interpreted as a sequential perturbation bound on the mixture prefix distributions induced by a finite-horizon rollout. Let dπ denote the resulting mixture distribution over prefixes under policy π. Suppose that replacing one policy by another changes the next-step prefix distribution by at most L times the total-variation distance between the two policies on the current prefix. Then, by recursively unrolling the perturbation through the trajectory, 
+
+TV  dt, d stale ,t  ≤ KH Ei∼B t
+
+δroll 
+
+> i
+
+
+
+for some constant KH = O(HL ) depending on horizon and the one-step sensitivity constant. This is the same compounding mechanism familiar from sequential prediction and imitation learning: small early action differences alter later prefixes, which in turn alter the observations, tool outputs, and teacher-conditioning contexts seen downstream. In asynchronous OPD, this means that rollout drift and supervision drift need not be independent at long horizons; stale early actions can create the context drift that later enlarges Dsup  
+
+> i
+
+.
+
+A.5 Additional Analysis for Supervision Drift 
+
+The teacher-side staleness is defined in the sample-level shorthand from Sec. 3 by 
+
+Dsup  
+
+> i
+
+= KL 
+
+
+
+πteacher (· | cti) ∥ πteacher (· | cr(i) 
+
+> i
+
+)
+
+
+
+.
+
+In Sec. 4, this shorthand is instantiated by averaging token-level teacher comparisons over aligned positions. Here πteacher (· | cr(i) 
+
+> i
+
+) is the teacher distribution actually cached and consumed during training, while πteacher (· | cti) is the teacher distribution obtained by relabeling the same training unit under the current context. The key point is that this term measures supervision drift, not teacher-parameter drift. It is enough for the effective teacher to change the context. 15 Proposition A.5 (Context mismatch perturbs the objective) . Under Assumption A.1, the loss pertur-bation induced by stale teacher labels satisfies 
+
+ℓ πtθ (· | xi), π teacher (· | cti) − ℓ πtθ (· | xi), π teacher (· | cr(i) 
+
+> i
+
+)
+
+≤ Lq TV 
+
+
+
+πteacher (· | cti), π teacher (· | cr(i) 
+
+> i
+
+)
+
+
+
+,
+
+and therefore the buffer-averaged supervision drift is bounded by a constant times the mean supervision-side total variation. By Pinsker, this is, in turn, controlled by the square root of the mean supervision KL. 
+
+This proposition is the formal justification for including Dsup  
+
+> i
+
+in the sample-level freshness score. The quantity need not be large in every setting, but whenever teacher outputs depend on mutable trajectory context, the stale label can shift the implemented objective away from the supervision that would be attached to the current trajectory. 
+
+Remark A.6 (When the supervision gap is negligible) . If the teacher is fixed, the effective context is unchanged, and labeling is deterministic, then 
+
+πteacher (· | cti) = πteacher (· | cr(i) 
+
+> i
+
+) =⇒ Dsup  
+
+> i
+
+= 0 .
+
+More generally, if the teacher distribution is stable under small context perturbations, then Dsup 
+
+> i
+
+remains small. In those situations, the freshness framework naturally reduces to control for update lag and rollout drift. 
+
+A.6 Interpretation of Coefficients in Freshness Computation 
+
+The surrogate discrepancy score from Sec. 4 is 
+
+e∆ti = α
+
+q
+
+Droll  
+
+> i
+
++ β
+
+q
+
+Dsup 
+
+> i
+
+and the corresponding freshness score is 
+
+fi = ( τi + 1) −1 exp( − e∆ti), τi = t − r(i).
+
+This pair should therefore be interpreted as a calibrated surrogate-and-control construction for sample-level stale bias. The theory above justifies three design choices and no more: 1. rollout drift and supervision drift are distinct nonnegative mismatch channels; 2. larger values of those diagnostics increase potential objective discrepancy under the stated assumptions, while larger lag enlarges the budget over which rollout drift may accumulate; and 3. mapping those signals through a monotone freshness transformation suppresses higher-risk samples. What the theory does not claim is that α and β are universal constants or that the chosen surrogate is uniquely optimal. In practice, they should be understood as domain-dependent calibration parameters that align observable mismatch diagnostics onto a common operational scale. 
+
+## B Additional Experimental Details 
+
+B.1 Settings Benchmark inventory and splits. The paper is organized around three task families: short-horizon mathematical reasoning, medium-horizon tool-use reasoning, and long-horizon coding-agent issue resolution. The short-horizon benchmark uses MATH500 [ 44 ] together with a held-out 1,200-problem olympiad-style pool constructed from recent public contest problems; 200 problems are reserved as a pilot split for threshold selection, and 1,000 are used for the reported evaluation tables. The tool-use benchmark uses that same 1,000-problem report split, but each problem is wrapped in a deterministic code-interpreter environment following the ReTool formulation of interleaved reasoning and tool execution [ 42 ]. For coding, training trajectories are drawn from the mini-SWE agent, while the final coding evaluation uses 300 SWE-bench Verified issues [ 45 ]; 50 issues form a pilot split, and 250 form the reported evaluation set. We reference Codex-style evaluation [ 50 ], early program-synthesis benchmarks [ 51 ], AgentBench [ 52 ], WebArena [ 53 ], and VisualWebArena [ 54 ] only as neighboring evaluation settings rather than as the paper’s primary evidence. 16 Algorithm 1: f -OPD training step. The algorithm first measures per-sample freshness from replay-based rollout and supervision diagnostics, then performs buffer-level refresh if aggregate freshness or aligned support degrades, and finally optimizes the freshness-weighted, rollout-anchored objective on the surviving samples. 
+
+Input: active buffer Bt; current student πtθ ; stale rollout checkpoints {πr(i) 
+
+> θ
+
+}; teacher model πteacher ;thresholds ξ, κ f , κ roll , κ sup ; weights α, β, λ  
+
+> 1
+
+foreach i ∈ B t do  
+
+> 2
+
+replay sample i on aligned token positions Uroll  
+
+> i
+
+, Usup  
+
+> i
+
+; 
+
+> 3
+
+if |U roll  
+
+> i
+
+| = 0 or |U sup  
+
+> i
+
+| = 0 then  
+
+> 4
+
+set fi = 0 , mroll  
+
+> i
+
+= 0 , and msup  
+
+> i
+
+= 0 ; 
+
+> 5
+
+mark sample i invalid for optimization and continue;  
+
+> 6
+
+compute rollout drift Droll  
+
+> i
+
+and supervision drift Dsup  
+
+> i
+
+by Eq. 10;  
+
+> 7
+
+compute lag τi = t − r(i) and freshness score fi = ( τi + 1) −1 exp( −αpDroll  
+
+> i
+
+− βpDsup  
+
+> i
+
+); 
+
+> 8
+
+compute alignment ratios mroll  
+
+> i
+
+= |U roll  
+
+> i
+
+|/H i and msup  
+
+> i
+
+= |U sup  
+
+> i
+
+|/H i; 
+
+> 9
+
+aggregate ¯f t = |B t|−1 P 
+
+> i∈B t
+
+fi, ¯Mt, roll = |B t|−1 P 
+
+> i
+
+mroll  
+
+> i
+
+, and ¯Mt, sup = |B t|−1 P 
+
+> i
+
+msup  
+
+> i
+
+; 
+
+> 10
+
+if ¯f t ≤ κf or ¯Mt, roll < κ roll or ¯Mt, sup < κ sup then  
+
+> 11
+
+refresh Bt with newly rolled out and relabeled samples;  
+
+> 12
+
+recompute {Droll  
+
+> i
+
+, D sup  
+
+> i
+
+, f i}i∈B t on the refreshed buffer;  
+
+> 13
+
+foreach minibatch M ⊂ B t do  
+
+> 14
+
+form freshness weights wi = σ(fi − ξ) for i ∈ M ; 
+
+> 15
+
+form aggregated current-context loss ℓti by averaging ℓ πtθ (· | xi,h ), π teacher (· | cti,h ) over h ∈ U sup  
+
+> i
+
+; 
+
+> 16
+
+form anchored loss LM = 1
+
+> |M|
+
+P 
+
+> i∈M
+
+wi
+
+ℓti + λD roll 
+
+> i
+
+; 
+
+> 17
+
+update student parameters θ ← θ − η∇θ LM;
+
+Output: updated student πt+1  
+
+> θ
+
+and refreshed metadata for the next asynchronous step 
+
+Student and teacher checkpoints. The reasoning student is Qwen2.5-Math-7B-Instruct [ 55 ], with Qwen2.5-Math-72B-Instruct [ 55 ] as its supervision source. In the reshaped agentic setup, both the tool-use student and the coding-agent student are Qwen3-8B [ 4], and both use the same frozen Qwen3-Coder-30B-A3B-Instruct supervision source [ 4]. All teachers are frozen. Student rollouts use temperature 0.7 and top-p 0.95 for reasoning and tool use, and temperature 0.6 for coding. Teacher labels are greedily generated in every setting, so supervision drift reflects asynchronous state drift rather than teacher sampling noise. These choices keep the supervision source stronger than the student without turning to a closed model, and they align with the public Qwen technical reports rather than informal leaderboard comparisons. 
+
+Async pipeline definition. A rollout batch is generated by a student snapshot, labeled by the frozen teacher, and consumed by a later student snapshot. Lag k means that the optimizer is allowed to apply roughly k update steps between the snapshot used for rollout generation and the current training state consuming that sample. For each buffered sample i, we compute the method quantities from Sec. 4: 
+
+τi = t−r(i), e∆ti = α
+
+q
+
+Droll  
+
+> i
+
++β
+
+q
+
+Dsup  
+
+> i
+
+, fi = ( τi +1) −1 exp( − e∆ti), wi = σ(fi −ξ).
+
+Here Droll  
+
+> i
+
+is the replay-based rollout-drift statistic, Dsup  
+
+> i
+
+is the replay-based supervision-drift statistic, and τi is the update lag attached to the sample. The reported full method uses the same thresholded freshness gating as Sec. 4, and applies the resulting gate to both the distillation term and the rollout-anchored regularizer. The lag-only freshness-weighting baseline replaces the full score with 
+
+f lag -only  
+
+> i
+
+= ( τi + 1) −1, wi = σ(f lag -only  
+
+> i
+
+− ξ),
+
+so it tests whether age alone is a sufficient freshness surrogate once rollout drift and supervision drift are ignored. All thresholds and score coefficients are selected on the task-specific pilot split and then fixed for the reported runs. The full f -OPD method combines this thresholded gating with rollout-anchored regularization and adaptive refresh. 17 Adaptive refresh follows the buffer-level rule from Sec. 4 rather than an auxiliary heuristic. We monitor 
+
+¯f t = 1
+
+|B t|
+
+X
+
+> i∈B t
+
+fi, ¯Mt, roll = 1
+
+|B t|
+
+X
+
+> i∈B t
+
+|U roll  
+
+> i
+
+|
+
+Hi
+
+, ¯Mt, sup = 1
+
+|B t|
+
+X
+
+> i∈B t
+
+|U sup  
+
+> i
+
+|
+
+Hi
+
+,
+
+and refresh the active buffer when 
+
+¯f t ≤ κf , or ¯Mt, roll < κ roll , or ¯Mt, sup < κ sup .
+
+Here Hi is the sample token length, as in Sec. 4. Adaptive refresh can trigger at most once every 200 optimizer steps to avoid oscillatory recollection. The fixed-refresh baseline is intentionally more aggressive: it refreshes deterministically every 10 optimizer steps. Under the uniform 400-step training schedule used throughout the paper, this baseline therefore performs 40 scheduled refreshes, corresponding to a refresh rate of 100.0 in the systems table under the paper’s normalized convention. To estimate the corresponding throughput, we use a simple amortized overlap model in which one full refresh costs about four asynchronous step-equivalents of recollection, relabeling, and pipeline refill; this yields an expected coding-side relative throughput of 1.15 × versus synchronous OPD under the every-10-step schedule. Rollout KL and response entropy are logged at the same checkpoints as operational monitoring proxies, but they are not the formal trigger conditions reported for the method. 
+
+Tool-use and coding-agent environment details. The tool-use environment follows ReTool [ 42 ]and exposes a single deterministic code-interpreter tool that can be interleaved with natural-language reasoning. Each tool invocation is a structured Python execution request; the harness returns the execution status along with stdout and stderr, and that observation is appended to the running dialogue state before the next student action. An invalid tool call is any malformed tool block, an unparsable execution payload, an unsupported invocation format, or a tool response that cannot be re-integrated into the active context. Each episode allows at most six tool calls and a maximum of ten total assistant turns. The coding-agent setup adopts mini-swe-agent as the scaffold [ 56 ], and the final benchmarked runs are evaluated on SWE-bench Verified instances [ 45 ]. For each evaluation instance, the agent receives a repository snapshot before the human fix, the issue description, and the associated test-facing sandbox, then interacts with the repository through an edit-execute-observe loop within an isolated, containerized environment. We use the same internal edit-execute-observe scaffold training and evaluation, rather than switching to a separate leaderboard-specific scaffold; only the repository instances and the final grading harness differ across the two stages. The final patch is graded using the Docker-based SWE-bench evaluation procedure: it is applied to the repository state for that instance, then checked against the corresponding test suite. 
+
+Metrics, uncertainty, and compute. Reasoning uses mean@1 accuracy. Tool-use uses mean@4 accuracy together with the same invalid tool definition as in Sec. 5. Coding uses the same single-run SWE-bench Verified resolve rate protocol as in Sec. 5, together with repeated-loop, premature-stop, and post-patch regression rates. Throughput is measured as the number of completed training samples per wall-clock hour and is normalized to synchronous OPD. Peak-to-final drop is the gap between the best and final checkpoint scores, using tool-use mean@4 or coding resolve rate, as appropriate for the table in question. Collapse is operationalized as a run whose final task score is more than 40% below its peak and remains below 90% of peak for the last 10% of training. The main freshness diagnostics are rollout drift and supervision drift. Rollout KL and response entropy are also logged every evaluation checkpoint as engineering-side warning signals. Supervision-side replay diagnostics are logged only when current relabeling contexts can be reconstructed reliably; in the current protocol, that means the tool-use ablations and the coding-agent runs, not pure reasoning. The figures report five-seed means with shaded standard-deviation bands for learning curves, and the appendix summaries expose the same uncertainty through bands, faint seed-level markers, and error bars where appropriate. 
+
+Metrics, uncertainty, and compute. Reasoning uses mean@1 accuracy. Tool-use uses the same single-trajectory tool success and invalid tool . Coding uses the same single-run SWE-bench Verified 
+
+resolve rate protocol, together with repeated-loop, premature-stop, and post-patch regression rates. Throughput is measured as completed training samples per wall-clock hour and is normalized to synchronous OPD. Peak-to-final drop is the gap between the best checkpoint score and the terminal 18 checkpoint score, using tool-use success or coding resolve rate as appropriate for the table in question. Collapse is operationalized as a run whose final task score is more than 40% below its peak and remains below 90% of peak for the last 10% of training. The main freshness diagnostics are rollout drift, supervision drift, the sample-level freshness score, and the buffer-level refresh statistics above. Rollout KL and response entropy are also logged every evaluation checkpoint as engineering-side warning signals. Supervision-side replay diagnostics are logged only when current relabeling contexts can be reconstructed reliably; in the current protocol that means the tool-use ablations and the coding-agent runs, not pure reasoning. The figures report five-seed means with shaded standard-deviation bands for learning curves, and the appendix summaries expose the same uncertainty through bands and error bars where appropriate. The reported compute budget is about 16k H100-80GB GPU-hours in total: 3k for reasoning, 5k for tool-use, and 8k for coding. Reasoning and tool-use runs use 16 H100-80GB GPUs, while coding runs use 24 H100-80GB GPUs. 
+
+Compared methods. Unless otherwise stated, the method comparisons below use the hardest asynchronous setting, lag = 8 , because that is where freshness mismatch is most visible. We use the following names throughout the section. Synchronous OPD is the fully synchronized on-policy baseline. Asynchronous OPD is the bare overlapped pipeline with no freshness-aware control. 
+
+Async OPD + fixed refresh keeps the bare asynchronous objective but deterministically refreshes the active buffer every 10 optimizer steps. Async OPD + lag-only freshness weighting replaces the full freshness score with 
+
+f lag -only  
+
+> i
+
+= ( τi + 1) −1, wi = σ(f lag -only  
+
+> i
+
+− ξ),
+
+so it tests whether update lag alone is an adequate freshness surrogate. Async OPD + rollout-anchored regularization keeps only the rollout-anchored regularization term from Sec. 4 on top of bare asynchronous OPD. Async OPD + adaptive refresh keeps only the adaptive refresh rule driven by ¯f t, ¯Mt, roll , and ¯Mt, sup . Finally, f -OPD is the full method that combines the freshness score fi,thresholded freshness gating, rollout-anchored regularization, and adaptive refresh. 
+
+Table layout and questions. The experiments are organized into a main comparison, a hardest-lag ablation, a score-design ablation, and a behavioral failure analysis. The following subsections interpret those views in turn. 
+
+## C Additional Tables and Figures 
+
+Table 3 further provides a summary of the protocol in our experiments. Fig. 5 supplements Fig. 1 with task-wise entropy dynamics across different lags. Moreover, Fig. 6 provides a comparative analysis of different freshness designs through coding-agent failure rates, including no freshness control, lag-only weighting, and the freshness weighting used in 
+
+f -OPD. The results show that f -OPD consistently achieves the lowest failure rate, highlighting the effectiveness of its coarse-grained sample-level freshness estimation. Table 3: Compact benchmark and model inventory for the three primary task families. LiveCodeBench is treated as supplementary coding evidence and is not part of the main-text benchmark count. Metric names follow the main-text reporting conventions.               
+
+> Family Student Supervision source Primary metric Seeds
+> Reasoning Qwen2.5-Math-7B-Instruct Qwen2.5-Math-72B-Instruct mean@1 accuracy 5Tool-use Qwen3-8B Qwen3-Coder-30B-A3B-Instruct mean@4 accuracy 5Coding-agent Qwen3-8B Qwen3-Coder-30B-A3B-Instruct Resolve rate 5
+
+19 0 100 200 300 400               
+
+> Training step
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> Token entropy
+> lag = 0
+> 0100 200 300 400
+> Training step
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> lag = 2
+> 0100 200 300 400
+> Training step
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> lag = 4
+> 0100 200 300 400
+> Training step
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> lag = 8
+> Task family
+> Reasoning Tool-use Coding
+
+Figure 5: Supplementary entropy dynamics under fixed lag values. Unlike Figure 3(c), which reports a task-average entropy curve computed as an unweighted average over Reasoning / Tool-use / Coding for each lag, this figure breaks the same runs back out by task family and shows one panel for each lag setting (0, 2, 4, and 8). Reasoning remains comparatively stable even as lag increases, while tool use and coding progressively develop wider late-training uncertainty bands. The upper side of those bands expands especially quickly at larger lag, indicating that some runs retain high-entropy exploration, whereas others partially collapse. Lines show five-seed means and shaded regions show standard deviation. Invalid tool Repeat loops Premature stop Regression after fix 
+
+0
+
+2
+
+4
+
+6
+
+8
+
+10 
+
+12 
+
+14  
+
+> Failure rate (%)
+> Asynchronous OPD Async OPD + lag-only score
+> f-OPD
+
+Figure 6: Supplementary behavioral failure analysis for the long-horizon coding-agent setting. Bars show five-seed means, and error bars show ±1 standard deviation for the representative asynchronous, lag-only freshness score, and fully stabilized settings. 
+
+## D Discussion and Limitations 
+
+Our claims are deliberately scoped: asynchronous OPD becomes unstable when the student outruns its data and supervision stream, and f -OPD reduces this mismatch through a principled freshness-aware control. Several limitations qualify this scope. First, our experiments cover a small set of model families and tasks—math reasoning, tool-use, and coding agents—chosen to span interaction horizons rather than to provide a comprehensive survey. The robustness of our conclusions across more benchmarks, seeds, and student–teacher pairs remains to be verified. Second, supervision drift is setting-dependent. In static labeling settings with a fixed teacher and identical context, Dsup  
+
+> i
+
+is near-zero by construction; its value lies in asynchronous relabeling or 20 trajectory-conditioned regimes. We therefore frame supervision drift as a generally applicable term whose contribution may be negligible in some settings, not as a universally dominant factor. Third, our analysis is a discrepancy bound under bounded-regularity assumptions, not a convergence theory. The freshness score is a calibrated surrogate for stale-objective bias, and the rollout-anchored KL acts as a trust-region constraint on the stale buffer—neither claim eliminates asynchronous bias outright. Tightening these bounds, relating calibration coefficients to queue statistics, and broader empirical stress tests are left to future work. 
+
+## E Broader Impact 
+
+f -OPD offers a practical recipe for navigating the performance–efficiency trade-off in on-policy distil-lation, supporting more reliable post-training of large language models under realistic asynchronous pipelines. Beyond technical contributions, our method can lower the resource barrier for academic and resource-constrained research groups, helping democratize a direction currently concentrated in a few well-resourced institutions. 21
