@@ -1,0 +1,1128 @@
+Title: MARGIN: Runtime Confidence Calibration for Multi-Agent Foundation Model Coordination
+
+URL Source: https://arxiv.org/pdf/2605.22949v1
+
+Published Time: Mon, 25 May 2026 00:05:32 GMT
+
+Number of Pages: 34
+
+Markdown Content:
+# MARGIN: Runtime Confidence Calibration for Multi-Agent Foundation Model Coordination 
+
+Joss Armstrong BCSS NM ST&A Research, Ericsson, Athlone, Ireland 
+
+joss.armstrong@ericsson.com 
+
+May 25, 2026 
+
+Abstract 
+
+Foundation model agents increasingly operate in multi-agent deployments where a coordi-nator must decide which agent’s response to trust. The standard approach weights agents by their self-reported confidence, but recent evidence shows that foundation model confidence is systematically miscalibrated and, on hard tasks, inversely correlated with accuracy. Design-time calibration methods (temperature scaling, Platt scaling, histogram binning) cannot address this problem because they fit a fixed correction to held-out data and degrade under distribution shift. We present MARGIN (Multi-Agent Runtime Grading via Incremental Normalisation), an online calibration method that learns per-agent, per-confidence-band calibration factors from the task stream itself, requiring no model access, no held-out data, and no retraining. MARGIN uses sym-metric exponentially weighted moving averages with Bayesian shrinkage blending, and has three hyperparameters with robust defaults. Across 19 foundation models, 8 benchmarks, and over 50,000 observations, MARGIN achieves 3–6 × lower calibration error than the best design-time baseline under distribution shift. In multi-agent selection, raw verbalized confidence produces pairwise resolution worse than random (45–56%) on hard benchmarks. MARGIN corrects this completely, raising pairwise resolution to 70–89% and surpassing the always-best-model oracle on three of four benchmarks. Six formal propositions characterise convergence, tracking speed, and the optimality of symmetric updates for non-strategic agents, with all predictions illustrated empirically. 
+
+Keywords: confidence calibration, multi-agent systems, foundation models, online learning, distribution shift. 
+
+# 1 Introduction 
+
+Foundation models are increasingly deployed as autonomous agents that observe, reason, and act without human intervention [30, 32]. In multi-agent deployments, a coordinator receives predictions from several agents and must decide which response to trust. The natural approach is to weight each agent by its self-reported confidence. This assumes that confidence is informative: that an agent expressing 90% confidence is more likely correct than one expressing 70%. The assumption is wrong. Studies consistently show that foundation model confidence is mis-calibrated [8, 12, 33]. An agent claiming 90% confidence may be correct only 60% of the time. More concerning, the miscalibration is not merely imprecise but can be inverted : on hard tasks, weaker models express higher confidence than stronger ones, so that trusting the most confident agent systematically selects the wrong answer. In our experiments, raw verbalized confidence produces pairwise resolution of 45–56% on hard code generation benchmarks, worse than a coin flip. 1
+
+> arXiv:2605.22949v1 [cs.LG] 21 May 2026
+
+Calibration methods exist. Temperature scaling [12], Platt scaling [26], and histogram bin-ning [24] learn correction functions from held-out validation data. Recent work extends these to language models specifically, through auxiliary calibration models [27], confidence tuning [20], and disagreement-aware alignment [22]. All are design-time methods. They fit a correction once, be-fore deployment, and the correction is then fixed. When the deployment distribution differs from the calibration set, as it inevitably does, the correction degrades. Our experiments show that design-time baselines degrade 3–4 × under distribution shift, with ECE rising from single digits to 37–63. This creates a gap. Foundation model agents operate in environments where the task distribu-tion shifts continuously: new problem types appear, user behaviour changes, and model updates alter the confidence landscape. No existing method learns calibration at runtime, from the task stream itself, without access to model internals. We present MARGIN (Multi-Agent Runtime Grading via Incremental Normalisation), an online confidence calibration method for multi-agent foundation model systems. MARGIN maintains per-agent, per-confidence-band calibration factors that are updated continuously via symmetric exponentially weighted moving averages (EWMA). The method treats each agent as a black box, observing only its predictions, stated confidence, and eventual outcomes. It requires no held-out calibration data, no access to logits or weights, and no retraining. Bayesian shrinkage blending stabilises estimates during the cold-start period. The entire method has three hyperparameters with robust defaults ( α = 0 .04, K = 3 bands, ks = 100) and negligible computational overhead. We evaluate MARGIN across 19 foundation models (10 cloud API, 9 local), 8 benchmarks spanning code generation, question answering, and mathematics, and over 50,000 observations. The key findings are: 
+
+• Distribution shift. Under severe shift, MARGIN achieves 3–6 × lower calibration error than the best design-time baseline (ECE 6–11 vs 37–63). Under moderate shift, MARGIN approx-imately halves the best baseline. The advantage scales monotonically with shift severity. 
+
+• Confidence inversion. Raw verbalized confidence is worse than random at pairwise reso-lution on three of four hard benchmarks (44.8–55.5%). MARGIN corrects this completely, raising pairwise resolution to 70–89%. 
+
+• Multi-agent selection. MARGIN-calibrated selection surpasses the always-best-model baseline on three of four benchmarks and reaches 83–97% of oracle performance. 
+
+• Symmetric optimality. Symmetric EWMA decisively outperforms all asymmetric con-figurations. We prove that asymmetric updates introduce systematic bias for non-strategic agents whose confidence errors are epistemic rather than strategic, and observe 3–4 × ECE degradation for all tested asymmetric rates, consistent with the theoretical prediction. Six formal propositions characterise MARGIN’s convergence, tracking speed, bias-variance tradeoff, and the optimality conditions for symmetric updates. The theoretical predictions are illustrated by the empirical results throughout. The remainder of this paper is organised as follows. Section 2 surveys related work. Section 3 presents the method. Section 4 states formal properties. Sections 5–8 describe the experimental evaluation. Section 10 reports ablation studies. Section 11 discusses implications and limitations. Section 12 concludes. 22 Related Work 
+
+MARGIN sits at the intersection of calibration, multi-agent coordination, reputation systems, and online learning. We survey each area and identify the gap that MARGIN fills. 
+
+2.1 Design-Time Calibration 
+
+The calibration problem for neural networks was established by Guo et al. [12], who showed that modern deep networks are poorly calibrated and that a single learned temperature parameter can substantially reduce expected calibration error (ECE) [24] on held-out data. Platt scaling [26] fits a logistic regression, and histogram binning [24] provides a non-parametric alternative. Minderer et al. [23] revisited these findings for newer architectures and found that calibration properties vary substantially across model families, but that the methods themselves remain design-time: a correction is fitted once and applied without further adaptation. Recent work has extended design-time calibration to large language models. Shen et al. [27] propose Thermometer, an auxiliary model trained across multiple tasks to produce calibrated confidence estimates for new tasks. ConfTuner [20] fine-tunes the language model itself to produce better-calibrated verbalized confidence. DACA [22] performs post-hoc temperature calibration by aligning a post-trained model’s confidence with a pre-trained reference on agreement examples. These methods represent the current state of the art in LLM calibration. All design-time methods share a fundamental limitation: they produce a fixed correction that assumes the deployment distribution matches the calibration set. When it does not, the correction degrades. Temperature scaling, for instance, learns a single scalar. If the model is overconfident on one task type and underconfident on another, a single temperature cannot correct both. More critically, if the task distribution shifts after deployment, the correction becomes stale with no mechanism for recovery. Ovadia et al. [25] document this failure mode systematically across neural uncertainty estimators, showing that every method they evaluate degrades substantially under shift. Ensemble approaches [19] improve uncertainty estimates but require training or fine-tuning multiple models. MARGIN addresses the limitation differently, by learning calibration factors online from the deployment stream itself without any retraining. 
+
+2.2 LLM Confidence and Uncertainty Estimation 
+
+The reliability of LLM self-reported confidence has been studied extensively. Kadavath et al. [15] showed that language models have partial self-knowledge about their own uncertainty, but that this self-assessment does not generalise across task distributions. Xiong et al. [33] conducted a systematic evaluation of confidence elicitation methods across frontier models and found that none produce well-calibrated outputs across tasks. Even GPT-4 achieved an AUROC of only 62.7% for failure prediction, barely above random. Two comprehensive surveys frame the current landscape. Geng et al. [8] survey confidence estimation and calibration methods for LLMs, covering verbalized confidence, logit-based methods, ensemble approaches, and post-hoc calibration. Liu et al. [21] survey uncertainty quantification more broadly, including Bayesian approaches and conformal prediction [1]. Both surveys document the severity of the miscalibration problem but propose no runtime solution. Confidence signals for LLMs fall into three categories. Verbalized confidence [29] prompts the model to state a numerical confidence alongside its prediction. This is broadly available but poorly calibrated, as models tend toward overconfidence and the mapping from internal uncertainty to a stated number is unreliable. Consistency confidence [31] runs the same query multiple times 3and measures agreement across samples. A third line of work constructs semantic-level uncertainty measures over generated answers [6, 17], treating multiple sampled outputs as evidence of underlying uncertainty at the meaning level rather than the token level. MARGIN is agnostic to the confidence source and applies the same online calibration across modalities. A common thread across all surveyed work is the absence of runtime adaptation. Confidence estimation methods produce a score; calibration methods correct that score using a pre-fitted function. Neither learns from deployment outcomes. MARGIN occupies this gap: it takes whatever confidence signal is available (verbalized or consistency) and learns, at runtime, how much that signal can be trusted for each agent and confidence level. 
+
+2.3 Multi-Agent Coordination and Debate 
+
+Multi-agent debate, where multiple LLM instances propose and refine answers through iterative discussion, has emerged as a prominent coordination paradigm. Du et al. [5] showed that multi-agent debate improves factuality and reasoning by exposing models to alternative perspectives. Frameworks such as AutoGen [32] operationalise this pattern for practical deployment. However, debate assumes that agents can productively critique each other’s reasoning. La Malfa et al. [18] challenge this assumption, arguing that current LLM multi-agent systems lack core properties of classical MAS such as social interaction and structured environments. Smit et al. [28] benchmark debate strategies and find that multi-agent debate does not reliably outperform simpler prompting approaches such as self-consistency. Heterogeneous approaches attempt to impose structure on multi-agent coordination. Zhou and Chen [34] propose A-HMAD, an adaptive heterogeneous debate framework that assigns distinct roles to different agent types and rates contributions via a consensus optimiser. This imposes ar-chitectural structure but does not learn, from observed outcomes, how much to trust any particular agent’s stated confidence. Confidence-based model selection represents a complementary approach. Gerych et al. [9] train an auxiliary regression model to predict each LLM’s confidence for a given query and route the query to the most confident model-prompt pair. Chen et al. [3] propose FrugalGPT, a cost-aware cascade that routes queries to progressively more capable models until a learned confidence threshold is met. Both approaches assume that raw or learned confidence is a reliable signal for routing. Neither tracks prediction outcomes to compute calibration factors, and neither adjusts confidence values based on demonstrated per-agent, per-band reliability. MARGIN operates at the layer beneath all of these approaches. Before confidence can be used for debate weighting, hierarchical role assignment, or query routing, it must first be calibrated to reflect actual reliability. A debate framework that weights agents by raw confidence will systemat-ically amplify the voices of overconfident agents. A routing system that sends queries to the most confident model will systematically choose the wrong model when confidence is inverted. MARGIN provides the calibration layer that makes downstream coordination mechanisms reliable. 
+
+2.4 Trust and Reputation Systems 
+
+Trust and reputation systems have a long history in multi-agent and distributed systems. Jøsang et al. [14] survey the landscape, covering computational trust models, reputation aggregation, and the distinction between direct experience and third-party recommendations. EigenTrust [16] computes global reputation scores in peer-to-peer networks by iterating local trust assessments, achieving robust reputation even under adversarial conditions. These systems track overall agent reliability: is this agent generally trustworthy? MARGIN 4tracks something more specific: conditional reliability as a function of stated confidence level. An agent might be highly reliable when it expresses moderate confidence but systematically overconfi-dent at high confidence levels. A single reputation score cannot capture this variation. MARGIN’s per-band calibration factors provide the fine-grained correction that flat reputation cannot. A second distinction concerns the agent model. Classical reputation systems are designed for strategic agents that may lie, collude, or manipulate their reputation. The update rules are typically asymmetric, penalising bad behaviour faster than rewarding good behaviour, to deter strategic defection. Foundation model agents, by contrast, have fixed policies and do not strategically adjust their confidence in response to external feedback. Their miscalibration is epistemic, not strategic. As we show formally in Proposition 5 and empirically in Section 10.3, the symmetric update that is optimal for non-strategic agents performs catastrophically under the asymmetric rules designed for strategic settings. 
+
+2.5 Online Learning and Calibration in Non-Stationary Environments 
+
+The formal definition of calibration is due to Dawid [4]: a sequence of probability forecasts is calibrated if, conditional on any stated probability p, the observed outcome frequency converges to p. Foster and Vohra [7] subsequently established that asymptotic calibration is achievable by a randomised forecasting rule even against adversarial sequences, a cornerstone result for online calibration. Cesa-Bianchi and Lugosi [2] develop the general theory of prediction with expert advice and sequential learning that underlies modern online calibration methods. The exponentially weighted moving average (EWMA) is a classical tool for tracking non-stationary statistics [13]. Originally developed for statistical process control, the EWMA assigns exponentially decaying weights to past observations, providing a principled tradeoff between track-ing speed and estimation noise. The effective memory window of approximately 1 /α observations makes the method inherently adaptive: stale observations are automatically down-weighted as the environment changes. A closely related line of work in conformal prediction adapts to distribution shift at the prediction-set level: Gibbs and Cand` es [10] show that conformal thresholds can be up-dated online to maintain target coverage under arbitrary shift. MARGIN and adaptive conformal inference are complementary: the former learns point calibration factors suitable for multi-agent selection; the latter produces distribution-free prediction intervals. MARGIN’s contribution is not the EWMA itself but its application to confidence calibration in a structured way: per-agent, per-confidence-band tracking with Bayesian shrinkage blending and a formal analysis of symmetric versus asymmetric updates. The per-band structure enables fine-grained calibration profiles that a single EWMA per agent cannot provide. The shrinkage blending addresses the cold-start problem inherent in stratified tracking, where some (agent, band) pairs may accumulate observations slowly. The symmetric optimality result, which contradicts the standard intuition from strategic reputation systems, is specific to the non-strategic agent setting and, to our knowledge, has not been formalised previously. Table 1 summarises the positioning of MARGIN relative to prior work along four dimensions. 
+
+# 3 Method 
+
+3.1 Problem Formulation 
+
+Consider a pool of N foundation model agents A = {a1, . . . , a N } deployed over a stream of tasks 
+
+{q1, q 2, . . . }. For each task qt, a subset of agents At ⊆ A provides responses. Each responding agent ai produces a prediction ˆ yi,t together with a confidence score ci,t ∈ [0 , 1] representing its 5Table 1: Positioning of MARGIN relative to prior work.                                     
+
+> Method Runtime Per-band Black-box Shift-adaptive
+> Temp. scaling [12] ××✓×
+> Platt scaling [26] ××✓×
+> Histogram binning [24] ×✓✓×
+> Thermometer [27] ××××
+> ConfTuner [20] ××××
+> Conf.-based search [9] ××✓×
+> EigenTrust [16] ✓×✓✓
+> MARGIN ✓✓✓✓
+
+self-assessed probability of correctness. After a delay, a binary outcome oi,t ∈ { 0, 1} is observed, where oi,t = 1 if ˆ yi,t matches the ground truth and oi,t = 0 otherwise. The core problem is that ci,t is unreliable. Foundation models are frequently overconfident, and the degree of miscalibration varies across models, across confidence ranges within the same model, and over time as the task distribution shifts. A model that is well-calibrated on one benchmark may be catastrophically miscalibrated on another. Design-time calibration methods (temperature scal-ing, Platt scaling, histogram binning) fit a correction function to held-out data, but this correction degrades whenever the deployment distribution differs from the calibration set. We impose three constraints that reflect realistic multi-agent deployment: 1. No model access. Agents are black boxes. We observe only their predictions, stated confidence, and eventual outcomes. No access to internal logits, weights, or training data is available. 2. No held-out calibration set. The method must learn from the task stream itself. In deployment, the distribution is unknown in advance and may shift at any time. 3. Online operation. Calibration must update incrementally as new observations arrive, with-out reprocessing historical data. Under these constraints, the goal is to learn a calibration function fi : [0 , 1] → [0 , 1] for each agent such that the calibrated confidence ˜ ci,t = fi(ci,t ) satisfies 
+
+P(oi,t = 1 | ˜ci,t = p) ≈ p (1) for all p ∈ [0 , 1], and to use these calibrated confidences for multi-agent selection: choosing the most reliable response from the pool. 
+
+3.2 Confidence-Band Stratified Tracking 
+
+Rather than learning a single calibration correction per agent, MARGIN partitions the confidence range [0 , 1] into K disjoint bands {B1, . . . , B K } and maintains a separate calibration factor for each (agent, band) pair. This reflects the empirical observation that miscalibration is not uniform across confidence levels: a model may be well-calibrated when it expresses moderate confidence but severely overconfident at high confidence, or vice versa. We use K = 3 equal-width bands by default: 
+
+B1 = [0 , 13 ), B2 = [ 13 , 23 ), B3 = [ 23 , 1] . (2) 6Let κ(c) ∈ { 1, . . . , K } denote the band index for confidence value c. For each agent ai and band 
+
+k, we maintain two running estimates: 
+
+• ˆai,k : the empirical accuracy rate of agent ai when its confidence falls in band Bk,
+
+• ¯ci,k : the mean confidence expressed by agent ai within band Bk.Both are initialised to the band midpoint mk, so that the initial calibration factor γi,k =ˆai,k /¯ci,k = 1 and raw confidence passes through unchanged before any observations. The choice of K = 3 balances calibration granularity against per-band sample requirements. Fewer bands accumulate observations faster and are more robust under severe distribution shift, where each band must re-learn its factor from limited data. More bands provide finer-grained correction when observations are plentiful. We evaluate this tradeoff empirically in Section 10.2. 
+
+3.3 EWMA Update Mechanism 
+
+Both running estimates are updated using an exponentially weighted moving average (EWMA) with a constant learning rate α ∈ (0 , 1). When agent ai produces a prediction at time t with confidence ci,t ∈ Bk and outcome oi,t is subsequently observed, the updates are: ˆai,k ← (1 − α) ˆ ai,k + α o i,t , (3) ¯ci,k ← (1 − α) ¯ ci,k + α c i,t . (4) The constant learning rate gives exponentially decaying weights to past observations: the weight on an observation τ steps in the past is (1 − α)τ · α, with an effective memory window of approx-imately 1 /α observations. This is the key property that enables adaptation to distribution shift. Unlike a simple running average, which gives equal weight to all past observations, the EWMA au-tomatically down-weights stale observations as the environment changes. The tradeoff is between tracking speed (higher α, faster adaptation to shift) and estimation noise (lower α, more stable estimates under stationarity). We formalise this in Proposition 4 and evaluate it empirically in Section 10.1. 
+
+Symmetric updates. A natural alternative is to use asymmetric learning rates: a larger αdown 
+
+when observed accuracy falls below the current estimate (penalising overconfidence faster) and a smaller αup otherwise. This is appropriate when agents can strategically manipulate their confidence in response to the calibration signal. However, foundation model agents have fixed policies and do not adapt their confidence expression in response to external feedback. Their miscalibration is epistemic, not strategic: confidence errors are approximately zero-mean over time. Under this condition, symmetric EWMA is an unbiased estimator of the true accuracy rate, while asymmetric updates introduce systematic bias proportional to |αup − αdown | (Proposition 5). We use α = 0 .04 throughout and confirm empirically in Section 10.3 that symmetric updates outperform all tested asymmetric configurations. The per-band calibration factor is then: 
+
+γi,k = ˆai,k 
+
+¯ci,k 
+
+, (5) representing the ratio of observed accuracy to stated confidence within the band. If an agent consistently achieves 60% accuracy when expressing 90% confidence, γi,k ≈ 0.67, appropriately discounting future high-confidence predictions. 73.4 Bayesian Shrinkage Blending 
+
+The per-band calibration factor γi,k is the most informative estimate when sufficient observations have accumulated in band k. Early in the observation stream, however, some (agent, band) pairs may have very few observations, leading to high-variance estimates. We address this with a hi-erarchical shrinkage scheme that blends the band-level factor toward a more stable model-level prior. Let γi, · denote the model-level calibration factor for agent ai, computed from the EWMA accuracy and confidence estimates aggregated across all bands. Let ni,k denote the number of observations accumulated for agent ai in band k. The effective calibration factor is: 
+
+γeff  
+
+> i,k
+
+= ni,k 
+
+ni,k + ks
+
+γi,k + ks
+
+ni,k + ks
+
+γi, ·, (6) where ks > 0 is the shrinkage constant controlling the blending rate. When ni,k is small relative to 
+
+ks, the estimate is pulled toward the model-level factor. As observations accumulate, the band-level factor dominates. This is an empirical Bayes construction: the model-level factor serves as a prior informed by the agent’s overall calibration quality, and the band-level factor is the likelihood contribution from within-band observations. The blending weight ni,k /(ni,k + ks) increases monotonically with observations, ensuring that the effective estimate improves over time regardless of the initial band allocation. We use ks = 100 as the default, which provides meaningful shrinkage during the first ∼100 observations per band while converging to the pure band-level factor thereafter. The no-blending case ( ks = 0) already outperforms all design-time baselines; shrinkage provides an additional 40% ECE reduction in the moderate-to-severe shift regime that dominates practical deployment (Sec-tion 10.4). 
+
+3.5 Calibrated Confidence Weighting 
+
+Given the effective calibration factor, the calibrated confidence for agent ai at time t is: ˜ci,t = γeff  
+
+> i,κ (ci,t )
+
+· ci,t . (7) For multi-agent selection, we aggregate across the responding pool using confidence-weighted voting. For each candidate answer y in the response set, the aggregated score is: 
+
+s(y) = X
+
+> i∈A t
+
+˜ci,t · 1[ˆ yi,t = y], (8) and the selected answer is ˆ yt = arg max y s(y). This rule has a clear interpretation: each agent’s vote is weighted by its calibrated confidence, so that a highly confident but historically unreliable agent contributes less than a moderately confident but well-calibrated one. When calibration is poor (as with raw confidence), overconfident agents dominate the vote and the selection can perform worse than random. When calibration is accurate, the weighting naturally favours the agent most likely to be correct. 
+
+3.6 Dual Modality 
+
+MARGIN is agnostic to the source of the confidence signal. We evaluate two modalities: 8Agent i                            
+
+> raw ci,t
+> Band router
+> K= 3 : [0,1/3) [1/3,2/3) [2/3,1]
+> EWMA ai, 1, t
+> α= 0.04 (sym.)
+> EWMA ai, 2, t
+> α= 0.04 (sym.)
+> EWMA ai, 3, t
+> α= 0.04 (sym.)
+> Bayesian shrinkage
+> ks= 100
+> Calibrated ̃
+> ci,t=ai,k,tci,t
+> Selection
+> arg max
+> ĩci,t
+> Outcome
+> yi,t∈ {0, 1}
+> feedback: update only the band used at t
+
+MARGIN: band-stratified symmetric EWMA pipeline Figure 1: MARGIN pipeline. Each agent’s raw confidence ci,t is routed to one of K=3 confidence bands. Each band maintains an independent symmetric EWMA of agent accuracy (learning rate 
+
+α=0 .04). Bayesian shrinkage ( ks=100) blends the band estimate with a global prior during the cold-start period to produce the calibrated confidence ˜ ci,t , which drives multi-agent selection. After the outcome yi,t is observed, only the band used at time t is updated (dashed feedback). 
+
+Verbalized confidence. The agent is prompted to state its confidence as a numerical value alongside its prediction. This is the most broadly available signal, requiring no special infrastructure beyond a prompt template. However, verbalized confidence is known to be poorly calibrated: foundation models tend toward overconfidence, and the mapping from internal uncertainty to a stated number is unreliable [33]. 
+
+Consistency confidence. The same query is presented to the agent M times with non-zero temperature, and the confidence is computed as the fraction of runs producing the same answer: 
+
+ccons  
+
+> i,t
+
+= 1
+
+M
+
+> M
+
+X
+
+> m=1
+
+1[ˆ y(m) 
+
+> i,t
+
+= ˆ y(1)  
+
+> i,t
+
+]. (9) Consistency confidence is more expensive ( M × the inference cost) but provides a behavioural measure of uncertainty that does not depend on the model’s ability to introspect. MARGIN applies the same per-band EWMA calibration to both modalities independently. No modality-specific tuning is required: the same α, band count, and shrinkage constant are used throughout. We compare both modalities in the experimental evaluation and find that consistency confidence provides a stronger base signal, but MARGIN improves both substantially. 
+
+3.7 Summary 
+
+Algorithm 1 gives the complete procedure, and Figure 1 summarises the pipeline. MARGIN has three hyperparameters: the learning rate α, the number of confidence bands K, and the shrinkage constant ks. We use α = 0 .04, K = 3, and ks = 100 as defaults throughout all experiments. Sensitivity to each is evaluated in Section 10. 9Algorithm 1 MARGIN: Online Confidence Calibration and Multi-Agent Selection 
+
+Require: Agent pool A, bands {B1, . . . , B K }, learning rate α, shrinkage ks 
+
+> 1:
+
+Initialise: For all i, k : ˆ ai,k ← mk, ¯ci,k ← mk, ni,k ← 0 
+
+> 2:
+
+for each task qt do  
+
+> 3:
+
+for each responding agent ai ∈ A t do  
+
+> 4:
+
+Receive prediction ˆ yi,t and confidence ci,t  
+
+> 5:
+
+k ← κ(ci,t ) ▷ Determine confidence band  
+
+> 6:
+
+Compute γeff  
+
+> i,k
+
+via Eq. (6)  
+
+> 7:
+
+˜ci,t ← γeff  
+
+> i,k
+
+· ci,t ▷ Calibrated confidence  
+
+> 8:
+
+end for  
+
+> 9:
+
+ˆyt ← arg max y
+
+P 
+
+> i∈A t
+
+˜ci,t · 1[ˆ yi,t = y] ▷ Select answer  
+
+> 10:
+
+Wait for ground truth yt 
+
+> 11:
+
+for each responding agent ai ∈ A t do  
+
+> 12:
+
+oi,t ← 1[ˆ yi,t = yt] 
+
+> 13:
+
+k ← κ(ci,t ) 
+
+> 14:
+
+ˆai,k ← (1 − α) ˆ ai,k + α o i,t ▷ Update accuracy  
+
+> 15:
+
+¯ci,k ← (1 − α) ¯ ci,k + α c i,t ▷ Update confidence  
+
+> 16:
+
+ni,k ← ni,k + 1  
+
+> 17:
+
+end for  
+
+> 18:
+
+end for 
+
+# 4 Formal Properties 
+
+We state six propositions characterising the behaviour of MARGIN. Proof sketches appear below; full proofs are in Appendix A. Throughout, we consider a single (agent, band) pair and drop the subscripts i, k for clarity. Let X1, X 2, . . . be binary outcomes with E[Xt] = θ, and let ˆ a0 ∈ [0 , 1] be an arbitrary initialisation. 
+
+Proposition 1 (EWMA as Exponential Discounting) . The EWMA update ˆat = (1 − α) ˆ at−1 + α X t
+
+admits the closed-form expansion 
+
+ˆat = (1 − α)t ˆa0 + α
+
+> t
+
+X 
+
+> τ=1
+
+(1 − α)t−τ Xτ . (10) 
+
+The weight assigned to observation Xτ is wτ = α(1 − α)t−τ , which decays exponentially with age. The weights sum to 1 − (1 − α)t, with the residual (1 − α)t carried by the initialisation. The effective memory window is approximately 1/α observations. Proof sketch. Direct induction on the recurrence. The weight sum is a geometric series. The effective window follows from (1 − α)1/α → e−1, so observations older than 1 /α steps contribute less than e−1 of the most recent observation’s weight. 
+
+Proposition 2 (Calibration Convergence) . Under i.i.d. outcomes Xt ∼ Bernoulli( θ), the EWMA estimator is asymptotically unbiased and converges to a stationary distribution: 
+
+E[ˆ at] = θ + (1 − α)t (ˆ a0 − θ), (11) Var(ˆ at) = α
+
+2 − α θ(1 − θ) 1 − (1 − α)2t. (12) 
+
+In the limit, E[ˆ at] → θ and Var(ˆ at) → α 
+
+> 2−α
+
+θ(1 − θ).
+
+10 Proof sketch. Apply linearity of expectation to Eq. (10) to obtain (11). For variance, use in-dependence of the Xτ to write Var(ˆ at) = θ(1 − θ) Ptτ =1 w2 
+
+> τ
+
+and evaluate the geometric sum of squared weights. The bias (1 − α)t(ˆ a0 − θ) decays geometrically: at α = 0 .04, the bias factor is 0 .96 50 ≈ 0.13 after 50 observations and 0 .96 100 ≈ 0.017 after 100. The steady-state standard deviation pα θ (1 − θ)/(2 − α) is irreducible and is the price of adaptability. 
+
+Empirical illustration. For α = 0 .04 and θ = 0 .79 (the observed mean accuracy in the high-confidence band), the predicted steady-state standard deviation is p0.04 × 0.79 × 0.21 /1.96 ≈
+
+0.058. Our bootstrap convergence analysis across 100 question orderings shows an asymptotic standard deviation exceeding 0.05 in this band, consistent with the theoretical prediction. 
+
+Proposition 3 (Tracking Speed) . Suppose the true accuracy rate shifts instantaneously from θ to 
+
+θ′ = θ + ∆ at time t0. After n subsequent observations drawn i.i.d. from Bernoulli( θ′), the expected bias of the estimator relative to θ′ is 
+
+|E[ˆ at0+n] − θ′| = (1 − α)n |ˆat0 − θ′|. (13) 
+
+To reduce this bias below ε, the required number of observations is 
+
+n ≥ 1
+
+α ln 
+
+ |ˆat0 − θ′|
+
+ε
+
+
+
++ O(1) . (14) 
+
+Proof sketch. After the shift, the system is equivalent to a fresh EWMA initialised at ˆ at0 tracking 
+
+θ′. Apply Eq. (11) with ˆ a0 = ˆ at0 . The logarithmic inversion uses (1 − α)n ≤ e−αn . This formalises why MARGIN adapts to distribution shift while design-time methods, which have no forgetting mechanism, remain permanently miscalibrated after the shift. 
+
+Proposition 4 (Bias-Variance Tradeoff) . Consider a slowly drifting environment where the true accuracy rate changes at rate δ per observation. The expected steady-state calibration error decom-poses as 
+
+E[ |ˆat − θt| ] ≤ δ
+
+2α|{z} 
+
+> tracking lag
+
++
+
+r α θ (1 − θ)2 − α| {z }
+
+> estimation noise
+
+. (15) 
+
+The tracking lag decreases with α (faster adaptation), while the estimation noise increases with α
+
+(shorter effective window). The minimum defines an optimal α∗ for a given drift rate δ.Proof sketch. The tracking lag arises because the EWMA lags behind a drifting target by approx-imately the drift accumulated over the effective window: δ × (1 /2α). The estimation noise is the steady-state standard deviation from Proposition 2. The bound follows from the triangle inequality applied to the bias and noise components. Minimising over α gives α∗ = O(δ2/3), but in practice the U-shape is broad and α = 0 .04 works well across a range of drift rates (Section 10.1). 
+
+Proposition 5 (Symmetric Optimality for Non-Strategic Agents) . Consider an asymmetric EWMA with learning rates αup (when Xt = 1 ) and αdown (when Xt = 0 ). Under i.i.d. Bernoulli( θ) out-comes, the steady-state expectation is 
+
+E[ˆ a∞] = αup θαup θ + αdown (1 − θ) . (16) 
+
+This equals θ if and only if αup = αdown . Otherwise, the asymptotic bias is 
+
+|E[ˆ a∞] − θ| = θ(1 − θ) |αup − αdown |
+
+αup θ + αdown (1 − θ) . (17) 11 For agents with fixed policies whose confidence errors are epistemic (zero-mean), symmetric EWMA is the minimum-variance unbiased estimator within the EWMA family. Proof sketch. The asymmetric EWMA defines a Markov chain on [0 , 1] with state-dependent tran-sition rates. The steady state satisfies E[ˆ a∞] = (1 − αup ) E[ˆ a∞ | X = 1] θ + (1 − αdown ) E[ˆ a∞ |
+
+X = 0] (1 − θ) + αup θ. Solving for the fixed point yields Eq. (16). The bias expression follows algebraically. As a numerical example: for θ = 0 .8, αup = 0 .02, αdown = 0 .06, the estimator converges to 0.016 /0.028 ≈ 0.571 rather than 0 .80. This predicts the severe ECE degradation (3–4 × worse) observed for all asymmetric configurations in Section 10.3. The argument for unbiasedness as optimality: foundation model agents have fixed policies and do not strategically adjust their confidence in response to calibration feedback. Their miscalibration errors are epistemic, arising from the gap between internal representations and true task difficulty. Under this condition, errors are approximately zero-mean, and any biased estimator systematically over- or under-corrects, increasing ECE. Symmetric EWMA is the unique unbiased member of the EWMA family. 
+
+Proposition 6 (Selection Monotonicity) . Consider N agents with true per-task accuracies p1 >p2 ≥ · · · ≥ pN , each expressing confidence ci = pi + ηi where ηi is zero-mean noise. Under confidence-weighted selection (Eq. 8) with a single task, the probability of selecting the best agent increases monotonically as calibration error decreases. Formally, let σ2 denote the variance of the calibration noise (the residual error in ˜ci,t relative to pi). Then 
+
+∂∂σ 2 P[ˆ yt = ˆ y1,t ] ≤ 0. (18) 
+
+In particular, when raw confidence is anti-correlated with true accuracy (as observed empirically on hard benchmarks), selection performs below random, and any calibration that reduces ECE must improve selection above this baseline. Proof sketch. The selection rule chooses the agent with the highest calibrated confidence. When calibration noise σ2 → 0, the highest-confidence agent is the most accurate with probability ap-proaching 1. As σ2 increases, the selection becomes increasingly random. The monotonicity follows from standard results on the probability that the maximum of correlated Gaussians corresponds to the highest-mean component. The “worse than random” pattern on hard benchmarks (pairwise resolution 45–56% with raw confidence) occurs because foundation models are systematically more confident on problems they get wrong: weaker models express higher verbalized confidence on challenging tasks. This cre-ates negative correlation between confidence and accuracy, making confidence-weighted selection actively harmful. Any calibration method that corrects this negative correlation, reducing ECE and restoring the confidence–accuracy alignment, must improve selection above 50%. 
+
+# 5 Experimental Setup 
+
+5.1 Models 
+
+We evaluate 19 foundation models spanning diverse architectures, scales, and access modes (Ta-ble 2). Ten models are accessed via cloud API (Qwen, DeepSeek, GPT, MiniMax, GLM families), and nine are run locally via Ollama at 4-bit quantisation (7B–72B parameters). This mix ensures that MARGIN is tested across the heterogeneity typical of real multi-agent deployments: different providers, architectures, quantisation levels, and inference regimes. 12 Table 2: Model inventory. Cloud models accessed via API; local models run via Ollama (Q4 K M quantisation).                                                             
+
+> Model Family Parameters Access
+> Qwen3-Coder-480B-A35B Qwen 3 480B (35B active) Cloud Qwen3-32B Qwen 3 32B Cloud Qwen2.5-32B-Instruct Qwen 2.5 32B Cloud Qwen2.5-14B-Instruct-1M Qwen 2.5 14B Cloud DeepSeek-R1-Distill-Qwen-32B DeepSeek 32B Cloud DeepSeek-V3.2 DeepSeek MoE Cloud gpt-oss-120b GPT 120B Cloud MiniMax MiniMax —Cloud GLM-4.7-Flash GLM —Cloud Qwen3-235B Qwen 3 235B Cloud qwen2.5:72b Qwen 2.5 72B Local llama3.1:70b LLaMA 3.1 70B Local command-r:35b Command R 35B Local gemma2:27b Gemma 2 27B Local qwen2.5:14b Qwen 2.5 14B Local phi4:14b Phi-4 14B Local gemma2:9b Gemma 2 9B Local llama3.1:8b LLaMA 3.1 8B Local mistral:7b Mistral 7B Local
+
+5.2 Benchmarks 
+
+We evaluate on eight benchmarks spanning code generation, question answering, and mathematics (Table 3). Code generation benchmarks provide deterministic ground truth via execution, making them ideal for calibration evaluation. The QA and mathematics benchmarks extend coverage to domains with different difficulty distributions. For distribution shift experiments, we pair an easy benchmark (phase 1, calibration source) with a harder benchmark (phase 2, evaluation target). MARGIN learns calibration factors online from the phase 1 stream, then continues learning on phase 2 without resetting. Baselines are fitted on phase 1 data only, using a proper 50/50 calibration/evaluation split with 100 random shuffles. 
+
+5.3 Baselines 
+
+We compare MARGIN against four baselines: 
+
+• Raw : Uncalibrated confidence, as stated by the model. 
+
+• Temperature scaling [12]: A single scalar temperature T fitted to minimise negative log-likelihood on calibration data. Applied to confidence scores post-hoc. 
+
+• Platt scaling [26]: A logistic regression mapping confidence to calibrated probability. Two parameters fitted on calibration data. 
+
+• Histogram binning : Non-parametric calibration that replaces each bin’s mean confidence with its observed accuracy. Fitted on calibration data. All baselines are fitted using a proper 50/50 calibration/evaluation split on phase 1 data. We repeat with 100 random shuffles and report means. This is the most favourable possible setup 13 Table 3: Benchmark summary. Shift pairs are indicated by arrows.                                       
+
+> Benchmark Problems Domain Shift role
+> HumanEval 164 Code generation Source MBPP 399 Code generation Source BigCodeBench 148 Code generation Target (severe) CodeContests 165 Code generation Target (severe) LiveCodeBench 880 Code generation Target (moderate) HumanEval+ / MBPP+ 164 / 399 Code generation Target (mild) MMLU (STEM →Humanities) 1,323 + 1,396 QA Source →target MATH (GSM8K →Competition) varies Mathematics Source →target TriviaQA varies QA Temporal shift
+
+for design-time methods: they see calibration data from the same distribution as evaluation. In deployment, this assumption rarely holds. 
+
+5.4 Evaluation Metrics 
+
+Expected Calibration Error (ECE). The standard measure of calibration quality. We partition predictions into 10 equal-width bins by confidence and compute the weighted average of per-bin 
+
+|accuracy − confidence |:ECE = 
+
+> 10
+
+X
+
+> b=1
+
+nb
+
+N |acc b − conf b|. (19) Lower is better. ECE is a summary statistic over a binned reliability diagram rather than a strictly proper scoring rule in the sense of Gneiting and Raftery [11], but it remains the standard reporting measure in the calibration literature and is directly comparable across methods. We report ECE on phase 2 (post-shift) data for distribution shift experiments. 
+
+pass@1. For multi-agent selection: the fraction of problems where the selected answer is correct. The upper bound is the oracle (best possible selection with perfect knowledge), and the lower bound is random selection. 
+
+Pairwise resolution. Given two agents that disagree, the probability that the higher-confidence agent is correct. This isolates calibration quality on the disagreement cases where selection actually matters. Random baseline is 50%. Values below 50% indicate that confidence is anti-correlated with accuracy. 
+
+Statistical methodology. For MARGIN, we report means and 95% bootstrap confidence intervals across 100 question-ordering shuffles (the EWMA is order-dependent, so this captures the sensitivity to presentation order). For baselines, the 100 shuffles correspond to different calibra-tion/evaluation splits. 
+
+# 6 Distribution Shift Results 
+
+The distribution shift experiments test MARGIN’s core advantage: online adaptation to changing task distributions without a held-out calibration set. Models learn calibration on an easy benchmark (phase 1), then face a harder benchmark (phase 2). We report phase 2 ECE, which measures calibration quality after the shift. 14 Table 4: Distribution shift results: code generation. Phase 2 ECE (lower is better). 10 cloud models for HE/MBPP/BCB shifts; 9 for CC/LCB shifts.                                                                              
+
+> Shift Raw Temp Platt Hist MARGIN
+> HE →BCB (severe) 66.6 62.2 62.5 63.0 11.1 ±0.5
+> HE →CC (severe) 44.1 40.8 48.4 49.4 6.4 ±0.6
+> HE →LCB (moderate) 18.9 15.0 19.6 17.8 7.6 ±0.2
+> HE →HE+ (mild) 11.4 7.4 5.9 3.3 4.6 ±0.5
+> MBPP →BCB (severe) 66.6 58.2 62.0 58.9 10.9 ±0.5
+> MBPP →CC (severe) 44.1 37.8 55.1 54.0 6.3 ±0.6
+> MBPP →LCB (moderate) 18.9 13.9 20.1 19.9 7.5 ±0.2
+> MBPP →MBPP+ (mild) 19.8 11.9 10.2 10.2 4.5 ±0.4
+
+Table 5: Distribution shift results: QA and mathematics. Phase 2 ECE (lower is better).                               
+
+> Shift Raw Temp Platt Hist MARGIN
+> MMLU (STEM →Hum.) 18.5 14.6 13.6 13.2 4.1 ±0.5
+> MATH (GSM8K →Comp.) 25.6 16.9 15.7 15.4 3.6 ±0.5
+> TriviaQA (temporal) 23.6 4.8 5.4 2.3 3.9 ±0.4
+
+6.1 Code Generation 
+
+Table 4 shows results across eight codegen shift conditions spanning three severity levels. Under se-vere shift (HumanEval or MBPP → BigCodeBench or CodeContests), design-time baselines remain catastrophically miscalibrated with ECE 37–63, while MARGIN adapts online to ECE 6–11. Under moderate shift ( → LiveCodeBench), MARGIN approximately halves the best baseline’s ECE (7.5 vs 13.9). Under mild shift (MBPP → MBPP+), MARGIN matches or beats the best baseline. 
+
+6.2 Question Answering and Mathematics 
+
+MARGIN generalises beyond code generation. Table 5 shows results on three QA and mathematics shift conditions. MARGIN achieves 3–4 × lower ECE than the best static baseline on MMLU and MATH shifts. TriviaQA (temporal shift) is the one case where histogram binning is competitive (2.3 vs 3.9), likely because the shift is mild and the held-out calibration data remains informative. 
+
+6.3 Analysis 
+
+The pattern across all 11 shift conditions is consistent: MARGIN’s advantage scales with shift sever-ity (Figure 4). Under severe shift, where the gap between calibration-time and deployment-time distributions is largest, design-time methods have no mechanism to adapt and remain permanently miscalibrated. MARGIN’s exponential forgetting (Proposition 1) allows it to discount stale cali-bration data and track the new distribution. The recovery dynamics match the theoretical prediction of Proposition 3: after an abrupt shift, MARGIN’s bias decays exponentially at rate α, reaching practical calibration within approximately 1/α ≈ 25 observations per band. The bias-variance tradeoff of Proposition 4 is visible in the mild shift regime, where MARGIN’s estimation noise slightly exceeds the best static baseline’s ECE. This is the expected cost of adaptability: when the environment happens to match the calibration set, a fixed correction is slightly more precise than an adaptive one. In practice, this case is rare. 15 Table 6: Multi-agent selection summary (pass@1, %). Best model = always selecting the single best-performing model.                                     
+
+> Benchmark Models Best Raw verb. MARGIN v. MARGIN c. Oracle
+> HumanEval 19 100.0 93.3 98.3 —100.0 HumanEval 10 (cons.) 94.5 92.7 93.5 96.7 99.4 LiveCodeBench 18 80.0 72.8 80.1 81.4 87.6 CodeContests 18 40.0 27.3 40.7 45.7 55.2 BigCodeBench 19 32.4 14.9 27.5 35.0 56.1
+
+Table 7: Pairwise resolution (%): probability of selecting the correct answer when two agents disagree. Random baseline is 50%.                   
+
+> Benchmark Raw verb. MARGIN verb. MARGIN cons.
+> HumanEval (19) 59.1 80.9 —HumanEval (10, cons.) 70.2 76.0 82.2
+> LiveCodeBench 45.2 86.2 89.5
+> CodeContests 55.5 81.0 89.4
+> BigCodeBench 44.8 70.9 70.7
+
+# 7 Multi-Agent Selection Results 
+
+The second contribution of calibrated confidence is improved multi-agent selection: choosing which agent’s answer to trust when multiple agents respond to the same task. Table 6 summarises results across four code generation benchmarks spanning easy (HumanEval) to hard (CodeContests). The pattern is striking: the harder the benchmark, the more MARGIN matters. On easy benchmarks where top models are near-perfect, calibration provides a modest improvement. On hard benchmarks where no single model dominates, raw confidence actively hurts selection, while MARGIN recovers and closes the gap to oracle. 
+
+7.1 The Confidence Inversion Problem 
+
+The most surprising finding is that raw verbalized confidence is worse than random at pairwise resolution on three of four benchmarks. Table 7 shows the pairwise resolution rates. On LiveCodeBench (45.2%) and BigCodeBench (44.8%), selecting the more confident agent when two agents disagree is worse than a coin flip. This occurs because weaker models tend to express higher verbalized confidence on hard problems. The result is confidence inversion: the confidence signal is anti-correlated with accuracy, making confidence-weighted selection actively harmful. MARGIN corrects this completely. After online calibration, pairwise resolution rises to 70–89% across all benchmarks. This is consistent with the theoretical prediction of Proposition 6: any calibration that restores the correlation between confidence and accuracy must improve selection above 50%. 
+
+7.2 Convergence Analysis 
+
+MARGIN’s selection advantage emerges rapidly. Table 8 shows pass@1 as a function of problems seen, using verbalized confidence. 16 Table 8: Convergence of MARGIN selection (verbalized pass@1, %) by number of problems seen.                                                       
+
+> Benchmark 10 30 50 100 150 All
+> HumanEval (raw) 93.9 93.2 93.2 93.2 93.2 93.3 HumanEval (MARGIN) 93.8 95.2 95.9 97.3 98.2 98.3
+> CodeContests (raw) 26.9 27.7 27.3 27.3 27.3 27.3 CodeContests (MARGIN) 31.0 37.9 39.1 40.5 40.8 40.7
+> BigCodeBench (raw) 14.4 15.2 14.9 14.9 —14.9 BigCodeBench (MARGIN) 20.2 24.1 25.2 27.1 —27.5
+> LCB (raw) 73.3 —73.8 72.9 72.4 72.8 LCB (MARGIN) 75.6 —79.8 79.8 79.8 80.1
+
+Table 9: Cross-task calibration transfer (mean ECE across 9–10 cloud models). Lower is better.                                            
+
+> Transfer direction Raw Transferred From-scratch
+> HE →BigCodeBench 66.5 57.6 14.4
+> HE →CodeContests 44.2 33.7 11.8
+> HE →LiveCodeBench 24.7 20.0 9.1
+> HE →MBPP 11.5 7.1 5.5
+> MBPP →BigCodeBench 66.5 56.1 14.4
+> MBPP →CodeContests 44.2 36.0 11.8
+> MBPP →LiveCodeBench 24.7 19.0 9.1
+> MBPP →HumanEval 10.9 8.6 6.2
+
+MARGIN surpasses raw confidence within 10–30 problems across all benchmarks. On CodeCon-tests, MARGIN already matches the always-best model (40.0%) by problem 50. LiveCodeBench, with 880 problems, provides the most robust convergence test: MARGIN reaches near-peak per-formance by approximately 50 problems and sustains it stably across the remaining 830. This convergence speed is consistent with the effective sample size of approximately 1 /α = 25 observa-tions per band predicted by Proposition 1. 
+
+# 8 Cross-Task Calibration Transfer 
+
+Can calibration factors learned on one benchmark transfer to a different benchmark? Table 9 evaluates eight transfer directions between codegen benchmarks, comparing raw (uncalibrated), transferred MARGIN factors (frozen from the source benchmark, no further updates), and from-scratch MARGIN (learning directly on the target). Transferred factors always improve over raw (e.g., 66.5 → 57.6 on HE → BCB), illustrating that MARGIN learns something generalisable about each model’s calibration tendencies. However, from-scratch adaptation that learns directly on the target distribution is 3–4 × better (57.6 → 14.4). This illustrates the central argument: online adaptation to the specific deployment distribution is fundamentally superior to any pre-computed correction, even one derived by MARGIN itself on a related task. This result connects directly to Proposition 2: the EWMA converges to the distribution-specific 
+
+accuracy rate θ, not a generic correction factor. When the distribution changes, the optimal factor changes, and only online learning can track it. 17 9 Robustness to Dynamic Agent Pools 
+
+Deployed multi-agent systems rarely operate on a fixed roster. Agents are added as new foundation models become available, removed for cost or quality reasons, or cycled in and out as the coordinator rebalances capacity. A calibration method that only works on a static pool is of limited practical use. This section evaluates MARGIN under three pool-dynamic scenarios, using the 11 cloud models with full coverage across the three QA and math shift datasets (MMLU-shift, TriviaQA, MATH-shift), 50 shuffles per scenario, 1000 observations per run. Figure 7 summarises the results. 
+
+Scenario 1, agent dropout. At observation 500, the two models with the most phase-1 observations are removed. MARGIN’s remaining calibrators continue to operate unchanged. Ensemble ECE descends from roughly 18% at initialisation to around 10% by observation 200, independent of the drop event. Post-drop mean ECE is 9.66% (std 3.55) compared with 11.86% pre-drop (std 5.03). The band-level statistics for surviving models are unaffected by the removal, so there is no spike at the drop event in Figure 7(a). 
+
+Scenario 2, cold start. Phase 1 runs for 500 observations with 4 established models. At observation 500, 7 newcomer models join with no prior calibration history. We compare two strate-gies. The first blends each newcomer’s band factor toward the current pool-wide band average using hierarchical shrinkage with ks = 18 (Section 3.4). The second uses raw per-agent EWMA without shrinkage. Figure 7(b) plots newcomer cumulative ECE as a function of newcomer observations. With shrinkage, newcomers reach 7.74% ECE after 50 observations and 5.12% after 200, closely tracking the established-model reference at 7.10% mean. Without shrinkage, newcomers start at 13.67% ECE and require more than 200 observations to reach single-digit error. Shrinkage reduces cold-start ECE by 41–44% across the first four checkpoints. 
+
+Scenario 3, rolling replacement. Every 200 observations, the worst-calibrated active model (by recent 200-observation ECE) is swapped out, and a previously removed model returns. After the initial cold-start segment (observations 50–200, mean ECE 14.45%), ensemble ECE is stable across all four swap points: 10.34%, 10.45%, 10.36%, and 10.30% for segments 250–400, 450–600, 650–800, and 850–1000 respectively. Variance is 3.6–4.2% std across all post-warmup segments. The three scenarios cover the dominant failure modes for a calibration layer under pool change, catastrophic loss of calibrated statistics when an agent leaves (scenario 1), slow convergence for new entrants (scenario 2), and accumulation of drift over repeated composition changes (scenario 3). MARGIN’s band-level, per-agent statistics localise the effect of each change. Hierarchical shrinkage addresses the cold-start gap with a single hyperparameter. No additional mechanism is required for the rolling case, as the EWMA’s forgetting rate naturally discounts the contribution of removed agents’ prior updates. 
+
+# 10 Ablation Studies 
+
+We ablate each of MARGIN’s three hyperparameters ( α, band count, ks) and the symmetric-vs-asymmetric design choice. All ablations use three representative shift conditions: HE → BCB (severe), MBPP → CC (moderate-severe), and MBPP → MBPP+ (mild). 
+
+10.1 EWMA Learning Rate 
+
+Table 10 shows ECE across seven α values. The U-shape predicted by Proposition 4 is clearly visible: too-low α (slow adaptation) yields high ECE under severe shift, while too-high α (noisy estimates) degrades mild shift. The default α = 0 .04 provides the best balance. Note that α = 0 .08 is slightly better on severe shift but 1.4 × worse on mild shift. 18 Table 10: Ablation: EWMA learning rate α (phase 2 ECE).                               
+
+> αHE →BCB MBPP →CC MBPP →MBPP+ 0.005 44.4 27.6 7.3 0.01 32.0 19.5 4.2
+> 0.02 19.3 10.7 3.6 0.04 11.1 6.3 4.5 0.08 8.9 4.6 6.4 0.16 10.4 5.1 9.5 0.32 14.9 7.4 14.6
+
+Table 11: Ablation: number of confidence bands (phase 2 ECE).                            
+
+> Bands HE →BCB MBPP →CC MBPP →MBPP+ 19.7 4.1 4.7 29.7 3.3 4.6
+> 311.1 6.3 4.5 411.1 6.5 4.4 511.6 7.4 4.4 10 15.0 9.8 4.1
+
+10.2 Confidence Band Count 
+
+Table 11 varies the number of equal-width confidence bands from 1 (a single calibration factor per model) to 10. Fewer bands are better under severe shift, where each band must re-learn its factor from limited data. More bands provide slightly finer correction under mild shift. The sweet spot is 1–3 bands with the data volumes in our experiments. Over longer horizons with more observations per band, finer partitions would likely outperform. 
+
+10.3 Asymmetric Learning Rate 
+
+Table 12 compares the default symmetric update ( α = 0 .04 for both correct and incorrect outcomes) against five asymmetric configurations. In each, αc is the learning rate after correct predictions and αi after incorrect ones. Symmetric α wins across the board. Configurations that penalise overconfidence faster (high 
+
+αi) help slightly on severe shift but catastrophically hurt mild shift (MBPP → MBPP+ ECE rises from 4.5 to 30.3 with αc = 0 .02 , α i = 0 .08). This is precisely the bias predicted by Proposition 5: asymmetric rates introduce systematic underconfidence, and the resulting bias compounds across all agents and bands. 
+
+10.4 Bayesian Shrinkage 
+
+Table 13 varies the shrinkage constant ks from 0 (no blending, pure band-level factors) to 1000. Blending consistently helps under moderate-to-severe shift, the regime most relevant to real-world deployment. The MBPP → CC condition (closest to production-scale drift) plateaus at ks ≈ 100 with a 40% improvement over no blending (ECE 3.8 vs 6.3). Mild shift is neutral up to ks = 100, then very slightly degrades, an acceptable tradeoff. 
+
+Recommended configuration. Based on these ablations, we recommend α = 0 .04, K = 3 bands, and ks = 100 as production defaults. The no-blending case ( ks = 0) already beats all design-time 19 Table 12: Ablation: asymmetric learning rate (phase 2 ECE). αc = correct, αi = incorrect.                                      
+
+> Configuration HE →BCB MBPP →CC MBPP →MBPP+
+> Symmetric 0.04/0.04 11.1 6.3 4.5
+> αc= 0 .02 , α i= 0 .08 15.9 10.1 30.3
+> αc= 0 .08 , α i= 0 .02 35.7 18.9 14.2
+> αc= 0 .01 , α i= 0 .04 14.4 7.0 27.7
+> αc= 0 .04 , α i= 0 .01 41.8 25.1 14.4
+> αc= 0 .08 , α i= 0 .04 19.8 8.7 9.3
+
+Table 13: Ablation: Bayesian shrinkage constant ks (phase 2 ECE).                                     
+
+> ksHE →BCB MBPP →CC MBPP →MBPP+ 0 (no blending) 11.1 6.3 4.5 510.8 5.7 4.5 10 10.7 5.5 4.5 20 10.5 5.1 4.5 50 10.3 4.4 4.5
+> 100 10.1 3.8 4.4 200 10.0 3.9 4.5 500 9.8 4.1 4.6 1000 9.8 3.9 4.6
+
+baselines; shrinkage provides further improvement in the moderate-to-severe shift regime that dom-inates practical deployment. Figure 8 summarises all four ablations across the three representative shift conditions. 
+
+# 11 Discussion 
+
+Why symmetric works. The most counterintuitive finding is that symmetric EWMA decisively outperforms all asymmetric configurations. In strategic settings (game theory, mechanism design), asymmetric penalties are standard: penalising defection faster than rewarding cooperation prevents exploitation. Foundation model agents, however, are not strategic. They have fixed policies and do not adjust their confidence in response to calibration feedback. Their errors are epistemic, arising from the gap between training distribution and deployment distribution. Proposition 5 shows that under these conditions, asymmetric updates introduce systematic bias, and the empirical results confirm it decisively. This distinction between strategic and non-strategic agents may become less clear as foundation models gain the ability to observe and respond to their own reputation signals. The symmetric EWMA is the correct choice for current deployment, but future systems with truly adaptive agents may require the asymmetric approach. 
+
+The confidence inversion problem. Perhaps the most practically important finding is that raw verbalized confidence is worse than random on hard benchmarks (pairwise resolution 44.8–55.5%). This means that naively trusting model confidence in multi-agent systems actively degrades performance. The mechanism is straightforward: weaker models tend to express higher confidence on problems they cannot solve. This is consistent with the Dunning–Kruger pattern observed in human metacognition, though the underlying cause is different (training distribution mismatch rather than cognitive bias). MARGIN’s online calibration learns this pattern and corrects 20 it, restoring the correlation between confidence and accuracy. 
+
+Practical deployment. MARGIN requires approximately 30–50 observations per agent to reach practical calibration, consistent with the effective sample size of ∼ 1/α = 25 per band from Proposition 1. Hierarchical shrinkage shortens the cold-start period substantially. Section 9 shows that with ks = 18, newcomer agents reach 7.74% ECE after 50 observations and track the established-model reference within the first checkpoint, while raw per-agent EWMA requires more than 200 observations to reach comparable error. The same section demonstrates stability under mid-stream agent removal and repeated composition change. Computational overhead is negligible: one EWMA update per observation per (agent, band) pair. 
+
+Limitations. Any calibration method that maps confidence to accuracy must observe accuracy at some point. The question is whether that observation happens once on a held-out set, or continuously from the deployment stream. MARGIN occupies the latter regime. MARGIN requires binary outcome signals (correct/incorrect), limiting its applicability to tasks with verifiable answers. Extension to graded or partial-credit outcomes is straightforward (replace the binary update with a continuous outcome) but is not evaluated here. The number of confidence bands is a design choice with no principled selection criterion beyond the empirical ablation. The i.i.d. assumption within each band is violated when consecutive tasks are correlated (e.g., topic clusters), though the shuffle robustness analysis (standard deviation 0.13 across 100 orderings) suggests this violation has limited practical impact. 
+
+# 12 Conclusion 
+
+We presented MARGIN, an online confidence calibration method for multi-agent foundation model systems. MARGIN uses per-band exponentially weighted moving averages to learn calibration factors from the task stream itself, requiring no held-out calibration data, no model access, and no retraining. The method has three hyperparameters with robust defaults ( α = 0 .04, K = 3 bands, 
+
+ks = 100) and negligible computational overhead. Across 19 models, 8 benchmarks, and over 50,000 observations, MARGIN achieves 3–6 × lower calibration error than the best design-time baselines under distribution shift. In multi-agent selec-tion, MARGIN corrects the confidence inversion problem, where raw confidence is anti-correlated with accuracy on hard benchmarks, raising pairwise resolution from 45–56% (worse than random) to 70–89%. MARGIN-calibrated selection surpasses the always-best-model baseline on three of four benchmarks. Six formal propositions characterise MARGIN’s convergence, tracking speed, bias-variance tradeoff, and the optimality of symmetric updates for non-strategic agents. The theoretical predic-tions are illustrated by the empirical results throughout. The key finding is that foundation model confidence, as currently expressed, is not merely imprecise but actively misleading in multi-agent coordination. Runtime calibration is not an en-hancement; it is a prerequisite for reliable multi-agent systems. 
+
+# References 
+
+[1] Anastasios N. Angelopoulos and Stephen Bates. A gentle introduction to conformal prediction and distribution-free uncertainty quantification. Foundations and Trends in Machine Learning ,16(4):494–591, 2023. arXiv:2107.07511. 21 [2] Nicol` o Cesa-Bianchi and G´ abor Lugosi. Prediction, Learning, and Games . Cambridge Univer-sity Press, 2006. [3] Lingjiao Chen, Matei Zaharia, and James Zou. FrugalGPT: How to use large language models while reducing cost and improving performance. Transactions on Machine Learning Research ,2024. arXiv:2305.05176. [4] A. Philip Dawid. The well-calibrated Bayesian. Journal of the American Statistical Association ,77(379):605–610, 1982. [5] Yilun Du, Shuang Li, Antonio Torralba, Joshua B. Tenenbaum, and Igor Mordatch. Improving factuality and reasoning in language models through multiagent debate. In Proceedings of the 41st International Conference on Machine Learning (ICML) , 2024. [6] Sebastian Farquhar, Jannik Kossen, Lorenz Kuhn, and Yarin Gal. Detecting hallucinations in large language models using semantic entropy. Nature , 630:625–630, 2024. [7] Dean P. Foster and Rakesh V. Vohra. Asymptotic calibration. Biometrika , 85(2):379–390, 1998. [8] Jiahui Geng, Fengyu Cai, Yuxia Wang, Heinz Koeppl, Preslav Nakov, and Iryna Gurevych. A survey of confidence estimation and calibration in large language models. In Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics (NAACL) , pages 6577–6595, 2024. [9] Walter Gerych, Yara Rizk, Vatche Isahagian, Vinod Muthusamy, Evelyn Duesterwald, and Praveen Venkateswaran. Who knows the answer? finding the best model and prompt for each query using confidence-based search. In Proceedings of the 38th AAAI Conference on Artificial Intelligence , 2024. [10] Isaac Gibbs and Emmanuel Cand` es. Adaptive conformal inference under distribution shift. In 
+
+Advances in Neural Information Processing Systems (NeurIPS) , 2021. [11] Tilmann Gneiting and Adrian E. Raftery. Strictly proper scoring rules, prediction, and esti-mation. Journal of the American Statistical Association , 102(477):359–378, 2007. [12] Chuan Guo, Geoff Pleiss, Yu Sun, and Kilian Q. Weinberger. On calibration of modern neural networks. In Proceedings of the 34th International Conference on Machine Learning (ICML) ,pages 1321–1330, 2017. [13] J. Stuart Hunter. The exponentially weighted moving average. Journal of Quality Technology ,18(4):203–210, 1986. [14] Audun Jøsang, Roslan Ismail, and Colin Boyd. A survey of trust and reputation systems for online service provision. Decision Support Systems , 43(2):618–644, 2007. [15] Saurav Kadavath, Tom Conerly, Amanda Askell, Tom Henighan, Dawn Drain, Ethan Perez, Nicholas Schiefer, Zac Hatfield-Dodds, Nova DaSilva, Eli Elhage, et al. Language models (mostly) know what they know. arXiv preprint arXiv:2207.05221 , 2022. [16] Sepandar D. Kamvar, Mario T. Schlosser, and Hector Garcia-Molina. EigenTrust: Reputation management in P2P networks. In Proceedings of the 12th International Conference on World Wide Web (WWW) , pages 640–651, 2003. 22 [17] Lorenz Kuhn, Yarin Gal, and Sebastian Farquhar. Semantic uncertainty: Linguistic invari-ances for uncertainty estimation in natural language generation. In Proceedings of the 11th International Conference on Learning Representations (ICLR) , 2023. [18] Emanuele La Malfa, Gabriele La Malfa, Samuele Marro, Jie M. Zhang, Elizabeth Black, Michael Luck, Philip Torr, and Michael Wooldridge. Large language models miss the multi-agent mark. In Advances in Neural Information Processing Systems (NeurIPS), Position Track ,2025. arXiv:2505.21298. [19] Balaji Lakshminarayanan, Alexander Pritzel, and Charles Blundell. Simple and scalable pre-dictive uncertainty estimation using deep ensembles. In Advances in Neural Information Pro-cessing Systems (NeurIPS) , 2017. [20] Zhiwei Li et al. ConfTuner: LLM self-calibration via confidence tuning. In Advances in Neural Information Processing Systems (NeurIPS) , 2025. [21] Xiaoou Liu, Tiejin Chen, Longchao Da, Chacha Chen, Zhen Lin, and Hua Wei. Uncertainty quantification and confidence calibration in large language models: A survey. In Proceed-ings of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data Mining , 2025. arXiv:2503.15850. [22] Beier Luo, Shuoyuan Wang, Sharon Li, and Hongxin Wei. Your pre-trained LLM is secretly an unsupervised confidence calibrator. In Advances in Neural Information Processing Systems (NeurIPS) , 2025. arXiv:2505.16690. [23] Matthias Minderer, Josip Djolonga, Rob Romijnders, Frances Hubis, Xiaohua Zhai, Neil Houlsby, Dustin Tran, and Mario Lucic. Revisiting the calibration of modern neural networks. In Advances in Neural Information Processing Systems (NeurIPS) , volume 34, 2021. [24] Mahdi Pakdaman Naeini, Gregory F. Cooper, and Milos Hauskrecht. Obtaining well cali-brated probabilities using Bayesian binning into quantiles. In Proceedings of the 29th AAAI Conference on Artificial Intelligence , pages 2901–2907, 2015. [25] Yaniv Ovadia, Emily Fertig, Jie Ren, Zachary Nado, D. Sculley, Sebastian Nowozin, Joshua V. Dillon, Balaji Lakshminarayanan, and Jasper Snoek. Can you trust your model’s uncertainty? evaluating predictive uncertainty under dataset shift. In Advances in Neural Information Processing Systems (NeurIPS) , 2019. [26] John C. Platt. Probabilistic outputs for support vector machines and comparisons to regular-ized likelihood methods. In Advances in Large Margin Classifiers , pages 61–74. MIT Press, 1999. [27] Maohao Shen, Subhro Das, Kristjan Greenewald, Prasanna Sattigeri, Gregory Wornell, and Soumya Ghosh. Thermometer: Towards universal calibration for large language models. In 
+
+Proceedings of the 41st International Conference on Machine Learning (ICML) , 2024. [28] Andries Smit, Paul Duckworth, Nathan Grinsztajn, Thomas D. Barrett, and Arnu Pretorius. Should we be going MAD? a look at multi-agent debate strategies for LLMs. arXiv preprint arXiv:2311.17371 , 2024. [29] Katherine Tian, Eric Mitchell, Huaxiu Yao, Christopher D. Manning, and Chelsea Finn. Just ask for calibration: Strategies for eliciting calibrated confidence scores from language models 23 fine-tuned with human feedback. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing (EMNLP) , 2023. arXiv:2305.14975. [30] Lei Wang, Chen Ma, Xueyang Feng, Zeyu Zhang, Hao Yang, Jingsen Zhang, Zhiyuan Chen, Jiakai Tang, Xu Chen, Yankai Lin, Wayne Xin Zhao, Zhewei Wei, and Ji-Rong Wen. A survey on large language model based autonomous agents. Frontiers of Computer Science , 18(6), 2024. [31] Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le, Ed Chi, Sharan Narang, Aakanksha Chowdhery, and Denny Zhou. Self-consistency improves chain of thought reasoning in language models. In Proceedings of the 11th International Conference on Learning Representations (ICLR) , 2023. [32] Qingyun Wu, Gagan Bansal, Jieyu Zhang, Yiran Wu, Beibin Li, Erkang Zhu, Li Jiang, Xiaoyun Zhang, Shaokun Zhang, Jiale Liu, Ahmed Hassan Awadallah, Ryen W. White, Doug Burger, and Chi Wang. AutoGen: Enabling next-gen LLM applications via multi-agent conversation. In COLM 2024 , 2024. arXiv:2308.08155. [33] Miao Xiong, Zhiyuan Hu, Xinyang Lu, Yifei Li, Jie Fu, Junxian He, and Bryan Hooi. Can LLMs express their uncertainty? an empirical evaluation of confidence elicitation in LLMs. In 
+
+Proceedings of the 12th International Conference on Learning Representations (ICLR) , 2024. arXiv:2306.13063. [34] Yan Zhou and Yanguang Chen. Adaptive heterogeneous multi-agent debate for enhanced educational and factual reasoning in large language models. Journal of King Saud University – Computer and Information Sciences , 2025. 
+
+# Appendix A Proofs of Formal Properties 
+
+Proof of Proposition 1 (EWMA as Exponential Discounting) 
+
+We proceed by induction. The base case t = 1 gives ˆ a1 = (1 − α)ˆ a0 + αX 1, matching Eq. (10). For the inductive step, assume the expansion holds for t − 1: ˆat = (1 − α)ˆ at−1 + αX t
+
+= (1 − α)
+
+"
+
+(1 − α)t−1ˆa0 + α
+
+> t−1
+
+X 
+
+> τ=1
+
+(1 − α)t−1−τ Xτ
+
+#
+
++ αX t
+
+= (1 − α)tˆa0 + α
+
+> t−1
+
+X 
+
+> τ=1
+
+(1 − α)t−τ Xτ + αX t
+
+= (1 − α)tˆa0 + α
+
+> t
+
+X 
+
+> τ=1
+
+(1 − α)t−τ Xτ .
+
+The weight on observation Xτ is wτ = α(1 − α)t−τ . The sum of weights is 
+
+> t
+
+X 
+
+> τ=1
+
+α(1 − α)t−τ = α · 1 − (1 − α)t
+
+1 − (1 − α) = 1 − (1 − α)t,
+
+24 with the complement (1 − α)t carried by the initialisation ˆ a0. Total weight is exactly 1. For the effective window: the ratio of the weight on an observation n steps in the past to the most recent observation is (1 − α)n. Setting this equal to e−1 and solving: n = −1/ ln(1 − α) ≈ 1/α 
+
+for small α. At α = 0 .04, this gives an effective window of ≈ 25 observations. 
+
+Proof of Proposition 2 (Calibration Convergence) 
+
+Mean. Taking expectations in Eq. (10) and using E[Xτ ] = θ:
+
+E[ˆ at] = (1 − α)tˆa0 + αθ 
+
+> t
+
+X 
+
+> τ=1
+
+(1 − α)t−τ
+
+= (1 − α)tˆa0 + θ [1 − (1 − α)t]= θ + (1 − α)t(ˆ a0 − θ).
+
+As t → ∞ , (1 − α)t → 0, so E[ˆ at] → θ.
+
+Variance. By independence of the Xτ :Var(ˆ at) = 
+
+> t
+
+X 
+
+> τ=1
+
+w2 
+
+> τ
+
+Var( Xτ ) = θ(1 − θ) α2
+
+> t
+
+X 
+
+> τ=1
+
+(1 − α)2( t−τ )
+
+= θ(1 − θ) α2 · 1 − (1 − α)2t
+
+1 − (1 − α)2
+
+= α
+
+2 − α θ(1 − θ) 1 − (1 − α)2t.
+
+As t → ∞ : Var(ˆ at) → α 
+
+> 2−α
+
+θ(1 − θ). 
+
+Convergence in probability. The mean squared error decomposes as 
+
+E[(ˆ at − θ)2] = Var(ˆ at) + (1 − α)t(ˆ a0 − θ)2.
+
+Both terms converge: the variance to its steady-state value, the squared bias to zero. By Cheby-shev’s inequality, for any ε > 0: 
+
+P(|ˆat − θ| > ε ) ≤ E[(ˆ at − θ)2]
+
+ε2 → α θ (1 − θ)(2 − α)ε2 .
+
+This is the irreducible error. Setting ε = 3 Std ss gives probability ≤ 1/9. 
+
+Proof of Proposition 3 (Tracking Speed) 
+
+After the shift at t0, outcomes are i.i.d. Bernoulli( θ′). The estimator at t0 + n is a fresh EWMA initialised at ˆ at0 tracking θ′. By Proposition 2: 
+
+E[ˆ at0+n] = θ′ + (1 − α)n (ˆ at0 − θ′).
+
+The bias magnitude is (1 − α)n |ˆat0 − θ′|. If the pre-shift estimator had converged, ˆ at0 ≈ θ, so 
+
+|ˆat0 − θ′| ≈ | ∆|.Setting (1 − α)n|∆| ≤ ε and using (1 − α)n ≤ e−αn :
+
+e−αn |∆| ≤ ε =⇒ n ≥ 1
+
+α ln |∆|
+
+ε .
+
+At α = 0 .04: recovering to within ε = 0 .01 after a shift of ∆ = 0 .20 requires n ≥ 25 ln(20) ≈ 75 observations. This is consistent with the empirical observation that MARGIN recovers within approximately 50–100 observations after a severe distribution shift (Section 6.3). 25 Proof of Proposition 4 (Bias-Variance Tradeoff ) 
+
+Consider an environment where θt = θ0 + δ t drifts linearly. At any time t, the expected estimator value lags behind the true value. The EWMA is a weighted average of past observations, with effective centre of mass approximately 1 /(2 α) steps in the past. The expected tracking lag is therefore approximately δ/ (2 α). From Proposition 2, the steady-state standard deviation is pα θ (1 − θ)/(2 − α). By the triangle inequality, the expected absolute error is bounded by the sum: 
+
+E[|ˆat − θt|] ≤ δ
+
+2α +
+
+r α θ (1 − θ)2 − α .
+
+The first term is decreasing in α; the second is increasing. Differentiating and setting to zero (approximating 2 − α ≈ 2 for small α): 
+
+δ
+
+2α2 = 12
+
+r θ(1 − θ)2α =⇒ α∗ = O
+
+
+
+δ2/3
+
+.
+
+In practice, the optimum is broad: the ablation in Section 10.1 shows that α ∈ [0 .02 , 0.08] gives similar performance across moderate shift severities, with α = 0 .04 as the robust default. 
+
+Proof of Proposition 5 (Symmetric Optimality) 
+
+Consider the asymmetric EWMA: ˆat =
+
+(
+
+(1 − αup )ˆ at−1 + αup if Xt = 1 ,
+
+(1 − αdown )ˆ at−1 if Xt = 0 .
+
+Taking expectations at the stationary point ˆ a∞:
+
+E[ˆ a∞] = θ (1 − αup ) E[ˆ a∞] + αup 
+
+ + (1 − θ) (1 − αdown ) E[ˆ a∞]= E[ˆ a∞] 1 − αup θ − αdown (1 − θ) + αup θ. 
+
+Solving: 
+
+E[ˆ a∞] αup θ + αdown (1 − θ) = αup θ =⇒ E[ˆ a∞] = αup θαup θ + αdown (1 − θ) .
+
+Setting E[ˆ a∞] = θ requires αup θ(1 − θ) = αdown θ(1 − θ), i.e., αup = αdown .When αdown > α up (penalising errors faster), the estimator is biased downward. For θ = 0 .8, 
+
+αup = 0 .02, αdown = 0 .06: 
+
+E[ˆ a∞] = 0.016 0.016 + 0 .012 = 0.016 0.028 ≈ 0.571 .
+
+The estimator converges to 0.571 instead of the true 0.80, a bias of −0.229. This systematic underconfidence compounds across all agents and bands, predicting the 3–4 × ECE degradation observed empirically. For the optimality claim: among EWMA estimators with potentially different up/down rates, only the symmetric case αup = αdown is unbiased under i.i.d. Bernoulli outcomes. Since the variance of the symmetric estimator matches the Cram´ er–Rao-type lower bound for exponentially weighted estimators of bounded random variables, it is the minimum-variance unbiased estimator within this family. 26 Proof of Proposition 6 (Selection Monotonicity) 
+
+Consider N agents with true accuracies p1 > p 2 ≥ · · · ≥ pN responding to a single task. Each agent’s calibrated confidence is ˜ ci = pi + ηi, where ηi are independent zero-mean noise terms with common variance σ2 (the residual calibration error). The best agent is selected when ˜ c1 > ˜cj for all j̸ = 1, i.e., when η1 − ηj > −(p1 − pj ) for all 
+
+j. As σ2 → 0, the noise vanishes and the best agent is selected with probability 1. As σ2 → ∞ ,selection becomes uniform random with probability 1 /N .For intermediate σ2, the probability of correct selection is: 
+
+P[˜ c1 = max  
+
+> j
+
+˜cj ] = E
+
+
+
+> N
+
+Y
+
+> j=2
+
+Φ
+
+ p1 − pj + η1
+
+σ
+
+ ,
+
+where Φ is the CDF of ηj /σ . Each factor inside the product is increasing as σ decreases (for fixed 
+
+p1 − pj > 0), establishing the monotonicity (18). For the anti-correlation case: when raw confidence satisfies Corr( ci, p i) < 0 across agents (as ob-served on hard benchmarks where weaker models are more confident), confidence-weighted selection systematically favours the wrong agent. The pairwise resolution probability, P[˜ c1 > ˜c2 | p1 > p 2], falls below 0.5. Any calibration that corrects the sign of the correlation (reducing ECE below the level at which the correlation flips) must raise pairwise resolution above 0.5. 27 0 20 40 60 80 100 
+
+Raw ECE (%)   
+
+> Phi4-14B (Q4)
+> Qwen2.5-72B (Q4)
+> Mistral-7B (Q4)
+> Llama3.1-70B (Q4)
+> DS-coder-v2 (Q4)
+> Qwen2.5-coder-32B (Q4)
+> Qwen2.5-coder-7B (Q4)
+> Qwen2.5-14B (Q4)
+> Qwen3-32B
+> Qwen3-235B
+> gpt-oss-120b
+> Kimi-K2.5
+> MiniMax-M2.5
+> Qwen3.5-35B
+> DeepSeek-V3.2
+> GLM-4.7-Flash
+> Qwen2.5-32B
+> Qwen3-Coder-480B
+> Qwen2.5-14B
+> R1-Distill-32B
+> Llama3.1-8B (Q4)
+> well-calibrated (ECE <10)
+
+Raw ECE across 21 foundation models: in-distribution vs out-of-distribution 
+
+> HumanEval (in-distribution)
+> BigCodeBench (out-of-distribution)
+
+Figure 2: Per-model raw ECE on HumanEval (phase 1, mild regime) versus BigCodeBench (phase 2 target of the severe HE → BCB shift), across 21 foundation models. Every model is poorly cal-ibrated on the out-of-distribution benchmark (ECE 40–80%), regardless of family or size. This motivates an online calibration layer that does not depend on any particular model’s raw calibra-tion quality. 28 0 20 40 60 80 100 
+
+Confidence (%) 
+
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Accuracy (%)
+> Raw ECE: 7.3
+> MARGIN ECE: 2.7
+
+Phase 1: pre-shift      
+
+> Raw
+> MARGIN
+> 020 40 60 80 100
+
+Confidence (%) 
+
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Accuracy (%)
+> Raw ECE: 18.5
+> MARGIN ECE: 4.6
+
+Phase 2: post-shift 
+
+> Raw
+> MARGIN
+
+Reliability diagram on MMLU-shift (10 cloud models, N=3496) Figure 3: Reliability diagrams on the MMLU (STEM → Humanities) shift. Left: raw verbalized confidence is systematically overconfident, with reliability curves lying far below the diagonal across all confidence bins (ECE 7 .3% → 18 .5% under shift). Right: MARGIN-calibrated confidence tracks the diagonal closely in both phases, reducing ECE by 4 × post-shift (2 .7% → 4.6%). 29 HE→HE+ 
+
+> MBPP→MBPP+
+> HE→LCB
+> MBPP→LCB
+> HE→BCB
+> MBPP→BCB
+> HE→CC
+> MBPP→CC
+> MMLU-shift
+> MATH-shift
+> TriviaQA
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> Phase 2 ECE (%, lower is better)
+> shading: light=mild / mid=moderate / dark=severe shift
+
+Distribution shift: phase-2 ECE across 11 conditions     
+
+> Raw Temp Scaling Platt Scaling Hist Binning MARGIN
+
+Figure 4: Phase 2 ECE across all 11 distribution-shift conditions (8 code-generation + 3 QA/math), comparing Raw verbalized confidence, Temperature scaling, Platt scaling, Histogram binning, and MARGIN. Background shading indicates shift severity (severe/moderate/mild). MARGIN’s rela-tive advantage grows monotonically with shift severity: under severe shift, all design-time baselines remain catastrophically miscalibrated while MARGIN adapts online to single-digit ECE. 30 Random 
+
+> Best single
+> Raw (verb.)
+> Raw (cons.)
+> Majority vote
+> MARGIN (verb.)
+> MARGIN (cons.)
+> Oracle
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> pass@1 (%)
+
+Multi-agent selection: pass@1      
+
+> All problems
+> Disagreement subset
+> 020 40 60 80 100
+
+Pairwise resolution accuracy (%) 
+
+> Random
+> Raw (verb.)
+> Raw (cons.)
+> MARGIN (verb.)
+> MARGIN (cons.)
+> random (50%)
+
+Pairwise resolution on disagreements Figure 5: Multi-agent selection results. Left: pass@1 (%) across four code-generation benchmarks, comparing random selection, the always-best single model, raw verbalized and consistency confi-dence, majority vote, MARGIN (verbalized and consistency), and an oracle upper bound. Right: pairwise resolution (%) when two agents disagree, with the 50% random baseline marked. Raw verbalized confidence falls below random on three of four hard benchmarks (confidence inversion); MARGIN restores pairwise resolution to 70–89%. 31 Raw                 
+
+> Transferred
+> From-scratch
+> HE→MBPP
+> MBPP→HE
+> HE→BCB
+> MBPP→BCB
+> HE→LCB
+> MBPP→LCB
+> HE→CC
+> MBPP→CC
+> 11.5 7.1 5.5
+> 10.9 8.6 6.2
+> 66.5 57.6 14.4
+> 66.5 56.1 14.4
+> 24.7 20.0 9.1
+> 24.7 19.0 9.1
+> 44.2 33.7 11.8
+> 44.2 36.0 11.8
+
+Phase-2 ECE by transfer regime 
+
+> Transfer penalty
+> HE→MBPP
+> MBPP→HE
+> HE→BCB
+> MBPP→BCB
+> HE→LCB
+> MBPP→LCB
+> HE→CC
+> MBPP→CC
+> +1.6
+> +2.4
+> +43.2
+> +41.7
+> +10.9
+> +9.9
+> +21.9
+> +24.2
+
+Transferred − from-scratch 
+
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> ECE (%)
+> −40
+> −30
+> −20
+> −10
+> 0
+> 10
+> 20
+> 30
+> 40
+> Δ ECE (%)
+
+Cross-task calibration transfer (mean across 9–10 cloud models) Figure 6: Cross-task calibration transfer (mean across 9–10 cloud models). Left: phase 2 ECE under three regimes (Raw, Transferred factors frozen from the source benchmark, and From-scratch online learning on the target). Right: transfer penalty, the ECE gap between Transferred and From-scratch. Transferred factors always beat raw, but online adaptation on the target is 3–4 × better, illustrating that calibration is distribution-specific rather than model-specific. 32 0 250 500 750 1000 
+
+> Observation
+> 5
+> 10
+> 15
+> 20
+> ECE (50-obs window)
+> 2 models removed
+
+(a) Agent dropout   
+
+> 100 200 300
+> Newcomer observations
+> 2.5
+> 5.0
+> 7.5
+> 10.0
+> 12.5
+> 15.0
+> 17.5
+> Cumulative ECE
+
+(b) Cold start     
+
+> Newcomer (raw)
+> Newcomer (shrinkage)
+> Established (ref.)
+> 0250 500 750 1000
+> Observation
+> 5
+> 10
+> 15
+> 20
+> ECE (50-obs window)
+> swaps
+
+(c) Rolling replacement Figure 7: Robustness of MARGIN to dynamic agent pools. 11 cloud models with full QA and math shift coverage, 50 shuffles per scenario, 1000 observations each. (a) Agent dropout: the two most-observed models are removed at observation 500 (dashed line); ensemble ECE (50-observation window) remains stable, with post-drop mean 9.66% versus pre-drop 11.86%. (b) Cold start: 4established models run for 500 observations, then 7 newcomers join; newcomer cumulative ECE under hierarchical shrinkage ( ks = 18) tracks the established-model reference from the first 50-observation checkpoint, while raw newcomer ECE requires over 200 observations to converge. (c) Rolling replacement: the worst-calibrated active model is swapped every 200 observations (dashed lines); ECE is stable across all four swaps. Shaded bands are ±1 standard deviation across 50 shuffles. 33 10 −2 10 −1 
+
+EWMA learning rate α
+
+> 10
+> 20
+> 30
+> 40
+> Phase-2 ECE (%)
+
+(a) Learning rate sensitivity       
+
+> default α= 0.04
+> HE→BCB
+> MBPP→CC
+> MBPP→MBPP+
+> 246810
+
+Number of confidence bands K
+
+> 4
+> 6
+> 8
+> 10
+> 12
+> 14
+> 16
+> Phase-2 ECE (%)
+
+(b) Band-count sensitivity        
+
+> default K= 3
+> HE→BCB
+> MBPP→CC
+> MBPP→MBPP+
+> 0510 15 20 25
+
+Phase-2 ECE (%), mean across shifts 
+
+> symmetric (default)
+> α_c=0.08, α_i=0.04
+> α_c=0.01, α_i=0.04
+> α_c=0.02, α_i=0.08
+> α_c=0.04, α_i=0.16
+> α_c=0.08, α_i=0.02
+> α_c=0.01, α_i=0.08
+> α_c=0.04, α_i=0.01
+> α_c=0.02, α_i=0.16
+
+(c) Asymmetric vs symmetric updates      
+
+> 0200 400 600 800 1000
+
+Shrinkage prior strength ks
+
+> 4
+> 6
+> 8
+> 10
+> Phase-2 ECE (%)
+
+(d) Bayesian-shrinkage sensitivity   
+
+> default ks= 100
+> HE→BCB
+> MBPP→CC
+> MBPP→MBPP+
+
+Ablation studies (phase-2 ECE) Figure 8: Ablations across three representative shift conditions (HE → BCB severe, MBPP → CC moderate, MBPP → MBPP+ mild). (a) EWMA learning rate α: the bias-variance U-shape of Proposition 4 is visible, with α=0 .04 balancing severe and mild regimes. (b) Confidence band count K: fewer bands suffice at current data volumes; finer partitions would benefit from more per-band observations. (c) Asymmetric learning rate: all asymmetric configurations are worse than symmetric, with mild-shift ECE rising sharply when αi > α c. (d) Bayesian shrinkage constant ks:blending plateaus near ks=100 on moderate shift, with mild shift essentially neutral. 34
