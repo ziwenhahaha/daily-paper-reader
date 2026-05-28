@@ -7,13 +7,13 @@ pdf: "https://www.biorxiv.org/content/10.64898/2026.05.18.725950v1.full.pdf"
 tags: ["query:rl"]
 score: 9.0
 evidence: 强化学习理论与表征学习对齐
-tldr: 。
+tldr: 大脑中的多巴胺信号可能不仅更新价值评估，还驱动状态表征的更新，揭示生物与人工系统在表征学习原理上的收敛
 source: biorxiv
 selection_source: fresh_fetch
-motivation: 。
-method: 。
-result: 。
-conclusion: 。
+motivation: 神经科学传统假设表征是固定的，而机器学习研究表明误差可以同时更新表征本身
+method: 通过同时记录嗅结节纹状体投射神经元和腹侧被盖区多巴胺神经元，分析逐试活动变化模式
+result: 纹状体活动的逐试变化更符合多巴胺驱动的表征学习而非仅更新价值映射的模型
+conclusion: 提供了生物系统采用误差驱动表征学习的神经生理学证据，支持生物与人工学习系统的深层收敛
 ---
 
 ## 摘要

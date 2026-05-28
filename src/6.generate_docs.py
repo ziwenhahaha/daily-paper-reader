@@ -647,7 +647,10 @@ def generate_glance_overview(title: str, abstract: str, max_retries: int = 3) ->
             method = str(obj.get("method") or "").strip()
             result = str(obj.get("result") or "").strip()
             conclusion = str(obj.get("conclusion") or "").strip()
-            if not (tldr and motivation and method and result and conclusion):
+            # 过滤掉空字段和占位符（"。" 或 "方法与实现细节请参考摘要与正文。" 等）
+            placeholder_fields = {"", "。", "方法与实现细节请参考摘要与正文。", "结果与对比结论请参考摘要与正文。", "总体而言，该工作在所述任务上展示了有效性，并提供了可复用的思路或工具。"}
+            all_fields = [tldr, motivation, method, result, conclusion]
+            if not all(x and x not in placeholder_fields for x in all_fields):
                 continue
             return "\n".join(
                 [
