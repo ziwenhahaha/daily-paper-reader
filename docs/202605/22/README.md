@@ -6,52 +6,10 @@
 - 速读区：15
 
 ## 今日简报（AI）
-<think>The user wants a daily report summary in Chinese, three sentences maximum, attractively concise. The user provides date, status, total 41 papers, 26 refined reading, 15 rapid reading. The refined reading list includes two papers with scores 9.0/10. The rapid reading includes three papers with scores 8.0/10.
 
-We need to output three lines, each a sentence. The sentences must be:
-
-1) Summarize what was done today, suitable for a title vibe.
-2) Provide the most noteworthy 1-2 directions or conclusions.
-3) Give next step suggestions for a general audience.
-
-We must base on the given data. Must not fabricate information. Must stay within 3 sentences.
-
-We need to ensure each line is a separate sentence (or separated by newline). Not Markdown. No extra formatting.
-
-So we output:
-
-Line 1: Something like "今日完成了 41 篇论文的筛选，其中 26 篇进入精读，15 篇速读，涵盖离线到在线强化学习、语言反馈等多领域。" But this is longer than 1 sentence? That is fine. It must be a sentence, not multiple sentences. We'll keep it one sentence.
-
-Line 2: Provide the most noteworthy direction(s): The two top-scoring精读 papers: ROAD (adaptive data mixing for offline-to-online RL) and Learning from Language Feedback via Variational Policy Distillation (both 9.0). Also maybe mention the three速读 papers collectively. But need 1-2 directions: maybe "离线到在线强化学习的数据混合和语言反馈策略提炼成为本轮最高评分亮点（均 9.0）" That is a direction.
-
-Line 3: Next step suggestion: "建议读者重点关注离线到在线 RL 的自适应数据混合方法及语言反馈的学习框架，可先阅读 ROAD 与语言反馈两篇精读文章获取核心思路。" That gives suggestion.
-
-Make sure it's 3 lines, each sentence, not too many characters, but attractively concise. Ensure Chinese and no markdown. The user said "直接输出 1-3 行文本，不要 Markdown 标题，也不要 JSON。" So plain text.
-
-We should avoid bullet points. Just plain lines. The three sentences can be separated by newline characters.
-
-We have to ensure the content is accurate: The date is 2026-05-22, success, 41 total, 26精读, 15速读. The list of精读 includes those two papers. The list of速读 includes three.
-
-Hence sentence 1: "2026-05-22 成功完成 41 篇论文筛选，其中 26 篇进入精读，15 篇进入速读，覆盖离线到在线强化学习、语言反馈等多个前沿方向。" That is a single sentence.
-
-Sentence 2: "本轮最高评分亮点是《ROAD：基于双层优化的离线到在线强化学习自适应数据混合》和《通过变分策略提炼学习语言反馈》两项，均获 9.0 分。" That mentions the top direction.
-
-Sentence 3: "建议读者先细读这两篇 9.0 分精读，兼顾速读的均衡分布信息，以快速把握自适应数据混合和语言反馈的关键技术路径。" That is a suggestion.
-
-Make sure it's within 3 sentences. Use newline separation.
-
-Check for any potential policy issues: It's about summarizing. No disallowed content. It's fine.
-
-Potential nuance: Ensure we are not giving false claims about results; just referencing the titles and scores. Should be fine.
-
-Make sure the language is appropriate and succinct.
-
-Alright let's produce final output.
-</think>
-
-
-
-2026‑05‑22 成功完成 41 篇论文筛选，其中 26 篇进入精读、15 篇进入速读，覆盖离线到在线强化学习、语言反馈
+2026-05-22 成功完成 41 篇论文筛选，其中 26 篇进入精读、15 篇进入速读，覆盖离线到在线强化学习、语言反馈与多智能体编排等方向。
+最高分精读集中在 ROAD 自适应数据混合与语言反馈变分策略蒸馏，提示“数据如何混合”和“反馈如何转化为策略”是本轮重点。
+建议先读这两篇 9.0 分论文，再用速读区的博弈、水印和联邦 Actor-Critic 论文补足应用侧视角。
 
 ## 精读区
 1. [ROAD: Adaptive Data Mixing for Offline-to-Online Reinforcement Learning via Bi-Level Optimization](/202605/22/2605.14497v1-road-adaptive-data-mixing-for-offline-to-online-reinforcement-learning-via-bi-level-optimization) （9.0/10）

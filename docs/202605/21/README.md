@@ -6,36 +6,6 @@
 - 速读区：15
 
 ## 今日简报（AI）
-<think>用户要求我作为日报编辑，输出3句以内、吸引人、简洁但具体的中文总结。
-
-给定的数据：
-- 日期：2026-05-21
-- 状态：成功
-- 总数：59篇
-- 精读：44篇
-- 速读：15篇
-- 精读列表：
-  - 《ERPPO: Entropy Regularization-based Proximal Policy Optimization》（9.0/10）
-  - 《On the Generalization of Knowledge Distillation: An Information-Theoretic View》（9.0/10）
-- 速读列表：
-  - 《LEMON: Learning Executable Multi-Agent Orchestration via Counterfactual Reinforcement Learning》（8.5/10）
-  - 《Embodied Multi-Agent Coordination by Aligning World Models Through Dialogue》（8.0/10）
-  - 《Embodied Multi-Agent Coordination by Aligning World Models Through Dialogue》（8.0/10）重复了
-
-需要按格式输出三行：
-1. 一句概括今天做了什么，适合标题感官
-2. 一句给出最值得看的1~2个方向/结论
-3. 一句给出下步建议（面向普通读者）
-
-要点：
-- 今天是2026年5月21日
-- 日报状态成功，处理了59篇论文，44精读+15速读
-- 精读高分论文：ERPPO（关于策略优化中的熵正则化）和知识蒸馏的泛化性（信息论视角）
-- 速读：多智能体编排、具身多智能体协作
-- 建议需要面向普通读者
-  
-我锁定三个核心维度：强化学习算法优化、多智能体协作、知识蒸馏泛化性。精读论文聚焦前沿算法改进，速读论文涉及多智能体系统前沿探索，为读者呈现技术发展全景图。
-</think>
 
 59篇论文高效产出：策略优化、知识蒸馏与多智能体协作成为核心方向；ERPPO与知识蒸馏泛化研究尤为突出；建议重点关注强化学习算法改进与智能体协作的前沿进展，结合自身应用场景深入探索。
 

@@ -45,6 +45,29 @@ elif os.getenv("BLT_API_KEY"):
 
 DEFAULT_DOCS_CONCURRENCY = 4
 
+REASONING_BLOCK_RE = re.compile(r"<think>.*?</think>|<thinking>.*?</thinking>", re.IGNORECASE | re.DOTALL)
+PLACEHOLDER_TEXT_RE = re.compile(r"^[\s.。…·,，、;；:：!！?？\-_/\\|\"'`]+$")
+
+
+def strip_llm_reasoning(text: str) -> str:
+    """
+    部分推理模型会把内部思考以 <think> 标签混入正文。
+    文档页只应保留最终答案。
+    """
+    if not text:
+        return ""
+    return REASONING_BLOCK_RE.sub("", str(text)).strip()
+
+
+def is_placeholder_text(text: str) -> bool:
+    """
+    判断 LLM/历史文档中常见的占位输出，如 "...", ".....", "。".
+    """
+    s = strip_llm_reasoning(text).strip()
+    if not s:
+        return True
+    return bool(PLACEHOLDER_TEXT_RE.match(s))
+
 
 def call_llm_text(
     client: LLMClient,
@@ -60,7 +83,7 @@ def call_llm_text(
         }
     )
     resp = client.chat(messages=messages, response_format=response_format)
-    return (resp.get("content") or "").strip()
+    return strip_llm_reasoning(resp.get("content") or "")
 
 
 def call_llm_structured_json(
@@ -332,8 +355,12 @@ def translate_title_and_abstract_to_zh(title: str, abstract: str) -> Tuple[str, 
         obj = parsed
         if not isinstance(obj, dict):
             return "", ""
-        zh_title = str(obj.get("title_zh") or "").strip()
-        zh_abstract = str(obj.get("abstract_zh") or "").strip()
+        zh_title = strip_llm_reasoning(str(obj.get("title_zh") or ""))
+        zh_abstract = strip_llm_reasoning(str(obj.get("abstract_zh") or ""))
+        if is_placeholder_text(zh_title):
+            zh_title = ""
+        if is_placeholder_text(zh_abstract):
+            zh_abstract = ""
     except Exception:
         return "", ""
     return zh_title, zh_abstract
@@ -469,6 +496,31 @@ def ensure_single_sentence_end(text: str) -> str:
     return s + "。"
 
 
+def build_zh_abstract_fallback(*parts: str) -> str:
+    """
+    当标题/摘要翻译阶段只返回点号占位时，用已有速览字段补一个可读的中文摘要。
+    """
+    cleaned: List[str] = []
+    generic_phrases = (
+        "方法与实现细节请参考摘要与正文",
+        "结果与对比结论请参考摘要与正文",
+        "总体而言，该工作在所述任务上展示了有效性",
+        "基于摘要生成的速览信息",
+    )
+    for part in parts:
+        s = strip_llm_reasoning(part).strip()
+        if is_placeholder_text(s):
+            continue
+        if any(p in s for p in generic_phrases):
+            continue
+        cleaned.append(ensure_single_sentence_end(s))
+    if not cleaned:
+        return ""
+    if len(cleaned) == 1:
+        return cleaned[0]
+    return " ".join(cleaned[:2])
+
+
 def upsert_auto_block(md_path: str, heading: str, content: str) -> None:
     """
     将自动生成内容写入 md：
@@ -548,6 +600,7 @@ def generate_deep_summary(md_file_path: str, txt_file_path: str, max_retries: in
         "7. 优点：方法或实验设计上有哪些亮点。\n"
         "8. 不足与局限：包括实验覆盖、偏差风险、应用限制等。\n\n"
         "请用分层标题和项目符号（Markdown 格式）组织上述内容，语言尽量简洁但信息要尽量完整。\n"
+        "只输出最终总结，不要输出思考过程、分析过程或 <think> 标签。\n"
         "要求：最后单独输出一行“（完）”作为结束标记。"
     )
 
@@ -955,7 +1008,7 @@ def build_daily_brief_summary(
         "1) 一句概括今天做了什么，适合标题感官。\n"
         "2) 一句给出最值得看的 1~2 个方向/结论。\n"
         "3) 一句给出下步建议（面向普通读者）。\n"
-        "直接输出 1-3 行文本，不要 Markdown 标题，也不要 JSON。"
+        "直接输出 1-3 行文本，不要 Markdown 标题，也不要 JSON，不要输出思考过程或 <think> 标签。"
     )
     try:
         content = call_llm_text(
@@ -1290,6 +1343,13 @@ def build_markdown_content(
     生成论文 Markdown 内容，使用 YAML front matter 存储元数据。
     前端通过解析 front matter 渲染页面布局。
     """
+    zh_title = strip_llm_reasoning(zh_title)
+    zh_abstract = strip_llm_reasoning(zh_abstract)
+    if is_placeholder_text(zh_title):
+        zh_title = ""
+    if is_placeholder_text(zh_abstract):
+        zh_abstract = ""
+
     title = (paper.get("title") or "").strip()
     authors = paper.get("authors") or []
     published = str(paper.get("published") or "").strip()
@@ -1336,6 +1396,17 @@ def build_markdown_content(
 
     # 优先使用速览生成的 TLDR（100字左右），否则使用原来的 TLDR
     display_tldr = glance_tldr if glance_tldr else tldr
+    if is_placeholder_text(display_tldr):
+        display_tldr = ""
+    if not zh_abstract:
+        zh_abstract = build_zh_abstract_fallback(
+            display_tldr,
+            glance_motivation,
+            glance_method,
+            glance_result,
+            glance_conclusion,
+            evidence,
+        )
 
     # 辅助函数：转义 YAML 字符串中的特殊字符
     # 构建 YAML front matter

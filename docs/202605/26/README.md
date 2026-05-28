@@ -6,53 +6,6 @@
 - 速读区：15
 
 ## 今日简报（AI）
-<think>用户要求我作为日报编辑，输出3句以内、吸引人、简洁但具体的中文总结。
-
-日报内容：
-- 日期：2026-05-26
-- 状态：成功
-- 总数：41篇
-- 精读：26篇
-- 速读：15篇
-- 精读列表（评分≥9.0）：
-  1. 《Self-Distillation is Optimal Among Spectral Shrinkage Estimators in Spiked Covariance Models》（9.0/10）
-  2. 《FedSDR: Federated Self-Distillation with Rectification》（9.0/10）
-
-- 速读列表（评分8.0）：
-  1. 《PEIRA: Learning Predictive Encoders through Inter-View Regressor Alignment》（8.0/10）
-  2. 《Balancing Knowledge Distillation for Imbalance Learning with Bilevel Optimization》（8.0/10）
-
-用户要求的格式：
-1) 一句概括今天做了什么，适合标题感官。
-2) 一句给出最值得看的 1~2 个方向/结论。
-3) 一句给出下步建议（面向普通读者）。
-
-注意：
-- 直接输出 1-3 行文本
-- 不要 Markdown 标题
-- 不要 JSON
-
-让我分析精读文章：
-1. 《Self-Distillation is Optimal Among Spectral Shrinkage Estimators in Spiked Covariance Models》（9.0/10）
-   - 关于自蒸馏在尖峰协方差模型中是最优的谱收缩估计器
-   - 这是一个理论性/方法论的研究，证明了自蒸馏的理论优势
-
-2. 《FedSDR: Federated Self-Distillation with Rectification》（9.0/10）
-   - 关于联邦学习中的自蒸馏和修正方法
-   - 这是一个应用性的研究，解决联邦学习中的实际问题
-
-速读文章：
-1. 《PEIRA: Learning Predictive Encoders through Inter-View Regressor Alignment》（8.0/10）
-   - 关于通过视图间回归对齐学习预测编码器
-   - 涉及多视图学习
-
-2. 《Balancing Knowledge Distillation for Imbalance Learning with Bilevel Optimization》（8.0/10）
-   - 关于知识蒸馏中的不平衡学习和双层优化平衡方法
-
-核心观察：自蒸馏在理论研究和实际应用中都展现了重要价值，不仅是尖峰协方差模型中的最优谱收缩估计器，也有效解决了联邦学习的挑战。今天的41篇论文中，精读26篇，其中两篇获得9.0分，聚焦于蒸馏和联邦学习领域。
-
-下步建议：深入研究自蒸馏的理论基础，关注其在处理类别不平衡问题中的潜在应用。
-</think>
 
 精读 26 篇揭示自蒸馏在理论与联邦学习中的双重突破；精读 Top2 均超 9.0 分，覆盖谱收缩估计与跨节点协同优化。可重点关注自蒸馏如何提升模型压缩与数据分布不均衡场景的实战效果。
 
