@@ -24,9 +24,9 @@ on:
         required: false
         default: "true"
       reranker_profile:
-        description: "Reranker：public-zwwen-rerank / local-qwen3-0.6b / siliconflow-qwen3-0.6b；留空使用 Secrets"
+        description: "Reranker：默认 public-zwwen-rerank；可改 local-qwen3-0.6b / siliconflow-qwen3-0.6b"
         required: false
-        default: ""
+        default: "public-zwwen-rerank"
       run_llm_refine:
         description: "是否继续运行 DeepSeek 相关性打分（true/false）"
         required: false
@@ -104,6 +104,7 @@ jobs:
             ~/.cache/pip
             ~/.cache/uv
             ~/.cache/torch
+            ~/.cache/dpr-tools/papercropper
           key: ${{ runner.os }}-dpr-conference-retrieval-v1-${{ hashFiles('requirements.txt') }}
 
       - name: Install deps
@@ -118,6 +119,67 @@ jobs:
           python -m pip install uv
           python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.5.1+cpu"
           uv pip install --system -r /tmp/req.txt
+
+      - name: Prepare PaperCropper (optional)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+
+          TOOL_DIR="$HOME/.cache/dpr-tools/papercropper"
+          SRC_DIR="$TOOL_DIR/PaperCropper"
+          MODEL_DIR="$TOOL_DIR/models"
+          MODEL_PATH="$MODEL_DIR/doclayout_yolo_docstructbench_imgsz1280_2501.pt"
+
+          mkdir -p "$TOOL_DIR" "$MODEL_DIR"
+          if [ ! -f "$SRC_DIR/extract.py" ]; then
+            rm -rf "$SRC_DIR"
+            git clone --depth 1 https://github.com/fake-learn/PaperCropper "$SRC_DIR"
+          fi
+
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torchvision==0.20.1+cpu"
+          python -m pip install -r requirements-paper-media.txt
+          python -m pip install --no-deps "doclayout-yolo==0.0.4"
+          if [ ! -f "$MODEL_PATH" ]; then
+            MODEL_DIR="$MODEL_DIR" python - <<'PY'
+          import os
+          from huggingface_hub import hf_hub_download
+
+          filename = "doclayout_yolo_docstructbench_imgsz1280_2501.pt"
+          path = hf_hub_download(
+              repo_id="juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501",
+              filename=filename,
+              local_dir=os.environ["MODEL_DIR"],
+              local_dir_use_symlinks=False,
+          )
+          print(path)
+          PY
+          fi
+
+          PAPERCROPPER_MODEL="$MODEL_PATH" python - <<'PY'
+          import os
+          import cv2
+          import fitz
+          import torch
+          import torchvision
+          from doclayout_yolo import YOLOv10
+
+          model_path = os.environ["PAPERCROPPER_MODEL"]
+          if not os.path.exists(model_path):
+              raise FileNotFoundError(model_path)
+          print(
+              "PaperCropper smoke OK:",
+              {
+                  "torch": torch.__version__,
+                  "torchvision": torchvision.__version__,
+                  "cv2": cv2.__version__,
+                  "fitz": getattr(fitz, "__doc__", "")[:20],
+                  "YOLOv10": YOLOv10.__name__,
+              },
+          )
+          PY
+
+          echo "PAPERCROPPER_SCRIPT=$SRC_DIR/extract.py" >> "$GITHUB_ENV"
+          echo "PAPERCROPPER_MODEL=$MODEL_PATH" >> "$GITHUB_ENV"
 
       - name: Run conference retrieval pipeline
         env:
@@ -148,6 +210,23 @@ jobs:
             RRF_TOP_N="200"
           fi
 
+          TOKENS="$(CONFERENCE_INPUT="$CONFERENCE" YEARS_INPUT="$YEARS" python -c 'import os, sys; sys.path.insert(0, "src"); from conference_retrieval import build_years_token, parse_conferences, parse_years; print("-".join(parse_conferences(os.environ.get("CONFERENCE_INPUT", "")))); print(build_years_token(parse_years(os.environ.get("YEARS_INPUT", ""))))')"
+          CONF_TOKEN="$(echo "$TOKENS" | sed -n '1p')"
+          YEAR_TOKEN="$(echo "$TOKENS" | sed -n '2p')"
+          TOPIC_MARKER="$(CONF_TOKEN="$CONF_TOKEN" YEAR_TOKEN="$YEAR_TOKEN" PROFILE_TAG="$DPR_FILTER_PROFILE_TAG" python - <<'PY'
+          import os, sys
+          sys.path.insert(0, "src")
+          from conference_sidebar import build_conference_topic_marker, topic_from_profile_tag
+
+          kind, label = topic_from_profile_tag(os.environ.get("PROFILE_TAG", ""))
+          print(build_conference_topic_marker(os.environ["CONF_TOKEN"], os.environ["YEAR_TOKEN"], kind, label))
+          PY
+          )"
+          if [ -f docs/_sidebar.md ] && grep -Fq "$TOPIC_MARKER" docs/_sidebar.md; then
+            echo "[INFO] 已存在会议词条，跳过重复检索：conference=${CONF_TOKEN}-${YEAR_TOKEN} profile=${DPR_FILTER_PROFILE_TAG:-General}"
+            exit 0
+          fi
+
           ARGS=(
             --conferences "$CONFERENCE"
             --years "$YEARS"
@@ -165,10 +244,18 @@ jobs:
               echo "::error::run_llm_refine=true requires DEEPSEEK_API_KEY secret."
               exit 1
             fi
-            ARGS+=(--run-llm-refine --llm-min-star "${LLM_MIN_STAR:-4}" --llm-filter-concurrency 2)
+            ARGS+=(--run-llm-refine --llm-min-star "${LLM_MIN_STAR:-4}" --llm-filter-concurrency 2 --display-min-score 4)
           fi
 
           python src/conference_pipeline.py "${ARGS[@]}"
+
+          python src/conference_sidebar.py \
+            --result "archive/${RUN_DATE}/rank/conference-${CONF_TOKEN}-${YEAR_TOKEN}.supabase.llm.json" \
+            --result "archive/${RUN_DATE}/rank/conference-${CONF_TOKEN}-${YEAR_TOKEN}.supabase.rerank.json" \
+            --result "archive/${RUN_DATE}/filtered/conference-${CONF_TOKEN}-${YEAR_TOKEN}.supabase.rrf.json" \
+            --sidebar docs/_sidebar.md \
+            --display-min-score 4 \
+            --deep-min-score 4
 
       - name: Commit conference retrieval results
         run: |
@@ -177,7 +264,7 @@ jobs:
           branch="${GITHUB_REF_NAME:-main}"
 
           shopt -s nullglob
-          paths=(archive/*/filtered/conference-*.supabase.*.json archive/*/rank/conference-*.supabase.*.json)
+          paths=(archive/*/rank/conference-*.supabase.llm.json docs/_sidebar.md docs/conference docs/assets/figures docs/assets/tables)
           if [ "${#paths[@]}" -eq 0 ]; then
             echo "No conference output files to commit."
             exit 0
@@ -190,6 +277,8 @@ jobs:
           fi
 
           git commit -m "[chore] conference retrieval"
+          git status --short
+          git reset --hard HEAD
           git fetch origin "$branch"
           git merge --no-ff "origin/$branch" -m "Merge origin/$branch into workflow branch"
           git push origin HEAD:"$branch"

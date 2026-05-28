@@ -10,6 +10,8 @@ const {
   getDeepSeekPreset,
   inferChatApiProfile,
   resolveJsonResponseMode,
+  isDeepSeekV4Model,
+  resolveMaxOutputTokens,
   shouldUseXApiKeyHeader,
   buildStreamingChatPayload,
   buildConnectivityTestPayload,
@@ -138,6 +140,33 @@ function testResolveJsonResponseMode() {
   );
 }
 
+function testResolveMaxOutputTokens() {
+  assert.equal(isDeepSeekV4Model('deepseek-v4-flash'), true);
+  assert.equal(isDeepSeekV4Model('deepseek-v4-pro'), true);
+  assert.equal(isDeepSeekV4Model('deepseek-chat'), false);
+  assert.equal(
+    resolveMaxOutputTokens({
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-flash',
+    }),
+    393216,
+  );
+  assert.equal(
+    resolveMaxOutputTokens({
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-pro',
+    }),
+    393216,
+  );
+  assert.equal(
+    resolveMaxOutputTokens({
+      baseUrl: 'https://example.com/v1',
+      model: 'other-model',
+    }),
+    null,
+  );
+}
+
 function testShouldUseXApiKeyHeader() {
   assert.equal(
     shouldUseXApiKeyHeader({
@@ -166,6 +195,7 @@ function testBuildStreamingChatPayload() {
       model: 'deepseek-v4-flash',
       messages: [{ role: 'user', content: 'hi' }],
       stream: true,
+      max_tokens: 393216,
     },
   );
 
@@ -179,6 +209,7 @@ function testBuildStreamingChatPayload() {
       model: 'deepseek-v4-pro',
       messages: [{ role: 'user', content: 'hi' }],
       stream: true,
+      max_tokens: 393216,
     },
   );
 
@@ -227,6 +258,7 @@ testInferProviderType();
 testGetDeepSeekPreset();
 testInferChatApiProfile();
 testResolveJsonResponseMode();
+testResolveMaxOutputTokens();
 testShouldUseXApiKeyHeader();
 testBuildStreamingChatPayload();
 testBuildConnectivityTestPayload();

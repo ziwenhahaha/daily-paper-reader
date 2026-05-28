@@ -2,6 +2,7 @@ import importlib.util
 import pathlib
 import sys
 import unittest
+from unittest.mock import patch
 
 
 def _load_module(module_name: str, path: pathlib.Path):
@@ -31,6 +32,23 @@ class InitSupabaseFromBioRxivTest(unittest.TestCase):
     def test_resolve_date_token_manual(self):
         token = self.mod.resolve_date_token("20260301-20260310", 30)
         self.assertEqual(token, "20260301-20260310")
+
+    def test_init_biorxiv_import_does_not_require_torch(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        real_import = __import__
+
+        def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "torch":
+                raise ModuleNotFoundError("No module named 'torch'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=guarded_import):
+            mod = _load_module(
+                "init_biorxiv_without_torch_mod",
+                root / "src" / "maintain" / "init_biorxiv.py",
+            )
+
+        self.assertIsNone(mod.torch)
 
 
 if __name__ == "__main__":

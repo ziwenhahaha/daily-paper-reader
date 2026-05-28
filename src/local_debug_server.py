@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -26,6 +27,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 RUNS_DIR = ROOT_DIR / ".local-runs"
 CONFIG_PATH = ROOT_DIR / "config.yaml"
 SECRET_PATH = ROOT_DIR / "secret.private"
+ENV_PATH = ROOT_DIR / ".env"
 
 
 def utc_now() -> str:
@@ -50,14 +52,12 @@ def build_secret_env(secret: dict[str, Any] | None) -> dict[str, str]:
         model = norm_text(first_chat.get("models")[0])
 
     env: dict[str, str] = {}
-    if api_key:
+    if summarized or first_chat:
         env["SUMMARY_API_KEY"] = api_key
         env["DEEPSEEK_API_KEY"] = api_key
-    if base_url:
         env["SUMMARY_BASE_URL"] = base_url
         env["DEEPSEEK_BASE_URL"] = base_url
         env["LLM_PRIMARY_BASE_URL"] = base_url
-    if model:
         env["SUMMARY_MODEL"] = model
         env["DEEPSEEK_MODEL"] = model
 
@@ -67,25 +67,53 @@ def build_secret_env(secret: dict[str, Any] | None) -> dict[str, str]:
     rerank_model = norm_text(reranker.get("model"))
     rerank_key = norm_text(reranker.get("apiKey"))
     rerank_base = norm_text(reranker.get("baseUrl"))
-    if rerank_profile:
+    if reranker:
         env["RERANK_PROFILE"] = rerank_profile
-    if rerank_provider:
         env["RERANK_PROVIDER"] = rerank_provider
-    if rerank_model:
         env["RERANK_MODEL"] = rerank_model
-    if rerank_key:
         env["RERANK_API_KEY"] = rerank_key
-        if rerank_provider == "public_zwwen":
-            env["PUBLIC_RERANK_API_KEY"] = rerank_key
-        if rerank_provider == "siliconflow":
-            env["SILICONFLOW_API_KEY"] = rerank_key
-    if rerank_base:
         env["RERANK_API_BASE_URL"] = rerank_base
         if rerank_provider == "public_zwwen":
+            env["PUBLIC_RERANK_API_KEY"] = rerank_key
             env["PUBLIC_RERANK_API_BASE_URL"] = rerank_base
         if rerank_provider == "siliconflow":
+            env["SILICONFLOW_API_KEY"] = rerank_key
             env["SILICONFLOW_RERANK_URL"] = rerank_base
     return env
+
+
+def quote_env_value(value: str) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    if any(ch.isspace() or ch in {'"', "'", "#", "\\"} for ch in text):
+        escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return text
+
+
+def update_env_file(path: Path, values: dict[str, str]) -> None:
+    clean_values = {str(k): str(v).strip() for k, v in values.items() if str(k).strip()}
+    existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    updated_keys: set[str] = set()
+    next_lines: list[str] = []
+    for line in existing:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            next_lines.append(line)
+            continue
+        prefix = "export " if stripped.startswith("export ") else ""
+        body = stripped[len("export ") :] if prefix else stripped
+        key = body.split("=", 1)[0].strip()
+        if key in clean_values:
+            next_lines.append(f"{prefix}{key}={quote_env_value(clean_values[key])}")
+            updated_keys.add(key)
+        else:
+            next_lines.append(line)
+    for key in clean_values:
+        if key not in updated_keys:
+            next_lines.append(f"{key}={quote_env_value(clean_values[key])}")
+    path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
 
 
 class RunStore:
@@ -244,29 +272,77 @@ def build_command(workflow_key: str, workflow_file: str, inputs: dict[str, str])
         return cmd
 
     if workflow_file == "conference-paper-retrieval.yml" or workflow_key == "conference-retrieval":
-        cmd = [
+        run_date = datetime.now(timezone.utc).strftime("%Y%m%d")
+        conference = str(inputs.get("conference") or "ICML")
+        years = str(inputs.get("years") or "2025")
+        profile_tag = str(inputs.get("profile_tag") or "")
+        pipeline_cmd = [
             python,
             "src/conference_pipeline.py",
             "--conferences",
-            str(inputs.get("conference") or "ICML"),
+            conference,
             "--years",
-            str(inputs.get("years") or "2025"),
+            years,
             "--top-k",
             str(inputs.get("top_k") or "50"),
             "--rrf-top-n",
             str(inputs.get("rrf_top_n") or "200"),
             "--output-dir",
-            f"archive/{datetime.now(timezone.utc).strftime('%Y%m%d')}/filtered",
+            f"archive/{run_date}/filtered",
             "--embedding-device",
             "cpu",
             "--embedding-batch-size",
             "8",
         ]
         if as_bool(inputs.get("run_rerank"), True) or as_bool(inputs.get("run_llm_refine"), True):
-            cmd.extend(["--run-rerank", "--rerank-device", "cpu", "--rerank-batch-size", "4"])
+            pipeline_cmd.extend(["--run-rerank", "--rerank-device", "cpu", "--rerank-batch-size", "4"])
         if as_bool(inputs.get("run_llm_refine"), True):
-            cmd.extend(["--run-llm-refine", "--llm-min-star", str(inputs.get("llm_min_star") or "4"), "--llm-filter-concurrency", "2"])
-        return cmd
+            pipeline_cmd.extend(["--run-llm-refine", "--llm-min-star", str(inputs.get("llm_min_star") or "4"), "--llm-filter-concurrency", "2"])
+        script = "\n".join([
+            "set -euo pipefail",
+            (
+                f"TOKENS=$(CONFERENCE_INPUT={shlex.quote(conference)} "
+                f"YEARS_INPUT={shlex.quote(years)} "
+                f"{shlex.quote(python)} -c "
+                + shlex.quote(
+                    "import os, sys; "
+                    "sys.path.insert(0, 'src'); "
+                    "from conference_retrieval import build_years_token, parse_conferences, parse_years; "
+                    "print('-'.join(parse_conferences(os.environ.get('CONFERENCE_INPUT', '')))); "
+                    "print(build_years_token(parse_years(os.environ.get('YEARS_INPUT', ''))))"
+                )
+                + ")"
+            ),
+            "CONF_TOKEN=$(echo \"$TOKENS\" | sed -n '1p')",
+            "YEAR_TOKEN=$(echo \"$TOKENS\" | sed -n '2p')",
+            f"PROFILE_TAG={shlex.quote(profile_tag)}",
+            "export DPR_FILTER_PROFILE_TAG=\"$PROFILE_TAG\"",
+            (
+                "TOPIC_MARKER=$(CONF_TOKEN=\"$CONF_TOKEN\" YEAR_TOKEN=\"$YEAR_TOKEN\" "
+                "PROFILE_TAG=\"$DPR_FILTER_PROFILE_TAG\" "
+                f"{shlex.quote(python)} - <<'PY'\n"
+                "import os, sys\n"
+                "sys.path.insert(0, 'src')\n"
+                "from conference_sidebar import build_conference_topic_marker, topic_from_profile_tag\n"
+                "kind, label = topic_from_profile_tag(os.environ.get('PROFILE_TAG', ''))\n"
+                "print(build_conference_topic_marker(os.environ['CONF_TOKEN'], os.environ['YEAR_TOKEN'], kind, label))\n"
+                "PY\n"
+                ")"
+            ),
+            (
+                "if [ -f docs/_sidebar.md ] && grep -Fq \"$TOPIC_MARKER\" docs/_sidebar.md; then\n"
+                "  echo \"[INFO] 已存在会议词条，跳过重复检索：conference=${CONF_TOKEN}-${YEAR_TOKEN} profile=${DPR_FILTER_PROFILE_TAG:-General}\"\n"
+                "  exit 0\n"
+                "fi"
+            ),
+            " ".join(shlex.quote(part) for part in pipeline_cmd),
+            f"{shlex.quote(python)} src/conference_sidebar.py "
+            f"--result archive/{run_date}/rank/conference-${{CONF_TOKEN}}-${{YEAR_TOKEN}}.supabase.llm.json "
+            f"--result archive/{run_date}/rank/conference-${{CONF_TOKEN}}-${{YEAR_TOKEN}}.supabase.rerank.json "
+            f"--result archive/{run_date}/filtered/conference-${{CONF_TOKEN}}-${{YEAR_TOKEN}}.supabase.rrf.json "
+            "--sidebar docs/_sidebar.md",
+        ])
+        return ["bash", "-lc", script]
 
     if workflow_file == "reset-content.yml" or workflow_key == "reset-content":
         return [python, "-c", "import shutil, pathlib; root=pathlib.Path('.'); shutil.rmtree(root/'docs', ignore_errors=True); shutil.copytree(root/'docs_init', root/'docs'); print('docs reset from docs_init')"]
@@ -356,7 +432,22 @@ class Handler(SimpleHTTPRequestHandler):
                 json.dumps(secret_payload, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
-            return self._json({"ok": True, "path": str(SECRET_PATH), "savedAt": utc_now()})
+            secret_plain = payload.get("secret") if isinstance(payload.get("secret"), dict) else None
+            env_path = ""
+            env_keys: list[str] = []
+            if secret_plain:
+                secret_env = build_secret_env(secret_plain)
+                if secret_env:
+                    update_env_file(ENV_PATH, secret_env)
+                    env_path = str(ENV_PATH)
+                    env_keys = sorted(secret_env.keys())
+            return self._json({
+                "ok": True,
+                "path": str(SECRET_PATH),
+                "envPath": env_path,
+                "envKeys": env_keys,
+                "savedAt": utc_now(),
+            })
         except Exception as exc:
             return self._json({"ok": False, "error": str(exc)}, status=400)
 

@@ -121,6 +121,20 @@ def _runtime_profile_tag_filters() -> List[str]:
   return out
 
 
+def _include_conference_only_profiles() -> bool:
+  return _as_bool(os.getenv("DPR_INCLUDE_CONFERENCE_ONLY_PROFILES"), False)
+
+
+def _is_conference_only_profile(profile: Dict[str, Any]) -> bool:
+  if not isinstance(profile, dict):
+    return False
+  return (
+    _as_bool(profile.get("temporary"), False)
+    or _as_bool(profile.get("conference_only"), False)
+    or _norm_text(profile.get("scope") or "").lower() == "conference"
+  )
+
+
 def _profile_matches_runtime_filter(tag: str, filters: List[str]) -> bool:
   if not filters:
     return True
@@ -319,6 +333,10 @@ def _normalize_profile(profile: Dict[str, Any], idx: int, known_sources: List[st
   }
   if "paused" in profile:
     result["paused"] = _as_bool(profile.get("paused"), False)
+  if _is_conference_only_profile(profile):
+    result["scope"] = "conference"
+    result["temporary"] = True
+    result["conference_only"] = True
   return result
 
 
@@ -326,9 +344,12 @@ def _build_from_profiles(subs: Dict[str, Any], known_sources: List[str]) -> Dict
   raw_profiles = subs.get("intent_profiles") or []
   runtime_tag_filters = _runtime_profile_tag_filters()
   profiles: List[Dict[str, Any]] = []
+  include_conference_only = _include_conference_only_profiles()
   if isinstance(raw_profiles, list):
     for idx, p in enumerate(raw_profiles):
       if not isinstance(p, dict):
+        continue
+      if _is_conference_only_profile(p) and not include_conference_only:
         continue
       normalized_profile = _normalize_profile(p, idx, known_sources)
       if runtime_tag_filters and not _profile_matches_runtime_filter(normalized_profile.get("tag") or "", runtime_tag_filters):

@@ -75,17 +75,26 @@ window.PrivateDiscussionChat = (function () {
     }
     return 'unsupported';
   };
-  const buildStreamingChatPayload = (baseUrl, model, messages) => {
-    const utils = window.DPRLLMConfigUtils || {};
-    if (typeof utils.buildStreamingChatPayload === 'function') {
-      return utils.buildStreamingChatPayload({ baseUrl, model, messages });
-    }
-    return {
-      model,
-      messages,
-      stream: true,
-    };
-  };
+	  const buildStreamingChatPayload = (baseUrl, model, messages) => {
+	    const utils = window.DPRLLMConfigUtils || {};
+	    if (typeof utils.buildStreamingChatPayload === 'function') {
+	      return utils.buildStreamingChatPayload({ baseUrl, model, messages });
+	    }
+	    const payload = {
+	      model,
+	      messages,
+	      stream: true,
+	    };
+	    const normalizedModel = String(model || '').trim().toLowerCase();
+	    const normalizedBaseUrl = String(baseUrl || '').trim().toLowerCase();
+	    if (
+	      (normalizedModel === 'deepseek-v4-flash' || normalizedModel === 'deepseek-v4-pro')
+	      && /(^|\/\/)(api\.)?deepseek\.com(?:$|\/)/i.test(normalizedBaseUrl)
+	    ) {
+	      payload.max_tokens = 393216;
+	    }
+	    return payload;
+	  };
 
   let chatDbPromise = null;
 
@@ -242,7 +251,31 @@ window.PrivateDiscussionChat = (function () {
               </div>
             </div>
           </div>
-          <select id="chat-llm-model-select" class="chat-model-select"></select>
+          <div id="chat-model-picker" class="chat-model-picker">
+            <button
+              id="chat-model-picker-btn"
+              class="chat-model-picker-btn"
+              type="button"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+            >
+              <span class="chat-model-picker-kicker">Model</span>
+              <span id="chat-model-picker-label" class="chat-model-picker-label">选择模型</span>
+              <span class="chat-model-picker-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div
+              id="chat-model-picker-menu"
+              class="chat-model-picker-menu"
+              role="listbox"
+              aria-label="选择 Chat 模型"
+            ></div>
+            <select
+              id="chat-llm-model-select"
+              class="chat-model-select"
+              aria-hidden="true"
+              tabindex="-1"
+            ></select>
+          </div>
           <span id="chat-status" class="chat-status"></span>
         </div>
       </div>
@@ -410,10 +443,22 @@ window.PrivateDiscussionChat = (function () {
     return r.querySelector('#chat-questions-panel');
   };
 
-  const closeQuestionsPanel = (root) => {
-    const panel = getQuestionsPanel(root);
+  const closeQuestionsPanelElement = (panel) => {
     if (!panel) return;
-    panel.style.display = 'none';
+    if (panel.style.display === 'none') return;
+    if (panel._closingTimer) {
+      clearTimeout(panel._closingTimer);
+    }
+    panel.classList.add('is-closing');
+    panel._closingTimer = setTimeout(() => {
+      panel.style.display = 'none';
+      panel.classList.remove('is-closing');
+      panel._closingTimer = null;
+    }, 170);
+  };
+
+  const closeQuestionsPanel = (root) => {
+    closeQuestionsPanelElement(getQuestionsPanel(root));
   };
 
   const isQuestionsPanelOpen = (root) => {
@@ -502,7 +547,12 @@ window.PrivateDiscussionChat = (function () {
   const openQuestionsPanel = (root) => {
     const panel = getQuestionsPanel(root);
     if (!panel) return;
+    if (panel._closingTimer) {
+      clearTimeout(panel._closingTimer);
+      panel._closingTimer = null;
+    }
     renderQuestionsPanel(root);
+    panel.classList.remove('is-closing');
     panel.style.display = 'block';
   };
 
@@ -600,7 +650,7 @@ window.PrivateDiscussionChat = (function () {
         if (!insideChat) {
           openPanels.forEach((p) => {
             try {
-              p.style.display = 'none';
+              closeQuestionsPanelElement(p);
             } catch {
               // ignore
             }
@@ -1161,12 +1211,15 @@ window.PrivateDiscussionChat = (function () {
       let resp = null;
 
       const baseUrl = (modelEntry && modelEntry.baseUrl ? modelEntry.baseUrl : '').trim();
-      const primaryPayload = buildStreamingChatPayload(baseUrl, model, messages);
-      const fallbackPayload = {
-        model,
-        messages,
-        stream: true,
-      };
+	      const primaryPayload = buildStreamingChatPayload(baseUrl, model, messages);
+	      const fallbackPayload = {
+	        model,
+	        messages,
+	        stream: true,
+	      };
+	      if (primaryPayload && primaryPayload.max_tokens) {
+	        fallbackPayload.max_tokens = primaryPayload.max_tokens;
+	      }
 
       const doChatFetch = async (payload) => fetch(endpoint, {
           method: 'POST',
@@ -1374,6 +1427,106 @@ window.PrivateDiscussionChat = (function () {
     }
   };
 
+  const getChatModelPickerElements = () => ({
+    picker: document.getElementById('chat-model-picker'),
+    button: document.getElementById('chat-model-picker-btn'),
+    label: document.getElementById('chat-model-picker-label'),
+    menu: document.getElementById('chat-model-picker-menu'),
+    select: document.getElementById('chat-llm-model-select'),
+  });
+
+  const setChatModelPickerOpen = (open) => {
+    const { picker, button } = getChatModelPickerElements();
+    if (!picker || !button || picker.classList.contains('is-disabled')) return;
+    picker.classList.toggle('is-open', Boolean(open));
+    button.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+
+  const closeChatModelPicker = () => {
+    const { picker, button } = getChatModelPickerElements();
+    if (!picker || !button) return;
+    picker.classList.remove('is-open');
+    button.setAttribute('aria-expanded', 'false');
+  };
+
+  const syncChatModelPicker = (names = []) => {
+    const { picker, button, label, menu, select } = getChatModelPickerElements();
+    if (!picker || !button || !label || !menu || !select) return;
+
+    const cleanNames = Array.from(
+      new Set(names.map((name) => (name || '').trim()).filter(Boolean)),
+    );
+    const current = (select.value || cleanNames[0] || '').trim();
+    const disabled = select.disabled || !cleanNames.length;
+
+    label.textContent = current || '选择模型';
+    picker.classList.toggle('is-disabled', disabled);
+    button.disabled = disabled;
+    button.title = disabled ? select.title || '暂无可用 Chat 模型' : '切换 Chat 模型';
+
+    if (disabled) {
+      closeChatModelPicker();
+    }
+
+    menu.innerHTML = '';
+    cleanNames.forEach((name) => {
+      const item = document.createElement('button');
+      const selected = name === current;
+      item.type = 'button';
+      item.className = `chat-model-picker-option${selected ? ' is-selected' : ''}`;
+      item.setAttribute('role', 'option');
+      item.setAttribute('aria-selected', selected ? 'true' : 'false');
+      item.dataset.value = name;
+      item.innerHTML = `
+        <span class="chat-model-option-main">${name}</span>
+        <span class="chat-model-option-check" aria-hidden="true">✓</span>
+      `;
+      item.addEventListener('click', () => {
+        if (select.disabled) return;
+        select.value = name;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        closeChatModelPicker();
+        syncChatModelPicker(cleanNames);
+      });
+      menu.appendChild(item);
+    });
+  };
+
+  const bindChatModelPickerOnce = () => {
+    const { picker, button, select } = getChatModelPickerElements();
+    if (!picker || !button || !select || picker._boundPicker) return;
+    picker._boundPicker = true;
+
+    button.addEventListener('click', () => {
+      if (button.disabled) return;
+      const shouldOpen = !picker.classList.contains('is-open');
+      setChatModelPickerOpen(shouldOpen);
+    });
+
+    button.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        setChatModelPickerOpen(true);
+        const first = picker.querySelector('.chat-model-picker-option');
+        if (first) first.focus();
+      }
+    });
+
+    if (!document._dprChatModelPickerBound) {
+      document._dprChatModelPickerBound = true;
+      document.addEventListener('click', (e) => {
+        const { picker: currentPicker } = getChatModelPickerElements();
+        if (!currentPicker || currentPicker.contains(e.target)) return;
+        closeChatModelPicker();
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          closeChatModelPicker();
+        }
+      });
+    }
+  };
+
   const initForPage = (paperId) => {
     const mainContent = document.querySelector('.markdown-section');
     if (!mainContent || !paperId) return;
@@ -1410,6 +1563,7 @@ window.PrivateDiscussionChat = (function () {
       document.body.appendChild(modal);
     }
     fillQuickRunOptions(chatQuickRunYearSelect, chatQuickRunConferenceSelect);
+    bindChatModelPickerOnce();
 
     const inGuestMode =
       window.DPR_ACCESS_MODE === 'guest' || window.DPR_ACCESS_MODE === 'locked';
@@ -1474,6 +1628,7 @@ window.PrivateDiscussionChat = (function () {
             '未检测到可用 Chat 模型，请在新配置指引中配置 chatLLMs。';
           status.style.color = '#c00';
         }
+        syncChatModelPicker(names);
 
         // 用户手动切换模型时，更新偏好，跨页面复用
         if (!select._boundChange) {
@@ -1483,6 +1638,7 @@ window.PrivateDiscussionChat = (function () {
             if (v) {
               savePreferredModelName(v);
             }
+            syncChatModelPicker(names);
           });
         }
       }
@@ -1508,6 +1664,7 @@ window.PrivateDiscussionChat = (function () {
       if (inGuestMode) {
         modelSelect.disabled = true;
         modelSelect.title = '当前为游客模式或未解锁密钥，无法选择大模型。';
+        syncChatModelPicker([]);
       }
     }
 

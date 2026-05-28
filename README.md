@@ -35,8 +35,21 @@
 
 ## 📰 News
 
-- **2026-04-08** 🏷️ 推荐状态改为按 tag 独立维护：`carryover` 时间与历史 `seen_ids` 不再跨词条互相污染，单词条 `10 天` / `30 天` 抓取、回补与复跑更稳定。
+- **2026-05-25** 🎛️ 重构后台管理体验：日常与会议面板统一词条卡片、批量选择、底部操作区与危险操作分区；新增仅会议临时词条，优化候选生成、关键词编辑、最近提问与模型选择弹窗样式。
+- **2026-05-25** 🖼️ 优化论文阅读页媒体展示：为 Attention 示例补充图片轮播，并固定轮播展示高度，避免切图时按钮位置跳动。
+- **2026-05-24** ⚡ 优化 GitHub Pages 首屏加载：本地化/延迟加载非首屏脚本，移除 Google Fonts 阻塞，并支持 CDN 静态资源加速与失败回退。
+- **2026-05-24** 🔐 修复静态密钥解锁链路：Pages 环境优先读取项目根目录 `secret.private`，避免已有密钥时误进入初始化向导。
+- **2026-05-24** 🧾 收紧会议论文展示规则：会议检索结果只保留并展示 4 分及以上论文，统一进入精读页生成与图片提取流程。
+- **2026-05-23** 🏛️ 打通会议论文阅读闭环：会议检索结果写入侧边栏，点击后进入本地介绍页；会议正文页对齐日常论文页的标题、元数据、标签、摘要与排版。
+- **2026-05-23** 🧠 强化远端模型链路：默认使用 `zwwen` 远端 embedding 与 rerank，补齐 DeepSeek V4 长输出、JSON 截断恢复和前端探活兼容处理。
+- **2026-05-23** 🔧 完善本地调试与密钥保存：本地后端支持触发 GitHub Actions 对应工作流，配置保存会同步写入本地 dotenv / `secret.private`，并修复密钥入口、弹窗与日志刷新问题。
+- **2026-05-22** 🚀 新增本地一键部署与调试入口：支持局域网本地页面触发后端任务，默认 CPU 依赖与远端 embedding，降低本机运行门槛。
+- **2026-05-22** 🌐 接入公益向量与重排服务：新增 `zwwen.online` embedding / rerank 链路，并让前端 reranker 测试在公益模式下免 API Key。
+- **2026-05-21** 🧩 重整本地初始化与模型配置：支持本地 dotenv 调试配置，更新 DeepSeek 默认模型到 V4，并移除旧的柏拉图 / BLT 配置链路。
+- **2026-05-19** 🧪 补充 rerank 预算实验工具，便于对不同模型、候选池规模与调用预算做离线评估。
+- **2026-05-03** 🎚️ 支持前端选择 reranker，并补充硅基流动 rerank 的限速重试与实验随机种子固定。
 - **2026-05-02** 🧩 收敛模型配置入口：工作流只保留 DeepSeek API，重排改为本地 `Qwen/Qwen3-Reranker-0.6B`。
+- **2026-04-08** 🏷️ 推荐状态改为按 tag 独立维护：`carryover` 时间与历史 `seen_ids` 不再跨词条互相污染，单词条 `10 天` / `30 天` 抓取、回补与复跑更稳定。
 - **2026-03-28** 🧬 补齐多源论文维护链路：新增并打通 `bioRxiv`、`medRxiv`、`ChemRxiv` 以及多类会议论文的抓取、向量编码、Supabase 同步与检索 SQL，支持将多源论文纳入统一推荐与阅读流。
 - **2026-03-28** 🎯 后台管理支持按词条单独触发抓取：可对指定 tag 直接运行 `10 天`、`30 天速览`、`30 天标准` 等任务，便于灰度验证、单主题回补与问题排查。
 - **2026-03-28** 🛡️ 提升 embedding 与多源检索稳定性：修复多源 embedding 查询分组时机问题，并在远程 embedding 首次失败后对整轮任务熔断回退到本地模型，避免分片阶段反复超时。
@@ -152,7 +165,7 @@ https://<你的用户名>.github.io/daily-paper-reader
 scripts/bootstrap_local.sh
 ```
 
-这个脚本会自动创建 `.venv`、按需从 `.env.example` 生成 `.env`，然后启动本地后端。默认使用快速部署模式，不会下载 `torch` 等重依赖。启动完成后访问：
+这个脚本会自动创建 `.venv`、安装远程服务模式依赖、按需从 `.env.example` 生成 `.env`，然后启动本地后端。默认不会下载 `torch` 等重依赖。启动完成后访问：
 
 ```text
 http://127.0.0.1:8567
@@ -170,6 +183,18 @@ scripts/local_debug.sh
 python src/local_debug_server.py --host 127.0.0.1 --port 8567
 ```
 
+如果需要跳过依赖安装，可以使用：
+
+```bash
+DPR_SKIP_INSTALL=1 scripts/bootstrap_local.sh
+```
+
+如果只想启动并明确跳过依赖安装，也可以使用旧的快速部署模式：
+
+```bash
+DPR_INSTALL_MODE=minimal scripts/bootstrap_local.sh
+```
+
 如果要一次性安装完整运行依赖，可以使用：
 
 ```bash
@@ -180,12 +205,6 @@ DPR_INSTALL_MODE=full scripts/bootstrap_local.sh
 
 ```bash
 DPR_INSTALL_MODE=full DPR_TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu scripts/bootstrap_local.sh
-```
-
-如果需要跳过依赖安装，可以使用：
-
-```bash
-DPR_SKIP_INSTALL=1 scripts/bootstrap_local.sh
 ```
 
 在 `localhost / 127.0.0.1` 页面里点击“触发工作流”时，前端会自动调用本地后端 `/api/local/workflows/dispatch`，把 `daily-paper-reader.yml`、`conference-paper-retrieval.yml` 等映射为本地 Python 子进程执行，不会上 GitHub，也不会要求启用 Actions。运行日志会显示在工作流面板里，并保存在 `.local-runs/`。
@@ -205,6 +224,17 @@ DPR_LOCAL_HOST=0.0.0.0 DPR_LOCAL_PORT=8567 scripts/local_debug.sh
 ```
 
 然后访问 `http://<服务器地址>:8567`。这样页面和后端同源，点击触发按钮会在服务器本机执行工作流命令，而不是调用 GitHub Actions。
+
+## 🙏 致谢
+
+Daily Paper Reader 的论文发现、重排与阅读增强链路受益于以下开源项目、模型与服务：
+
+- **[PaperCropper](https://github.com/fake-learn/PaperCropper)**：为论文 PDF 中的图表检测与裁剪提供了重要参考和能力基础，让论文详情页可以更自然地展示图表内容。
+- **[BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5)**：作为默认 embedding 模型之一，支撑语义召回、会议论文检索与查询向量复用。
+- **[Qwen/Qwen3-Reranker](https://huggingface.co/Qwen)**：作为重排链路的重要开源模型基础，用于提升候选论文排序质量。
+- **zwwen.online 公益服务**：提供默认远端 embedding / rerank 接入，降低普通用户本地部署时的模型下载、显存和算力门槛。
+- **硅基流动（SiliconFlow）**：提供可选的 rerank API 接入方式，便于在不同模型尺寸和调用预算之间做实验与切换。
+- **DeepSeek**：为候选过滤、论文精读摘要与问答等 LLM 环节提供模型能力支持。
 
 ## ❓ FAQ
 

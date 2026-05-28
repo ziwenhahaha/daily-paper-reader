@@ -33,6 +33,7 @@ window.DPRWorkflowRunner = (function () {
         top_k: '50',
         rrf_top_n: '200',
         run_rerank: 'true',
+        reranker_profile: 'public-zwwen-rerank',
         run_llm_refine: 'true',
       },
     },
@@ -226,36 +227,55 @@ window.DPRWorkflowRunner = (function () {
   };
 
   const localApiFetch = async (path, init) => {
-    const res = await fetch(getLocalApiUrl(path), {
-      ...(init || {}),
-      headers: {
-        'Content-Type': 'application/json',
-        ...(init && init.headers ? init.headers : {}),
-      },
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) {
-      throw new Error((data && data.error) || `本地调试后端请求失败：HTTP ${res.status}`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const res = await fetch(getLocalApiUrl(path), {
+        ...(init || {}),
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(init && init.headers ? init.headers : {}),
+        },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        throw new Error((data && data.error) || `本地调试后端请求失败：HTTP ${res.status}`);
+      }
+      return data;
+    } catch (e) {
+      if (e && e.name === 'AbortError') {
+        throw new Error('本地调试后端请求超时，请确认 8567 端口服务正在运行。');
+      }
+      throw e;
+    } finally {
+      clearTimeout(timeout);
     }
-    return data;
   };
 
-  const scrollWorkflowOutputToBottom = () => {
-    if (!runsEl) return;
-    const logEl = runsEl.querySelector('[data-dpr-workflow-log]');
-    const bodyEl = document.getElementById('dpr-workflow-body');
+  const isWorkflowLogNearBottom = (logEl) => {
+    if (!logEl) return true;
+    const distance =
+      Number(logEl.scrollHeight || 0) -
+      Number(logEl.scrollTop || 0) -
+      Number(logEl.clientHeight || 0);
+    return distance <= 24;
+  };
+
+  const scrollWorkflowLogToBottom = (shouldScroll) => {
+    if (!runsEl || !shouldScroll) return;
     requestAnimationFrame(() => {
+      const logEl = runsEl.querySelector('[data-dpr-workflow-log]');
       if (logEl) {
         logEl.scrollTop = logEl.scrollHeight;
-      }
-      if (bodyEl) {
-        bodyEl.scrollTop = bodyEl.scrollHeight;
       }
     });
   };
 
   const renderLocalRun = (run, logText) => {
     if (!runsEl || !run) return;
+    const previousLogEl = runsEl.querySelector('[data-dpr-workflow-log]');
+    const shouldFollowLog = isWorkflowLogNearBottom(previousLogEl);
     const status = run.status || '';
     const conclusion = run.conclusion || '';
     const badgeColor =
@@ -283,7 +303,7 @@ window.DPRWorkflowRunner = (function () {
       <div style="font-size:12px; color:#666; margin-bottom:8px;">${escapeHtml(command)}</div>
       ${logHtml}
     `;
-    scrollWorkflowOutputToBottom();
+    scrollWorkflowLogToBottom(shouldFollowLog);
   };
 
   const refreshLocalRun = async (runId) => {

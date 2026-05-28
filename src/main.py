@@ -611,9 +611,11 @@ def main() -> None:
     profile_tag = str(args.profile_tag or os.getenv("DPR_FILTER_PROFILE_TAG") or "").strip()
     if profile_tag:
         os.environ["DPR_FILTER_PROFILE_TAG"] = profile_tag
+        os.environ["DPR_INCLUDE_CONFERENCE_ONLY_PROFILES"] = "1"
         print(f"[INFO] profile_tag={profile_tag}", flush=True)
     else:
         os.environ.pop("DPR_FILTER_PROFILE_TAG", None)
+        os.environ.pop("DPR_INCLUDE_CONFERENCE_ONLY_PROFILES", None)
     fetch_mode = (args.fetch_mode or "auto").strip().lower()
     if fetch_mode == "skims":
         use_skims_mode = True

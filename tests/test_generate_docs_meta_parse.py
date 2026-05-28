@@ -26,6 +26,7 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
                     pass
 
             llm_stub.DeepSeekClient = DummyDeepSeekClient
+            llm_stub.resolve_max_output_tokens = lambda default=393216: default
             sys.modules["llm"] = llm_stub
 
         src_path = root / "src" / "6.generate_docs.py"
@@ -114,7 +115,7 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
         self.assertNotIn(("query", "sr:composite"), tags)
         self.assertEqual(tags.count(("query", "sr")), 1)
 
-    def test_build_markdown_content_writes_figures_json_front_matter(self):
+    def test_build_markdown_content_writes_media_json_front_matter(self):
         paper = {
             "title": "Figure Test",
             "authors": ["Ada Lovelace"],
@@ -132,25 +133,42 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
                     "height": 720,
                 }
             ],
+            "_table_assets": [
+                {
+                    "url": "assets/tables/arxiv/1234.5678/table-001.webp",
+                    "caption": "",
+                    "page": 3,
+                    "index": 1,
+                    "width": 1000,
+                    "height": 560,
+                }
+            ],
         }
         md = self.mod.build_markdown_content(paper, "quick", "", "", [])
         meta = self.mod._parse_front_matter(md)
         self.assertIn("figures_json", meta)
+        self.assertIn("tables_json", meta)
         figures = json.loads(meta["figures_json"])
+        tables = json.loads(meta["tables_json"])
         self.assertEqual(len(figures), 1)
         self.assertEqual(figures[0]["url"], "assets/figures/arxiv/1234.5678/fig-001.webp")
+        self.assertEqual(len(tables), 1)
+        self.assertEqual(tables[0]["url"], "assets/tables/arxiv/1234.5678/table-001.webp")
 
-    def test_maybe_generate_paper_figures_accepts_biorxiv(self):
+    def test_maybe_generate_paper_media_accepts_biorxiv(self):
         calls = []
 
-        def fake_ensure_paper_figures(**kwargs):
+        def fake_ensure_paper_media(**kwargs):
             calls.append(kwargs)
-            return [{"url": "assets/figures/biorxiv/pid/fig-001.webp"}]
+            return (
+                [{"url": "assets/figures/biorxiv/pid/fig-001.webp"}],
+                [{"url": "assets/tables/biorxiv/pid/table-001.webp"}],
+            )
 
-        original = self.mod.ensure_paper_figures
-        self.mod.ensure_paper_figures = fake_ensure_paper_figures
+        original = self.mod.ensure_paper_media
+        self.mod.ensure_paper_media = fake_ensure_paper_media
         try:
-            figures = self.mod.maybe_generate_paper_figures(
+            figures, tables = self.mod.maybe_generate_paper_media(
                 {
                     "id": "biorxiv-abc",
                     "source": "biorxiv",
@@ -160,10 +178,59 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
                 pdf_url="https://www.biorxiv.org/content/test.full.pdf",
             )
         finally:
-            self.mod.ensure_paper_figures = original
+            self.mod.ensure_paper_media = original
 
         self.assertEqual(len(figures), 1)
+        self.assertEqual(len(tables), 1)
         self.assertEqual(calls[0]["source_key"], "biorxiv")
+
+    def test_maybe_generate_paper_figures_keeps_legacy_return(self):
+        original = self.mod.ensure_paper_media
+        self.mod.ensure_paper_media = lambda **kwargs: (
+            [{"url": "assets/figures/arxiv/pid/fig-001.webp"}],
+            [{"url": "assets/tables/arxiv/pid/table-001.webp"}],
+        )
+        try:
+            figures = self.mod.maybe_generate_paper_figures(
+                {"id": "1234.5678", "source": "arxiv"},
+                docs_dir="docs",
+                paper_id="1234.5678",
+                pdf_url="https://arxiv.org/pdf/1234.5678",
+            )
+        finally:
+            self.mod.ensure_paper_media = original
+
+        self.assertEqual(figures, [{"url": "assets/figures/arxiv/pid/fig-001.webp"}])
+
+    def test_generate_glance_prompt_requires_richer_fields(self):
+        captured = {}
+
+        def fake_call_llm_structured_json(client, messages, **kwargs):
+            captured["messages"] = messages
+            return {
+                "tldr": "这是一段足够长的中文速览摘要，用于覆盖研究背景、核心方法和主要贡献。",
+                "motivation": "这是一段研究动机说明。",
+                "method": "这是一段方法说明。",
+                "result": "这是一段结果说明。",
+                "conclusion": "这是一段结论说明。",
+            }
+
+        original_client = self.mod.LLM_CLIENT
+        original_call = self.mod.call_llm_structured_json
+        self.mod.LLM_CLIENT = object()
+        self.mod.call_llm_structured_json = fake_call_llm_structured_json
+        try:
+            out = self.mod.generate_glance_overview("Title", "Abstract")
+        finally:
+            self.mod.LLM_CLIENT = original_client
+            self.mod.call_llm_structured_json = original_call
+
+        self.assertIn("**TLDR**", out)
+        prompt = captured["messages"][2]["content"]
+        self.assertIn("150-220个中文字符", prompt)
+        self.assertIn("30-70个中文字符", prompt)
+        self.assertIn("问题背景→核心方法→关键结果→贡献意义", prompt)
+        self.assertNotIn("每个字段一句话概括", prompt)
 
 
 if __name__ == "__main__":

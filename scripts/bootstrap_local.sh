@@ -8,7 +8,7 @@ HOST="${DPR_LOCAL_HOST:-127.0.0.1}"
 PORT="${DPR_LOCAL_PORT:-8567}"
 VENV_DIR="${DPR_LOCAL_VENV:-.venv}"
 PYTHON_BIN="${PYTHON:-python3}"
-INSTALL_MODE="${DPR_INSTALL_MODE:-minimal}"
+INSTALL_MODE="${DPR_INSTALL_MODE:-remote}"
 SKIP_INSTALL="${DPR_SKIP_INSTALL:-0}"
 TORCH_INDEX_URL="${DPR_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
 
@@ -46,7 +46,7 @@ elif [ "$SKIP_INSTALL" != "1" ] && [ "$INSTALL_MODE" = "remote" ]; then
   python -m pip install -r requirements.txt
 elif [ "$SKIP_INSTALL" != "1" ]; then
   log "快速部署模式：跳过完整依赖安装"
-  log "如需补齐远程服务模式依赖，请执行：DPR_INSTALL_MODE=remote scripts/bootstrap_local.sh"
+  log "如需补齐远程服务模式依赖，请执行：scripts/bootstrap_local.sh 或 DPR_INSTALL_MODE=remote scripts/bootstrap_local.sh"
   log "仅当需要本地模型 fallback 时，再执行：DPR_INSTALL_MODE=full scripts/bootstrap_local.sh"
 else
   log "跳过依赖安装：DPR_SKIP_INSTALL=1"

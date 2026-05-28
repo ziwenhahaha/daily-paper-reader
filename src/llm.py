@@ -14,6 +14,19 @@ import requests
 """
 
 # 单次实验级别的全局 token 统计（需由调用方在实验开始前手动 reset）
+DEFAULT_MAX_OUTPUT_TOKENS = 393216
+
+
+def resolve_max_output_tokens(default: int = DEFAULT_MAX_OUTPUT_TOKENS) -> int:
+    raw = os.getenv("DPR_LLM_MAX_OUTPUT_TOKENS") or os.getenv("LLM_MAX_OUTPUT_TOKENS")
+    if not raw:
+        return default
+    try:
+        return max(1, int(raw))
+    except Exception:
+        return default
+
+
 GLOBAL_TOKENS = {
     'prompt': 0,    # 提示词（prompt）部分 token
     'thinking': 0,  # 推理/思维链部分 token（reasoning_tokens）
@@ -82,7 +95,7 @@ class LLMClient:
         # 实例级别的累计耗时（秒）
         self._cum_time_seconds: float = 0.0
         self.kwargs: Dict[str, Any] = {
-            'max_tokens': 4000,  # 更安全的默认值，避免超过部分模型上限
+            'max_tokens': resolve_max_output_tokens(),
             'temperature': 0.6,
             'top_p': 0.3,
             'top_k': 50,
@@ -362,10 +375,11 @@ class LLMClient:
         if response_format is not None:
             payload['response_format'] = response_format
 
-        # 对输出 token 上限做保护（部分模型 4k 上限，统一取不超过 10000）
+        # 对输出 token 上限做保护；DeepSeek V4 支持更长输出，默认按 384K 预留。
         try:
-            if isinstance(payload.get('max_tokens'), int) and payload['max_tokens'] > 10000:
-                payload['max_tokens'] = 10000
+            max_output_tokens = resolve_max_output_tokens()
+            if isinstance(payload.get('max_tokens'), int) and payload['max_tokens'] > max_output_tokens:
+                payload['max_tokens'] = max_output_tokens
         except Exception:
             pass
 

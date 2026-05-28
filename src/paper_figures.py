@@ -7,8 +7,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import fitz
 import requests
@@ -20,9 +21,13 @@ MIN_FIGURE_HEIGHT = 180
 MIN_FIGURE_AREA = 120_000
 WEBP_QUALITY = 82
 FIGURE_META_VERSION = 2
-PDFFIGURES2_JAR_ENV = "PDFFIGURES2_JAR"
-PDFFIGURES2_DEFAULT_CACHE = os.path.expanduser("~/.cache/dpr-tools/pdffigures2/pdffigures2.jar")
-PDFFIGURES2_REPO_CACHE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tools", "pdffigures2.jar"))
+PAPERCROPPER_SCRIPT_ENV = "PAPERCROPPER_SCRIPT"
+PAPERCROPPER_DIR_ENV = "PAPERCROPPER_DIR"
+PAPERCROPPER_MODEL_ENV = "PAPERCROPPER_MODEL"
+PAPERCROPPER_PYTHON_ENV = "PAPERCROPPER_PYTHON"
+PAPERCROPPER_DISABLE_ENV = "PAPERCROPPER_DISABLE"
+PAPERCROPPER_MODEL_FILENAME = "doclayout_yolo_docstructbench_imgsz1280_2501.pt"
+PAPERCROPPER_LOG_LIMIT = 1200
 
 
 def _safe_asset_key(value: str) -> str:
@@ -42,7 +47,15 @@ def _absolute_dir(docs_dir: str, source_key: str, asset_key: str) -> str:
     return os.path.join(docs_dir, "assets", "figures", source_key, _safe_asset_key(asset_key))
 
 
-def _load_cached_figures(meta_path: str) -> List[Dict[str, Any]]:
+def _relative_tables_prefix(source_key: str, asset_key: str) -> str:
+    return "/".join(["assets", "tables", source_key, _safe_asset_key(asset_key)])
+
+
+def _absolute_tables_dir(docs_dir: str, source_key: str, asset_key: str) -> str:
+    return os.path.join(docs_dir, "assets", "tables", source_key, _safe_asset_key(asset_key))
+
+
+def _load_cached_media(meta_path: str, key: str) -> List[Dict[str, Any]]:
     if not os.path.exists(meta_path):
         return []
     try:
@@ -52,11 +65,11 @@ def _load_cached_figures(meta_path: str) -> List[Dict[str, Any]]:
         return []
     if int(payload.get("version") or 0) != FIGURE_META_VERSION:
         return []
-    figures = payload.get("figures")
-    if not isinstance(figures, list):
+    items = payload.get(key)
+    if not isinstance(items, list):
         return []
     out: List[Dict[str, Any]] = []
-    for item in figures:
+    for item in items:
         if not isinstance(item, dict):
             continue
         url = str(item.get("url") or "").strip()
@@ -75,19 +88,53 @@ def _load_cached_figures(meta_path: str) -> List[Dict[str, Any]]:
     return out
 
 
-def _save_figures_meta(meta_path: str, figures: List[Dict[str, Any]], *, extractor: str) -> None:
+def _load_cached_figures(meta_path: str) -> List[Dict[str, Any]]:
+    return _load_cached_media(meta_path, "figures")
+
+
+def _load_cached_tables(meta_path: str) -> List[Dict[str, Any]]:
+    return _load_cached_media(meta_path, "tables")
+
+
+def _save_media_meta(meta_path: str, items: List[Dict[str, Any]], *, extractor: str, key: str) -> None:
     os.makedirs(os.path.dirname(meta_path), exist_ok=True)
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(
             {
                 "version": FIGURE_META_VERSION,
                 "extractor": extractor,
-                "figures": figures,
+                key: items,
             },
             f,
             ensure_ascii=False,
             indent=2,
         )
+
+
+def _save_figures_meta(meta_path: str, figures: List[Dict[str, Any]], *, extractor: str) -> None:
+    _save_media_meta(meta_path, figures, extractor=extractor, key="figures")
+
+
+def _save_tables_meta(meta_path: str, tables: List[Dict[str, Any]], *, extractor: str) -> None:
+    _save_media_meta(meta_path, tables, extractor=extractor, key="tables")
+
+
+def _warn_papercropper(message: str) -> None:
+    print(f"[WARN] PaperCropper 表格/图表提取降级：{message}", flush=True)
+
+
+def _tail_log_text(text: str, limit: int = PAPERCROPPER_LOG_LIMIT) -> str:
+    compact = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(compact) <= limit:
+        return compact
+    return "..." + compact[-limit:]
+
+
+def _papercropper_was_configured() -> bool:
+    return any(
+        str(os.getenv(name) or "").strip()
+        for name in [PAPERCROPPER_SCRIPT_ENV, PAPERCROPPER_DIR_ENV, PAPERCROPPER_MODEL_ENV, PAPERCROPPER_PYTHON_ENV]
+    )
 
 
 def _download_pdf_bytes(pdf_url: str, timeout: int = 90) -> bytes:
@@ -100,16 +147,53 @@ def _download_pdf_bytes(pdf_url: str, timeout: int = 90) -> bytes:
     return resp.content
 
 
-def _resolve_pdffigures2_jar() -> str:
-    candidates = [
-        str(os.getenv(PDFFIGURES2_JAR_ENV) or "").strip(),
-        PDFFIGURES2_DEFAULT_CACHE,
-        PDFFIGURES2_REPO_CACHE,
-    ]
+def _truthy_env(name: str) -> bool:
+    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _first_existing(candidates: List[str]) -> str:
     for candidate in candidates:
-        if candidate and os.path.exists(candidate):
-            return candidate
+        path = str(candidate or "").strip()
+        if path and os.path.exists(path):
+            return path
     return ""
+
+
+def _resolve_papercropper() -> Tuple[str, str, str]:
+    if _truthy_env(PAPERCROPPER_DISABLE_ENV):
+        return "", "", ""
+
+    configured_dir = str(os.getenv(PAPERCROPPER_DIR_ENV) or "").strip()
+    cache_root = os.path.expanduser("~/.cache/dpr-tools/papercropper")
+    script_path = _first_existing(
+        [
+            str(os.getenv(PAPERCROPPER_SCRIPT_ENV) or "").strip(),
+            os.path.join(configured_dir, "extract.py") if configured_dir else "",
+            os.path.join(cache_root, "PaperCropper", "extract.py"),
+            os.path.expanduser("~/.cache/dpr-tools/PaperCropper/extract.py"),
+            "/tmp/PaperCropper/extract.py",
+        ]
+    )
+    model_path = _first_existing(
+        [
+            str(os.getenv(PAPERCROPPER_MODEL_ENV) or "").strip(),
+            os.path.join(configured_dir, "models", PAPERCROPPER_MODEL_FILENAME) if configured_dir else "",
+            os.path.join(cache_root, "models", PAPERCROPPER_MODEL_FILENAME),
+            os.path.expanduser(f"~/.cache/dpr-tools/papercropper/models/{PAPERCROPPER_MODEL_FILENAME}"),
+            f"/tmp/papercropper-run/models/{PAPERCROPPER_MODEL_FILENAME}",
+        ]
+    )
+    python_path = _first_existing(
+        [
+            str(os.getenv(PAPERCROPPER_PYTHON_ENV) or "").strip(),
+            os.path.join(cache_root, "venv", "bin", "python"),
+            "/tmp/papercropper-venv/bin/python",
+            sys.executable,
+        ]
+    )
+    if not script_path or not model_path or not python_path:
+        return "", "", ""
+    return python_path, script_path, model_path
 
 
 def _load_image_size(path: str) -> tuple[int, int]:
@@ -134,111 +218,152 @@ def _save_webp_from_path(src_path: str, dst_path: str) -> tuple[int, int]:
         return width, height
 
 
-def _extract_figures_with_pdffigures2(
-    pdf_path: str,
+def _natural_sort_key(path: str) -> List[Any]:
+    name = os.path.basename(path)
+    parts = re.split(r"(\d+)", name)
+    return [int(part) if part.isdigit() else part.lower() for part in parts]
+
+
+def _collect_papercropper_pngs(
+    src_dir: str,
     output_dir: str,
     relative_prefix: str,
+    *,
+    file_prefix: str,
+    label: str,
 ) -> List[Dict[str, Any]]:
-    jar_path = _resolve_pdffigures2_jar()
-    java_path = shutil.which("java")
-    if not jar_path or not java_path:
+    if not os.path.isdir(src_dir):
         return []
 
-    with tempfile.TemporaryDirectory(prefix="pdffigures2_") as tmp_root:
-        input_dir = os.path.join(tmp_root, "input")
-        data_dir = os.path.join(tmp_root, "data")
-        image_dir = os.path.join(tmp_root, "images")
-        os.makedirs(input_dir, exist_ok=True)
-        os.makedirs(data_dir, exist_ok=True)
-        os.makedirs(image_dir, exist_ok=True)
-
-        base_name = os.path.basename(pdf_path)
-        truncated = os.path.splitext(base_name)[0]
-        tmp_pdf = os.path.join(input_dir, base_name)
-        shutil.copy2(pdf_path, tmp_pdf)
-
-        cmd = [
-            java_path,
-            "-Dsun.java2d.cmm=sun.java2d.cmm.kcms.KcmsServiceProvider",
-            "-jar",
-            jar_path,
-            input_dir,
-            "-g",
-            data_dir + os.sep,
-            "-m",
-            image_dir + os.sep,
-            "-f",
-            "png",
-            "-q",
-        ]
-        proc = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-        )
-        if proc.returncode != 0:
-            return []
-
-        json_path = os.path.join(data_dir, f"{truncated}.json")
-        if not os.path.exists(json_path):
-            return []
+    os.makedirs(output_dir, exist_ok=True)
+    items: List[Dict[str, Any]] = []
+    seen_hash: set[str] = set()
+    paths = [
+        os.path.join(src_dir, name)
+        for name in os.listdir(src_dir)
+        if name.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+    ]
+    for index, src_path in enumerate(sorted(paths, key=_natural_sort_key), start=1):
         try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                payload = json.load(f) or {}
+            with open(src_path, "rb") as f:
+                sha = hashlib.sha256(f.read()).hexdigest()
         except Exception:
-            return []
+            continue
+        if sha in seen_hash:
+            continue
+        seen_hash.add(sha)
+        file_name = f"{file_prefix}-{len(items) + 1:03d}.webp"
+        abs_path = os.path.join(output_dir, file_name)
+        try:
+            width, height = _save_webp_from_path(src_path, abs_path)
+        except Exception:
+            continue
+        items.append(
+            {
+                "url": "/".join([relative_prefix.strip("/"), file_name]),
+                "caption": "",
+                "page": 0,
+                "index": len(items) + 1,
+                "width": width,
+                "height": height,
+                "label": label,
+            }
+        )
+    return items
 
-        raw_figures = payload.get("figures") if isinstance(payload, dict) else None
-        if not isinstance(raw_figures, list):
-            return []
 
-        os.makedirs(output_dir, exist_ok=True)
-        figures: List[Dict[str, Any]] = []
-        seen_hash: set[str] = set()
-        fig_index = 1
-        for item in raw_figures:
-            if not isinstance(item, dict):
-                continue
-            render_url = str(item.get("renderURL") or item.get("renderUrl") or "").strip()
-            if not render_url or not os.path.exists(render_url):
-                continue
-            try:
-                width, height = _load_image_size(render_url)
-            except Exception:
-                continue
-            if width < MIN_FIGURE_WIDTH or height < MIN_FIGURE_HEIGHT or width * height < MIN_FIGURE_AREA:
-                continue
-            try:
-                with open(render_url, "rb") as f:
-                    sha = hashlib.sha256(f.read()).hexdigest()
-            except Exception:
-                continue
-            if sha in seen_hash:
-                continue
-            seen_hash.add(sha)
+def _extract_media_with_papercropper(
+    pdf_path: str,
+    figure_output_dir: str,
+    figure_relative_prefix: str,
+    table_output_dir: str,
+    table_relative_prefix: str,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    python_path, script_path, model_path = _resolve_papercropper()
+    if not python_path or not script_path or not model_path:
+        if not _truthy_env(PAPERCROPPER_DISABLE_ENV) and _papercropper_was_configured():
+            _warn_papercropper("未找到可用的 PaperCropper 脚本或模型，改用备用图片提取器。")
+        return [], []
 
-            file_name = f"fig-{fig_index:03d}.webp"
-            abs_path = os.path.join(output_dir, file_name)
-            width, height = _save_webp_from_path(render_url, abs_path)
-            page = int(item.get("page") or 0) + 1
-            caption = str(item.get("caption") or "").strip()
-            figures.append(
-                {
-                    "url": "/".join([relative_prefix.strip("/"), file_name]),
-                    "caption": caption,
-                    "page": page,
-                    "index": fig_index,
-                    "width": width,
-                    "height": height,
-                }
+    timeout = int(os.getenv("PAPERCROPPER_TIMEOUT_SECONDS") or "360")
+    conf = str(os.getenv("PAPERCROPPER_CONF") or "0.4")
+    imgsz = str(os.getenv("PAPERCROPPER_IMGSZ") or "1024")
+    dpi = str(os.getenv("PAPERCROPPER_DPI") or "200")
+    png_dpi = str(os.getenv("PAPERCROPPER_PNG_DPI") or "260")
+    batch_size = str(os.getenv("PAPERCROPPER_BATCH_SIZE") or "4")
+    padding = str(os.getenv("PAPERCROPPER_PADDING") or "2.0")
+
+    with tempfile.TemporaryDirectory(prefix="papercropper_") as tmp_root:
+        cmd = [
+            python_path,
+            script_path,
+            "--pdf",
+            pdf_path,
+            "--model",
+            model_path,
+            "--output",
+            tmp_root,
+            "--formats",
+            "png",
+            "--targets",
+            "figure,table",
+            "--conf",
+            conf,
+            "--imgsz",
+            imgsz,
+            "--dpi",
+            dpi,
+            "--png-dpi",
+            png_dpi,
+            "--batch-size",
+            batch_size,
+            "--padding",
+            padding,
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=max(timeout, 30),
+                check=False,
             )
-            fig_index += 1
+        except subprocess.TimeoutExpired:
+            _warn_papercropper(f"执行超时（>{max(timeout, 30)}s），改用备用图片提取器。")
+            return [], []
+        if proc.returncode != 0:
+            detail = _tail_log_text("\n".join([proc.stdout or "", proc.stderr or ""]))
+            suffix = f"；输出：{detail}" if detail else ""
+            _warn_papercropper(f"执行失败 returncode={proc.returncode}{suffix}")
+            return [], []
 
+        doc_output = os.path.join(tmp_root, os.path.splitext(os.path.basename(pdf_path))[0])
+        figures = _collect_papercropper_pngs(
+            os.path.join(doc_output, "Figures_png"),
+            figure_output_dir,
+            figure_relative_prefix,
+            file_prefix="fig",
+            label="Figure",
+        )
+        tables = _collect_papercropper_pngs(
+            os.path.join(doc_output, "Tables_png"),
+            table_output_dir,
+            table_relative_prefix,
+            file_prefix="table",
+            label="Table",
+        )
         if figures:
-            _save_figures_meta(os.path.join(output_dir, "meta.json"), figures, extractor="pdffigures2")
-        return figures
+            _save_figures_meta(os.path.join(figure_output_dir, "meta.json"), figures, extractor="papercropper")
+        if tables:
+            _save_tables_meta(os.path.join(table_output_dir, "meta.json"), tables, extractor="papercropper")
+        if not figures and not tables:
+            detail = _tail_log_text("\n".join([proc.stdout or "", proc.stderr or ""]))
+            suffix = f"；输出：{detail}" if detail else ""
+            _warn_papercropper(f"执行完成但未产出 figure/table{suffix}")
+        else:
+            print(f"[INFO] PaperCropper 提取完成：figures={len(figures)} tables={len(tables)}", flush=True)
+        return figures, tables
 
 
 def extract_figures_from_pdf(
@@ -321,24 +446,54 @@ def ensure_paper_figures(
     asset_key: str,
     force: bool = False,
 ) -> List[Dict[str, Any]]:
-    if not str(pdf_url or "").strip():
-        return []
+    figures, _tables = ensure_paper_media(
+        pdf_url=pdf_url,
+        docs_dir=docs_dir,
+        source_key=source_key,
+        asset_key=asset_key,
+        force=force,
+    )
+    return figures
 
-    asset_dir = _absolute_dir(docs_dir, source_key, asset_key)
-    relative_prefix = _relative_prefix(source_key, asset_key)
-    meta_path = os.path.join(asset_dir, "meta.json")
+
+def ensure_paper_media(
+    *,
+    pdf_url: str,
+    docs_dir: str,
+    source_key: str,
+    asset_key: str,
+    force: bool = False,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    if not str(pdf_url or "").strip():
+        return [], []
+
+    figure_dir = _absolute_dir(docs_dir, source_key, asset_key)
+    table_dir = _absolute_tables_dir(docs_dir, source_key, asset_key)
+    figure_relative_prefix = _relative_prefix(source_key, asset_key)
+    table_relative_prefix = _relative_tables_prefix(source_key, asset_key)
+    figure_meta_path = os.path.join(figure_dir, "meta.json")
+    table_meta_path = os.path.join(table_dir, "meta.json")
     if not force:
-        cached = _load_cached_figures(meta_path)
-        if cached:
-            return cached
-        if os.path.exists(meta_path):
-            return []
+        cached_figures = _load_cached_figures(figure_meta_path)
+        cached_tables = _load_cached_tables(table_meta_path)
+        if cached_figures and cached_tables:
+            return cached_figures, cached_tables
+        if (cached_figures or os.path.exists(figure_meta_path)) and os.path.exists(table_meta_path):
+            return cached_figures, cached_tables
 
     pdf_bytes = _download_pdf_bytes(pdf_url)
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp_pdf:
         tmp_pdf.write(pdf_bytes)
         tmp_pdf.flush()
-        figures = _extract_figures_with_pdffigures2(tmp_pdf.name, asset_dir, relative_prefix)
-        if figures:
-            return figures
-        return extract_figures_from_pdf(tmp_pdf.name, asset_dir, relative_prefix)
+
+        figures, tables = _extract_media_with_papercropper(
+            tmp_pdf.name,
+            figure_dir,
+            figure_relative_prefix,
+            table_dir,
+            table_relative_prefix,
+        )
+        if figures or tables:
+            return figures, tables
+
+        return extract_figures_from_pdf(tmp_pdf.name, figure_dir, figure_relative_prefix), []

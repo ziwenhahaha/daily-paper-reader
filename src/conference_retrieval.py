@@ -78,6 +78,7 @@ class PaperHit:
     categories: List[str] = field(default_factory=list)
     published: str | None = None
     link: str | None = None
+    pdf_url: str | None = None
     source: str = ""
     tags: set[str] = field(default_factory=set)
     best_score: float = 0.0
@@ -93,6 +94,7 @@ class PaperHit:
             categories=[str(c) for c in (row.get("categories") or [])],
             published=str(row.get("published") or "").strip() or None,
             link=str(row.get("link") or "").strip() or None,
+            pdf_url=str(row.get("pdf_url") or "").strip() or None,
             source=str(row.get("source") or "").strip(),
             best_score=float(score),
         )
@@ -108,6 +110,7 @@ class PaperHit:
             "categories": self.categories,
             "published": self.published,
             "link": self.link,
+            "pdf_url": self.pdf_url,
             "tags": sorted(self.tags),
         }
 
@@ -473,6 +476,7 @@ def main() -> None:
     years = parse_years(args.years)
     top_k = max(int(args.top_k or 1), 1)
     config = load_config(args.config)
+    os.environ["DPR_INCLUDE_CONFERENCE_ONLY_PROFILES"] = "1"
     plan = build_pipeline_inputs(config)
     bm25_queries = clone_queries_for_conference(plan.get("bm25_queries") or [], ",".join(conferences))
     embedding_queries = clone_queries_for_conference(plan.get("embedding_queries") or [], ",".join(conferences))

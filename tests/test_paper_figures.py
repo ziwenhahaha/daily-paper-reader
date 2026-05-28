@@ -2,6 +2,7 @@ import importlib.util
 import io
 import json
 import os
+import contextlib
 import sys
 import tempfile
 import unittest
@@ -65,69 +66,80 @@ class PaperFiguresTest(unittest.TestCase):
             self.assertEqual(len(meta["figures"]), 1)
             self.assertEqual(meta["version"], 2)
 
-    def test_extract_figures_with_pdffigures2_payload(self):
+    def test_papercropper_failure_is_reported_before_fallback(self):
         with tempfile.TemporaryDirectory() as d:
             tmp_dir = Path(d)
             pdf_path = tmp_dir / "sample.pdf"
             pdf_path.write_bytes(b"%PDF-1.4\n")
-            output_dir = tmp_dir / "out"
 
-            render_img = self._make_png_bytes((640, 480), (20, 180, 120))
-
-            original_resolve = self.mod._resolve_pdffigures2_jar
-            original_which = self.mod.shutil.which
+            original_resolve = self.mod._resolve_papercropper
             original_run = self.mod.subprocess.run
 
             class DummyResult:
-                def __init__(self):
-                    self.returncode = 0
-                    self.stdout = ""
-                    self.stderr = ""
+                returncode = 1
+                stdout = "starting"
+                stderr = "ModuleNotFoundError: No module named 'scipy'"
 
-            def fake_run(cmd, stdout=None, stderr=None, text=None, check=None):
-                input_dir = Path(cmd[4])
-                data_dir = Path(cmd[6])
-                image_dir = Path(cmd[8])
-                base_name = next(input_dir.glob("*.pdf")).stem
-                image_dir.mkdir(parents=True, exist_ok=True)
-                data_dir.mkdir(parents=True, exist_ok=True)
-                image_path = image_dir / f"{base_name}-Figure1-1.png"
-                image_path.write_bytes(render_img)
-                payload = {
-                    "figures": [
-                        {
-                            "renderURL": str(image_path),
-                            "caption": "Figure 1. Demo caption",
-                            "page": 0,
-                        }
-                    ]
-                }
-                (data_dir / f"{base_name}.json").write_text(
-                    json.dumps(payload),
-                    encoding="utf-8",
-                )
+            def fake_run(*args, **kwargs):
                 return DummyResult()
 
-            self.mod._resolve_pdffigures2_jar = lambda: "/tmp/pdffigures2.jar"
-            self.mod.shutil.which = lambda name: "/usr/bin/java" if name == "java" else original_which(name)
+            self.mod._resolve_papercropper = lambda: (sys.executable, "/tmp/extract.py", "/tmp/model.pt")
             self.mod.subprocess.run = fake_run
+            output = io.StringIO()
             try:
-                figures = self.mod._extract_figures_with_pdffigures2(
-                    str(pdf_path),
-                    str(output_dir),
-                    "assets/figures/arxiv/sample",
-                )
+                with contextlib.redirect_stdout(output):
+                    figures, tables = self.mod._extract_media_with_papercropper(
+                        str(pdf_path),
+                        str(tmp_dir / "figures"),
+                        "assets/figures/arxiv/sample",
+                        str(tmp_dir / "tables"),
+                        "assets/tables/arxiv/sample",
+                    )
             finally:
-                self.mod._resolve_pdffigures2_jar = original_resolve
-                self.mod.shutil.which = original_which
+                self.mod._resolve_papercropper = original_resolve
                 self.mod.subprocess.run = original_run
 
-            self.assertEqual(len(figures), 1)
-            self.assertEqual(figures[0]["caption"], "Figure 1. Demo caption")
-            self.assertEqual(figures[0]["page"], 1)
-            self.assertTrue((output_dir / "fig-001.webp").exists())
-            meta = json.loads((output_dir / "meta.json").read_text(encoding="utf-8"))
-            self.assertEqual(meta["extractor"], "pdffigures2")
+            self.assertEqual(figures, [])
+            self.assertEqual(tables, [])
+            self.assertIn("PaperCropper 表格/图表提取降级", output.getvalue())
+            self.assertIn("No module named 'scipy'", output.getvalue())
+
+    def test_papercropper_empty_output_is_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp_dir = Path(d)
+            pdf_path = tmp_dir / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n")
+
+            original_resolve = self.mod._resolve_papercropper
+            original_run = self.mod.subprocess.run
+
+            class DummyResult:
+                returncode = 0
+                stdout = "done"
+                stderr = ""
+
+            def fake_run(*args, **kwargs):
+                return DummyResult()
+
+            self.mod._resolve_papercropper = lambda: (sys.executable, "/tmp/extract.py", "/tmp/model.pt")
+            self.mod.subprocess.run = fake_run
+            output = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(output):
+                    figures, tables = self.mod._extract_media_with_papercropper(
+                        str(pdf_path),
+                        str(tmp_dir / "figures"),
+                        "assets/figures/arxiv/sample",
+                        str(tmp_dir / "tables"),
+                        "assets/tables/arxiv/sample",
+                    )
+            finally:
+                self.mod._resolve_papercropper = original_resolve
+                self.mod.subprocess.run = original_run
+
+            self.assertEqual(figures, [])
+            self.assertEqual(tables, [])
+            self.assertIn("执行完成但未产出 figure/table", output.getvalue())
 
 
 if __name__ == "__main__":

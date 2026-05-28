@@ -8,7 +8,10 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
-import torch
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
 
 
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -81,8 +84,9 @@ def main() -> None:
     if args.local_maintain:
         args.embed_local_only = True
     if not str(args.embed_device or "").strip() and not str(args.embed_devices or "").strip():
-        if args.local_maintain and torch.cuda.is_available() and int(torch.cuda.device_count() or 0) > 0:
-            args.embed_devices = ",".join(f"cuda:{idx}" for idx in range(int(torch.cuda.device_count() or 0)))
+        cuda_mod = getattr(torch, "cuda", None)
+        if args.local_maintain and cuda_mod is not None and cuda_mod.is_available() and int(cuda_mod.device_count() or 0) > 0:
+            args.embed_devices = ",".join(f"cuda:{idx}" for idx in range(int(cuda_mod.device_count() or 0)))
         else:
             args.embed_device = "cpu"
 

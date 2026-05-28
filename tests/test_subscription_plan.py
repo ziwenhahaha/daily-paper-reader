@@ -266,6 +266,30 @@ class SubscriptionPlanTest(unittest.TestCase):
         self.assertEqual([item.get('tag') for item in plan['profiles']], ['PausedOnly'])
         self.assertEqual([item.get('tag') for item in plan['bm25_queries']], ['PausedOnly'])
 
+    def test_runtime_profile_tag_filter_can_run_conference_only_profile_when_included(self):
+        cfg = {
+            'subscriptions': {
+                'intent_profiles': [
+                    {
+                        'tag': 'ConferenceOnly',
+                        'enabled': True,
+                        'scope': 'conference',
+                        'temporary': True,
+                        'conference_only': True,
+                        'keywords': [{'keyword': 'conference keyword', 'query': 'conference keyword'}],
+                    },
+                ],
+            },
+        }
+        with patch.dict(
+            'os.environ',
+            {'DPR_FILTER_PROFILE_TAG': 'ConferenceOnly', 'DPR_INCLUDE_CONFERENCE_ONLY_PROFILES': '1'},
+            clear=False,
+        ):
+            plan = build_pipeline_inputs(cfg)
+        self.assertEqual([item.get('tag') for item in plan['profiles']], ['ConferenceOnly'])
+        self.assertEqual([item.get('tag') for item in plan['bm25_queries']], ['ConferenceOnly'])
+
     def test_count_tags(self):
         cfg = {
             'subscriptions': {

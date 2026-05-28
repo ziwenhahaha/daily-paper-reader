@@ -41,6 +41,36 @@ class LlmStructuredOutputTest(unittest.TestCase):
         )
         return resp
 
+    @patch.dict("llm.os.environ", {}, clear=False)
+    @patch("llm.requests.post")
+    def test_chat_allows_deepseek_v4_large_output_window_by_default(self, mock_post):
+        mock_post.return_value = self._mock_success_response({"content": "ok"})
+        client = LLMClient(
+            api_key="test-key",
+            model="deepseek-v4-flash",
+            base_url="https://api.deepseek.com",
+        )
+        client.kwargs["max_tokens"] = 500000
+
+        client.chat(messages=[{"role": "user", "content": "hello"}])
+
+        self.assertEqual(mock_post.call_args.kwargs["json"]["max_tokens"], 393216)
+
+    @patch.dict("llm.os.environ", {"DPR_LLM_MAX_OUTPUT_TOKENS": "8192"}, clear=False)
+    @patch("llm.requests.post")
+    def test_chat_max_output_window_can_be_overridden_by_env(self, mock_post):
+        mock_post.return_value = self._mock_success_response({"content": "ok"})
+        client = LLMClient(
+            api_key="test-key",
+            model="deepseek-v4-flash",
+            base_url="https://api.deepseek.com",
+        )
+        client.kwargs["max_tokens"] = 500000
+
+        client.chat(messages=[{"role": "user", "content": "hello"}])
+
+        self.assertEqual(mock_post.call_args.kwargs["json"]["max_tokens"], 8192)
+
     @patch("llm.requests.post")
     def test_chat_structured_prefers_json_object_for_deepseek(self, mock_post):
         mock_post.return_value = self._mock_success_response({"content": '{"answer":"ok"}'})

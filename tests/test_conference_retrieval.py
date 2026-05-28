@@ -56,7 +56,7 @@ class ConferenceRetrievalTest(unittest.TestCase):
         self.assertEqual(backend["vector_rpc_exact"], "match_icml_openreview_papers_exact")
 
     def test_save_result_writes_only_tagged_papers(self):
-        paper = self.mod.PaperHit(id="p1", title="Paper", best_score=1.0)
+        paper = self.mod.PaperHit(id="p1", title="Paper", pdf_url="https://openreview.net/pdf?id=p1", best_score=1.0)
         paper.tags.add("query:test")
         result = {
             "papers": {"p1": paper, "p2": self.mod.PaperHit(id="p2", title="No tag")},
@@ -68,6 +68,7 @@ class ConferenceRetrievalTest(unittest.TestCase):
             self.mod.save_result(result, path, mode="bm25", top_k=1, conferences=["icml"], years=[2025])
             payload = __import__("json").loads(path.read_text(encoding="utf-8"))
             self.assertEqual(len(payload["papers"]), 1)
+            self.assertEqual(payload["papers"][0]["pdf_url"], "https://openreview.net/pdf?id=p1")
             self.assertEqual(payload["papers"][0]["tags"], ["query:test"])
             self.assertEqual(payload["retrieval"]["mode"], "supabase_bm25")
         finally:
