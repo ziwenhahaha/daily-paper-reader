@@ -69,6 +69,18 @@ def is_placeholder_text(text: str) -> bool:
     return bool(PLACEHOLDER_TEXT_RE.match(s))
 
 
+def is_too_short_for_abstract_translation(zh_abstract: str, abstract_en: str) -> bool:
+    """
+    粗略识别“把 Abstract 写成一句 TLDR”的情况。
+    对较长英文摘要，完整中文翻译通常不会只有英文词数的一小部分。
+    """
+    zh_cjk = len(re.findall(r"[\u4e00-\u9fff]", zh_abstract or ""))
+    en_words = len(re.findall(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)?", abstract_en or ""))
+    if en_words < 80:
+        return False
+    return zh_cjk < int(en_words * 0.85)
+
+
 def call_llm_text(
     client: LLMClient,
     messages: List[Dict[str, str]],
@@ -313,6 +325,7 @@ def translate_title_and_abstract_to_zh(title: str, abstract: str) -> Tuple[str, 
     system_prompt = (
         "你是一名熟悉机器学习与自然科学论文的专业翻译，请将英文标题和摘要翻译为自然、准确的中文。"
         "保持学术风格，尽量保留专有名词，不要额外添加评论。"
+        "摘要必须完整忠实翻译英文 abstract，不要压缩成 TLDR、要点或改写总结。"
     )
     payload = {"title": title, "abstract": abstract}
     user_text = json.dumps(payload, ensure_ascii=False)
@@ -360,6 +373,8 @@ def translate_title_and_abstract_to_zh(title: str, abstract: str) -> Tuple[str, 
         if is_placeholder_text(zh_title):
             zh_title = ""
         if is_placeholder_text(zh_abstract):
+            zh_abstract = ""
+        if zh_abstract and is_too_short_for_abstract_translation(zh_abstract, abstract):
             zh_abstract = ""
     except Exception:
         return "", ""
@@ -494,31 +509,6 @@ def ensure_single_sentence_end(text: str) -> str:
         return s
     s = s.rstrip("。.!?！？")
     return s + "。"
-
-
-def build_zh_abstract_fallback(*parts: str) -> str:
-    """
-    当标题/摘要翻译阶段只返回点号占位时，用已有速览字段补一个可读的中文摘要。
-    """
-    cleaned: List[str] = []
-    generic_phrases = (
-        "方法与实现细节请参考摘要与正文",
-        "结果与对比结论请参考摘要与正文",
-        "总体而言，该工作在所述任务上展示了有效性",
-        "基于摘要生成的速览信息",
-    )
-    for part in parts:
-        s = strip_llm_reasoning(part).strip()
-        if is_placeholder_text(s):
-            continue
-        if any(p in s for p in generic_phrases):
-            continue
-        cleaned.append(ensure_single_sentence_end(s))
-    if not cleaned:
-        return ""
-    if len(cleaned) == 1:
-        return cleaned[0]
-    return " ".join(cleaned[:2])
 
 
 def upsert_auto_block(md_path: str, heading: str, content: str) -> None:
@@ -904,10 +894,7 @@ def ensure_home_module_files(docs_dir: str) -> Tuple[str, str]:
             f.write("────────────────────────────────────────\n")
     if not os.path.exists(promo_path):
         with open(promo_path, "w", encoding="utf-8") as f:
-            f.write("════════════════════════════════════════\n")
-            f.write("（宣传占位）欢迎 Star / Fork 本项目。\n")
-            f.write("（宣传占位）欢迎提交 Issue 与 PR。\n")
-            f.write("════════════════════════════════════════\n")
+            f.write("")
     return notice_path, promo_path
 
 
@@ -1398,15 +1385,6 @@ def build_markdown_content(
     display_tldr = glance_tldr if glance_tldr else tldr
     if is_placeholder_text(display_tldr):
         display_tldr = ""
-    if not zh_abstract:
-        zh_abstract = build_zh_abstract_fallback(
-            display_tldr,
-            glance_motivation,
-            glance_method,
-            glance_result,
-            glance_conclusion,
-            evidence,
-        )
 
     # 辅助函数：转义 YAML 字符串中的特殊字符
     # 构建 YAML front matter
@@ -2079,8 +2057,9 @@ def build_home_readme_content(
     lines.append("")
     lines.append("## 每次日报")
     lines.append(latest_report_md)
-    lines.append("")
-    lines.append(promo_md or "（宣传模块为空）")
+    if promo_md:
+        lines.append("")
+        lines.append(promo_md)
     lines.append("")
     return "\n".join(lines)
 
