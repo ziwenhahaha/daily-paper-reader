@@ -1,64 +1,57 @@
 # 日报 · 2026-05-28
 
-- 生成时间：2026-05-28 09:32:28 UTC
-- 当次推荐总数：48
-- 精读区：33
+- 生成时间：2026-05-28 22:10:24 UTC
+- 当次推荐总数：39
+- 精读区：24
 - 速读区：15
 
 ## 今日简报（AI）
-今日精读了33篇论文，重点关注轻量级模型蒸馏与自学习方法，其中轻量级扩散模型蒸馏框架和自适应视图自蒸馏最受关注。推荐关注LIFT and PLACE的稳定蒸馏框架以及AVSD的共识与特权信号平衡方法，两者均获9.0高分。建议深入了解知识蒸馏在生成式模型中的应用进展，可优先研读这两篇精读论文的核心技术细节。
+今日完成39篇论文筛选，精读24篇、速读15篇。  
+重点推荐教师标记可靠性与文本生成模型防护（均9.0分），以及强化学习、自蒸馏、跨分词器知识蒸馏等方向（均8.0分）。  
+建议先阅读两篇9.0高分研究，再依据兴趣挑选快速阅读文章深入了解。
 
 ## 精读区
-1. [LIFT and PLACE: A Simple, Stable, and Effective Knowledge Distillation Framework for Lightweight Diffusion Models](/202605/28/2605.19729v2-lift-and-place-a-simple-stable-and-effective-knowledge-distillation-framework-for-lightweight-diffusion-models) （9.0/10）
-2. [AVSD: Adaptive-View Self-Distillation by Balancing Consensus and Teacher-Specific Privileged Signals](/202605/28/2605.20643v1-avsd-adaptive-view-self-distillation-by-balancing-consensus-and-teacher-specific-privileged-signals) （9.0/10）
-3. [OPPO: Bayesian Value Recursion for Token-Level Credit Assignment in LLM Reasoning](/202605/28/2605.21851v1-oppo-bayesian-value-recursion-for-token-level-credit-assignment-in-llm-reasoning) （9.0/10）
-4. [Tailoring Teaching to Aptitude: Direction-Adaptive Self-Distillation for LLM Reasoning](/202605/28/2605.22263v1-tailoring-teaching-to-aptitude-direction-adaptive-self-distillation-for-llm-reasoning) （9.0/10）
-5. [Search-E1: Self-Distillation Drives Self-Evolution in Search-Augmented Reasoning](/202605/28/2605.22511v1-search-e1-self-distillation-drives-self-evolution-in-search-augmented-reasoning) （9.0/10）
-6. [Self-Policy Distillation via Capability-Selective Subspace Projection](/202605/28/2605.22675v1-self-policy-distillation-via-capability-selective-subspace-projection) （9.0/10）
-7. [Deep Reinforcement Learning for Flexible Job Shop Scheduling with Random Job Arrivals](/202605/28/2605.22773v1-deep-reinforcement-learning-for-flexible-job-shop-scheduling-with-random-job-arrivals) （9.0/10）
-8. [MARGIN: Runtime Confidence Calibration for Multi-Agent Foundation Model Coordination](/202605/28/2605.22949v1-margin-runtime-confidence-calibration-for-multi-agent-foundation-model-coordination) （9.0/10）
-9. [How to Steer Your Multi-Agent System: Human-LLM Collaborative Planning](/202605/28/2605.23023v1-how-to-steer-your-multi-agent-system-human-llm-collaborative-planning) （9.0/10）
-10. [Infra-Bayesian Reinforcement Learning Agents Outperform Classical RL For Worst-Case Robustness](/202605/28/2605.23146v1-infra-bayesian-reinforcement-learning-agents-outperform-classical-rl-for-worst-case-robustness) （9.0/10）
-11. [When Planning Fails Despite Correct Execution: On Epistemic Calibration for LLM-Based Multi-Agent Systems](/202605/28/2605.23414v1-when-planning-fails-despite-correct-execution-on-epistemic-calibration-for-llm-based-multi-agent-systems) （9.0/10）
-12. [One Policy, Infinite NPCs: Persona-Traceable Shared RL Policies for Scalable Game Agents](/202605/28/2605.23652v1-one-policy-infinite-npcs-persona-traceable-shared-rl-policies-for-scalable-game-agents) （9.0/10）
-13. [MAPLE: Multi-State Aggregated Policy Evaluation for AlphaZero in Imperfect-Information Games](/202605/28/2605.24139v1-maple-multi-state-aggregated-policy-evaluation-for-alphazero-in-imperfect-information-games) （9.0/10）
-14. [Scaling up Energy-Aware Multi-Agent Reinforcement Learning for Mission-Oriented Drone Networks with Individual Reward](/202605/28/2605.24992v1-scaling-up-energy-aware-multi-agent-reinforcement-learning-for-mission-oriented-drone-networks-with-individual-reward) （9.0/10）
-15. [ParkingWorld: End-to-End Autonomous Parking Reinforcement Learning from Corrective Experience in 3DGS Simulation](/202605/28/2605.25029v2-parkingworld-end-to-end-autonomous-parking-reinforcement-learning-from-corrective-experience-in-3dgs-simulation) （9.0/10）
-16. [Meta-Agent: From Task Descriptions to Verified Multi-Agent Systems](/202605/28/2605.25233v1-meta-agent-from-task-descriptions-to-verified-multi-agent-systems) （9.0/10）
-17. [Prior Policy Guided Dual-Agent Coordinated Manipulation Planning of Spacecraft-Manipulator System](/202605/28/2605.25362v1-prior-policy-guided-dual-agent-coordinated-manipulation-planning-of-spacecraft-manipulator-system) （9.0/10）
-18. [Can LLMs Time Travel? Enhancing Temporal Consistency in Legal Agentic Search through Reinforcement Learning](/202605/28/2605.25920v1-can-llms-time-travel-enhancing-temporal-consistency-in-legal-agentic-search-through-reinforcement-learning) （9.0/10）
-19. [Exploiting Local Dynamics Regularity for Reusable Skills in Offline Hierarchical RL](/202605/28/2605.26371v1-exploiting-local-dynamics-regularity-for-reusable-skills-in-offline-hierarchical-rl) （9.0/10）
-20. [Efficient On-policy Visual-RL via Stochastic Decoupled Policy Gradient](/202605/28/2605.26478v1-efficient-on-policy-visual-rl-via-stochastic-decoupled-policy-gradient) （9.0/10）
-21. [Focal Reward: Balanced Reinforcement Learning under Rubric-Based Rewards](/202605/28/2605.26579v1-focal-reward-balanced-reinforcement-learning-under-rubric-based-rewards) （9.0/10）
-22. [Tournament-GRPO: Group-Wise Tournament Rewards for Reinforcement Learning in Open-Ended Long-Form Generation](/202605/28/2605.26958v1-tournament-grpo-group-wise-tournament-rewards-for-reinforcement-learning-in-open-ended-long-form-generation) （9.0/10）
-23. [MAIGO: Mitigating Lost-in-Conversation with History-Cleaned On-Policy Self-Distillation](/202605/28/2605.27186v1-maigo-mitigating-lost-in-conversation-with-history-cleaned-on-policy-self-distillation) （9.0/10）
-24. [AgensFlow: A Coordination-Policy Substrate for Multi-Agent Systems](/202605/28/2605.27466v1-agensflow-a-coordination-policy-substrate-for-multi-agent-systems) （9.0/10）
-25. [You Only Align Once: Propagating Cooperative Behaviors in Multi-Agent Systems through Seed Agents](/202605/28/2605.27586v1-you-only-align-once-propagating-cooperative-behaviors-in-multi-agent-systems-through-seed-agents) （9.0/10）
-26. [MolLingo: Molecule-Native Representations for LLM-Powered Scientific Agents](/202605/28/2605.27853v1-mollingo-molecule-native-representations-for-llm-powered-scientific-agents) （9.0/10）
-27. [MACReD: A Multi-Agent Collaborative Reasoning Framework for Reaction Diagram Parsing](/202605/28/2605.28077v1-macred-a-multi-agent-collaborative-reasoning-framework-for-reaction-diagram-parsing) （9.0/10）
-28. [Examining Agents' Bias Amplification versus Suppression in Multi-Agent Systems](/202605/28/2605.28098v1-examining-agents-bias-amplification-versus-suppression-in-multi-agent-systems) （9.0/10）
-29. [Variance-Adaptive Optimal Algorithm for Reinforcement Learning with Multinomial Logit Function Approximation](/202605/28/2605.28364v1-variance-adaptive-optimal-algorithm-for-reinforcement-learning-with-multinomial-logit-function-approximation) （9.0/10）
-30. [Interpretability-Guided Layer Selection over Subspace Projection: SAEs as Stethoscopes, Not Scalpels, for Raw Task Vector Model Editing](/202605/28/2605.28649v1-interpretability-guided-layer-selection-over-subspace-projection-saes-as-stethoscopes-not-scalpels-for-raw-task-vector-model-editing) （9.0/10）
-31. [TRACER: Turn-level Regret Matching with Inner Reinforcement Credit for Cooperative Multi-LLM Reasoning](/202605/28/2605.28699v1-tracer-turn-level-regret-matching-with-inner-reinforcement-credit-for-cooperative-multi-llm-reasoning) （9.0/10）
-32. [Skill-Conditioned Gated Self-Distillation for LLM Reasoning](/202605/28/2605.28791v1-skill-conditioned-gated-self-distillation-for-llm-reasoning) （9.0/10）
-33. [Gamma-World: Generative Multi-Agent World Modeling Beyond Two Players](/202605/28/2605.28816v1-gamma-world-generative-multi-agent-world-modeling-beyond-two-players) （9.0/10）
+1. [When Are Teacher Tokens Reliable? Position-Weighted On-Policy Self-Distillation for Reasoning](/202605/28/2605.21606v1-when-are-teacher-tokens-reliable-position-weighted-on-policy-self-distillation-for-reasoning) （9.0/10）
+2. [Safeguarding Text-to-Image Generative Models Against Unauthorized Knowledge Distillation](/202605/28/2605.22060v1-safeguarding-text-to-image-generative-models-against-unauthorized-knowledge-distillation) （9.0/10）
+3. [Self-Policy Distillation via Capability-Selective Subspace Projection](/202605/28/2605.22675v1-self-policy-distillation-via-capability-selective-subspace-projection) （9.0/10）
+4. [One Policy, Infinite NPCs: Persona-Traceable Shared RL Policies for Scalable Game Agents](/202605/28/2605.23652v1-one-policy-infinite-npcs-persona-traceable-shared-rl-policies-for-scalable-game-agents) （9.0/10）
+5. [Adaptive Human-AI Coordination via Hierarchical Action Disentanglement](/202605/28/2605.24343v1-adaptive-human-ai-coordination-via-hierarchical-action-disentanglement) （9.0/10）
+6. [Emission-Aware Reinforcement Learning for Sustainable Electric Vehicle Charging and Carbon Dioxide Reduction Under Varying Renewable Penetration](/202605/28/2605.24543v1-emission-aware-reinforcement-learning-for-sustainable-electric-vehicle-charging-and-carbon-dioxide-reduction-under-varying-renewable-penetration) （9.0/10）
+7. [Unifying Value Alignment and Assignment in Cross-Domain Offline Reinforcement Learning with Heterogeneous Datasets](/202605/28/2605.24862v1-unifying-value-alignment-and-assignment-in-cross-domain-offline-reinforcement-learning-with-heterogeneous-datasets) （9.0/10）
+8. [Scaling up Energy-Aware Multi-Agent Reinforcement Learning for Mission-Oriented Drone Networks with Individual Reward](/202605/28/2605.24992v1-scaling-up-energy-aware-multi-agent-reinforcement-learning-for-mission-oriented-drone-networks-with-individual-reward) （9.0/10）
+9. [Reinforcement Learning for Laser Additive Manufacturing Scan-Order Optimisation: A Bilevel Proxy--FEA Diagnostic Framework for Reward and World-Model Diagnosis](/202605/28/2605.25063v1-reinforcement-learning-for-laser-additive-manufacturing-scan-order-optimisation-a-bilevel-proxy--fea-diagnostic-framework-for-reward-and-world-model-diagnosis) （9.0/10）
+10. [Counterfactually Safe Reinforcement Learning](/202605/28/2605.25114v1-counterfactually-safe-reinforcement-learning) （9.0/10）
+11. [Learning to Search and Searching to Learn for Generalization in Planning](/202605/28/2605.25720v1-learning-to-search-and-searching-to-learn-for-generalization-in-planning) （9.0/10）
+12. [Multi-Agent Systems are Mixtures of Experts: Who Becomes an Influencer?](/202605/28/2605.25929v1-multi-agent-systems-are-mixtures-of-experts-who-becomes-an-influencer) （9.0/10）
+13. [When Does Adaptive Guidance Help? Belief-Aware Privileged Distillation for Autonomous Driving Under Partial Observability](/202605/28/2605.26155v1-when-does-adaptive-guidance-help-belief-aware-privileged-distillation-for-autonomous-driving-under-partial-observability) （9.0/10）
+14. [Efficient On-policy Visual-RL via Stochastic Decoupled Policy Gradient](/202605/28/2605.26478v1-efficient-on-policy-visual-rl-via-stochastic-decoupled-policy-gradient) （9.0/10）
+15. [Testing Agentic Workflows with Structural Coverage Criteria](/202605/28/2605.26521v1-testing-agentic-workflows-with-structural-coverage-criteria) （9.0/10）
+16. [QUACK: Questioning, Understanding, and Auditing Communicated Knowledge in Multimodal Social Deduction Agents](/202605/28/2605.27068v1-quack-questioning-understanding-and-auditing-communicated-knowledge-in-multimodal-social-deduction-agents) （9.0/10）
+17. [SCALE-COMM: Shared, Contrastively-Aligned Latent Embeddings for MARL Communication](/202605/28/2605.27532v1-scale-comm-shared-contrastively-aligned-latent-embeddings-for-marl-communication) （9.0/10）
+18. [You Only Align Once: Propagating Cooperative Behaviors in Multi-Agent Systems through Seed Agents](/202605/28/2605.27586v1-you-only-align-once-propagating-cooperative-behaviors-in-multi-agent-systems-through-seed-agents) （9.0/10）
+19. [TCP-MCP: Landscape-Guided Co-Evolution of Prompts and Communication Topologies for Multi-Agent Systems](/202605/28/2605.27850v1-tcp-mcp-landscape-guided-co-evolution-of-prompts-and-communication-topologies-for-multi-agent-systems) （9.0/10）
+20. [ROSD: Reflective On-Policy Self-Distillation for Language Model Reasoning across Domains](/202605/28/2605.28014v1-rosd-reflective-on-policy-self-distillation-for-language-model-reasoning-across-domains) （9.0/10）
+21. [Examining Agents' Bias Amplification versus Suppression in Multi-Agent Systems](/202605/28/2605.28098v1-examining-agents-bias-amplification-versus-suppression-in-multi-agent-systems) （9.0/10）
+22. [Defending LLM-based Multi-Agent Systems Against Cooperative Attacks with Sentence-Level Rectification](/202605/28/2605.28104v1-defending-llm-based-multi-agent-systems-against-cooperative-attacks-with-sentence-level-rectification) （9.0/10）
+23. [Commit to the Bit: Reactive Reinforcement Learning Done Right](/202605/28/2605.28276v1-commit-to-the-bit-reactive-reinforcement-learning-done-right) （9.0/10）
+24. [Optimal Data Acquisition for Reinforcement Learning: A Large Deviations Perspective](/202605/28/2605.28675v1-optimal-data-acquisition-for-reinforcement-learning-a-large-deviations-perspective) （9.0/10）
 
 ## 速读区
-1. [LIFT and PLACE: A Simple, Stable, and Effective Knowledge Distillation Framework for Lightweight Diffusion Models](/202605/28/2605.19729v3-lift-and-place-a-simple-stable-and-effective-knowledge-distillation-framework-for-lightweight-diffusion-models) （8.0/10）
-2. [Memory-Augmented Reinforcement Learning Agent for CAD Generation](/202605/28/2605.19748v1-memory-augmented-reinforcement-learning-agent-for-cad-generation) （8.0/10）
-3. [Towards Distillation Guarantees under Algorithmic Alignment for Combinatorial Optimization](/202605/28/2605.20074v1-towards-distillation-guarantees-under-algorithmic-alignment-for-combinatorial-optimization) （8.0/10）
-4. [Consistently Informative Soft-Label Temperature for Knowledge Distillation](/202605/28/2605.20357v1-consistently-informative-soft-label-temperature-for-knowledge-distillation) （8.0/10）
-5. [ZEBRA: Zero-shot Budgeted Resource Allocation for LLM Orchestration](/202605/28/2605.20485v1-zebra-zero-shot-budgeted-resource-allocation-for-llm-orchestration) （8.0/10）
-6. [LIFT and PLACE: A Simple, Stable, and Effective Knowledge Distillation Framework for Lightweight Diffusion Models](/202605/28/2605.19729v1-lift-and-place-a-simple-stable-and-effective-knowledge-distillation-framework-for-lightweight-diffusion-models) （7.0/10）
-7. [EngiAI: A Multi-Agent Framework and Benchmark Suite for LLM-Driven Engineering Design](/202605/28/2605.19743v2-engiai-a-multi-agent-framework-and-benchmark-suite-for-llm-driven-engineering-design) （7.0/10）
-8. [Fast Tensorization of Neural Networks via Slice-wise Feature Distillation](/202605/28/2605.19842v1-fast-tensorization-of-neural-networks-via-slice-wise-feature-distillation) （7.0/10）
-9. [Beyond Action Residuals: Real-World Robot Policy Steering via Bottleneck Latent Reinforcement Learning](/202605/28/2605.19919v1-beyond-action-residuals-real-world-robot-policy-steering-via-bottleneck-latent-reinforcement-learning) （7.0/10）
-10. [Robust synchronization for multi-agent systems governed by PDEs with observable and unobservable disturbances](/202605/28/2605.19992v1-robust-synchronization-for-multi-agent-systems-governed-by-pdes-with-observable-and-unobservable-disturbances) （7.0/10）
-11. [DIVE: Embedding Compression via Self-Limiting Gradient Updates](/202605/28/2605.20689v1-dive-embedding-compression-via-self-limiting-gradient-updates) （6.0/10）
-12. [The Human-AI Delegation Dilemma: Individual Strategies, Collective Equilibria and Sociotechnical Lock-in](/202605/28/2605.21351v1-the-human-ai-delegation-dilemma-individual-strategies-collective-equilibria-and-sociotechnical-lock-in) （6.0/10）
-13. [DualOptim+: Bridging Shared and Decoupled Optimizer States for Better Machine Unlearning in Large Language Models](/202605/28/2605.21539v1-dualoptim-bridging-shared-and-decoupled-optimizer-states-for-better-machine-unlearning-in-large-language-models) （6.0/10）
-14. [AI-Enabled Serious Games: Integrating Intelligence and Adaptivity in Training Systems](/202605/28/2605.21962v1-ai-enabled-serious-games-integrating-intelligence-and-adaptivity-in-training-systems) （6.0/10）
-15. [Cross-domain benchmarks reveal when coordinated AI agents improve scientific inference from partial evidence](/202605/28/2605.22300v1-cross-domain-benchmarks-reveal-when-coordinated-ai-agents-improve-scientific-inference-from-partial-evidence) （6.0/10）
+1. [Mahjax: A GPU-Accelerated Mahjong Simulator for Reinforcement Learning in JAX](/202605/28/2605.20577v1-mahjax-a-gpu-accelerated-mahjong-simulator-for-reinforcement-learning-in-jax) （8.0/10）
+2. [AVSD: Adaptive-View Self-Distillation by Balancing Consensus and Teacher-Specific Privileged Signals](/202605/28/2605.20643v1-avsd-adaptive-view-self-distillation-by-balancing-consensus-and-teacher-specific-privileged-signals) （8.0/10）
+3. [X-Token: Projection-Guided Cross-Tokenizer Knowledge Distillation](/202605/28/2605.21699v1-x-token-projection-guided-cross-tokenizer-knowledge-distillation) （8.0/10）
+4. [OPPO: Bayesian Value Recursion for Token-Level Credit Assignment in LLM Reasoning](/202605/28/2605.21851v1-oppo-bayesian-value-recursion-for-token-level-credit-assignment-in-llm-reasoning) （8.0/10）
+5. [OPPO: Bayesian Value Recursion for Token-Level Credit Assignment in LLM Reasoning](/202605/28/2605.21851v2-oppo-bayesian-value-recursion-for-token-level-credit-assignment-in-llm-reasoning) （8.0/10）
+6. [When Planning Fails Despite Correct Execution: On Epistemic Calibration for LLM-Based Multi-Agent Systems](/202605/28/2605.23414v1-when-planning-fails-despite-correct-execution-on-epistemic-calibration-for-llm-based-multi-agent-systems) （7.8/10）
+7. [Foundation Protocol: A Coordination Layer for Agentic Society](/202605/28/2605.23218v1-foundation-protocol-a-coordination-layer-for-agentic-society) （7.5/10）
+8. [DIVE: Embedding Compression via Self-Limiting Gradient Updates](/202605/28/2605.20689v1-dive-embedding-compression-via-self-limiting-gradient-updates) （7.0/10）
+9. [Decomposing Subject-Driven Image Generation via Intermediate Structural Prediction](/202605/28/2605.20807v1-decomposing-subject-driven-image-generation-via-intermediate-structural-prediction) （7.0/10）
+10. [APEX: Autonomous Policy Exploration for Self-Evolving LLM Agents](/202605/28/2605.21240v1-apex-autonomous-policy-exploration-for-self-evolving-llm-agents) （7.0/10）
+11. [GSA-YOLO: A High-Efficiency Framework via Structured Sparsity and Adaptive Knowledge Distillation for Real-Time X-ray Security Inspection](/202605/28/2605.20669v1-gsa-yolo-a-high-efficiency-framework-via-structured-sparsity-and-adaptive-knowledge-distillation-for-real-time-x-ray-security-inspection) （6.0/10）
+12. [Hack-Verifiable Environments: Towards Evaluating Reward Hacking at Scale](/202605/28/2605.20744v1-hack-verifiable-environments-towards-evaluating-reward-hacking-at-scale) （6.0/10）
+13. [PACD-Net: Pseudo-Augmented Contrastive Distillation for Glycemic Control Estimation from SMBG](/202605/28/2605.20751v1-pacd-net-pseudo-augmented-contrastive-distillation-for-glycemic-control-estimation-from-smbg) （6.0/10）
+14. [3D Reconstruction and Knowledge Distillation to Improve Multi-View Image Models to Explore Spike Volume Estimation in Wheat](/202605/28/2605.20940v1-3d-reconstruction-and-knowledge-distillation-to-improve-multi-view-image-models-to-explore-spike-volume-estimation-in-wheat) （6.0/10）
+15. [FTerViT: Fully Ternary Vision Transformer](/202605/28/2605.21171v1-ftervit-fully-ternary-vision-transformer) （6.0/10）
 
 ---
 使用键盘方向键可在日报/论文之间快速切换。
