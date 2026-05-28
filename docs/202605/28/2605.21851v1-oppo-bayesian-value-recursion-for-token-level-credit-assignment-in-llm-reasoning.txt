@@ -1,0 +1,1137 @@
+Title: OPPO: Bayesian Value Recursion for Token-Level Credit Assignment in LLM Reasoning
+
+URL Source: https://arxiv.org/pdf/2605.21851v1
+
+Published Time: Fri, 22 May 2026 00:24:14 GMT
+
+Number of Pages: 28
+
+Markdown Content:
+# OPPO: Bayesian Value Recursion for Token-Level Credit Assignment in LLM Reasoning 
+
+Yu Li 1 Rui Miao 2 Tian Lan 1 Zhengling Qi 11George Washington University 2The University of Texas at Dallas 
+
+## Abstract 
+
+Reinforcement learning with verifiable rewards has become the standard recipe for improving LLM reasoning, but the dominant algorithm GRPO assigns a single trajectory-level advantage to every token, diluting the signal at pivotal reasoning steps and injecting noise at uninformative ones. Critic-free alternatives derived from on-policy distillation supply per-token signals through oracle-conditioned like-lihood ratios, yet apply each signal in isolation from the trajectory-level evidence accumulated up to that position. We propose Oracle-Prompted Policy Optimiza-tion (OPPO), which rests on a single observation: the oracle signal used by prior distillation-style methods for local discrimination is also the natural Bayesian up-date of the model’s belief about eventual success. Accumulating the signal along a trajectory yields, in closed form and at the cost of one extra forward pass, a running estimate of the success probability at every position, together with a token-level advantage that requires no learned value network and no additional rollouts. A first-order analysis factorizes the advantage into the per-token discrimination signal used by distillation methods modulated by a state weight that concentrates credit on genuinely pivotal tokens, with a directional variance-reduction guarantee. The framework admits two estimators differing only in which model scores the evi-dence: a self-oracle that reuses the student and recovers the on-policy distillation reward as a strict special case, and a teacher-oracle that delegates scoring to a stronger frozen model. On two base LLMs across seven mathematics, science, and code reasoning benchmarks, OPPO improves over GRPO, DAPO, and SDPO by up to +6 .0 points on AMC’23 and +5 .2 points on AIME’24, with gains that widen monotonically with response length. 
+
+## 1 Introduction 
+
+Reinforcement learning with verifiable rewards (RLVR) has become a central paradigm for improving the reasoning capabilities of large language models [ 9 , 34 , 13 ]. In the standard pipeline, a model generates a complete reasoning trajectory, receives a binary reward based on the correctness of the final answer, and updates its policy to increase the likelihood of generating correct trajectories. Group Relative Policy Optimization (GRPO) [ 9] is the most widely adopted on-policy algorithm in the paradigm, estimating the advantage of each trajectory relative to a group of sampled responses and feeding the signal into a clipped policy gradient update. GRPO broadcasts a single scalar advantage to every token position [ 24 ]. In a reasoning chain of several hundred tokens, only a small subset of tokens typically determine the outcome, namely those corresponding to a strategy selection, a key algebraic step, or a critical logical deduction [ 27 , 32 ]. By assigning equal credit to every position, GRPO dilutes the learning signal at pivotal tokens and injects noise through undeserved gradient updates at uninformative ones, and the problem worsens as reasoning chains grow longer [36, 16]. Recent work has pursued two strategies. The first refines the GRPO framework while retaining the trajectory-level advantage. Dr.GRPO [ 24 ], DAPO [ 36 ], GSPO [ 39 ], and GMPO [ 38 ] modify 
+
+> Preprint.
+> arXiv:2605.21851v1 [cs.LG] 21 May 2026
+
+the importance ratio, clipping, or advantage normalization, yet every token still receives the same advantage [ 10 ]. The second seeks finer-grained credit at the token level. Monte Carlo resampling methods such as VinePPO [ 19 ] and TreeRL [ 11 ] require orders of magnitude more inference, implicit process reward models such as PRIME [ 6] require online updating, and segment-level aggregation in SPO [ 10 ] pools descendant outcomes within shared prefixes. Most relevant to the present work, on-policy distillation methods with privileged information [ 2, 8 , 25 , 35 , 12 ] condition the model on the ground-truth answer y∗ and use the resulting log-likelihood ratio log λt = log πteacher (yt |
+
+st) − log πstudent (yt | st) as a token-level credit signal, where log λt is the one-step expert log-ratio between the success-conditional optimal policy π∗ and the student. Every such method, however, applies log λt with uniform weight across positions and treats each token’s credit as an isolated one-step quantity decoupled from the cumulative evidence along y<t .Motivated by this gap, we propose Oracle-Prompted Policy Optimization (OPPO), which rests on a single observation: the per-token oracle signal used in distillation-style methods is also the natural Bayesian update of the model’s belief about eventual success. Accumulating the signal along a trajectory yields, in closed form and at no extra rollout cost, a running estimate of the success probability at every position, and from it a token-level advantage that requires no learned value network and sums exactly to the trajectory’s outcome relative to its prior. The recursion admits two estimators that differ only in which model scores the evidence: a self-oracle reuses the student in one extra forward pass and recovers the on-policy distillation reward as a strict special case, while a teacher-oracle delegates scoring to a stronger frozen model. The advantage factorizes as the per-token discrimination signal modulated by a state weight Vt(1 − Vt) that peaks where the running belief is most uncertain and vanishes once the trajectory has committed, concentrating credit on pivotal tokens without any tunable hyperparameter. A direction-anchoring step ties the sign of each token-level advantage to the sequence-level outcome, preserving the verifier as the sole arbiter of which trajectories are reinforced while letting the Bayesian machinery redistribute credit within each trajectory. Our contributions are as follows. • Showing that the OPD per-token reward log λt is simultaneously an expert log-ratio surrogate for 
+
+Aπ∗ 
+
+> t
+
+and the Bayesian sufficient statistic for Vt, with the choice of probability measure cleanly selecting the self-oracle or teacher-oracle estimator. • Deriving a closed-form Bayesian value recursion that produces a token-level advantage with no learned critic and no extra rollouts, satisfies the telescoping budget P 
+
+> t
+
+At = R − V0, and admits the factorization At ≈ Vt(1 − Vt) log λt with a directional variance-reduction guarantee. • Integrating the recursion into the GRPO pipeline via direction anchoring and evidence clipping at the cost of one extra forward pass per trajectory, with identical downstream computation under either oracle. • Evaluating the method on Qwen3 and Phi reasoning models across seven reasoning benchmarks, where the proposed framework consistently surpasses representative trajectory-level and oracle-conditioned baselines, with up to +5 .7 points on AMC’23 and +5 .2 points on AIME’24 under Teacher-OPPO on DAPO and gains that widen monotonically with response length. 
+
+## 2 Preliminaries 
+
+2.1 Reinforcement Learning for LLM Reasoning 
+
+We model autoregressive LLM generation as a finite-horizon Markov decision process (S, V, π θ , R )
+
+over a finite vocabulary V. Given a query x, the state at step t is the prefix st ≜ (x, y <t ) with 
+
+y<t ≜ (y1, . . . , y t−1) and s1 = ( x). The policy πθ (· | st) ∈ ∆( V) samples a token yt, yielding the deterministic transition st+1 = ( st, y t). Generation terminates at the first step T ≤ Tmax where yT
+
+is the end-of-sequence symbol. A verifier assigns a terminal binary reward R(τ ) ∈ { 0, 1} indicating answer correctness, with all intermediate rewards equal to zero. Training maximizes the expected return through policy gradient 
+
+J(θ) ≜ Ex∼D , τ ∼πθ (·| x)[R(τ )] , ∇θ J(θ) = E
+
+" TX
+
+> t=1
+
+At(st, y t) ∇θ log πθ (yt | st)
+
+#
+
+, (1) 2where D is the query distribution and At : S × V → R is any per-token advantage estimator unbiased against Qt(st, y t) ≜ Eπθ [R | st, y t] when paired with the score function ∇θ log πθ (yt | st).GRPO [ 9 ] forgoes a learned value baseline by drawing a group of G ≥ 2 trajectories {τi}Gi=1 ∼
+
+πθ (· | x) per query and assigning every token in τi the trajectory-level standardized advantage 
+
+ˆAGRPO  
+
+> i
+
+≜ Ri − μσ + ε , μ ≜ 1
+
+G
+
+> G
+
+X
+
+> j=1
+
+Rj , σ ≜
+
+vuut 1
+
+G
+
+> G
+
+X
+
+> j=1
+
+(Rj − μ)2, (2) so that At(τi) ≡ ˆAGRPO  
+
+> i
+
+for all t ∈ { 1, . . . , T i}. The estimator is exchangeable in t, so if a subset 
+
+C(τ ) of cardinality k ≪ T carries the causal responsibility for R, the signal at t ∈ C (τ ) is attenuated by a factor of k/T while the remaining T − k positions receive gradient mass with zero expected contribution [14, 21]. The cleanest reference quantity for token-level credit is the on-policy state value 
+
+Vt ≜ P πθ (R = 1 | x, y 1: t−1), V0 ≜ P πθ (R=1 | x), VT +1 ≜ R, (3) which satisfies the Bellman consistency Vt = Eyt∼πθ [Vt+1 ]. The ideal token-level advantage is the one-step temporal difference At ≜ Vt+1 − Vt = Qt(st, y t) − Vt(st), and telescoping along the trajectory gives TX
+
+> t=1
+
+At = VT +1 − V0 = R − V0, (4) so the question is how to distribute the credit budget R − V0 across the T positions. PPO [ 29 ] trains a value network Vϕ(st) to approximate Eq. (3) at substantial memory cost; GRPO sets Vt ≡ V0 and distributes R − V0 uniformly. Note that token-level estimators concentrate the learning signal on the subset of positions causally responsible for R, while estimators constant in t inject the variance of R
+
+uniformly across all positions [23, 31]. 
+
+2.2 On-Policy Distillation 
+
+On-policy distillation (OPD) pairs a student policy πθ with a frozen teacher πT and supervises πθ
+
+on its own rollouts under a per-token divergence [ 2, 8 , 25 ]. In the reasoning setting most relevant to RLVR, the teacher is conditioned on privileged information such as the ground-truth answer y∗, so that πT (· | x, y <t ) ≡ πT (· | x, y ∗, y <t ) approximates the success-conditional next-token distribution 
+
+P (· | x, y <t , R =1) [37 , 12 ]. Drawing y1: T ∼ πθ (· | x), OPD minimizes the on-policy summed reverse KL 
+
+LOPD (θ) ≜ Ex, y 1: T ∼πθ (·| x)
+
+" TX
+
+> t=1
+
+KL  πθ (· | st) πT (· | st)#
+
+. (5) Standard practice [ 2 , 25 ] treats the rollout as a stop-gradient sample and differentiates only the inner KL through the student logits, under which the contribution at the sampled token yt reduces to 
+
+∇θ LOPD (θ) yt
+
+= − log λOPD  
+
+> t
+
+·∇ θ log πθ (yt | st), log λOPD  
+
+> t
+
+≜ log πT (yt | st)−log πθ (yt | st).
+
+(6) Comparing Eq. (6) with Eq. (1) shows that the OPD update is a REINFORCE estimator in which 
+
+log λOPD  
+
+> t
+
+plays the role of a per-token reward rather than an advantage. The reward coincides with the KL-shaping term in PPO-based RLHF [ 29 ] when the privileged teacher serves as the reference policy and the environment reward vanishes, so OPD is the special case of token-level PPO without a learned value baseline and without trust-region clipping. Every position is updated independently of its place in the trajectory, with the local signal log λOPD  
+
+> t
+
+decoupled from both the cumulative agreement along y<t and the terminal outcome R [35, 31]. 
+
+Advantage under the optimal policy. The unbiasedness condition below Eq. (1) leaves freedom in the reference policy under which At is defined: replacing Aπθ 
+
+> t
+
+with the advantage under a policy π∗
+
+that dominates πθ in value preserves a valid policy-improvement direction [29, 14]. Let 
+
+π∗(yt | st) ≜ P (yt | x, y <t , R =1) , V π∗ 
+
+> t
+
+(st) ≜ P π∗
+
+(R=1 | st), (7) denote the success-conditional optimal policy and its value, with Aπ∗ 
+
+> t
+
+≜ Qπ∗ 
+
+> t
+
+(st, y t) − V π∗ 
+
+> t
+
+(st) the corresponding one-step advantage. Equation (6) then admits a clean re-reading: the OPD teacher is 3an approximation πT ≈ π∗, so log λOPD  
+
+> t
+
+is the one-step expert log-ratio between π∗ and πθ , serving as a per-token surrogate for Aπ∗ 
+
+> t
+
+in the spirit of advantage-weighted regression. 
+
+Bridge to our method. So far we have identified two complementary failure modes of existing methods. The GRPO advantage in Eq. (2) resolves the credit budget R − V0 uniformly across all 
+
+T tokens, while the OPD signal log λt in Eq. (6) , an expert log-ratio under π∗, is purely local and ignores both the cumulative evidence along y<t and the terminal outcome R. A principled estimator should sit between the two extremes, retaining OPD’s dense π∗-anchored signal while reweighting it by a position-dependent coefficient that tracks the running posterior of success encoded by Eq. (3) ,recovering an approximation to At/A π∗ 
+
+> t
+
+without a learned value network. 
+
+## 3 Bayesian Evidence Aggregation 
+
+The bridge of Section 2.2 singled out Vt as the right object for token-level credit assignment: the ideal advantage At = Vt+1 − Vt should telescope to R − V0 in Eq. (4) , so any accurate tracker of Vt
+
+distributes the budget across tokens automatically but the challenge is to track Vt without a learned critic. In this section, we first show that the problem reduces to learning an additive log-odds update driven by a per-token Bayes factor; Then we construct two tractable surrogate for the Bayes factors. 
+
+3.1 Bayesian Value Recursion 
+
+Applying Bayes’ theorem to update the success probability after observing yt gives 
+
+Vt+1 = P πθ (R=1 | x, y 1: t) = P (yt | x, y <t , R =1) Vt
+
+P (yt | x, y <t ) . (8) Define the per-token Bayes factor between the success and failure branches as 
+
+λ⋆t ≜ P (yt | x, y <t , R =1) 
+
+P (yt | x, y <t , R =0) = P (yt | x, y <t , y T =y∗)
+
+P (yt | x, y <t , y T̸ =y∗) , (9) and let ℓt ≜ log Vt 
+
+> 1−Vt
+
+collect the running log-odds of success. The probability P in Eqs. (8) – (9) can be taken under either πθ or π∗ from Eq. (7) , yielding valid Bayesian recursions for V πθ 
+
+> t
+
+and V π∗
+
+> t
+
+respectively, with the latter targeted by the expert log-ratio of Section 2.2, though they are not exactly the same. Using the law of total probability P (yt | x, y <t ) = P (yt | x, y <t , R =1) Vt + P (yt |
+
+x, y <t , R =0) (1 − Vt), Eq. (8) can be rewritten as the additive log-odds recursion 
+
+Vt+1 = λ⋆t Vt
+
+λ⋆t Vt + (1 − Vt) , ℓt+1 = ℓt + log λ⋆t , (10) in which every token contributes additively to ℓt via its log-Bayes-factor. Unrolling from ℓ0 =logit( V0) and applying the sigmoid yields the closed-form value, the corresponding token-level advantage, and a telescoping credit identity, respectively, 
+
+Vt = σ ℓ0 + X
+
+> s<t
+
+log λ⋆s
+
+!
+
+, At = σ(ℓt + log λ⋆t ) − σ(ℓt), (11) 
+
+> T
+
+X
+
+> t=1
+
+At = σ(ℓT +1 ) − σ(ℓ0) = R − V0. (12) Two structural properties follow. Since σ is Lipschitz with constant 14 , every token satisfies |At| ≤  
+
+> 14
+
+| log λ⋆t |, and the universal range bound |At| ≤ 1 applies regardless of log λ⋆t , so the per-token contribution is jointly bounded by min( 14 | log λ⋆t |, 1) . Equation (12) fixes the total credit by the outcome and the prior alone, so any estimator that respects the additive log-odds structure of Eq. (10) distributes the GRPO budget across tokens with no further bookkeeping. Token-level credit assignment therefore reduces to estimating log λ⋆t , which is defined in terms of the success- and failure-conditional next-token distributions, which are not directly observable. 
+
+3.2 Two Oracle Surrogates for Bayesian Evidence 
+
+We construct estimators of λ⋆t under either probability measure ( πθ or π∗). Both arise from the same pair of modeling choices applied to whichever scorer ˆπ realizes the measure. 40 25 50 75 100               
+
+> top-k% positions
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> cumulative signal (\%)
+> (a) Credit concentration
+> |At|
+> |log t|
+> 010 20 30 40 50 60 70 80
+> token position t
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> 1.25
+> |log  t| (norm.)
+> pivotal
+> (b) tsharpness by oracle
+> Self (4B)
+> Teacher (32B)
+> Q1
+> 0-256
+> Q2
+> 257-512
+> Q3
+> 513-1024
+> Q4
+> 1025+
+> response length (tokens)
+> 0.000
+> 0.005
+> 0.010
+> 0.015
+> 0.020
+> 0.025
+> | t
+> At (R V0)|
+> (c) Telescoping residual, by length and outcome
+> correct ( R= 1), mean
+> incorrect ( R= 0), mean
+> p95 (per group)
+
+Figure 1: Empirical analysis on 200 MATH-500 trajectories from Qwen3-4B-Instruct. (a) |At|
+
+concentrates more sharply than | log λt|, with the gap widest on incorrect trajectories where Vt
+
+saturates early. (b) The 32B teacher produces sharper | log λt| at pivotal tokens and lower background in determined regions. (c) Telescoping budget residual stratified by length quartile and outcome. Solid lines mark the per-stratum mean of | P
+
+t At − (R − ˆV0)| with 95% confidence bands. The shaded region marks the long-sequence regime where evidence clipping caps the recursion. 
+
+Oracle Conditioning 
+
+The success-conditional distribution is approximated by appending y∗ to the prompt: 
+
+P (yt | x, y <t , R =1) ≈ ˆπ(yt | x, y <t , y ∗). (13) The justification is the privileged-teacher rationale of Section 2.2: conditioning on y∗ constrains the scorer to tokens consistent with reaching the correct answer. 
+
+Failure Branch 
+
+The failure-conditional distribution is approximated by the marginal under the same scorer: 
+
+P (yt | x, y <t , R =0) ≈ ˆπ(yt | x, y <t ). (14) The marginal admits the decomposition ˆπ(yt | st) = P (yt | st, R =1) Vt + P (yt | st, R =0) (1 − Vt):the failure branch dominates as Vt → 0 and the approximation is tightest where incorrect trajectories spend most of their length, while the gap is largest near Vt = 12 where the state weight Vt(1 − Vt)
+
+peaks. Substituting Modeling Choices 3.2 and 3.2 into Eq. (9) yields the unified estimator 
+
+λt ≜ ˆπ(yt | x, y <t , y ∗)ˆπ(yt | x, y <t ) , log λt = log ˆ π(yt | x, y <t , y ∗) − log ˆ π(yt | x, y <t ), (15) parameterized by a single scorer ˆπ. Setting ˆπ = πθ yields the self-oracle , which requires only one extra forward pass per trajectory and recovers the OPD per-token reward of Eq. (6) exactly, since the OPD privileged teacher is the student conditioned on y∗ [37 ]. Setting ˆπ = πϕ for a frozen scorer that approximates π∗ at lower KL distance than πθ [ 2, 25 ] yields the teacher-oracle , which reduces approximation error at the cost of a separate scoring model; πϕ receives no gradient updates and need not be instruction-tuned, since its role is likelihood scoring rather than generation. The pointwise gap between either estimator and the exact Bayes factor is captured by the success-branch KL 
+
+ϵt ≜ DKL 
+
+ P (· | x, y <t , R =1) ˆπ(· | x, y <t , y ∗), (16) which traces a design axis: the self-oracle yields the largest ϵt, and a perfect teacher drives ϵt → 0,recovering λt = λ⋆t and the exact recursion. Substituting λt for λ⋆t in Eq. (10) gives the implementable form, with the budget residual controlled by the cumulative oracle quality P
+
+t ϵt (Appendix D.1). The telescoping identity in Eq. (12) applies to the raw advantage before clipping, sign anchoring, and group normalization in Section 4; the implemented training advantage redistributes credit within each trajectory and inherits its direction from the verifier. Figure 1(c) stratifies the residual by length quartile and outcome: the mean rises monotonically from Q1 to Q4 in both classes, with R=0 above 
+
+R=1 because Vt saturates earlier on incorrect rollouts. 53.3 Further Discussion and Empirical Validation 
+
+Subtracting Vt from both sides of Eq. (10) gives the closed-form identity 
+
+At = Vt(1 − Vt)( λt − 1) 
+
+λt Vt + 1 − Vt
+
+. (17) For |λt − 1| small, λt − 1 ≈ log λt and the denominator approaches 1, yielding the first-order approximation 
+
+At ≈ Vt(1 − Vt) · log λt. (18) The factorization separates two roles: the oracle evidence log λt provides per-token discrimination between success and failure branches, identical to the gradient signal of on-policy distillation in Eq. (6) , while the state weight Vt(1 − Vt) modulates the evidence by the running belief. Reliability diagrams in Appendix H.1 confirm that intermediate Vt at t = T / 4, T / 2, 3T / 4 is well calibrated. Two predictions follow. Since Vt(1 − Vt) collapses once the running belief commits, credit con-centrates on undetermined positions; on incorrect trajectories Vt saturates toward 0 early, so the state weight collapses even where log λt remains elevated by answer-correlated content. Figure 1(a) confirms the prediction: the cumulative signal of |At| rises more steeply than that of | log λt|, with the gap widest on incorrect trajectories. A stronger oracle should additionally sharpen λt at pivotal positions while keeping the magnitude small elsewhere, and Figure 1(b) bears this out: the 32B teacher concentrates | log λt| more tightly around strategy-selection tokens than the 4B self-oracle. The prior V0 supplies a complementary adaptation: V0(1 − V0) multiplies the entire trajectory, down-weighting easy and unsolvable queries throughout, which yields prompt-difficulty filtering without manual thresholding [6]. The state weight admits a variance-reduction interpretation under an idealized score-vector assump-tion. Writing the policy gradient as ˆg = P 
+
+> t
+
+wtht with ht = ∇θ log πθ (yt | x, y <t ) and treating the 
+
+ht as uncorrelated across positions, the variance gap between the state-blind weighting wt = log λt
+
+and the Bayesian weighting wt = Vt(1 − Vt) log λt satisfies 
+
+Var[ˆ g0] − Var[ˆ g1] ≥ (1 − γ2)X
+
+> t∈D
+
+(log λt)2 · Var[ ht],
+
+where D = { t : | log λt| ≥ δ, V t(1 − Vt) < γ }.
+
+(19) Score vectors in autoregressive models are correlated across positions, so Eq. (19) is a directional indication rather than a quantitative guarantee, and the set D expands once the model commits to a solution path, predicting larger gains on longer trajectories that are consistent with the stratified residual in Figure 1(c) and the length-stratified accuracy in Table 3(b). 
+
+## 4 OPPO: Oracle-Prompted Policy Optimization 
+
+The Bayesian value recursion of Section 3 is agnostic to how λt is estimated. The remainder of the section specifies the estimator, defines the prior V0, and the direction anchoring. 
+
+Oracle estimator. Computing λt requires scoring every sampled token both with and without y∗
+
+in context. In the self-oracle mode, the policy πθ scores both contexts, adding one forward pass per trajectory and no extra model. In the teacher-oracle mode, a frozen πϕ replaces πθ in both terms; πϕ receives no gradient updates and need not be instruction-tuned, since its role is likelihood scoring. The two modes operate at different points along the ϵt axis of Section 3.2, and once log ˆλi,t 
+
+is computed every later step is identical, so the Bayesian machinery is decoupled from the choice of estimator. 
+
+Prior and ratio computation. Given G trajectories per query, the prior is the Beta( α, α ) posterior mean, and ratios are clipped for numerical stability: 
+
+ˆV0 = k + αG + 2 α , ℓ0 = log k + αG − k + α , log ˆλi,t = clip  oi,t − si,t , −C, C , (20) where si,t = log ˆ π(yi,t | x, y i,<t ) and oi,t = log ˆ π(yi,t | x, y ∗, y i,<t ). Setting α = 1 keeps the log-odds finite in all-correct and all-incorrect groups, which would otherwise collapse every advantage to zero, while the clip bound C prevents a single extreme log λt from saturating ℓt and silencing later positions. The log-odds then accumulate as ℓi,t = ℓ0 + P 
+
+> j<t
+
+log ˆλi,j and the raw Bayesian advantage is Araw  
+
+> i,t
+
+= σ(ℓi,t + log ˆλi,t ) − σ(ℓi,t ).6Table 1: Pass@1 accuracy (%) on reasoning benchmarks. All models are trained on DeepScaleR. OPPO variants are grouped by the underlying optimization framework and the oracle estimator. Subscript arrows denote improvement over the corresponding baseline. 
+
+Mathematical Reasoning Scientific Reasoning Code 
+
+Method GSM8K MATH-500 AMC’23 AIME’24 GPQA-D ARC-C LCB 
+
+Qwen3-4B-Instruct-2507 
+
+SFT 89.5 70.2 52.5 44.0 37.8 87.1 28.6 GRPO 91.4 72.8 54.0 46.4 39.2 88.0 31.5 Dr.GRPO 91.6 73.0 54.5 46.3 39.4 88.3 31.4 DAPO 92.3 74.2 55.8 47.0 40.3 88.5 32.8 SDPO 92.8 74.6 56.5 48.2 40.0 89.0 32.4 
+
+on GRPO 
+
+Self-OPPO 93.0 ↑1.6 76.0 ↑3.2 58.5 ↑4.5 49.5 ↑3.1 41.6 ↑2.4 89.5 ↑1.5 34.2 ↑2.7
+
+Teacher-OPPO 93.8 ↑2.4 77.4 ↑4.6 60.0 ↑6.0 51.3 ↑4.9 42.5 ↑3.3 89.8 ↑1.8 35.4 ↑3.9
+
+on DAPO 
+
+Self-OPPO 93.6 ↑1.3 76.8 ↑2.6 59.2 ↑3.4 50.0 ↑3.0 41.8 ↑1.5 89.6 ↑1.1 34.6 ↑1.8
+
+Teacher-OPPO 94.5 ↑2.2 78.5 ↑4.3 61.5 ↑5.7 52.2 ↑5.2 43.2 ↑2.9 90.0 ↑1.5 36.2 ↑3.4
+
+Phi-4-mini-instruct 
+
+SFT 88.2 71.4 28.0 9.5 30.8 83.5 20.4 GRPO 89.8 75.0 32.5 12.0 32.4 84.6 23.0 Dr.GRPO 90.0 74.8 33.0 11.7 32.6 84.8 22.8 DAPO 90.5 76.2 34.0 13.3 33.5 85.0 24.2 SDPO 90.8 76.5 35.5 13.0 33.0 85.4 23.8 
+
+on GRPO 
+
+Self-OPPO 91.4 ↑1.6 78.2 ↑3.2 37.0 ↑4.5 15.3 ↑3.3 34.5 ↑2.1 86.2 ↑1.6 25.8 ↑2.8
+
+Teacher-OPPO 92.0 ↑2.2 80.0 ↑5.0 39.5 ↑7.0 17.0 ↑5.0 35.8 ↑3.4 86.8 ↑2.2 27.2 ↑4.2
+
+on DAPO 
+
+Self-OPPO 91.8 ↑1.3 78.8 ↑2.6 38.0 ↑4.0 16.0 ↑2.7 35.0 ↑1.5 86.4 ↑1.4 26.5 ↑2.3
+
+Teacher-OPPO 92.5 ↑2.0 80.8 ↑4.6 40.5 ↑6.5 17.8 ↑4.5 36.4 ↑2.9 87.0 ↑2.0 28.0 ↑3.8
+
+Direction anchoring. The sign of Araw  
+
+> i,t
+
+is determined by log λt, not by the trajectory outcome. Any token with log λt > 0 in an incorrect trajectory would receive positive advantage and reinforce a flawed reasoning step, and tokens in correct trajectories with log λt < 0 would be penalized despite contributing to a successful answer; the failure mode mirrors pure self-distillation, where the gradient direction follows the privileged teacher rather than the environment reward [ 35 ]. To prevent the inversion, OPPO anchors the sign of every token-level advantage to the sequence-level GRPO advantage and normalizes across the group: 
+
+ˆAi,t = sign  Aseq 
+
+> i
+
+ · | Araw  
+
+> i,t
+
+|, Aseq  
+
+> i
+
+= Ri − μσ , ˜Ai,t = ˆAi,t − ¯AσA + ϵ . (21) The environment reward retains exclusive control over which trajectories are reinforced or penalized, while the Bayesian state weight and oracle evidence govern only the relative magnitude across positions within each trajectory. 
+
+Policy update. The normalized advantages enter the clipped surrogate objective 
+
+L(θ) = E
+
+"
+
+1
+
+G
+
+> G
+
+X
+
+> i=1
+
+1
+
+TiTiX
+
+> t=1
+
+min 
+
+
+
+ρi,t ˜Ai,t , clip( ρi,t , 1−ϵ, 1+ ϵ) ˜Ai,t 
+
+#
+
+, ρi,t = πθ (yi,t | x, y i,<t )
+
+πθold (yi,t | x, y i,<t ) .
+
+(22) Algorithm 1 summarizes the procedure that replace the uniform sequence-level advantage Aseq  
+
+> i
+
+by the token-level ˜Ai,t , at the cost of one additional forward pass per trajectory. 
+
+## 5 Results 
+
+5.1 Experimental Setup 
+
+7Algorithm 1 Oracle-Prompted Policy Optimization 
+
+Require: Policy πθ , oracle estimator πest (πθ or 
+
+πϕ), group size G, prior α, clip C 
+
+> 1:
+
+for each query x with answer y∗ do  
+
+> 2:
+
+# Rollout and reward  
+
+> 3:
+
+Sample {y(i)}Gi=1 ∼ πθ (· | x) 
+
+> 4:
+
+Obtain Ri; Aseq  
+
+> i
+
+← (Ri −μ)/σ  
+
+> 5:
+
+k ← P 
+
+> i
+
+Ri; ℓ0 ← log k+αG−k+α 
+
+> 6:
+
+# Oracle evaluation  
+
+> 7:
+
+for i = 1 , . . . , G do  
+
+> 8:
+
+st ← log πest (yi,t | x, y i,<t ) 
+
+> 9:
+
+ot ← log πest (yi,t | x, y ∗, y i,<t ) 
+
+> 10:
+
+log ˆλi,t ← clip( ot −st, −C, C ) 
+
+> 11:
+
+end for  
+
+> 12:
+
+# Bayesian credit assignment  
+
+> 13:
+
+for i = 1 , . . . , G do  
+
+> 14:
+
+ℓi,t ← ℓ0 + P 
+
+> j<t
+
+log ˆλi,j  
+
+> 15:
+
+Araw  
+
+> i,t
+
+← σ(ℓi,t +log ˆλi,t ) − σ(ℓi,t ) 
+
+> 16:
+
+ˆAi,t ← sign( Aseq  
+
+> i
+
+) · | Araw  
+
+> i,t
+
+| 
+
+> 17:
+
+end for  
+
+> 18:
+
+˜Ai,t ← ( ˆAi,t − ¯A)/(σA +ϵ) 
+
+> 19:
+
+end for  
+
+> 20:
+
+# Policy update  
+
+> 21:
+
+Update θ via Eq. (22) 
+
+Models and data. We train all methods on DeepScaleR [ 26 ], approximately 40K problem-answer pairs drawn from AMC, AIME, MATH, and OlympiadBench. Each problem comes with a ground-truth integer an-swer that serves both as the verifiable reward and as the oracle context y∗ for computing λt.We evaluate on two instruction-tuned models of comparable scale, Qwen3-4B-Instruct [ 34 ]and Phi-4-mini-instruct [1]. 
+
+Benchmarks. For mathematical reason-ing we use GSM8K [ 4], MATH-500 [ 22 ], AMC 2023 1, and AIME 2024 & 2025 2; for sci-entific reasoning, GPQA-Diamond [ 28 ] and ARC-Challenge [ 3]; for code generation, Live-CodeBench [ 15 ]. None of the benchmarks overlap the training data, and Pass@1 accu-racy is averaged over 16 sampling runs. 
+
+Comparison and configuration. Baselines are drawn from the GRPO family: GRPO [ 9], Dr.GRPO [ 24 ], DAPO [ 36 ], and SDPO [ 12 ]. We additionally apply OPPO on top of DAPO to isolate whether the Bayesian advantage adds gains beyond optimization mechanics. The teacher-oracle uses Qwen3-32B as the es-timator πϕ for both base models. Experiments run on 2× H200 GPUs using the verl framework [ 30 ], with AdamW at learning rate 1 × 10 −6, batch size 32 , group size G = 8 , clip ϵ = 0 .2, evidence clip 
+
+C = 3 .0, and prior α = 1 .
+
+5.2 Main Results 
+
+Table 1 reports performance across all seven benchmarks. Three findings organize the discussion. 
+
+Token-level credit improves reasoning. Self-OPPO outperforms GRPO and its optimization variants on every benchmark for both base models, with gains concentrated on competition-level tasks where reasoning chains are longest. The pattern matches the variance argument of Section 3.3: longer sequences accumulate more positions in determined regions where Vt(1 − Vt) ≈ 0, and the Bayesian advantage suppresses gradient signal at the saturated positions while GRPO distributes credit uniformly. The further gains over SDPO, which leverages oracle-conditioned signals without cumulative belief tracking, indicate that the running state estimate adds headroom beyond per-token discrimination. Oracle quality translates into training gains. Teacher-OPPO improves over Self-OPPO on every benchmark, with the largest gains on the hardest tasks. Since the Bayesian machinery is identical in both variants, the improvement is attributable to sharper λt estimates from the larger oracle. Scoring student tokens under a 32B model approximates a controlled distillation signal, so the additional gains over Self-OPPO should be read as evidence that the framework absorbs higher-quality λt rather than as a within-model improvement at fixed scale; Self-OPPO remains the cleaner test of the Bayesian mechanism. The Bayesian advantage complements optimization improvements. OPPO on top of DAPO yields gains comparable in magnitude to OPPO on GRPO, and Teacher-OPPO on DAPO reaches the highest performance on most benchmarks for both models. Improved clipping and filtering are therefore complementary to finer credit assignment rather than redundant with it. 
+
+5.3 Ablation and Analysis 
+
+Table 2 removes each component of Self-OPPO individually on Qwen3-4B-Instruct. Direction anchoring is the most important: tokens in incorrect trajectories that correlate with y∗ produce 
+
+log λt > 0 and receive positive advantage, reinforcing flawed reasoning, and AIME’24 performance falls below GRPO without anchoring, mirroring the degradation of pure self-distillation [ 35 ]. State 
+
+> 1https://huggingface.co/datasets/AI-MO/aimo-validation-amc
+> 2https://huggingface.co/datasets/AI-MO/aimo-validation-aime
+
+8Table 3: (a) Oracle estimator capacity: performance rises monotonically with teacher scale, with the largest jump at the 4B-to-8B transition and near-saturated gains beyond. All teachers are Qwen3 base models. (b) OPPO gains widen with sequence length as more tokens enter determined regions. 
+
+(a) Oracle estimator capacity Estimator Size M-500 AIME’24 Self 4B 76.0 49.5 Qwen3-8B 8B 76.8 50.2 Qwen3-14B 14B 77.0 50.8 Qwen3-32B 32B 77.4 51.3 
+
+(b) Accuracy by response length Method 0–256 257–512 513–1024 1025+ GRPO 88.5 80.2 68.4 52.0 SDPO 89.0 81.5 70.8 55.2 Self-OPPO 89.2 82.0 73.5 62.8 
+
+tracking ranks second, with the largest drops on AMC and AIME’24 where reasoning chains are longest: without the Vt(1 − Vt) factor, every position receives weight proportional to | log λt|
+
+regardless of trajectory commitment, and longer chains accumulate more saturated positions. The "log λt-only" row, which removes both state tracking and clipping, sits close to GRPO across the four benchmarks; the gap to the full method quantifies the joint contribution of state tracking and numerical control, while the small margin over GRPO, negligible on AIME’24, isolates the value of per-token oracle evidence on its own. Table 2: Component ablation on Qwen3-4B-Instruct-2507, concentrated on long-chain benchmarks.                                                 
+
+> Configuration M-500 AMC AIME’24 GPQA Self-OPPO (full) 76.0 58.5 49.5 41.6 remove anchoring 71.8 51.0 43.0 38.5 remove tracking 74.5 55.8 46.8 40.0 remove clipping 75.4 57.5 48.6 41.2 remove prior 75.8 58.0 49.0 41.5
+> log λtonly 73.6 55.0 46.5 39.8 GRPO (uniform) 72.8 54.0 46.4 39.2 0100 200 300
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> reward
+> (a) Reward
+> 0100 200 300
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> entropy
+> (b) Entropy
+> 0100 200 300
+> 0
+> 2
+> 4
+> 6
+> 8
+> 10
+> 12
+> 14
+> clip rate (%)
+> (c) Evidence clip rate
+> GRPO SDPO Self-OPPO Teacher-OPPO w/o tracking w/o anchoring
+
+Figure 2: Without anchoring, reward collapses after step 150 as the clip rate diverges. Removing state tracking reduces the entropy preservation that separates OPPO from other methods. The training dynamics in Figure 2 corrobo-rate the static ablation. Reward ceiling and entropy floor both increase from GRPO through SDPO to Teacher-OPPO: GRPO applies uniform gradient pressure regard-less of state and compresses the distribution at every position, whereas OPPO applies weak gradients where Vt has saturated and preserves exploration capacity. The "w/o anchoring" run exhibits a distinctive fail-ure mode: reward rises fastest in the early steps but declines after roughly step 150 as the evidence clip rate rises sharply and 
+
+log λt values grow extreme on surface cor-relations with y∗, the runaway prevented by direction anchoring of the trajectory sign. Two further analyses support the frame-work. Table 3(a) scales the oracle while holding the student fixed: performance rises monotonically with teacher scale, with the largest jump at the 4B-to-8B transi-tion and near-saturated gains beyond, con-firming that the framework absorbs higher-quality λt and that the estimator needs only next-token prediction capability rather than instruction-following ability. Table 3(b) partitions MATH-500 by response length: all three methods perform comparably on the shortest bin because Vt stays near V0, while the gap widens with length and Self-OPPO shows the largest separation in the longest bin, matching the prediction of Section 3.3 that variance reduction grows with |D| . Hyperparameter sensitivity and token-level credit visualizations are in Appendix H. 
+
+## 6 Conclusion 
+
+OPPO recovers token-level advantages by accumulating oracle-conditioned likelihood ratios into a running Bayesian estimate of trajectory success, concentrating credit where the outcome remains uncertain and adding no learned components beyond one extra forward pass. Experiments across mathematical, scientific, and code reasoning benchmarks confirm consistent gains that widen on longer sequences, with stronger oracle estimators yielding monotonically better performance. Ex-tending the framework beyond domains with verifiable answers remains an open direction, as does adapting the Bayesian recursion to richer outcome signals such as partial-credit rubrics. 9References 
+
+[1] Marah Abdin, Sahaj Agarwal, Ahmed Awadallah, Vidhisha Balachandran, Harkirat Behl, Lingjiao Chen, Gustavo de Rosa, Suriya Gunasekar, Mojan Javaheripi, Neel Joshi, et al. Phi-4-reasoning technical report. arXiv preprint arXiv:2504.21318 , 2025. [2] Rishabh Agarwal, Nino Vieillard, Yongchao Zhou, Piotr Stanczyk, Sabela Ramos Garea, Matthieu Geist, and Olivier Bachem. On-policy distillation of language models: Learning from self-generated mistakes. In The twelfth international conference on learning representations ,2024. [3] Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv:1803.05457v1 , 2018. [4] Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christopher Hesse, and John Schulman. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 ,2021. [5] Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 , 2021. [6] Ganqu Cui, Lifan Yuan, Zefan Wang, Hanbin Wang, Yuchen Zhang, Jiacheng Chen, Wendi Li, Bingxiang He, Yuchen Fan, Tianyu Yu, et al. Process reinforcement through implicit rewards. 
+
+arXiv preprint arXiv:2502.01456 , 2025. [7] Mohammad Ghavamzadeh, Shie Mannor, Joelle Pineau, and Aviv Tamar. Bayesian reinforce-ment learning: A survey. Foundations and Trends® in Machine Learning , 8(5-6):359–483, 2015. [8] Yuxian Gu, Li Dong, Furu Wei, and Minlie Huang. Minillm: Knowledge distillation of large language models. arXiv preprint arXiv:2306.08543 , 2023. [9] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. [10] Yiran Guo, Lijie Xu, Jie Liu, Dan Ye, and Shuang Qiu. Segment policy optimization: Ef-fective segment-level credit assignment in rl for large language models. arXiv preprint arXiv:2505.23564 , 2025. [11] Zhenyu Hou, Ziniu Hu, Yujiang Li, Rui Lu, Jie Tang, and Yuxiao Dong. Treerl: Llm reinforce-ment learning with on-policy tree search. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 12355–12369, 2025. [12] Jonas Hübotter, Frederike Lübeck, Lejs Behric, Anton Baumann, Marco Bagatella, Daniel Marta, Ido Hakimi, Idan Shenfeld, Thomas Kleine Buening, Carlos Guestrin, et al. Reinforcement learning via self-distillation. arXiv preprint arXiv:2601.20802 , 2026. [13] Aaron Jaech, Adam Kalai, Adam Lerer, Adam Richardson, Ahmed El-Kishky, Aiden Low, Alec Helyar, Aleksander Madry, Alex Beutel, Alex Carney, et al. Openai o1 system card. arXiv preprint arXiv:2412.16720 , 2024. [14] Adit Jain and Brendan Rappazzo. Learning to reason with mixture of tokens. arXiv preprint arXiv:2509.21482 , 2025. [15] Naman Jain, King Han, Alex Gu, Wen-Ding Li, Fanjia Yan, Tianjun Zhang, Sida Wang, Ar-mando Solar-Lezama, Koushik Sen, and Ion Stoica. Livecodebench: Holistic and contamination free evaluation of large language models for code. arXiv preprint arXiv:2403.07974 , 2024. [16] Samyak Jain, Ayush Agrawal, and Navin Goyal. Towards understanding the optimization landscape of grpo and its variants. In First Workshop on Foundations of Reasoning in Language Models , 2025. 10 [17] Michael I Jordan, Zoubin Ghahramani, Tommi S Jaakkola, and Lawrence K Saul. An in-troduction to variational methods for graphical models. Machine learning , 37(2):183–233, 1999. [18] Rudolph Emil Kalman. A new approach to linear filtering and prediction problems. 1960. [19] Amirhossein Kazemnejad, Milad Aghajohari, Eva Portelance, Alessandro Sordoni, Siva Reddy, Aaron Courville, and Nicolas Le Roux. Vineppo: Unlocking rl potential for llm reasoning through refined credit assignment. 2024. [20] Maxim Khanov, Jirayu Burapacheep, and Yixuan Li. Args: Alignment as reward-guided search. 
+
+arXiv preprint arXiv:2402.01694 , 2024. [21] Yu Li, Sizhe Tang, and Tian Lan. Reason in chains, learn in trees: Self-rectification and grafting for multi-turn agent policy optimization. arXiv preprint arXiv:2604.07165 , 2026. [22] Hunter Lightman, Vineet Kosaraju, Yura Burda, Harri Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. arXiv preprint arXiv:2305.20050 , 2023. [23] Zheng Liu, Mengjie Liu, Siwei Wen, Mengzhang Cai, Bin Cui, Conghui He, and Wentao Zhang. From uniform to heterogeneous: Tailoring policy optimization to every token’s nature. arXiv preprint arXiv:2509.16591 , 2025. [24] Zichen Liu, Changyu Chen, Wenjun Li, Penghui Qi, Tianyu Pang, Chao Du, Wee Sun Lee, and Min Lin. Understanding r1-zero-like training: A critical perspective. arXiv preprint arXiv:2503.20783 , 2025. [25] Kevin Lu and Thinking Machines Lab. On-policy distillation. Thinking Machines Lab: Con-nectionism , 2025. doi: 10.64434/tml.20251026. https://thinkingmachines.ai/blog/on-policy-distillation. [26] Michael Luo, Sijun Tan, Justin Wong, Xiaoxiang Shi, William Tang, Manan Roongta, Colin Cai, Jeffrey Luo, Tianjun Zhang, Erran Li, Raluca Ada Popa, and Ion Stoica. Deepscaler: Surpassing o1-preview with a 1.5b model by scaling rl, 2025. Notion Blog. [27] Avinash Patil and Aryan Jadon. Advancing reasoning in large language models: Promising methods and approaches. arXiv preprint arXiv:2502.03671 , 2025. [28] David Rein, Betty Li Hou, Asa Cooper Stickland, Jackson Petty, Richard Yuanzhe Pang, Julien Dirani, Julian Michael, and Samuel R Bowman. Gpqa: A graduate-level google-proof q&a benchmark. In First conference on language modeling , 2024. [29] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. [30] Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin Wu, Wang Zhang, Ru Zhang, Yanghua Peng, Haibin Lin, and Chuan Wu. Hybridflow: A flexible and efficient rlhf framework. In 
+
+Proceedings of the Twentieth European Conference on Computer Systems , pages 1279–1297, 2025. [31] Mingyang Song and Mao Zheng. A survey of on-policy distillation for large language models. 
+
+arXiv preprint arXiv:2604.00626 , 2026. [32] Jiankai Sun, Chuanyang Zheng, Enze Xie, Zhengying Liu, Ruihang Chu, Jianing Qiu, Jiaqi Xu, Mingyu Ding, Hongyang Li, Mengzhe Geng, et al. A survey of reasoning with foundation models: Concepts, methodologies, and outlook. ACM Computing Surveys , 57(11):1–43, 2025. [33] Richard S Sutton. Learning to predict by the methods of temporal differences. Machine learning ,3(1):9–44, 1988. [34] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. 11 [35] Chenxu Yang, Chuanyu Qin, Qingyi Si, Minghui Chen, Naibin Gu, Dingyu Yao, Zheng Lin, Weiping Wang, Jiaqi Wang, and Nan Duan. Self-distilled rlvr. arXiv preprint arXiv:2604.03128 ,2026. [36] Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, et al. Dapo: An open-source llm reinforcement learning system at scale. arXiv preprint arXiv:2503.14476 , 2025. [37] Siyan Zhao, Zhihui Xie, Mengchen Liu, Jing Huang, Guan Pang, Feiyu Chen, and Aditya Grover. Self-distilled reasoner: On-policy self-distillation for large language models. arXiv preprint arXiv:2601.18734 , 2026. [38] Yuzhong Zhao, Yue Liu, Junpeng Liu, Jingye Chen, Xun Wu, Yaru Hao, Tengchao Lv, Shaohan Huang, Lei Cui, Qixiang Ye, et al. Geometric-mean policy optimization. arXiv preprint arXiv:2507.20673 , 2025. [39] Chujie Zheng, Shixuan Liu, Mingze Li, Xiong-Hui Chen, Bowen Yu, Chang Gao, Kai Dang, Yuqiong Liu, Rui Men, An Yang, et al. Group sequence policy optimization. arXiv preprint arXiv:2507.18071 , 2025. 12 A Extended Related Work 
+
+This appendix expands the discussion in Section 1 along three axes that frame OPPO within the broader landscape of credit assignment and reinforcement learning for reasoning. The body section establishes the immediate baselines; here we situate the framework against the wider literature. 
+
+A.1 Trajectory-Level Optimization and Critic-Based Alternatives 
+
+Group Relative Policy Optimization [ 9 ] and its descendants form the dominant on-policy paradigm for reasoning. Dr.GRPO [ 24 ] fixes the reference policy in the importance ratio denominator to remove the length-bias of the original objective. DAPO [ 36 ] introduces asymmetric clipping and filtered sampling. GSPO [ 39 ] aggregates probabilities at the sequence level. GMPO [ 38 ] replaces the arithmetic-mean group baseline with a geometric mean. Across these variants, the per-token advantage remains a single trajectory-level scalar broadcast uniformly across positions [ 10 ], which is the limitation that motivates OPPO. The Bayesian recursion of Section 3 is orthogonal to the optimization-mechanic improvements, and Section 5 shows that applying OPPO on top of DAPO yields gains comparable in magnitude to applying it over standard GRPO. The critic-based alternative is Proximal Policy Optimization [ 29 ], which pairs the clipped surrogate with a learned value network Vϕ(st) that approximates the on-policy state value of Eq. (3) via temporal-difference regression. VinePPO[ 19 ] show that the learned critic in PPO barely outperforms a random baseline on long-horizon reasoning trajectories, where credit-assignment difficulty grows with sequence length and the regression target is dominated by sparse outcome rewards. The Bayesian value recursion of Section 3 can be read as an analytical alternative to fitting Vϕ: rather than learning the success probability through bootstrapped regression targets, the recursion computes it in closed form from the per-token oracle ratio, with the running posterior Vt playing the role of Vϕ at no parameter cost. 
+
+A.2 Critic-Free Token-Level Credit and Distillation-Based Methods 
+
+Beyond GRPO and PPO, several critic-free approaches resolve credit at finer granularity than the trajectory level. VinePPO [ 19 ] estimates per-step values through Monte Carlo rollouts that branch from each prefix; the estimator is unbiased but requires orders-of-magnitude more inference. TreeRL [ 11 ] extends the tree-search idea to multi-branch rollouts. PRIME [ 6 ] trains an implicit process reward model that supplies dense token-level rewards but requires online updating to avoid reward hacking. Segment Policy Optimization [ 10 ] aggregates descendant outcomes within shared prefixes, sitting between trajectory-level and token-level granularity. Process reward models more broadly [ 22 ] train a separate verifier to score intermediate reasoning steps. Compared with all such methods, OPPO achieves token-level resolution at the cost of one extra forward pass per trajectory and without any auxiliary network or rollout, by exploiting the privileged y∗ context to derive a closed-form per-token signal. The trade-off is that OPPO requires verifiable training-time answers; methods that use Monte Carlo rollouts, learned critics, or step verifiers do not. The line of work most closely related to OPPO uses on-policy distillation [ 2 , 8, 25 ] with a privileged teacher. The reasoning-specific variant conditions the teacher on the ground-truth answer [ 37 , 12 ]: RLSD [ 35 ] and SDPO [ 12 ] use the resulting answer-conditioned likelihood ratio as a token-level reward within GRPO. As established in Section 2.2, the per-token signal log λt is the same quantity in all four works; the substantive distinction is what OPPO does with the signal. Where SDPO and RLSD apply log λt as an isolated per-token reward with uniform weight, OPPO accumulates it through the Bayesian recursion of Eq. (10) and modulates each contribution by the running state weight Vt(1 − Vt). Section 5 shows that the additional Bayesian machinery yields consistent improvements over SDPO across all benchmarks, with the largest gains on long-chain competition-mathematics tasks where the state weight has the most room to redistribute credit. 
+
+A.3 Methodological Connections 
+
+The recursion of Section 3.1 is structurally a Bayesian filter over a binary latent variable (eventual success), with the per-token oracle ratio playing the role of the observation likelihood. The closed-form additivity in log-odds space is a standard property of Bayes’ rule applied to binary outcomes [ 18 ,17 ]. The novelty is not the filter itself but its identification with token-level RL credit assignment: 13 the running posterior Vt coincides with the success probability targeted by the on-policy state value of Eq. (3) , and the one-step posterior change Vt+1 − Vt recovers the temporal-difference advantage 
+
+At = Qt − Vt in the perfect-oracle limit. The connection to TD learning [ 33 ] is that OPPO provides an analytical, non-bootstrapped value estimator in a regime where bootstrapping is expensive (full reasoning rollout) and the target signal is sparse (binary terminal reward). Bayesian RL methods that maintain explicit posterior beliefs over reward or value functions [ 7] typically require either conjugate priors or posterior-sampling machinery; the closed-form structure of the binary-outcome posterior here sidesteps both. The framework is therefore best understood as a Bayesian filtering interpretation of the existing on-policy distillation primitive, not as a fully Bayesian reinforcement-learning method. A separate line of work uses learned or implicit value estimates to guide decoding at inference time, including verifier-augmented decoding [ 5] and value-guided sampling [ 20 ]. OPPO operates entirely at training time: it modifies how trajectory-level reward is redistributed across tokens during gradient updates, and the deployed policy uses no oracle context, no verifier, and no tree search. The interpretation of Vt as a running success probability does, however, suggest a natural inference-time analogue: the same recursion could in principle be applied with a self-oracle estimator at decoding time to weight token candidates by their belief contribution. Such a use of the framework is outside the scope of this paper and is left for future work. We note also that token-level credits learned via OPPO at training time may align with regions where verifier-guided decoding methods place high mass at inference, since both quantities track the model’s running belief about eventual success; an empirical correlation analysis is similarly outside scope. 
+
+## B Detailed Derivations 
+
+B.1 Bayesian Update Derivation 
+
+The full derivation of the value recursion proceeds from the definition Vt = P (R=1 | x, y 1: t−1).Bayes’ theorem gives the posterior after observing yt:
+
+Vt+1 = P (R=1 | x, y 1: t) = P (yt | x, y <t , R =1) · Vt
+
+P (yt | x, y <t ) . (23) The denominator expands by the law of total probability, 
+
+P (yt | x, y <t ) = P (yt | x, y <t , R =1) Vt + P (yt | x, y <t , R =0) (1 − Vt). (24) Substituting Modeling Choice 3.2 into the numerator and Modeling Choice 3.2 into the second denominator term, then dividing numerator and denominator by π(yt | x, y <t ), yields 
+
+Vt+1 = λt Vt
+
+λt Vt + (1 − Vt) , λt = πest (yt | x, y <t , y ∗)
+
+πest (yt | x, y <t ) , (25) which is exactly the same expression in the main text. 
+
+B.2 Logit-Space Reduction 
+
+Define the running log-odds ℓt = log Vt 
+
+> 1−Vt
+
+. From Eq. (25), 
+
+Vt+1 
+
+1 − Vt+1 
+
+= λtVt/(λtVt + 1 − Vt)(1 − Vt)/(λtVt + 1 − Vt) = λtVt
+
+1 − Vt
+
+= λt · Vt
+
+1 − Vt
+
+, (26) so taking logarithms collapses the multiplicative recursion in Vt to additive accumulation in ℓt:
+
+ℓt+1 = log λt + ℓt, ℓt = ℓ0 +
+
+> t−1
+
+X
+
+> i=1
+
+log λi, Vt = σ(ℓt) = 11 + e−ℓt . (27) 
+
+B.3 Advantage Closed Form 
+
+The token-level advantage At = Vt+1 − Vt admits a closed-form expression. Subtracting Vt from Eq. (25) and clearing the common denominator, 
+
+At = λtVt − Vt(λtVt + 1 − Vt)
+
+λtVt + 1 − Vt
+
+= λtVt − λtV 2 
+
+> t
+
+− Vt + V 2
+
+> t
+
+λtVt + 1 − Vt
+
+= Vt(1 − Vt)( λt − 1) 
+
+λtVt + 1 − Vt
+
+. (28) 14 The first-order approximation follows from two small-quantity expansions when |λt − 1| ≪ 1. The denominator satisfies λtVt +1 −Vt = 1+( λt −1) Vt ≈ 1, and the numerator satisfies λt −1 ≈ log λt
+
+via the Taylor expansion ex − 1 ≈ x. Substituting both gives 
+
+At ≈ Vt(1 − Vt) · log λt, (29) which is Eq. (18) in the main text. 
+
+B.4 Telescoping Property 
+
+Using the identity At = σ(ℓt+1 ) − σ(ℓt) established, the trajectory sum telescopes: 
+
+> T
+
+X
+
+> t=1
+
+At =
+
+> T
+
+X
+
+> t=1
+
+[σ(ℓt+1 ) − σ(ℓt)] = σ(ℓT +1 ) − σ(ℓ1). (30) At the terminal state, the Bayesian posterior should converge to VT +1 = R, giving σ(ℓT +1 ) = R in the limit of an unconstrained recursion. With σ(ℓ1) = V0 at the start, the budget identity becomes 
+
+> T
+
+X
+
+> t=1
+
+At ≈ R − V0. (31) Evidence clipping prevents ℓT +1 from reaching ±∞ in practice, so σ(ℓT +1 ) approximates rather than equals R. The empirical residual on 200 MATH-500 trajectories has mean 0.007 and 95th percentile 
+
+0.018 (Figure 1(c)), confirming that the deviation from the exact identity is small in aggregate. 
+
+B.5 Lipschitz and Range Bounds on the Advantage 
+
+The sigmoid derivative satisfies σ′(x) = σ(x)(1 − σ(x)) ≤ 14 for all x, with equality at x = 0 . The mean value theorem applied to σ yields the Lipschitz bound, while the fact that σ maps R into the open interval (0 , 1) yields a universal range bound: 
+
+|At| = σ(ℓt + log λt) − σ(ℓt) ≤ 14 | log λt|, |At| < 1 for any ℓt, log λt ∈ R. (32) The two combine to give |At| ≤ min   14 | log λt|, 1, with the Lipschitz bound active when | log λt| <
+
+4 and the range bound active otherwise. With evidence clipping | log ˆλt| ≤ C, the per-token contribution is further bounded by |At| ≤ min( C/ 4, 1) . For the manuscript’s choice C = 3 .0, the Lipschitz bound is binding and gives |At| ≤ 0.75 .
+
+## C Variance Reduction Proof 
+
+We provide the full derivation of the bound in Eq. (19) , with the caveat already noted in Section 3.3: the uncorrelated-score-vector assumption does not hold for autoregressive language models, so the bound should be read as a directional indication rather than a quantitative guarantee on practical training runs. 
+
+Proposition 1. Let ˆg = PTt=1 wtht denote the policy gradient estimator, where ht = ∇θ log πθ (yt |
+
+x, y <t ) is the score vector at position t. Suppose Cov[ hs, h t] = 0 for all s̸ = t, and consider two weighting schemes, 
+
+wblind  
+
+> t
+
+= log λt, wBayes  
+
+> t
+
+= Vt(1 − Vt) log λt.
+
+Then Var[ˆ gblind ] ≥ Var[ˆ gBayes ], with the gap bounded below by 
+
+Var[ˆ gblind ]−Var[ˆ gBayes ] ≥ (1 −γ2) X
+
+> t∈Tdet
+
+(log λt)2 Var[ ht], Tdet = { t : | log λt| ≥ δ, V t(1 −Vt) < γ },
+
+(33) 
+
+for any thresholds δ, γ > 0.Proof. Under the uncorrelated-score assumption, the variance of each estimator decomposes addi-tively across positions: 
+
+Var[ˆ gblind ] = 
+
+> T
+
+X
+
+> t=1
+
+(log λt)2 Var[ ht], Var[ˆ gBayes ] = 
+
+> T
+
+X
+
+> t=1
+
+V 2 
+
+> t
+
+(1 − Vt)2(log λt)2 Var[ ht]. (34) 15 The variance gap is therefore 
+
+∆ = Var[ˆ gblind ] − Var[ˆ gBayes ] = 
+
+> T
+
+X
+
+> t=1
+
+1 − V 2 
+
+> t
+
+(1 − Vt)2(log λt)2 Var[ ht]. (35) Since Vt ∈ [0 , 1] implies Vt(1 − Vt) ≤ 14 , every factor satisfies V 2 
+
+> t
+
+(1 − Vt)2 ≤ 116 , so 1 − V 2 
+
+> t
+
+(1 −
+
+Vt)2 ≥ 15 16 > 0 and ∆ ≥ 0. To obtain the interpretable lower bound, restrict the sum to Tdet and use 
+
+V 2 
+
+> t
+
+(1 − Vt)2 < γ 2 on that subset: 
+
+∆ ≥ X
+
+> t∈Tdet
+
+1 − V 2 
+
+> t
+
+(1 − Vt)2(log λt)2 Var[ ht] ≥ (1 − γ2) X
+
+> t∈Tdet
+
+(log λt)2 Var[ ht]. (36) The bound is informative when Tdet is large, which happens in two regimes. The first is long sequences, where Vt saturates after a pivotal decision and many subsequent positions retain nonzero 
+
+log λt from answer-correlated content. The second is easy or unsolvable queries, where V0 already sits near 0 or 1 before any tokens are generated, so Vt(1 − Vt) ≈ 0 throughout the trajectory while log λt
+
+remains nonzero. In both regimes the Bayesian state weight collapses to near zero on the saturating positions, so the corresponding gradient contributions are suppressed in ˆgBayes but not in ˆgblind . The empirical sequence-length stratification in Table 3(b) is consistent with the predicted pattern: the gap between Self-OPPO and the state-blind baselines widens monotonically with response length. 
+
+## D Oracle Quality Analysis 
+
+D.1 Bias Under Imperfect Oracle 
+
+When ϵt > 0, the estimated λt differs from the true posterior ratio. The deviation has a clean interpretation. Let pt = P (yt | x, y <t , R =1) denote the true success-conditional probability and 
+
+qt = πest (yt | x, y <t , y ∗) the oracle estimate. Define the true ratio λ∗ 
+
+> t
+
+and the estimated ratio ˆλt on the same denominator: 
+
+λ∗ 
+
+> t
+
+= pt
+
+π(yt | x, y <t ) , ˆλt = qt
+
+π(yt | x, y <t ) , log ˆλt − log λ∗ 
+
+> t
+
+= log qt − log pt. (37) The KL definition ϵt = Eyt∼pt [log pt − log qt] gives the expected log-ratio bias under the true success-conditional distribution: 
+
+Eyt∼pt
+
+h
+
+log ˆλt − log λ∗
+
+> t
+
+i
+
+= − ϵt. (38) The bias is non-positive on average, so the oracle estimate is conservative and underestimates the true evidence for success. Stronger oracles reduce ϵt and the magnitude of the bias, which is consistent with the monotonic improvement in Table 3(a). 
+
+D.2 Why Same-Family Teachers Are Preferred 
+
+The oracle quality ϵt depends not only on model capacity but also on distributional alignment between the estimator and the true posterior. Cross-family teachers, for example a Llama model scoring Qwen trajectories, can produce large ϵt despite high capacity because tokenization, positional encoding, and pre-training corpus all differ. The ratio structure log λt = log πest (yt | x, y <t , y ∗) −
+
+log πest (yt | x, y <t ) cancels many model-specific biases through subtraction, but residual mismatch in the conditional shape still inflates ϵt. Same-family, larger-scale models are the recommended choice for the teacher-oracle role because the cancellation is most effective when the two scoring distributions share the same underlying parameterization. 
+
+## E Connection to Distillation 
+
+E.1 On-Policy Distillation as a Special Case 
+
+Section 2.2 introduced the on-policy distillation objective LOPD with the oracle-conditioned teacher 
+
+πT (· | x, y <t ) ≡ πest (· | x, y <t , y ∗), and showed that the per-token gradient at the sampled token 16 yt reduces to a policy-gradient form with weight log λt. Repeating the conclusion in the present notation, 
+
+∇θ LOPD (θ) yt = − log λt·∇ θ log πθ (yt | x, y <t ), log λt = log πest (yt | x, y <t , y ∗)−log πθ (yt | x, y <t ).
+
+(39) Pure on-policy distillation is therefore a policy gradient with advantage log λt, identical to the " log λt
+
+only" row of the ablation in Table 2. The Bayesian advantage in Eq. (18) differs from the distillation gradient in two specific ways. The state weight Vt(1 − Vt) concentrates the gradient on positions where the outcome remains uncertain, so determined regions receive negligible updates. Direction anchoring binds the sign of every token-level advantage to the sequence-level GRPO advantage, so the environment reward retains exclusive control over which trajectories are reinforced or penalized. The two modifications are independent: removing either one degrades performance, but the failure mechanisms differ, as documented in the ablation analysis of Section 5. 
+
+E.2 Spectrum of Methods 
+
+The factorization At ≈ Vt(1 − Vt) · log λt organizes a spectrum of methods along three axes: the per-token signal carried into the gradient, whether a state-tracking factor weights the signal, and which quantity controls the sign of each trajectory’s update. Table 4: Method spectrum induced by the Bayesian factorization. Each row corresponds to one column setting in the ablation of Table 2: GRPO matches "uniform"; SDPO matches " log λt only" with environment-anchored direction; pure distillation (OPSD) matches "remove anchoring".                              
+
+> Method Per-token signal State tracking Direction GRPO [9] uniform Aseq
+> i—environment reward Anchored distillation (SDPO) [12] |log λt|—environment reward Self-OPPO (ours) Vt(1 −Vt)|log λt|Bayesian environment reward Teacher-OPPO (ours) Vt(1 −Vt)|log λt|, lower ϵtBayesian environment reward Pure distillation (OPSD) [37] log λt—teacher
+
+Reading the table from top to bottom moves through the design space. GRPO sits at the trajectory-level extreme, with no per-token discrimination and no state tracking. Anchored distillation introduces 
+
+log λt as a per-token signal but applies it uniformly across positions. OPPO adds the Bayesian state weight Vt(1 − Vt), modulating the per-token signal by the running belief about success. The self-oracle and teacher-oracle variants of OPPO differ only in the quality of the log λt estimate, parameterized by ϵt. Pure distillation drops direction anchoring and lets log λt control the sign of the update, which is the failure mode reproduced in the "remove anchoring" row of Table 2. 
+
+## F Extended Experimental Results 
+
+F.1 Full Results on Phi-4-mini 
+
+Table 5 reports the complete results for Phi-4-mini across all benchmarks and ablation configurations, complementing the Qwen3-4B results in the main text. The pattern matches the Qwen3-4B case: OPPO improves over every baseline on every benchmark, with the largest absolute gains on AIME’24 and the largest relative gains on competition-level tasks where the base model is weakest. 
+
+F.2 Component Ablation on Phi-4-mini 
+
+The component ablation in Table 6 repeats the analysis of Section 5 on Phi-4-mini. The ranking of components reproduces the Qwen3-4B result: direction anchoring is the most critical, followed by state tracking, with clipping and the prior contributing modestly. The "remove anchoring" row falls below GRPO on AIME’24, reproducing the inversion-failure pattern documented in the main text. 
+
+F.3 Pass@ K Results 
+
+Table 7 reports Pass@ K for K ∈ { 1, 4, 8, 16 } on MATH-500 and AIME’24, estimated from 32 samples per problem. OPPO improves Pass@ K at every sampling budget on both benchmarks, 17 Table 5: Full results on Phi-4-mini (base). All methods are trained on DeepScaleR.                                                                       
+
+> Method GSM8K M-500 AMC’23 AIME’24 GPQA-D ARC-C LCB Base model 68.0 42.5 22.0 3.3 25.6 72.8 14.5 + GRPO 76.8 55.2 35.0 8.3 29.4 78.6 19.2 + Dr.GRPO 77.0 55.4 35.2 8.5 29.6 78.8 19.4 + DAPO 78.2 57.0 37.5 10.0 30.4 79.4 20.2 + SDPO 78.6 57.8 38.0 10.5 30.8 79.8 20.6 + Self-OPPO 80.4 60.2 41.5 13.3 32.4 81.0 22.4 + Teacher-OPPO 81.5 62.0 43.5 15.0 33.6 81.6 23.6 + Dr.GRPO + OPPO 80.6 59.8 40.8 12.8 32.0 80.8 22.0 + DAPO + OPPO 82.0 61.5 43.0 14.5 33.2 81.4 23.2
+
+Table 6: Component ablation on Phi-4-mini. The ranking of components matches the Qwen3-4B result, with direction anchoring the most critical and state tracking second.                                   
+
+> Configuration M-500 AMC AIME’24 GPQA Self-OPPO (full) 60.2 41.5 13.3 32.4 remove anchoring 52.0 30.5 5.0 27.8 remove tracking 57.5 38.0 10.8 30.6 remove clipping 59.5 40.5 12.5 32.0 remove prior 59.8 41.0 13.0 32.2
+> log λtonly 56.5 36.5 9.5 29.8 GRPO (uniform) 55.2 35.0 8.3 29.4
+
+indicating that the gains over GRPO and SDPO are not driven by sharpening a single dominant mode at the expense of diversity. The relative improvement is largest at small K on AIME’24, where the base policy spreads probability across many incorrect reasoning paths and the Bayesian advantage redistributes credit toward the few that succeed. Table 7: Pass@ K on Qwen3-4B. OPPO outperforms GRPO and SDPO at every sampling budget on both benchmarks.                                          
+
+> MATH-500 AIME’24 Method @1 @4 @8 @16 @1 @4 @8 @16 GRPO 72.6 82.0 86.5 90.2 26.7 40.0 48.3 56.7 SDPO 74.8 83.5 87.8 91.0 29.0 43.3 51.7 60.0 Self-OPPO 76.5 85.2 89.4 92.5 31.7 46.7 55.0 63.3 Teacher-OPPO 78.0 86.5 90.2 93.0 33.3 48.3 56.7 65.0
+
+## G Hyperparameter Sensitivity 
+
+We study the sensitivity of Self-OPPO on Qwen3-4B to the three method-specific hyperparameters: evidence clip bound C, Beta prior strength α, and group size G.
+
+G.1 Evidence Clip Bound C
+
+The clip bound C in Eq. (20) controls the per-token contribution to the running log-odds. Table 8 reports performance across five settings. Setting C too small ( C = 1 .0) truncates genuine evidence at pivotal tokens, compressing the dynamic range of At toward the uniform-advantage regime. Setting C too large ( C = 10 .0) lets single tokens dominate the log-odds, saturating Vt prematurely and silencing later positions. Performance is stable across C ∈ [2 .0, 5.0] , and the choice C = 3 .0 used in the main experiments sits at the center of the stable region. 18 Table 8: Sensitivity to evidence clip bound C on Qwen3-4B.                
+
+> C1.0 2.0 3.0 5.0 10.0 MATH-500 74.8 76.0 76.5 76.2 75.5 AIME’24 29.0 31.0 31.7 31.3 30.0
+
+G.2 Beta Prior Strength α
+
+The Beta prior in Eq. (20) smooths the empirical group success rate before converting it to log-odds. Table 9 reports performance across five settings. Table 9: Sensitivity to Beta prior strength α on Qwen3-4B.                
+
+> α0.1 0.5 1.0 2.0 5.0 MATH-500 76.0 76.3 76.5 76.4 75.8 AIME’24 30.8 31.3 31.7 31.5 30.5
+
+Small α makes ˆV0 responsive to the empirical success rate but produces extreme initial log-odds in all-correct or all-incorrect groups. Large α pulls ˆV0 toward 0.5 regardless of the group composition and weakens the prompt-difficulty adaptation discussed in Section 3.3. Performance is stable across 
+
+α ∈ [0 .5, 2.0] , and α = 1 corresponds to a Laplace prior that is the standard choice for a Bernoulli outcome. 
+
+G.3 Group Size G
+
+The group size G controls both the granularity of the prior ˆV0 = ( k + α)/(G + 2 α) and the variance of the GRPO sequence-level advantage that drives direction anchoring. Table 10 reports performance across four settings. Table 10: Sensitivity to group size G on Qwen3-4B. OPPO improves over GRPO at every group size.                 
+
+> G4816 32 GRPO 70.8 72.6 73.5 74.0 Self-OPPO 74.5 76.5 77.2 77.5
+> ∆+3.7 +3.9 +3.7 +3.5
+
+Larger groups improve both GRPO and OPPO by reducing the variance of ˆV0. The improvement of OPPO over GRPO is stable across group sizes, indicating that the token-level credit assignment provides gains complementary to the group-based prior estimation rather than depending on a particular group size. 
+
+## H Additional Analysis 
+
+H.1 Value Estimation Accuracy 
+
+The state-weight argument in Section 3.3 requires that intermediate Vt track the evolving success probability, not merely that the terminal VT +1 converge to R. We assess calibration on 500 MATH-500 trajectories from Qwen3-4B at four positions: t = T / 4, T / 2, 3T / 4, T . Calibration at each position is measured by the Brier score 
+
+BS( t) = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+ V (i) 
+
+> t
+
+− R(i)2, (40) which equals 0 when the predicted success probability matches the empirical success rate at every decile. 19 Table 11: Brier score of Vt at four positions along the trajectory, on 500 MATH-500 trajectories. Lower is better.             
+
+> Oracle estimator T / 4T / 23T / 4T
+> Self (4B) 0.071 0.058 0.049 0.042 Teacher (32B) 0.054 0.043 0.034 0.028
+
+The Brier score decreases monotonically along the trajectory under both estimators, consistent with the recursion sharpening the posterior as more evidence is observed. The curves stay close to the diagonal at every position for both estimators, with the teacher curves consistently tighter in the mid-range Vt ∈ [0 .3, 0.7] where the state weight Vt(1 − Vt) has the largest effect on the gradient. The intermediate calibration confirms that Vt ≈ 12 corresponds to roughly 50% empirical success, so the state-weight modulation peaks where the outcome is genuinely uncertain rather than at an artefact of the recursion. 
+
+H.2 Computational Overhead 
+
+OPPO requires one additional forward pass per trajectory for oracle evaluation. Table 12 reports wall-clock training time per step on 2× H200 GPUs. Table 12: Wall-clock time per training step on 2× H200 GPUs.             
+
+> Method Forward passes Time/step (s) Overhead vs. GRPO GRPO 1 (rollout) + 1 (policy) 12.4 —Self-OPPO 1 (rollout) + 1 (oracle) + 1 (policy) 16.8 +35%
+> Teacher-OPPO 1 (rollout) + 1 (oracle, 32B) + 1 (policy) 24.2 +95%
+
+The self-oracle overhead is moderate ( +35% ) because the oracle forward pass uses the same model as the policy and can share the KV cache from the standard forward pass. The teacher-oracle overhead is larger ( +95% ) because the 32B estimator runs on separate weights, but the cost can be amortized by batching oracle evaluations across trajectories within a step and by offloading the estimator to dedicated devices when available. 
+
+## I Implementation Details 
+
+I.1 Training Configuration 
+
+All experiments use the verl framework [30] on 2× H200 GPUs with the configuration in Table 13. 
+
+I.2 Oracle Prompt Format 
+
+For self-oracle evaluation, the ground-truth answer y∗ is appended to the prompt before the model’s response, in the format 
+
+[Standard prompt] Question: {question} [Oracle augmentation] The answer is {y*}. [Model response] {y_1, y_2, ..., y_T} 
+
+The oracle-conditioned forward pass scores the same response tokens y1: T under the augmented prompt, while the standard forward pass scores them under the original prompt. The log-likelihood ratio log λt is the per-token difference between the two scores. No generation is performed during oracle evaluation, so the cost reduces to two forward passes per trajectory rather than two decoding runs. 20 Table 13: Training hyperparameters used for all main-text experiments.                          
+
+> Hyperparameter Value Optimizer AdamW Learning rate 1×10 −6
+> Weight decay 0.01
+> Warmup steps 10
+> Learning-rate schedule cosine decay Global batch size 32
+> Group size G8
+> Maximum response length 8192 tokens Maximum prompt length 1024 tokens Sampling temperature 1.0
+> PPO clip ϵ0.2
+> Evidence clip C3.0
+> Beta prior α1
+> Training epochs 1
+> Gradient checkpointing enabled Precision bfloat16
+
+I.3 Reward Function 
+
+We use exact-match reward: R = 1 if the extracted numerical answer matches the ground-truth integer and R = 0 otherwise. Answer extraction follows the standard boxed-answer format used in DeepScaleR. No partial-credit or format-bonus rewards are used, so the binary outcome reward is the only environment signal driving direction anchoring. 21 NeurIPS Paper Checklist 
+
+1. Claims 
+
+Question: Do the main claims made in the abstract and introduction accurately reflect the paper’s contributions and scope? Answer: [Yes] Justification: The abstract and Section 1 state four contributions, each substantiated in the body: the Bayesian value recursion in Section 3.1, the closed-form factorization of the advantage in Section 3.3, the algorithmic integration in Section 4 (Algorithm 1), and the empirical evaluation in Section 5 (Table 1). Guidelines: • The answer [N/A] means that the abstract and introduction do not include the claims made in the paper. • The abstract and/or introduction should clearly state the claims made, including the contributions made in the paper and important assumptions and limitations. A [No] or [N/A] answer to this question will not be perceived well by the reviewers. • The claims made should match theoretical and experimental results, and reflect how much the results can be expected to generalize to other settings. • It is fine to include aspirational goals as motivation as long as it is clear that these goals are not attained by the paper. 2. Limitations 
+
+Question: Does the paper discuss the limitations of the work performed by the authors? Answer: [Yes] Justification: Limitations are discussed in Section 6, with the bias analysis in Appendix D.1 and the overhead breakdown in Appendix H.2 providing supporting detail. Guidelines: • The answer [N/A] means that the paper has no limitation while the answer [No] means that the paper has limitations, but those are not discussed in the paper. • The authors are encouraged to create a separate “Limitations” section in their paper. • The paper should point out any strong assumptions and how robust the results are to violations of these assumptions (e.g., independence assumptions, noiseless settings, model well-specification, asymptotic approximations only holding locally). The authors should reflect on how these assumptions might be violated in practice and what the implications would be. • The authors should reflect on the scope of the claims made, e.g., if the approach was only tested on a few datasets or with a few runs. In general, empirical results often depend on implicit assumptions, which should be articulated. • The authors should reflect on the factors that influence the performance of the approach. For example, a facial recognition algorithm may perform poorly when image resolution is low or images are taken in low lighting. Or a speech-to-text system might not be used reliably to provide closed captions for online lectures because it fails to handle technical jargon. • The authors should discuss the computational efficiency of the proposed algorithms and how they scale with dataset size. • If applicable, the authors should discuss possible limitations of their approach to address problems of privacy and fairness. • While the authors might fear that complete honesty about limitations might be used by reviewers as grounds for rejection, a worse outcome might be that reviewers discover limitations that aren’t acknowledged in the paper. The authors should use their best judgment and recognize that individual actions in favor of transparency play an impor-tant role in developing norms that preserve the integrity of the community. Reviewers will be specifically instructed to not penalize honesty concerning limitations. 3. Theory assumptions and proofs 
+
+22 Question: For each theoretical result, does the paper provide the full set of assumptions and a complete (and correct) proof? Answer: [Yes] Justification: All theoretical results are stated formally with explicit assumptions and proved in Appendix B, including the Bayesian update derivation, the closed-form advantage, the telescoping budget identity, the Lipschitz bound, and the directional variance bound (Proposition 1). Guidelines: • The answer [N/A] means that the paper does not include theoretical results. • All the theorems, formulas, and proofs in the paper should be numbered and cross-referenced. • All assumptions should be clearly stated or referenced in the statement of any theorems. • The proofs can either appear in the main paper or the supplemental material, but if they appear in the supplemental material, the authors are encouraged to provide a short proof sketch to provide intuition. • Inversely, any informal proof provided in the core of the paper should be complemented by formal proofs provided in appendix or supplemental material. • Theorems and Lemmas that the proof relies upon should be properly referenced. 4. Experimental result reproducibility 
+
+Question: Does the paper fully disclose all the information needed to reproduce the main ex-perimental results of the paper to the extent that it affects the main claims and/or conclusions of the paper (regardless of whether the code and data are provided or not)? Answer: [Yes] Justification: Section 5 specifies the base models, training data, benchmarks, and optimizer configuration; Appendix I provides the full hyperparameter table (Table 13), the oracle prompt format, and the reward function. Guidelines: • The answer [N/A] means that the paper does not include experiments. • If the paper includes experiments, a [No] answer to this question will not be perceived well by the reviewers: Making the paper reproducible is important, regardless of whether the code and data are provided or not. • If the contribution is a dataset and/or model, the authors should describe the steps taken to make their results reproducible or verifiable. • Depending on the contribution, reproducibility can be accomplished in various ways. For example, if the contribution is a novel architecture, describing the architecture fully might suffice, or if the contribution is a specific model and empirical evaluation, it may be necessary to either make it possible for others to replicate the model with the same dataset, or provide access to the model. In general. releasing code and data is often one good way to accomplish this, but reproducibility can also be provided via detailed instructions for how to replicate the results, access to a hosted model (e.g., in the case of a large language model), releasing of a model checkpoint, or other means that are appropriate to the research performed. • While NeurIPS does not require releasing code, the conference does require all submis-sions to provide some reasonable avenue for reproducibility, which may depend on the nature of the contribution. For example (a) If the contribution is primarily a new algorithm, the paper should make it clear how to reproduce that algorithm. (b) If the contribution is primarily a new model architecture, the paper should describe the architecture clearly and fully. (c) If the contribution is a new model (e.g., a large language model), then there should either be a way to access this model for reproducing the results or a way to reproduce the model (e.g., with an open-source dataset or instructions for how to construct the dataset). 23 (d) We recognize that reproducibility may be tricky in some cases, in which case authors are welcome to describe the particular way they provide for reproducibility. In the case of closed-source models, it may be that access to the model is limited in some way (e.g., to registered users), but it should be possible for other researchers to have some path to reproducing or verifying the results. 5. Open access to data and code 
+
+Question: Does the paper provide open access to the data and code, with sufficient instruc-tions to faithfully reproduce the main experimental results, as described in supplemental material? Answer: [Yes] Justification: An anonymized code repository is provided in the supplementary material, and all training and evaluation datasets are publicly available; the base models and the teacher-oracle are released open-weight. Guidelines: • The answer [N/A] means that paper does not include experiments requiring code. • Please see the NeurIPS code and data submission guidelines ( https://neurips.cc/ public/guides/CodeSubmissionPolicy ) for more details. • While we encourage the release of code and data, we understand that this might not be possible, so [No] is an acceptable answer. Papers cannot be rejected simply for not including code, unless this is central to the contribution (e.g., for a new open-source benchmark). • The instructions should contain the exact command and environment needed to run to reproduce the results. See the NeurIPS code and data submission guidelines ( https: //neurips.cc/public/guides/CodeSubmissionPolicy ) for more details. • The authors should provide instructions on data access and preparation, including how to access the raw data, preprocessed data, intermediate data, and generated data, etc. • The authors should provide scripts to reproduce all experimental results for the new proposed method and baselines. If only a subset of experiments are reproducible, they should state which ones are omitted from the script and why. • At submission time, to preserve anonymity, the authors should release anonymized versions (if applicable). • Providing as much information as possible in supplemental material (appended to the paper) is recommended, but including URLs to data and code is permitted. 6. Experimental setting/details 
+
+Question: Does the paper specify all the training and test details (e.g., data splits, hyperpa-rameters, how they were chosen, type of optimizer) necessary to understand the results? Answer: [Yes] Justification: The training and evaluation protocols are reported in Section 5, the full hyperparameter configuration in Appendix I.1 (Table 13), and the sensitivity to method-specific hyperparameters in Appendix G. Guidelines: • The answer [N/A] means that the paper does not include experiments. • The experimental setting should be presented in the core of the paper to a level of detail that is necessary to appreciate the results and make sense of them. • The full details can be provided either with the code, in appendix, or as supplemental material. 7. Experiment statistical significance 
+
+Question: Does the paper report error bars suitably and correctly defined or other appropriate information about the statistical significance of the experiments? Answer: [N/A] 24 Justification: Pass@1 is averaged over 16 sampling runs as is standard in the reasoning-benchmark literature, and Section 5 reports the typical run-to-run sampling variance to allow readers to identify which gains lie outside the noise band; multiple training seeds per cell are not feasible at the scales studied. Guidelines: • The answer [N/A] means that the paper does not include experiments. • The authors should answer [Yes] if the results are accompanied by error bars, confidence intervals, or statistical significance tests, at least for the experiments that support the main claims of the paper. • The factors of variability that the error bars are capturing should be clearly stated (for example, train/test split, initialization, random drawing of some parameter, or overall run with given experimental conditions). • The method for calculating the error bars should be explained (closed form formula, call to a library function, bootstrap, etc.) • The assumptions made should be given (e.g., Normally distributed errors). • It should be clear whether the error bar is the standard deviation or the standard error of the mean. • It is OK to report 1-sigma error bars, but one should state it. The authors should preferably report a 2-sigma error bar than state that they have a 96% CI, if the hypothesis of Normality of errors is not verified. • For asymmetric distributions, the authors should be careful not to show in tables or figures symmetric error bars that would yield results that are out of range (e.g., negative error rates). • If error bars are reported in tables or plots, the authors should explain in the text how they were calculated and reference the corresponding figures or tables in the text. 8. Experiments compute resources 
+
+Question: For each experiment, does the paper provide sufficient information on the com-puter resources (type of compute workers, memory, time of execution) needed to reproduce the experiments? Answer: [Yes] Justification: Section 5 reports training on 2× H200 GPUs with the verl framework, and Appendix H.2 (Table 12) reports per-step wall-clock time for GRPO, Self-OPPO, and Teacher-OPPO. Guidelines: • The answer [N/A] means that the paper does not include experiments. • The paper should indicate the type of compute workers CPU or GPU, internal cluster, or cloud provider, including relevant memory and storage. • The paper should provide the amount of compute required for each of the individual experimental runs as well as estimate the total compute. • The paper should disclose whether the full research project required more compute than the experiments reported in the paper (e.g., preliminary or failed experiments that didn’t make it into the paper). 9. Code of ethics 
+
+Question: Does the research conducted in the paper conform, in every respect, with the NeurIPS Code of Ethics https://neurips.cc/public/EthicsGuidelines ?Answer: [Yes] Justification: We have reviewed the NeurIPS Code of Ethics, and the work uses publicly available open-weight models and reasoning benchmarks, involves no human subjects, and preserves anonymity in submission. Guidelines: • The answer [N/A] means that the authors have not reviewed the NeurIPS Code of Ethics. 25 • If the authors answer [No], they should explain the special circumstances that require a deviation from the Code of Ethics. • The authors should make sure to preserve anonymity (e.g., if there is a special consid-eration due to laws or regulations in their jurisdiction). 10. Broader impacts 
+
+Question: Does the paper discuss both potential positive societal impacts and negative societal impacts of the work performed? Answer: [N/A] Justification: OPPO is a foundational training-time credit-assignment method for reinforce-ment learning with verifiable rewards and has no direct path to specific applications or deployments; any downstream societal impact derives from the underlying base models rather than from the credit-assignment mechanism introduced here. Guidelines: • The answer [N/A] means that there is no societal impact of the work performed. • If the authors answer [N/A] or [No], they should explain why their work has no societal impact or why the paper does not address societal impact. • Examples of negative societal impacts include potential malicious or unintended uses (e.g., disinformation, generating fake profiles, surveillance), fairness considerations (e.g., deployment of technologies that could make decisions that unfairly impact specific groups), privacy considerations, and security considerations. • The conference expects that many papers will be foundational research and not tied to particular applications, let alone deployments. However, if there is a direct path to any negative applications, the authors should point it out. For example, it is legitimate to point out that an improvement in the quality of generative models could be used to generate Deepfakes for disinformation. On the other hand, it is not needed to point out that a generic algorithm for optimizing neural networks could enable people to train models that generate Deepfakes faster. • The authors should consider possible harms that could arise when the technology is being used as intended and functioning correctly, harms that could arise when the technology is being used as intended but gives incorrect results, and harms following from (intentional or unintentional) misuse of the technology. • If there are negative societal impacts, the authors could also discuss possible mitigation strategies (e.g., gated release of models, providing defenses in addition to attacks, mechanisms for monitoring misuse, mechanisms to monitor how a system learns from feedback over time, improving the efficiency and accessibility of ML). 11. Safeguards 
+
+Question: Does the paper describe safeguards that have been put in place for responsible release of data or models that have a high risk for misuse (e.g., pre-trained language models, image generators, or scraped datasets)? Answer: [N/A] Justification: The paper releases only the training-procedure code; no pretrained model weights, scraped datasets, or other dual-use artifacts are introduced. Guidelines: • The answer [N/A] means that the paper poses no such risks. • Released models that have a high risk for misuse or dual-use should be released with necessary safeguards to allow for controlled use of the model, for example by requiring that users adhere to usage guidelines or restrictions to access the model or implementing safety filters. • Datasets that have been scraped from the Internet could pose safety risks. The authors should describe how they avoided releasing unsafe images. • We recognize that providing effective safeguards is challenging, and many papers do not require this, but we encourage authors to take this into account and make a best faith effort. 26 12. Licenses for existing assets 
+
+Question: Are the creators or original owners of assets (e.g., code, data, models), used in the paper, properly credited and are the license and terms of use explicitly mentioned and properly respected? Answer: [Yes] Justification: All external assets (the Qwen3 and Phi-4 base models, the DeepScaleR training set, the seven evaluation benchmarks, and the verl framework) are cited at first use and used within the terms of their original release. Guidelines: • The answer [N/A] means that the paper does not use existing assets. • The authors should cite the original paper that produced the code package or dataset. • The authors should state which version of the asset is used and, if possible, include a URL. • The name of the license (e.g., CC-BY 4.0) should be included for each asset. • For scraped data from a particular source (e.g., website), the copyright and terms of service of that source should be provided. • If assets are released, the license, copyright information, and terms of use in the package should be provided. For popular datasets, paperswithcode.com/datasets 
+
+has curated licenses for some datasets. Their licensing guide can help determine the license of a dataset. • For existing datasets that are re-packaged, both the original license and the license of the derived asset (if it has changed) should be provided. • If this information is not available online, the authors are encouraged to reach out to the asset’s creators. 13. New assets 
+
+Question: Are new assets introduced in the paper well documented and is the documentation provided alongside the assets? Answer: [Yes] Justification: The OPPO training code is released as an extension to the verl framework with a README, configuration files for the Self-OPPO and Teacher-OPPO variants, and the oracle prompt template documented in Appendix I.2. Guidelines: • The answer [N/A] means that the paper does not release new assets. • Researchers should communicate the details of the dataset/code/model as part of their submissions via structured templates. This includes details about training, license, limitations, etc. • The paper should discuss whether and how consent was obtained from people whose asset is used. • At submission time, remember to anonymize your assets (if applicable). You can either create an anonymized URL or include an anonymized zip file. 14. Crowdsourcing and research with human subjects 
+
+Question: For crowdsourcing experiments and research with human subjects, does the paper include the full text of instructions given to participants and screenshots, if applicable, as well as details about compensation (if any)? Answer: [N/A] Justification: The paper does not involve crowdsourcing or research with human subjects. Guidelines: • The answer [N/A] means that the paper does not involve crowdsourcing nor research with human subjects. • Including this information in the supplemental material is fine, but if the main contribu-tion of the paper involves human subjects, then as much detail as possible should be included in the main paper. 27 • According to the NeurIPS Code of Ethics, workers involved in data collection, curation, or other labor should be paid at least the minimum wage in the country of the data collector. 15. Institutional review board (IRB) approvals or equivalent for research with human subjects 
+
+Question: Does the paper describe potential risks incurred by study participants, whether such risks were disclosed to the subjects, and whether Institutional Review Board (IRB) approvals (or an equivalent approval/review based on the requirements of your country or institution) were obtained? Answer: [N/A] Justification: The paper does not involve human subjects, so IRB approval was not required. Guidelines: • The answer [N/A] means that the paper does not involve crowdsourcing nor research with human subjects. • Depending on the country in which research is conducted, IRB approval (or equivalent) may be required for any human subjects research. • We recognize that the procedures for this may vary significantly between institutions and locations, and we expect authors to adhere to the NeurIPS Code of Ethics and the guidelines for their institution. • For initial submissions, do not include any information that would break anonymity (if applicable), such as the institution conducting the review. 16. Declaration of LLM usage 
+
+Question: Does the paper describe the usage of LLMs if it is an important, original, or non-standard component of the core methods in this research? Note that if the LLM is used only for writing, editing, or formatting purposes and does not impact the core methodology, scientific rigor, or originality of the research, declaration is not required. Answer: [N/A] Justification: LLMs in the paper are the experimental subjects (the policies being trained) rather than tools used to develop the core methodology, and the teacher-oracle is used only as a likelihood scorer in a manner standard for distillation-based RL methods; any incidental use of LLMs for writing or editing did not affect scientific rigor. Guidelines: • The answer [N/A] means that the core method development in this research does not involve LLMs as any important, original, or non-standard components. • Please refer to our LLM policy in the NeurIPS handbook for what should or should not be described. 28
