@@ -6,135 +6,138 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-05-28
-- 运行时间：2026-05-28 22:10:24 UTC
+- 最新运行日期：2026-05-29
+- 运行时间：2026-05-29 22:09:09 UTC
 - 运行状态：成功
-- 本次总论文数：39
-- 精读区：24
+- 本次总论文数：40
+- 精读区：25
 - 速读区：15
 
 ### 今日简报（AI）
-精筛39篇论文，两篇9分研究聚焦教师令牌可靠性与生成模型保护，值得优先关注。推荐追踪位置加权自蒸馏在推理中的突破，或尝试Mahjax加速麻将强化学习实战。下一步可泛读X-Token等知识蒸馏轻量工作，快速积累跨领域迁移经验。
-- 详情：[/202605/28/README](/202605/28/README)
+多循环持续强化学习与自演化LLM策略优化成为今日推荐核心方向；自蒸馏与自适应教学在LLM推理优化中表现突出；建议关注智能体推理效率与知识图谱记忆迁移的跨领域应用。
+- 详情：[/202605/29/README](/202605/29/README)
 
 ### 精读区论文标签
-1. [When Are Teacher Tokens Reliable? Position-Weighted On-Policy Self-Distillation for Reasoning](/202605/28/2605.21606v1-when-are-teacher-tokens-reliable-position-weighted-on-policy-self-distillation-for-reasoning)  
+1. [Tailoring Teaching to Aptitude: Direction-Adaptive Self-Distillation for LLM Reasoning](/202605/29/2605.22263v1-tailoring-teaching-to-aptitude-direction-adaptive-self-distillation-for-llm-reasoning)  
    标签：评分：9.0/10、query:self-distillation
-   evidence：策略自蒸馏用于推理
-2. [Safeguarding Text-to-Image Generative Models Against Unauthorized Knowledge Distillation](/202605/28/2605.22060v1-safeguarding-text-to-image-generative-models-against-unauthorized-knowledge-distillation)  
+   evidence：方向自适应的自蒸馏方法用于大语言模型推理
+2. [Don't Forget the Critic: Value-Based Data Rehearsal for Multi-Cyclic Continual Reinforcement Learning](/202605/29/2605.22454v1-dont-forget-the-critic-value-based-data-rehearsal-for-multi-cyclic-continual-reinforcement-learning)  
+   标签：评分：9.0/10、query:mas
+   evidence：多智能体强化学习与持续学习
+3. [Self-Policy Distillation via Capability-Selective Subspace Projection](/202605/29/2605.22675v1-self-policy-distillation-via-capability-selective-subspace-projection)  
    标签：评分：9.0/10、query:self-distillation
-   evidence：知识蒸馏模型保护 防止未授权复制
-3. [Self-Policy Distillation via Capability-Selective Subspace Projection](/202605/28/2605.22675v1-self-policy-distillation-via-capability-selective-subspace-projection)  
-   标签：评分：9.0/10、query:self-distillation
-   evidence：自我策略蒸馏方法用于大模型自训练
-4. [One Policy, Infinite NPCs: Persona-Traceable Shared RL Policies for Scalable Game Agents](/202605/28/2605.23652v1-one-policy-infinite-npcs-persona-traceable-shared-rl-policies-for-scalable-game-agents)  
+   evidence：自蒸馏方法让大语言模型从自身输出中学习
+4. [SCOPE: Simulating Cross-game Operations in Playable Environments for FPS World Models](/202605/29/2605.23345v1-scope-simulating-cross-game-operations-in-playable-environments-for-fps-world-models)  
    标签：评分：9.0/10、query:game-ai
-   evidence：基于强化学习的游戏NPC角色实现人格一致性和可控性
-5. [Adaptive Human-AI Coordination via Hierarchical Action Disentanglement](/202605/28/2605.24343v1-adaptive-human-ai-coordination-via-hierarchical-action-disentanglement)  
+   evidence：FPS游戏世界模型模拟
+5. [MAPLE: Multi-State Aggregated Policy Evaluation for AlphaZero in Imperfect-Information Games](/202605/29/2605.24139v1-maple-multi-state-aggregated-policy-evaluation-for-alphazero-in-imperfect-information-games)  
+   标签：评分：9.0/10、query:game-ai
+   evidence：AlphaZero扩展用于不完美信息游戏的多状态聚合方法
+6. [HyLaT: Efficient Multi-Agent Communication via Hybrid Latent-Text Protocol](/202605/29/2605.25421v1-hylat-efficient-multi-agent-communication-via-hybrid-latent-text-protocol)  
    标签：评分：9.0/10、query:mas
-   evidence：用于人机协调的深度分层强化学习
-6. [Emission-Aware Reinforcement Learning for Sustainable Electric Vehicle Charging and Carbon Dioxide Reduction Under Varying Renewable Penetration](/202605/28/2605.24543v1-emission-aware-reinforcement-learning-for-sustainable-electric-vehicle-charging-and-carbon-dioxide-reduction-under-varying-renewable-penetration)  
+   evidence：多智能体系统的混合潜在文本通信协议
+7. [Multi-Agent Systems are Mixtures of Experts: Who Becomes an Influencer?](/202605/29/2605.25929v1-multi-agent-systems-are-mixtures-of-experts-who-becomes-an-influencer)  
+   标签：评分：9.0/10、query:mas
+   evidence：多智能体LLM deliberation机制
+8. [AgentSociety: Incentivizing Agentic Social Intelligence](/202605/29/2605.26203v1-agentsociety-incentivizing-agentic-social-intelligence)  
+   标签：评分：9.0/10、query:mas
+   evidence：多智能体自主协作环境
+9. [Exploiting Local Dynamics Regularity for Reusable Skills in Offline Hierarchical RL](/202605/29/2605.26371v1-exploiting-local-dynamics-regularity-for-reusable-skills-in-offline-hierarchical-rl)  
    标签：评分：9.0/10、query:rl
-   evidence：基于SAC强化学习的电动汽车可持续充电
-7. [Unifying Value Alignment and Assignment in Cross-Domain Offline Reinforcement Learning with Heterogeneous Datasets](/202605/28/2605.24862v1-unifying-value-alignment-and-assignment-in-cross-domain-offline-reinforcement-learning-with-heterogeneous-datasets)  
+   evidence：分层强化学习中的可复用技能抽象
+10. [Reasoning Depth and Environment Complexity: A Controlled Study of RLVR Data Allocation across Logical Reasoning Tasks](/202605/29/2605.26934v1-reasoning-depth-and-environment-complexity-a-controlled-study-of-rlvr-data-allocation-across-logical-reasoning-tasks)  
    标签：评分：9.0/10、query:rl
-   evidence：跨域离线强化学习研究
-8. [Scaling up Energy-Aware Multi-Agent Reinforcement Learning for Mission-Oriented Drone Networks with Individual Reward](/202605/28/2605.24992v1-scaling-up-energy-aware-multi-agent-reinforcement-learning-for-mission-oriented-drone-networks-with-individual-reward)  
+   evidence：强化学习可验证奖励推理分析
+11. [AgensFlow: A Coordination-Policy Substrate for Multi-Agent Systems](/202605/29/2605.27466v1-agensflow-a-coordination-policy-substrate-for-multi-agent-systems)  
    标签：评分：9.0/10、query:mas
-   evidence：多智能体强化学习用于无人机协作
-9. [Reinforcement Learning for Laser Additive Manufacturing Scan-Order Optimisation: A Bilevel Proxy--FEA Diagnostic Framework for Reward and World-Model Diagnosis](/202605/28/2605.25063v1-reinforcement-learning-for-laser-additive-manufacturing-scan-order-optimisation-a-bilevel-proxy--fea-diagnostic-framework-for-reward-and-world-model-diagnosis)  
-   标签：评分：9.0/10、query:rl
-   evidence：强化学习用于制造优化
-10. [Counterfactually Safe Reinforcement Learning](/202605/28/2605.25114v1-counterfactually-safe-reinforcement-learning)  
-   标签：评分：9.0/10、query:rl
-   evidence：反事实安全的强化学习解决带安全约束的RL理论
-11. [Learning to Search and Searching to Learn for Generalization in Planning](/202605/28/2605.25720v1-learning-to-search-and-searching-to-learn-for-generalization-in-planning)  
-   标签：评分：9.0/10、query:rl
-   evidence：深度强化学习用于规划中的组合泛化
-12. [Multi-Agent Systems are Mixtures of Experts: Who Becomes an Influencer?](/202605/28/2605.25929v1-multi-agent-systems-are-mixtures-of-experts-who-becomes-an-influencer)  
-   标签：评分：9.0/10、query:mas
-   evidence：多智能体大模型 deliberation与观点动态
-13. [When Does Adaptive Guidance Help? Belief-Aware Privileged Distillation for Autonomous Driving Under Partial Observability](/202605/28/2605.26155v1-when-does-adaptive-guidance-help-belief-aware-privileged-distillation-for-autonomous-driving-under-partial-observability)  
-   标签：评分：9.0/10、query:rl
-   evidence：带知识蒸馏的引导式强化学习
-14. [Efficient On-policy Visual-RL via Stochastic Decoupled Policy Gradient](/202605/28/2605.26478v1-efficient-on-policy-visual-rl-via-stochastic-decoupled-policy-gradient)  
-   标签：评分：9.0/10、query:rl
-   evidence：复杂环境的视觉强化学习方法
-15. [Testing Agentic Workflows with Structural Coverage Criteria](/202605/28/2605.26521v1-testing-agentic-workflows-with-structural-coverage-criteria)  
-   标签：评分：9.0/10、query:mas
-   evidence：多智能体工作流协调与委托的结构化测试
-16. [QUACK: Questioning, Understanding, and Auditing Communicated Knowledge in Multimodal Social Deduction Agents](/202605/28/2605.27068v1-quack-questioning-understanding-and-auditing-communicated-knowledge-in-multimodal-social-deduction-agents)  
-   标签：评分：9.0/10、query:mas
-   evidence：多智能体LLM评估框架用于社交推理游戏
-17. [SCALE-COMM: Shared, Contrastively-Aligned Latent Embeddings for MARL Communication](/202605/28/2605.27532v1-scale-comm-shared-contrastively-aligned-latent-embeddings-for-marl-communication)  
-   标签：评分：9.0/10、query:mas
-   evidence：多智能体强化学习用于机器人协调
-18. [You Only Align Once: Propagating Cooperative Behaviors in Multi-Agent Systems through Seed Agents](/202605/28/2605.27586v1-you-only-align-once-propagating-cooperative-behaviors-in-multi-agent-systems-through-seed-agents)  
-   标签：评分：9.0/10、query:mas
-   evidence：迭代囚徒困境中通过对齐传播实现多智能体合作
-19. [TCP-MCP: Landscape-Guided Co-Evolution of Prompts and Communication Topologies for Multi-Agent Systems](/202605/28/2605.27850v1-tcp-mcp-landscape-guided-co-evolution-of-prompts-and-communication-topologies-for-multi-agent-systems)  
-   标签：评分：9.0/10、query:mas
-   evidence：多智能体系统中提示与通信拓扑的协同进化框架
-20. [ROSD: Reflective On-Policy Self-Distillation for Language Model Reasoning across Domains](/202605/28/2605.28014v1-rosd-reflective-on-policy-self-distillation-for-language-model-reasoning-across-domains)  
+   evidence：多智能体协调被视为部分可观测条件下的在线策略学习问题
+12. [UniMaia: Steering Chess Policies with Language for Human-like Play](/202605/29/2605.27767v1-unimaia-steering-chess-policies-with-language-for-human-like-play)  
+   标签：评分：9.0/10、query:game-ai
+   evidence：语言控制棋类策略系统
+13. [ROSD: Reflective On-Policy Self-Distillation for Language Model Reasoning across Domains](/202605/29/2605.28014v1-rosd-reflective-on-policy-self-distillation-for-language-model-reasoning-across-domains)  
    标签：评分：9.0/10、query:self-distillation
-   evidence：在线策略自蒸馏方法，模型从自身预测中学习
-21. [Examining Agents' Bias Amplification versus Suppression in Multi-Agent Systems](/202605/28/2605.28098v1-examining-agents-bias-amplification-versus-suppression-in-multi-agent-systems)  
-   标签：评分：9.0/10、query:mas
-   evidence：多智能体系统公平性中的偏置分析
-22. [Defending LLM-based Multi-Agent Systems Against Cooperative Attacks with Sentence-Level Rectification](/202605/28/2605.28104v1-defending-llm-based-multi-agent-systems-against-cooperative-attacks-with-sentence-level-rectification)  
-   标签：评分：9.0/10、query:mas
-   evidence：基于LLM的多智能体系统防御机制
-23. [Commit to the Bit: Reactive Reinforcement Learning Done Right](/202605/28/2605.28276v1-commit-to-the-bit-reactive-reinforcement-learning-done-right)  
+   evidence：自蒸馏方法结合在线策略学习
+14. [GUI Agents for Continual Game Generation](/202605/29/2605.28258v1-gui-agents-for-continual-game-generation)  
+   标签：评分：9.0/10、query:game-ai
+   evidence：GUI智能体评估与测试程序化生成游戏内容
+15. [Variance-Adaptive Optimal Algorithm for Reinforcement Learning with Multinomial Logit Function Approximation](/202605/29/2605.28364v1-variance-adaptive-optimal-algorithm-for-reinforcement-learning-with-multinomial-logit-function-approximation)  
    标签：评分：9.0/10、query:rl
-   evidence：反应式强化学习算法
-24. [Optimal Data Acquisition for Reinforcement Learning: A Large Deviations Perspective](/202605/28/2605.28675v1-optimal-data-acquisition-for-reinforcement-learning-a-large-deviations-perspective)  
+   evidence：MNL马尔可夫决策过程的变差自适应遗憾界理论强化学习算法
+16. [Skill0.5: Joint Skill Internalization and Utilization for Out-of-Distribution Generalization in Agentic Reinforcement Learning](/202605/29/2605.28424v1-skill05-joint-skill-internalization-and-utilization-for-out-of-distribution-generalization-in-agentic-reinforcement-learning)  
    标签：评分：9.0/10、query:rl
-   evidence：基于大偏差理论的强化学习数据获取框架
+   evidence：智能体强化学习技能内化框架
+17. [Roles with Rails: Contract-Preserving Role Evolution in Multi-Agent Structured Reasoning](/202605/29/2605.28433v1-roles-with-rails-contract-preserving-role-evolution-in-multi-agent-structured-reasoning)  
+   标签：评分：9.0/10、query:mas
+   evidence：用于多智能体结构化推理的保持契约的角色演进方法
+18. [Skill-Conditioned Gated Self-Distillation for LLM Reasoning](/202605/29/2605.28791v1-skill-conditioned-gated-self-distillation-for-llm-reasoning)  
+   标签：评分：9.0/10、query:self-distillation
+   evidence：自蒸馏用于大语言模型推理
+19. [PatchBoard: Schema-Grounded State Mutation for Reliable and Auditable LLM Multi-Agent Collaboration](/202605/29/2605.29313v1-patchboard-schema-grounded-state-mutation-for-reliable-and-auditable-llm-multi-agent-collaboration)  
+   标签：评分：9.0/10、query:mas
+   evidence：LLM多智能体协作架构
+20. [MINDGAMES: A Live Arena for Evaluating Social and Strategic Reasoning in Multi-Agent LLMs](/202605/29/2605.29512v1-mindgames-a-live-arena-for-evaluating-social-and-strategic-reasoning-in-multi-agent-llms)  
+   标签：评分：9.0/10、query:mas
+   evidence：多智能体LLM评估平台，含心理理论推理
+21. [CONCAT: Consensus- and Confidence-Driven Ad Hoc Teaming for Efficient LLM-Based Multi-Agent Systems](/202605/29/2605.29612v1-concat-consensus--and-confidence-driven-ad-hoc-teaming-for-efficient-llm-based-multi-agent-systems)  
+   标签：评分：9.0/10、query:mas
+   evidence：无训练多智能体协作框架
+22. [PTCG-Bench: Can LLM Agents Master Pokémon Trading Card Game?](/202605/29/2605.29653v1-ptcg-bench-can-llm-agents-master-pokmon-trading-card-game)  
+   标签：评分：9.0/10、query:game-ai
+   evidence：游戏AI决策与策略评估研究
+23. [Evolve as a Team: Collaborative Self-Evolution for LLM-based Multi-Agent Systems](/202605/29/2605.29790v1-evolve-as-a-team-collaborative-self-evolution-for-llm-based-multi-agent-systems)  
+   标签：评分：9.0/10、query:mas
+   evidence：多智能体系统自我进化框架
+24. [A Predictive Law for On-Policy Self-Distillation From World Feedback](/202605/29/2605.30070v1-a-predictive-law-for-on-policy-self-distillation-from-world-feedback)  
+   标签：评分：9.0/10、query:self-distillation
+   evidence：策略内自蒸馏强化学习后训练
+25. [Enhancing Multi-Agent Communication through Attention Steering with Context Relevance](/202605/29/2605.30136v1-enhancing-multi-agent-communication-through-attention-steering-with-context-relevance)  
+   标签：评分：9.0/10、query:mas
+   evidence：多智能体通信与协调机制
 
 ### 速读区论文标签
-1. [Mahjax: A GPU-Accelerated Mahjong Simulator for Reinforcement Learning in JAX](/202605/28/2605.20577v1-mahjax-a-gpu-accelerated-mahjong-simulator-for-reinforcement-learning-in-jax)  
-   标签：评分：8.0/10、query:game-ai
-   evidence：游戏AI研究的RL麻将模拟器
-2. [AVSD: Adaptive-View Self-Distillation by Balancing Consensus and Teacher-Specific Privileged Signals](/202605/28/2605.20643v1-avsd-adaptive-view-self-distillation-by-balancing-consensus-and-teacher-specific-privileged-signals)  
-   标签：评分：8.0/10、query:self-distillation
-   evidence：师生模型相同情况下的自蒸馏
-3. [X-Token: Projection-Guided Cross-Tokenizer Knowledge Distillation](/202605/28/2605.21699v1-x-token-projection-guided-cross-tokenizer-knowledge-distillation)  
-   标签：评分：8.0/10、query:self-distillation
-   evidence：跨分词器知识蒸馏模型压缩
-4. [OPPO: Bayesian Value Recursion for Token-Level Credit Assignment in LLM Reasoning](/202605/28/2605.21851v1-oppo-bayesian-value-recursion-for-token-level-credit-assignment-in-llm-reasoning)  
-   标签：评分：8.0/10、query:self-distillation
-   evidence：在线策略蒸馏用于RL令牌级信用分配
-5. [OPPO: Bayesian Value Recursion for Token-Level Credit Assignment in LLM Reasoning](/202605/28/2605.21851v2-oppo-bayesian-value-recursion-for-token-level-credit-assignment-in-llm-reasoning)  
+1. [Efficient Agentic Reasoning Through Self-Regulated Simulative Planning](/202605/29/2605.22138v1-efficient-agentic-reasoning-through-self-regulated-simulative-planning)  
+   标签：评分：8.0/10、query:mas
+   evidence：三系统智能体推理含自调控模拟规划
+2. [Short-Term-to-Long-Term Memory Transfer for Knowledge Graphs under Partial Observability](/202605/29/2605.22142v1-short-term-to-long-term-memory-transfer-for-knowledge-graphs-under-partial-observability)  
    标签：评分：8.0/10、query:rl
-   evidence：LLM推理信用分配的RL算法
-6. [When Planning Fails Despite Correct Execution: On Epistemic Calibration for LLM-Based Multi-Agent Systems](/202605/28/2605.23414v1-when-planning-fails-despite-correct-execution-on-epistemic-calibration-for-llm-based-multi-agent-systems)  
-   标签：评分：7.8/10、query:mas
-   evidence：多智能体认知校准与规划
-7. [Foundation Protocol: A Coordination Layer for Agentic Society](/202605/28/2605.23218v1-foundation-protocol-a-coordination-layer-for-agentic-society)  
-   标签：评分：7.5/10、query:mas
-   evidence：多智能体社会的协调层框架
-8. [DIVE: Embedding Compression via Self-Limiting Gradient Updates](/202605/28/2605.20689v1-dive-embedding-compression-via-self-limiting-gradient-updates)  
-   标签：评分：7.0/10、query:self-distillation
-   evidence：自限制梯度更新的嵌入压缩方法
-9. [Decomposing Subject-Driven Image Generation via Intermediate Structural Prediction](/202605/28/2605.20807v1-decomposing-subject-driven-image-generation-via-intermediate-structural-prediction)  
-   标签：评分：7.0/10、query:self-distillation
-   evidence：图像生成评估中的知识蒸馏
-10. [APEX: Autonomous Policy Exploration for Self-Evolving LLM Agents](/202605/28/2605.21240v1-apex-autonomous-policy-exploration-for-self-evolving-llm-agents)  
+   evidence：部分可观测条件下的强化学习记忆转移，Q学习设计
+3. [One-Way Policy Optimization for Self-Evolving LLMs](/202605/29/2605.22156v1-one-way-policy-optimization-for-self-evolving-llms)  
+   标签：评分：8.0/10、query:rl
+   evidence：LLM推理强化学习算法设计
+4. [How to Steer Your Multi-Agent System: Human-LLM Collaborative Planning](/202605/29/2605.23023v1-how-to-steer-your-multi-agent-system-human-llm-collaborative-planning)  
+   标签：评分：8.0/10、query:mas
+   evidence：多智能体规划与引导交互
+5. [Multilingual Steering by Design: Multilingual Sparse Autoencoders and Principled Layer Selection](/202605/29/2605.23036v1-multilingual-steering-by-design-multilingual-sparse-autoencoders-and-principled-layer-selection)  
+   标签：评分：8.0/10、query:intervention
+   evidence：多语言稀疏自编码器语言导向
+6. [Dynamic Mixture of Latent Memories for Self-Evolving Agents](/202605/29/2605.21951v1-dynamic-mixture-of-latent-memories-for-self-evolving-agents)  
    标签：评分：7.0/10、query:mas
-   evidence：具有策略图探索的自我进化LLM智能体
-11. [GSA-YOLO: A High-Efficiency Framework via Structured Sparsity and Adaptive Knowledge Distillation for Real-Time X-ray Security Inspection](/202605/28/2605.20669v1-gsa-yolo-a-high-efficiency-framework-via-structured-sparsity-and-adaptive-knowledge-distillation-for-real-time-x-ray-security-inspection)  
+   evidence：基于专家路由的多智能体记忆框架
+7. [AI-Enabled Serious Games: Integrating Intelligence and Adaptivity in Training Systems](/202605/29/2605.21962v1-ai-enabled-serious-games-integrating-intelligence-and-adaptivity-in-training-systems)  
+   标签：评分：7.0/10、query:game-ai
+   evidence：严肃游戏训练系统中的人工智能智能适应性
+8. [Multimodal Distribution Matching for Vision-Language Dataset Distillation](/202605/29/2605.23482v1-multimodal-distribution-matching-for-vision-language-dataset-distillation)  
+   标签：评分：7.0/10、query:self-distillation
+   evidence：数据集蒸馏技术压缩训练数据
+9. [SeedER: Seed-and-Expand Retrieval from Knowledge Graphs](/202605/29/2605.23753v1-seeder-seed-and-expand-retrieval-from-knowledge-graphs)  
+   标签：评分：7.0/10、query:rl
+   evidence：强化学习训练图感知策略用于知识图谱检索
+10. [Beyond Binary Edits Robust Multimodal Knowledge Editing with Adversarial Subspace Alignment](/202605/29/2605.23780v1-beyond-binary-edits-robust-multimodal-knowledge-editing-with-adversarial-subspace-alignment)  
+   标签：评分：7.0/10、query:intervention
+   evidence：对抗子空间对齐的多模态知识编辑实现知识操控
+11. [Evaluating Large Language Models as Live Strategic Agents: Provider Performance, Hybrid Decomposition, and Operational Gaps in Timed Risk Play](/202605/29/2605.22238v1-evaluating-large-language-models-as-live-strategic-agents-provider-performance-hybrid-decomposition-and-operational-gaps-in-timed-risk-play)  
+   标签：评分：6.0/10、query:mas
+   evidence：多智能体战略游戏 Risk 环境
+12. [Joint Communication and Computation Scheduling for MEC-enabled AIGC Services: A Game-Theoretic Stochastic Learning Approach](/202605/29/2605.22277v1-joint-communication-and-computation-scheduling-for-mec-enabled-aigc-services-a-game-theoretic-stochastic-learning-approach)  
+   标签：评分：6.0/10、query:mas
+   evidence：多智能体博弈论调度
+13. [Agent-as-Peer-Debriefer: A Multi-Agent Framework with Perspective-Based Refinement for Qualitative Analysis](/202605/29/2605.24600v1-agent-as-peer-debriefer-a-multi-agent-framework-with-perspective-based-refinement-for-qualitative-analysis)  
+   标签：评分：6.0/10、query:mas
+   evidence：多智能体同行评审协调机制
+14. [Learning from Semantic Dictionaries: Discriminative Codebook Contrastive Learning for Unified Visual Representation and Generation](/202605/29/2605.25012v1-learning-from-semantic-dictionaries-discriminative-codebook-contrastive-learning-for-unified-visual-representation-and-generation)  
    标签：评分：6.0/10、query:self-distillation
-   evidence：YOLO框架中集成了自适应知识蒸馏
-12. [Hack-Verifiable Environments: Towards Evaluating Reward Hacking at Scale](/202605/28/2605.20744v1-hack-verifiable-environments-towards-evaluating-reward-hacking-at-scale)  
-   标签：评分：6.0/10、query:rl
-   evidence：自主智能体的奖励黑客评估
-13. [PACD-Net: Pseudo-Augmented Contrastive Distillation for Glycemic Control Estimation from SMBG](/202605/28/2605.20751v1-pacd-net-pseudo-augmented-contrastive-distillation-for-glycemic-control-estimation-from-smbg)  
+   evidence：自监督代码本对比学习框架
+15. [CODESKILL: Learning Self-Evolving Skills for Coding Agents](/202605/29/2605.25430v1-codeskill-learning-self-evolving-skills-for-coding-agents)  
    标签：评分：6.0/10、query:self-distillation
-   evidence：自监督对比知识蒸馏方法
-14. [3D Reconstruction and Knowledge Distillation to Improve Multi-View Image Models to Explore Spike Volume Estimation in Wheat](/202605/28/2605.20940v1-3d-reconstruction-and-knowledge-distillation-to-improve-multi-view-image-models-to-explore-spike-volume-estimation-in-wheat)  
-   标签：评分：6.0/10、query:self-distillation
-   evidence：知识蒸馏用于农业3D模型训练
-15. [FTerViT: Fully Ternary Vision Transformer](/202605/28/2605.21171v1-ftervit-fully-ternary-vision-transformer)  
-   标签：评分：6.0/10、query:self-distillation
-   evidence：知识蒸馏训练全三值化视觉Transformer
+   evidence：编码智能体自进化技能提取与蒸馏
 
