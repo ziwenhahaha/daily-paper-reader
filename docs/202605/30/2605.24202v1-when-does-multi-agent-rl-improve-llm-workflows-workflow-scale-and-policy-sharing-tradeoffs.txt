@@ -1,0 +1,466 @@
+Title: When Does Multi-Agent RL Improve LLM Workflows? Workflow, Scale, and Policy-Sharing Tradeoffs
+
+URL Source: https://arxiv.org/pdf/2605.24202v1
+
+Published Time: Tue, 26 May 2026 00:15:40 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# When Does Multi-Agent RL Improve LLM Workflows? Workflow, Scale, and Policy-Sharing Tradeoffs 
+
+Yifan Zeng 1, Yiran Wu 2, Yaolun Zhang 1
+
+Wentian Zhao 3, Kun Wan 3, Qingyun Wu 2,4, Huazheng Wang 1,41Oregon State University 2Pennsylvania State University 
+
+> 3
+
+Adobe Inc. 4AG2AI, Inc. 
+
+{zengyif, zhanyaol, huazheng.wang}@oregonstate.edu {yiran.wu, qingyun.wu}@psu.edu, {wezhao, kuwan}@adobe.com 
+
+§ XHMY/marl-llm-workflows 
+
+## Abstract 
+
+Multi-agent LLM workflows route inference through specialized roles to lift end-task accuracy, but jointly training those roles with reinforcement learning is unstable in ways that are poorly understood. We study when end-to-end RL training of multi-agent LLM workflows improves over their base models, comparing Shared-Policy training, where all roles update one policy, with Isolated-Policy training, where each role has its own parameters. Our experimental matrix spans Eval-Opt, Voting, and Orch-Workers workflows, math and code tasks, and three model scales (0.6B, 1.7B, 4B). We find that multi-agent RL usually improves over base models, but gains depend jointly on workflow, task, and scale, not on policy sharing alone. IP tends to reach higher peak accuracy yet more often falls off a terminal accuracy cliff, while SP training does not eliminate failure; it redistributes failure into qualitatively different patterns. We then explain the strongest of these patterns through role-level gradient dynamics induced by workflow topology and policy routing: under IP, parallel same-role agents on shared prompts amplify per-role gradients and drive terminal degradation in Voting and Orch-Workers workflows; under SP, asymmetric per-step gradient mass causes the shared policy to be captured by the dominant role, producing different failure signatures by task and workflow. Together, the empirical map and its underlying mechanisms show that policy sharing routes training pressure through different channels rather than offering uniform stability, making it a design choice with workflow- and task-conditional tradeoffs. 
+
+## 1 Introduction 
+
+Multi-agent LLM workflows have become a common inference-time way to extract more capability than a single forward pass can deliver, often by decomposing generation, evaluation, aggregation, or delegation across multiple model calls (Yang et al., 2026; Wu et al., 2023; Madaan et al., 2023; Wang et al., 2023). In parallel, reinforcement learning with verifiable rewards (RLVR) has become a standard way to improve the reasoning capabilities of large language models (LLMs), with notable success on mathematics and code (Shao et al., 2024; Guo et al., 2025; Yu et al., 2025; Zhao et al., 2025a). More recently, RLVR has been applied to train multi-step LLM agents, where task success can be evaluated by an outcome signal at the end of an episode(Jin et al., 2025; Wei et al., 2025; Wang et al., 2025). This progression naturally extends to multi-agent systems, where the workflow consists of multiple interacting components and the final verifiable outcome can provide a reward signal for optimizing the system end to end.             
+
+> Preprint.
+> arXiv:2605.24202v1 [cs.AI] 22 May 2026 Final Answer
+> Eval-Opt
+> Question Generator
+> N=1
+> Evaluator
+> N=1
+> draft
+> critique →revise
+> SP
+> One Shared Policy
+> ↻
+> accept
+> same policy π_gen, k revisions
+> trajectory
+> IP
+> Per-role Policies π_gen π_eval
+> π_shared
+> π_eval
+> trajectory
+> Aggregator
+> N=1 Question
+> IP
+> Per-role Policies π_voter π_agg
+> π_shared
+> Final Answer
+> N=3
+> Voter
+> Voter
+> Voter
+> Voting
+> SP
+> One Shared Policy
+> Worker
+> Synthesizer
+> N=1 Question
+> trajectory
+> π_orch π_worker π_synth IP
+> Per-role Policies
+> π_shared SP
+> One Shared Policy
+> Final Answer
+> N=3
+> Orch-Workers
+> Orchestrator
+> N=1 Worker
+> Worker
+> Rollout Outcome Reward / Advantage GRPO Update
+> updates π
+
+Figure 1: Workflow topology and policy routing. Three workflows (Eval-Opt, Voting, Orch-Workers), each trained under Isolated-Policy (one πrole per role) or Shared-Policy (one πshared for all roles), with a shared outcome-reward GRPO loop. Recent work has begun extending Group Relative Policy Optimization (Shao et al., 2024) to multi-agent settings (Zhao et al., 2025b; Liu et al., 2025; Hong et al., 2025; Chen et al., 2025; Feng et al., 2026). These efforts show that RL can be applied to specific multi-agent workflows, such as debate, search, or hierarchical tool use, but they do not provide a systematic picture of when multi-agent RL improves performance or why training succeeds or fails. This paper therefore asks a broader question: when does reinforcement learning improve a multi-agent workflow, and what training dynamics explain the outcome ?To answer this question, we run a systematic study across three workflows (Eval-Opt, Voting, and Orch-Workers), three model scales (0.6B, 1.7B, 4B), two tasks (math and code), and two policy-sharing strategies (a shared policy used by every role, and an isolated policy per role). Every cell is compared against a base-model control and a single-agent RL control at matched scale and task, so we can separate the gain attributable to multi-agent training from the gain that single-agent RL alone would already produce. Figure 1 shows the workflow topology and policy routing under study. From this design, we gain three empirical insights about when multi-agent RL training improves over the base workflow. (1) multi-agent RL training usually improves over base models, but the choice of policy-sharing strategy trades ceiling against floor: Isolated-Policy routes more often reach higher peak accuracy yet are more prone to late-training degradation, while Shared-Policy routes are conservative on the upside and still subject to late-training drift. (2) whether and how much joint training helps depends jointly on workflow and task, not on the policy-sharing axis alone: the same policy-sharing choice has different consequences across Eval-Opt, Voting, and Orch-Workers workflows, and across math and code. (3) SP training redistributes degradation rather than eliminating it, and some SP failure patterns hide from token-level training metrics and surface only at the episode-correctness layer (§3, §4). We then explain the strongest of these insights through two role-level gradient mechanisms induced by workflow topology and policy routing: gradient_amplification 
+
+under Isolated-Policy, and sp_role_capture under Shared-Policy (§5). 
+
+## 2 Related Work 
+
+Multi-agent RL training of LLM workflows. A growing body of work extends reinforcement learning, especially GRPO (Shao et al., 2024), to multi-agent LLM systems. One line of work devel-ops GRPO-style training objectives for different multi-agent workflow structures. AT-GRPO (Zhao et al., 2025b) introduces agent- and turn-wise grouping with tree-structured sampling, MAGRPO (Liu et al., 2025) formulates LLM collaboration as a Dec-POMDP with centralized group-relative advan-tages and decentralized execution, M-GRPO (Hong et al., 2025) addresses hierarchical multi-agent systems through trajectory alignment for variable-length sub-agent invocations, and MHGPO (Chen et al., 2025) designs heterogeneous group advantages for multi-agent search pipelines. A second line studies policy adaptation and reinforcement fine-tuning at the system level, including MPDF (Yang & 2Thomason, 2025), which learns adaptive meta-policies for agent deliberation through rank-based RL, and MARFT (Liao et al., 2025), which provides a conceptual framework for multi-agent reinforce-ment fine-tuning with LoRA adapters. Another recent direction analyzes optimization stability in multi-agent RL; for example, Dr. MAS (Feng et al., 2026) identifies gradient-norm imbalance caused by global advantage normalization across agents and proposes agent-wise normalization. Overall, these methods advance multi-agent RL by introducing algorithmic components tailored to specific workflow patterns or optimization issues. Our work is complementary: rather than proposing a new training algorithm, we conduct a controlled cross-workflow, cross-scale, cross-task empirical study with base-model and single-agent-RL controls, and explain the strongest observed patterns through role-level gradient dynamics induced by workflow topology and policy routing. 
+
+Diversity collapse and role drift in LLM RL. Several recent threads address related symptoms in single-policy and multi-agent LLM RL. Long et al. (2025) treat diversity collapse under reinforcement learning with verifiable reward as a divergence-choice problem and argue for replacing forward KL with alternatives that better preserve sample diversity. Wang et al. (2026) detect and repair role drift in multi-agent collaboration through lightweight protocol-level monitors. Zhang et al. (2025) address the converse pathology of agent under-contribution in multi-agent reasoning, where one agent dominates and others degenerate into passive roles. Our work is structural: we identify which workflow topologies and policy-routing choices produce role drift in the first place, and explain the strongest observed patterns through gradient mechanisms ( gradient_amplification under Isolated-Policy, sp_role_capture under Shared-Policy). 
+
+## 3 Experimental Setup 
+
+Our experiments are organized as a controlled grid over four dimensions: task, model scale, policy-routing strategy, and workflow (Figure 1). The task dimension covers mathematical reasoning and code-generation settings; the model dimension varies the size of the underlying base model; the policy-routing dimension compares shared and isolated policies; and the workflow dimension evaluates three different topologies with distinct role structures and communication patterns. This grid allows us to separate effects that arise from the task domain, the model scale, the way policies are shared across roles, and the topology of the agent system itself. Each workflow–task–scale–policy configuration is trained once with a fixed seed, and we include both a base-model evaluation with no training and a single-agent reinforcement-learning control trained on the same task and scale. These controls allow the later analysis to distinguish general RL-induced drift from drift that is specific to multi-agent interaction. Training uses GRPO (Shao et al., 2024) without an explicit KL penalty against a reference policy: each training step draws n = 8 workflow rollouts per problem and computes the relative advantage within the resulting group of rollouts. 
+
+Dataset. We use DAPO-Math-17K (Yu et al., 2025), which we refer to as Math, and DeepCoder (Luo et al., 2025), which we refer to as Code. Math evaluates multi-step mathematical reasoning, while Code evaluates code-oriented problem solving. Models. Across both tasks, the underlying model family is Qwen3 (Yang et al., 2025), instantiated at three scales: Qwen3-0.6B, Qwen3-1.7B, and Qwen3-4B. Using the same model family across scales keeps the architecture fixed while allowing us to test whether role specialization, policy drift, and workflow-level behavior change as model capacity increases. 
+
+3.1 Multi-Agent Workflows 
+
+We study three multi-agent workflows: Eval-Opt, Voting, and Orch-Workers. Eval-Opt is a two-role workflow consisting of a generator and an evaluator. The generator produces an initial answer, while the evaluator judges the answer, provides a verdict and critique, and may induce revision. This workflow tests whether separating solution generation from evaluation creates useful role specialization or instead causes one role to dominate the optimization dynamics. 
+
+Voting is a two-role workflow with three generators and one aggregator. The three generators independently produce candidate answers, and the aggregator selects or combines among them. This workflow introduces same-role multiplicity: the three generator slots play the same functional role but may produce different outputs for the same prompt. We therefore track not only the aggregator’s 3Table 1: Validation accuracy (%) across the task × scale × workflow matrix, with a single-agent RL (SA-RL) baseline. Each cell reports the peak validation accuracy; IP and SP residuals are MA-RL minus SA-RL in percentage points. SA-RL is workflow-agnostic and reported once per (task, scale) block. Code abbreviates DeepCoder. Task Scale Workflow SA-RL Base MA-RL IP MA-RL SP IP residual SP residual Math 0.6B Eval-Opt 31.4 11.3 39.5 29.5 +8.2 −1.9                                                                                
+
+> Voting 11.7 28.5 24.7 −2.8−6.6
+> Orch-Workers 13.0 36.0 31.6 +4 .7+0 .2
+> 1.7B Eval-Opt 49.9 28.7 60.0 52.7 +10 .1+2 .8
+> Voting 31.2 50.9 46.5 +1 .0−3.4
+> Orch-Workers 32.1 55.5 52.7 +5.5+2 .8
+> 4B Eval-Opt 66.6 48.2 75.2 65.8 +8.6−0.8
+> Voting 53.0 68.1 56.2 +1 .6−10 .3
+> Orch-Workers 54.8 67.9 69.6 +1 .4+3 .1
+> Code 0.6B Eval-Opt 13.1 6.6 15.2 16.0 +2 .1+2 .9
+> Voting 6.2 13.6 12.7 +0 .5−0.4
+> Orch-Workers 6.9 16.1 13.6 +3 .0+0 .5
+> 1.7B Eval-Opt 19.4 12.2 25.8 19.0 +6.4−0.4
+> Voting 11.6 19.0 18.0 −0.4−1.4
+> Orch-Workers 14.9 22.7 20.5 +3 .3+1 .1
+> 4B Eval-Opt 34.2 22.0 36.5 33.9 +2 .3−0.3
+> Voting 14.9 33.9 30.4 −0.3−3.8
+> Orch-Workers 27.2 35.1 32.4 +0 .9−1.8
+
+final decision but also the distribution of generator answers, the aggregator’s selection behavior, and the pass@ k oracle over the three generator outputs. 
+
+Orch-Workers is a three-role workflow consisting of an orchestrator, three workers, and a synthesizer. The orchestrator proposes a plan or decomposition, the workers generate candidate solutions or partial responses, and the synthesizer produces the final answer. Like Voting, this workflow includes same-role multiplicity, but the repeated role appears in a more explicitly hierarchical pipeline. This makes Orch-Workers useful for studying whether coordination roles and worker roles drift differently under the same outcome-level training signal. 
+
+3.2 Policy-Sharing Strategy 
+
+We compare two policy-routing strategies: Shared-Policy (SP) and Isolated-Policy (IP). Under SP, all roles in a workflow use a single shared policy, so gradients from generators, evaluators, aggregators, orchestrators, workers, and synthesizers all update the same parameters. This setting tests whether one policy can support multiple conversational and functional roles without role interference. Under IP, each distinct role is assigned its own role-specific policy adapter. Same-role multiplicity does not create separate adapters: for example, the three generators in Voting share one generator adapter, and the three workers in Orch-Workers share one worker adapter. Thus, IP isolates policies by role type rather than by individual agent instance. This design lets us compare role-specialized learning against fully shared learning while keeping the treatment of repeated same-role agents consistent across workflows. 
+
+3.3 Analysis Protocol 
+
+The analysis follows the structure of the paper. §4 compares outcomes across the workflow–task– scale–policy grid. §5 uses role-level and trajectory-level evidence to explain the strongest empirical patterns, especially the higher-ceiling-and-lower-floor behavior of Isolated-Policy training and the failure redistribution observed under Shared-Policy training. §A.6 translates these findings into design implications and monitoring recommendations. 40.6B 1.7B 4B 0.6B 1.7B 4B 0.6B 1.7B 4B              
+
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> 0.35
+> ∆ accuracy (peak  − base)  Eval-Opt Voting Orch-Workers
+> Math
+> 0.6B 1.7B 4B 0.6B 1.7B 4B 0.6B 1.7B 4B
+> Eval-Opt Voting Orch-Workers
+> Code
+> IP SP
+
+Figure 2: Per-cell validation accuracy delta against the base model, across the workflow × scale ×
+
+task matrix and colored by policy (IP/ SP). 
+
+## 4 Results 
+
+We present the empirical landscape of multi-agent RL training across the workflow, scale, task, and policy-sharing matrix. §4.1 establishes that multi-agent RL usually improves over the base model. §4.2 contrasts Isolated-Policy and Shared-Policy routes on validation accuracy and on training-side instability amplitude. §4.3 reads the workflow and task interactions. §4.4 closes the empirical claim by showing that SP training changes which failure patterns appear rather than removing them. 
+
+4.1 Multi-Agent RL Usually Improves Over Base Models 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 
+
+> SP val pass@1
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> IP val pass@1
+> y = x
+> Workflow
+> Eval-Opt
+> Voting
+> Orch-Workers
+> Task
+> Math
+> Code
+> Scale
+> 0.6B
+> 1.7B
+> 4B
+
+Figure 3: IP vs SP validation accuracy on matched cells. Markers above the diagonal favor IP. Marker shape encodes workflow, fill color encodes task (Math vs Code), and marker size encodes scale. Across the workflow, scale, and task matrix, the headline pattern is positive: multi-agent RL training reaches higher validation accuracy than the corresponding base model in the large majority of cells, and on most cells the multi-agent accuracy matches or exceeds the single-agent RL baseline at the same scale and task. Table 1 reports per-cell base accuracy, the single-agent RL accuracy, the IP and SP multi-agent accuracies, and the IP and SP residuals against the single-agent baseline; Fig. 2 shows the same landscape as a per-cell delta against the base model, grouped by workflow, task, and scale. The improvements are not uniform. On a minority of cells the multi-agent accuracy slips below the single-agent baseline at matched scale and task; the cells where this happens are visible directly in Table 1 as negative residuals. Multi-agent RL is therefore usually a net win over the base model, but the share of that win attributable to multi-agent training (rather than to RL on the underlying single-agent policy) varies across cells, and the variation has structure that the next subsections expose. Table 3 in Appendix §A.2 reports the matched single-agent RL policy run on the each multi-agent workflow, isolating the workflow contribution from the multi-agent training contribution. 
+
+4.2 Isolated Policies Have a Higher Ceiling but Lower Floor 
+
+Comparing Isolated-Policy and Shared-Policy at matched workflow, scale, and task reveals a con-sistent shape: on the cells where multi-agent training helps, IP routes more often reach the higher accuracy. The matched comparison is summarized in Fig. 3, which plots IP accuracy against SP 50 100 200 300                       
+
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> Training Success Rate
+> Training
+> Success Rate
+> Eval-Opt
+> 050 100 150 200 250 300
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> Training Success Rate
+> Voting
+> 0100 200 300
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> Training Success Rate
+> Orch-Workers
+> 0100 200 300
+> Training Step
+> 30
+> 40
+> 50
+> 60
+> DAPO-Math Acc (%)
+> Validation
+> Accuracy
+> 050 100 150 200 250 300
+> Training Step
+> 35
+> 40
+> 45
+> 50
+> DAPO-Math Acc (%)
+> 0100 200 300
+> Training Step
+> 35
+> 40
+> 45
+> 50
+> 55
+> DAPO-Math Acc (%)
+> Multi-LoRA (dark) Shared (light)
+
+Figure 4: Training-side dynamics at 1.7B × Math across the three multi-agent workflows (Eval-Opt, Voting, Orch-Workers). Top row: training success rate. Bottom row: per-checkpoint validation accuracy. accuracy with a diagonal reference; the points cluster above the diagonal across most matched cells. This is the higher-ceiling half of the claim. The lower-floor half is more subtle. We support it with two complementary readings: a within-(scale, task) training-dynamics reading restricted to one cell group where termination conditions are uniform across rows, and a cross-experiment training-side amplitude comparison. 
+
+Within-cell training dynamics at 1.7B × Math. At fixed (scale, task) = 1.7B × Math, training-side dynamics are plotted for each multi-agent workflow’s Isolated-Policy and Shared-Policy runs over each workflow’s full training run. Figure 4 shows training success rate (top row) and per-checkpoint validation accuracy (bottom row), one column per workflow. Across all three multi-agent workflows IP rises faster early and reaches a higher peak; at later training steps IP falls back toward or below SP while SP plateaus at a lower but stable validation accuracy. The within-cell shape is the within-(1.7B, Math) signature of the lower-floor claim; the same comparison across (scale, task) groups would mix runs that terminate under different training-budget conditions. 
+
+Cross-experiment amplitude: training-side instability is larger under IP. Within-cell training dynamics at 1.7B × Math (Fig. 4) only extend across a single cell group. A run-length-tolerant statistic that does extend across the matched matrix is the maximum amplitude of a training-side instability metric over the full training run. Fig. 5 reports three such statistics per matched cell and per policy: the maximum token-level policy ratio ( χ2), the maximum gradient norm, and the entropy collapse depth (initial entropy minus the minimum entropy on the rollout actor’s per-token entropy series). Across the matched matrix, Isolated-Policy shows systematically larger gradient-norm amplitude than Shared-Policy, and larger policy-ratio amplitude on most cells; the exceptions are taken up in §4.4. The pattern is therefore that Isolated-Policy and Shared-Policy carry different risk profiles. IP can climb to a higher accuracy ceiling (Fig. 3), but within a single (scale, task) cell group the IP advantage flips or shrinks at later training steps (Fig. 4), and the same training trajectory drives larger training-side amplitude across the matched matrix (Fig. 5). SP plateaus earlier and lower, but its training-side amplitude stays smaller across most cells. §4.4 clarifies that the SP plateau’s lower training-side amplitude does not translate to a stably higher validation trajectory at later training steps; some SP cells drift down through patterns that token-level training metrics do not register. 6E V O E V O E V O E V O E V O E V O                                               
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> 1.2
+> 0.6B 0.6B 1.7B 1.7B 4B 4B
+> Math Code
+> max χ2token
+> IP
+> SP
+> EVOEVOEVOEVOEVOEVO
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> 1.25
+> 0.6B 0.6B 1.7B 1.7B 4B 4B
+> Math Code
+> max grad-norm
+> EVOEVOEVOEVOEVOEVO
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> 0.6B 0.6B 1.7B 1.7B 4B 4B
+> Math Code
+> entropy collapse
+
+Figure 5: Training-side instability amplitude on matched IP-vs-SP cells. Three statistics per cell and policy: max token-level policy ratio ( χ2), max adapter gradient norm, and entropy collapse depth (initial − minimum on the rollout actor’s per-token entropy). Each statistic is the maximum (or initial-minus-min for entropy collapse) over the full training run, a run-length-tolerant cross-experiment statistic. IP carries larger gradient-norm amplitude than SP across matched cells, and larger policy-ratio amplitude on most cells; the exceptions on policy-ratio amplitude are detailed in §4.4. Entropy collapse depth is small across both policies and less discriminating. Workflow codes: E = Eval-Opt, V = Voting, O = Orch-Workers. 0 100 200 300         
+
+> training step
+> 10 0
+> 10 1
+> per-role metric / first-step value
+> peak
+> (a) Voting-IP-1.7B-Math
+> generator ( Â2)
+> generator (PPL)
+> aggregator ( Â2)
+> aggregator (PPL)
+> 050 100 150 200
+> training step
+> 10 0
+> 10 1
+> global metric / first-step value
+> peak
+> (b) Orch-Workers-SP-4B-Math
+> global Â2
+> global PPL
+> global grad-norm
+> 0100 200 300
+> training step
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> validation pass@1
+> (c) Orch-Workers-{IP,SP}-1.7B-Math
+> IP (per-role policy)
+> SP (shared policy)
+
+Figure 6: Training dynamics on matched IP-vs-SP cliff cells. (a) Voting-IP-1.7B-Math: per-role generator diagnostics rise while the aggregator stays flat. (b) Orch-Workers-SP-4B-Math: global training-side diagnostics escalate ahead of a terminal validation cliff (per-role decomposition is unavailable under Shared-Policy, since a single shared adapter logs only global actor metrics). (c) Matched 1.7B Math Orch-Workers IP-versus-SP validation overlay. Metrics in (a) and (b) are normalized to their first logged value. 
+
+4.3 Improvements Depend on Workflow and Task 
+
+Reading Fig. 2 along the workflow and task axes shows that the magnitude and even the direction of multi-agent improvement depend jointly on what the workflow is doing and on the task. Eval-Opt, Voting, and Orch-Workers are not interchangeable: at matched scale and task, the per-cell residuals against the single-agent baseline differ across workflows, and the ranking of workflows is not constant across tasks or scales. Math and Code also behave differently: at matched workflow, the same policy route can yield a clear gain on one task and slip below the single-agent baseline on the other. 
+
+4.4 Shared-Policy Plateaus Can Still Drift Down at Later Steps 
+
+Shared-Policy’s smaller training-side amplitude does not entail a stably higher validation trajectory at later training steps. Two patterns clarify how. First, the training-amplitude advantage is not uniform: some SP cells (Eval-Opt SP × Code, Eval-Opt SP × 1.7B Math) carry larger token-level policy-ratio amplitude than their IP counterparts. Second, even on cells where SP’s token-level amplitude stays small, the validation trajectory can drift down at later training steps through patterns that token-level metrics do not register. 7Two cells make the point at 4B Math, where the headroom is largest and the routes’ behaviors separate most sharply. At Voting-SP-4B-Math , validation accuracy plateaus and then drifts down within the run, and the trajectory-level signature lives on the aggregator slot: the role designed to emit a terse selection stamp migrates toward verbose justification at the validation-cliff step, while voter-side token-level metrics such as inter-voter Jaccard and per-token entropy remain near their first logged values. At Orch-Workers-SP-4B-Math , the within-experiment validation series falls off a late-training cliff. §5.2 takes up the role-level dynamics behind these patterns. 
+
+## 5 Role-Level Gradient Dynamics 
+
+§4 reports two patterns: an IP shape with a higher ceiling and lower floor (§4.2), and an SP shape whose plateaus can drift down at later steps (§4.4). Both share a common cause: role-level gradient pressure on a single role’s parameters, with the policy-sharing choice selecting the surface shape. §5.1 takes up the IP shape; §5.2 takes up the SP shape. Both mechanisms can leave parallel same-role slots drawing from a narrowed policy, and the shared inference-time consequence on those slots is the same across both shapes. When the narrowed mode lands on a wrong answer, the parallel slots are more likely to emit the same wrong answer than under the base model, sharpening slot-level agreement on the wrong-answer subpopulation. The two mechanisms have different manifestation geometries. The IP mechanism in §5.1 has a single gradient source whose surface is selected by the workflow; the SP mechanism in §5.2 has two distinct sources of gradient asymmetry, each with task- and workflow-conditional surfaces. 
+
+5.1 Same-Role Parallelism Amplifies Role-Level Gradients Under Isolated-Policy 
+
+When a workflow contains N > 1 same-role agents that see the same or related prompts and receive the same outcome reward, and those agents are routed through a single per-role isolated policy (Voting IP, Orch-Workers IP), the role’s parameters receive N gradient samples per training step whose advantage signs co-vary. Because the N samples share task identity and a sign of advantage, the role’s gradient updates are coherent across the N copies. The role’s effective per-step update is amplified relative to a single-agent baseline at the same scale and task, and the role drifts faster than the base policy can absorb. We label this mechanism gradient_amplification . Two manifestations appear in our matrix, distinguished by the workflow that creates the same-role parallelism. 
+
+Voting workflow. The parallelism falls on the generator role. Voting-IP-1.7B-Math decomposes cleanly along role identity: the generator’s χ2 and training perplexity climb sharply over training while the aggregator’s stay near their first logged values, and validation accuracy descends shortly after the generator’s χ2 peak (Fig. 6 panel (a)). 
+
+Orch-Workers workflow. The parallelism falls on the worker role. At fixed workflow, task, and scale, Orch-Workers-IP-1.7B-Math peaks higher than Orch-Workers-SP-1.7B-Math and falls farther, while the SP run peaks lower and stays near its peak through the terminal step (Fig. 6 panel (c)). The IP curve rises and descends; the SP curve rises and plateaus. §5.2 takes up the SP shape. Per-role peak-over-first-step ratios for both manifestations are tabulated in Table 2; trajectory-level signatures are tabulated in Table 4, with the full per-cell breakdown in §A.3. 
+
+5.2 Shared-Policy Training Redistributes Role-Level Gradients 
+
+Sharing parameters across roles redirects the gradient pressures that drive role-level drift toward a different shared-policy direction. The unifying pattern across our Shared-Policy cells is shared-policy capture by the dominant role : when one role contributes more, or more distinctive, per-step gradient mass than the others, the shared policy shifts toward the dominant role’s distribution, and the captured role’s slot starts producing dominant-role-typical outputs at evaluation time. We label this mechanism 
+
+sp_role_capture . Two manifestations appear in our matrix, distinguished by the source of the per-step gradient asymmetry. 
+
+Token-distribution asymmetry. One role emits longer or more distinctive token sequences than the others and so contributes the dominant share of per-step gradient mass; the captured slot drifts toward 8Table 2: Per-role training-dynamics signatures on matched IP-vs-SP cells. Each row is one role under IP or the shared policy under SP; the three ratio columns are peak-over-first-step ratios for token-level 
+
+χ2, training perplexity, and adapter gradient norm, and the rightmost column is the step at which the χ2 ratio peaks. SP cells aggregate across roles into a single shared-policy row; multi-slot roles (3 voters, 3 workers) are logged as a single per-role aggregate. The grad-norm column reports the gradient magnitude of a single optimizer step, before those steps accumulate across an iteration; 
+
+gradient_amplification adds more same-role updates per iteration, each in a similar direction, rather than enlarging any single update, so the mechanism shows up in the χ2 and perplexity columns rather than in grad-norm. Cell Policy Role χ2 ratio PPL ratio grad-norm ratio Step at χ2 peak Voting-1.7B-Math IP generator 29 .49 7.64 1.17 291                                                                            
+
+> IP aggregator 1.18 1.02 13 .27 66
+> SP shared policy 1.69 1.05 3.53 281
+> Voting-4B-Math IP generator 16 .28 4.52 3.64 216
+> IP aggregator 3.21 1.00 1.90 133
+> SP shared policy 1.68 1.06 4.90 182
+> Orch-Workers-1.7B-Math IP orchestrator 1.39 1.05 1.54 316
+> IP worker 21 .43 4.22 1.21 346
+> IP synthesizer 1.14 1.06 7.68 44
+> SP shared policy 3.07 1.13 2.47 336
+> Eval-Opt-1.7B-Math IP generator 1.28 2.92 17 .50 148
+> IP evaluator 6.92 1.20 32 .56 309
+> SP shared policy 5.00 1.56 12 .10 330
+> Eval-Opt-0.6B-Code IP generator 1.78 1.31 1.48 128
+> IP evaluator 1.07 1.31 7.61 2
+> SP shared policy 2.49 1.57 1.19 432
+
+the dominant role’s idiom. Eval-Opt-SP-0.6B-Code surfaces as code-like emission in the evaluator slot, where the base model’s code prior compounds the asymmetry. Eval-Opt-SP-1.7B-Math 
+
+surfaces as long-form re-solve in the evaluator slot, where the Math reward landscape tolerates length inflation as the surface. Voting-SP-4B-Math surfaces as aggregator-slot drift: the aggregator’s terse-stamp slot is captured by the generators’ long-form idiom, with aggregator emitted length climbing sharply at the validation-cliff step while voter-side training metrics remain near their first logged values. 
+
+Per-episode frequency asymmetry. One role occupies N > 1 episode slots against fewer slots from other roles. Orch-Workers-SP-4B-Math surfaces as worker-shape capture under the 3 workers, 1 orchestrator, 1 synthesizer episode structure, manifesting as global training-side amplitude escalation alongside a terminal-step descent of validation accuracy (Fig. 6 panel (b)). Trajectory-level signatures for the token-distribution cells are tabulated in Table 5 (Panels A1, A2, A3); the per-episode-frequency cell is tabulated in Table 6. The full per-cell breakdown is in §A.4. 
+
+## 6 Conclusion 
+
+We asked when multi-agent RL training improves LLM workflows over their base models, and what governs the stability of the training trajectories that produce those improvements. The empirical answer is two-sided. Multi-agent RL training usually does improve workflow performance over the base model, but the trajectories themselves are unstable in workflow-, scale-, task-, and policy-sharing-dependent ways. Isolated-Policy often reaches higher peaks, yet suffers terminal degradation cliffs late in training. Shared-Policy redistributes the underlying drift into shared-policy capture by the dominant role, surfacing as code emission in the evaluator slot under Eval-Opt Code, length inflation in the evaluator slot under Eval-Opt Math, aggregator-slot drift under Voting Math, and worker-shape capture under Orch-Workers Math. The strongest of these patterns are explained by role-level gradient dynamics created jointly by workflow topology and policy routing: same-role gradient amplification under Isolated-Policy (gradient_amplification ), and shared-policy capture by the dominant role under Shared-Policy (sp_role_capture ). SP and IP route training pressure through different channels, each with its own 9characteristic failure surface. The empirical landscape, together with the gradient mechanisms behind it, reframes SP training from a default safety knob into an auditable design choice that practitioners should select with workflow topology, role multiplicity, and task fit explicitly in view. In practice, this means selecting the policy-sharing strategy at the workflow level and monitoring per-role drift signatures rather than aggregate accuracy alone. The bounds on these claims, including the LoRA substrate, the outcome-reward setting, and the single-seed-per-cell design, are stated in §A.1. 
+
+## References 
+
+Guanzhong Chen, Shaoxiong Yang, Chao Li, Wei Liu, Jian Luan, and Zenglin Xu. End-to-end opti-mization of LLM-driven multi-agent search systems via heterogeneous-group-based reinforcement learning. arXiv preprint arXiv:2506.02718 , 2025. Lun Feng, Lin Zheng, Songyan He, Fengzhuo Zhang, and Bo An. Dr. MAS: Stable reinforcement learning for multi-agent LLM systems. arXiv preprint arXiv:2602.08847 , 2026. Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. Hao Hong, Jiacheng Yin, Yuhao Wang, Jiangtao Liu, Zhicheng Chen, Ao Yu, Jianqiang Li, et al. Multi-agent deep research: Training multi-agent systems with M-GRPO. arXiv preprint arXiv:2511.13288 , 2025. Bowen Jin, Hansi Zeng, Zhenrui Yue, Jinsung Yoon, Sercan O. Arik, Dong Wang, Hamed Zamani, and Jiawei Han. Search-r1: Training llms to reason and leverage search engines with reinforcement learning. arXiv preprint arXiv:2503.09516 , 2025. Junqi Liao, Muning Wen, Jun Wang, and Weinan Zhang. MARFT: Multi-agent reinforcement fine-tuning. arXiv preprint arXiv:2504.16129 , 2025. Shaolin Liu, Tianpei Chen, Zhaoyu Liang, Xuejie Lyu, and Christopher Amato. Llm collaboration with multi-agent reinforcement learning. arXiv preprint arXiv:2508.04652 , 2025. Li Long, Zhijian Zhou, Jiejie Hao, J. Liu, Yanting Miao, Wei Pang, Xiaoyu Tan, Wei-Ta Chu, Zhe Wang, Shirui Pan, Chao Qu, and Yuan Qi. The choice of divergence: A neglected key to mitigating diversity collapse in reinforcement learning with verifiable reward. arXiv preprint arXiv:2509.07430 , 2025. doi: 10.48550/arXiv.2509.07430. Michael Luo, Sijun Tan, Roy Huang, Ameen Patel, Alpay Ariyak, Qingyang Wu, Xiaoxiang Shi, Rachel Xin, Colin Cai, Maurice Weber, et al. Deepcoder: A fully open-source 14b coder at o3-mini level. Notion Blog , 1, 2025. Aman Madaan, Niket Tandon, Prakhar Gupta, Skyler Hallinan, Luyu Gao, Sarah Wiegreffe, Uri Alon, Nouha Dziri, Shrimai Prabhumoye, Yiming Yang, et al. Self-refine: Iterative refinement with self-feedback. Advances in Neural Information Processing Systems , 2023. John Schulman and Thinking Machines Lab. Lora without regret. Thinking Machines Lab: Connec-tionism , 2025. doi: 10.64434/tml.20250929. https://thinkingmachines.ai/blog/lora/. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathemat-ical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. Feiyang Wang, Hengguang Cui, Linghao Yang, Chi Shing Lee, Zhongkang Li, and Chenfeiyu Wen. Detecting and repairing role drift in multi-agent collaboration with lightweight protocols. In 2026 International Conference on Communication Networks and Machine Learning (CNML) , 2026. doi: 10.1109/CNML68938.2026.11453032. Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le, Ed Chi, Sharan Narang, Aakanksha Chowdh-ery, and Denny Zhou. Self-consistency improves chain of thought reasoning in language models. 
+
+Proceedings of the International Conference on Learning Representations , 2023. 10 Zihan Wang, Kangrui Wang, Qineng Wang, Pingyue Zhang, Linjie Li, Zhengyuan Yang, Xing Jin, Kefan Yu, Minh Nhat Nguyen, Licheng Liu, Eli Gottlieb, Yiping Lu, Kyunghyun Cho, Jiajun Wu, Li Fei-Fei, Lijuan Wang, Yejin Choi, and Manling Li. Ragen: Understanding self-evolution in llm agents via multi-turn reinforcement learning. arXiv preprint arXiv:2504.20073 , 2025. Zhepei Wei, Wenlin Yao, Yao Liu, Weizhi Zhang, Qin Lu, Liang Qiu, Changlong Yu, Puyang Xu, Chao Zhang, Bing Yin, Hyokun Yun, and Lihong Li. Webagent-r1: Training web agents via end-to-end multi-turn reinforcement learning. arXiv preprint arXiv:2505.16421 , 2025. Qingyun Wu, Gagan Bansal, Jieyu Zhang, Yiran Wu, Beibin Li, Erkang Zhu, Li Jiang, Xiaoyun Zhang, Shaokun Zhang, Jiale Liu, et al. AutoGen: Enabling next-gen LLM applications via multi-agent conversation. arXiv preprint arXiv:2308.08155 , 2023. An Yang, Baosong Yang, Beichen Zhang, Binyuan Wang, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. Wesley Yang and Jesse Thomason. Learning to deliberate: Meta-policy collaboration for agentic LLMs with multi-agent reinforcement learning. arXiv preprint arXiv:2509.03817 , 2025. Yubo Yang, Chao Qu, Muning Wen, Lun Shi, Ying Wen, Weinan Zhang, Adam Wierman, and Shixiang Gu. Understanding agent scaling in LLM-based multi-agent systems via diversity. arXiv preprint arXiv:2602.03794 , 2026. Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Tiantian Fan, Gaohong Liu, Lingjun Liu, Xin Liu, et al. DAPO: An open-source LLM reinforcement learning system at scale. arXiv preprint arXiv:2503.14476 , 2025. Zhiwei Zhang, Xiaomin Li, Yudi Lin, Hui Liu, Ramraj Chandradevan, Linlin Wu, Minhua Lin, Fali Wang, Xianfeng Tang, Qi He, and Suhang Wang. Unlocking the power of multi-agent LLM for reasoning: From lazy agents to deliberation. arXiv preprint arXiv:2511.02303 , 2025. doi: 10.48550/arXiv.2511.02303. Andrew Zhao, Yiran Wu, Yang Yue, Tong Wu, Quentin Xu, Matthieu Lin, Shenzhi Wang, Qingyun Wu, Zilong Zheng, and Gao Huang. Absolute zero: Reinforced self-play reasoning with zero data. 
+
+arXiv preprint arXiv:2505.03335 , 2025a. Yujie Zhao, Lanxiang Hu, Yang Wang, Minmin Hou, Hao Zhang, Ke Ding, and Jishen Zhao. Stronger-mas: Multi-agent reinforcement learning for collaborative llms. arXiv preprint arXiv:2510.11062 ,2025b. 
+
+## A Appendix 
+
+This appendix collects the design implications, monitoring recommendations, and limitations that follow from the empirical and mechanistic findings in the body of the paper, together with the implementation specifics needed to reproduce the experiments. §A.1 states the limitations of the study; §A.2 describes the single-agent reinforcement-learning baseline used in Table 1; §A.3 reports trajectory-level signatures for the two IP cells named in §5.1; §A.4 reports trajectory-level signatures for the SP cells named in §5.2; §A.5 gives the training hyperparameters; §A.6 discusses design implications and monitoring recommendations; §A.7 states the reward functions and the per-role advantage assignment; and §A.8 summarizes compute. 
+
+A.1 Limitations 
+
+Several limitations bound the claims in this paper. 
+
+LoRA substrate. All training runs use LoRA adapters, a parameter-efficient setup that has been reported to match full fine-tuning on RL workloads at the scales we use (Schulman & Lab, 2025). The cross-role gradient mechanisms in §5 are therefore not specific to LoRA, and the same gradient pressures would act under full-parameter training. One axis our analysis does not characterize is how adapter capacity interacts with the base-model role prior, which would require LoRA-rank or full-parameter ablations that we leave to future work. 11 Outcome-reward setting only. All experiments use outcome reward, scoring only the final answer. We do not study process-reward workflows in which intermediate role outputs receive their own reward signal. Process rewards change the reward geometry on each role and may suppress, amplify, or recompose the patterns we report. 
+
+Single seed per cell. Each workflow × task × scale × policy combination is trained once with a fixed seed. The cross-cell consistency of Isolated-Policy-vs-Shared-Policy cliff signatures across the matched cells in Tables 1 and 2, and in Fig. 5, is the substitute for repeated seeds, not equivalent to them; cell-level effect sizes should be read with this in mind. 
+
+A.2 Single-Agent RL Baseline Details 
+
+The SA-RL column in Table 1 reports a single-agent reinforcement-learning baseline at matched task and scale. The baseline uses the same base model, the same task, the same training hyperparameters listed in Table 7, and the same total training step budget as the multi-agent runs at that scale. The single-agent rollout uses one generator role only: a single LoRA adapter is trained on rollouts from a single-role workflow whose prompt template matches the multi-agent generator prompt for the same task. No evaluator, aggregator, orchestrator, worker, or synthesizer role is run, and no inter-role context is available; the only role-conditional input is the generator prompt template applied to the problem. The baseline is therefore matched to the multi-agent runs in everything except (a) the workflow topology, which is single-role rather than multi-role; and (b) the policy-routing strategy, which is a single adapter rather than Isolated-Policy or Shared-Policy. This design lets the residual columns in Table 1 (Isolated-Policy and Shared-Policy minus SA-RL) isolate the share of the multi-agent run’s accuracy that is attributable to multi-agent training, separate from the share already produced by single-agent reinforcement learning at the same task and scale. As a diagnostic on the same SA-RL adapter, we additionally deploy the 1.7B adapter only on the generator role inside each multi-agent workflow; the evaluator, aggregator, orchestrator, worker, and synthesizer roles fall through to the base model. Table 3 reports validation accuracy across the three multi-agent workflows on both tasks. The SA-RL column reproduces the matched single-agent value from Table 1 so the workflow effect on a generator-only RL adapter can be read off directly. Table 3: Single-agent generator transfer at 1.7B. The SA-RL adapter is applied only on the generator role inside each multi-agent workflow; supervisor roles use the base model. Validation accuracy (%) on dapo_math (1412 problems) and Code (1000 problems), nrollouts =1 , training-time length caps. The SA-RL column reproduces the matched value from Table 1. Task SA-RL Eval-Opt Voting Orch-Workers Math 49.9 49.1 50.5 58.9 Code 19.4 18.4 20.0 19.5 
+
+A.3 Trajectory-level signatures for the gradient_amplification cells in §5.1 
+
+This subsection collects trajectory-level signatures for the two IP cells named in §5.1. Each cell is sampled at three trajectory checkpoints under dapo_math , with 100 problems per checkpoint. Table 4 Panel C1 reports Voting-IP-1.7B-Math , where the same-role parallelism falls on the generator role. Panel C2 reports Orch-Workers-IP-1.7B-Math , where the parallelism falls on the worker role and uses the same columns as Table 6. Panel C2 and Table 6 sit at different scales (1.7B vs 4B); the scale-matched IP-vs-SP validation-accuracy contrast for Orch-Workers on Math is in Fig. 6 panel (c). 
+
+A.4 Trajectory-level signatures for the sp_role_capture cells in §5.2 
+
+This subsection collects trajectory-level signatures for the SP cells named in §5.2. Each cell is sampled at three trajectory checkpoints under dapo_math (Math) or deepcoder_primeintellect (Code), with 100 problems per checkpoint. Throughout the signature tables in this appendix, the hedging-12 Table 4: Per-role trajectory-level signatures of gradient amplification on the two IP cells named in §5.1. Panel C1 ( Voting-IP-1.7B-Math ) concentrates the same-role parallelism on the generator role. The generator block reports the generator’s mean completion length, the rate at which the rollout hits the 5120-token cap ( finish_reason =length), the rate at which the rollout contains a parseable 
+
+\boxed{} , the hedging-phrase rate (defined in §A.4), and pairwise inter-generator 3-gram Jaccard averaged within a problem and then across problems. The aggregator column reports the aggregator’s median completion length. Panel C2 ( Orch-Workers-IP-1.7B-Math ) concentrates the parallelism on the worker role and uses the same columns as Table 6. 
+
+Panel C1. Voting-IP-1.7B-Math (dapo_math, 100 problems / step, 3 generators / 1 aggregator per problem). Generator (300 rollouts / step) Aggregator (100 / step) Step mean toks trunc % \boxed{} ret. hedge % inter-gen 3-gram J median toks 
+
+70 2167 0.093 0.907 0.260 0.144 126 130 2899 0.237 0.767 0.507 0.126 149 290 3260 0.283 0.810 0.877 0.025 155 
+
+Panel C2. Orch-Workers-IP-1.7B-Math (dapo_math, 100 problems / step, 3 workers / 1 orch / 1 synth per problem). Worker (300 rollouts / step) Orchestrator Synthesizer (100 / step) Step mean toks trunc % \boxed{} ret. hedge % inter-worker 3-gram J unique 3-word openers (of 100) p50 toks p95 toks                         
+
+> 140 2351 0.133 0.870 0.367 0.117 89 95 425 280 3760 0.453 0.550 0.853 0.101 71 147 2734 330 4298 0.647 0.360 0.903 0.065 76 292 5120
+
+phrase rate is the rate at which a rollout contains a phrase from the fixed list wait , alternatively ,
+
+actually , hmm , let me reconsider , on second thought , not correct , or this is wrong .Table 5 collects the three token-distribution-asymmetry cells. Panels A1 and A2 report the two Eval-Opt SP cells, where the per-role gradient asymmetry surfaces as the evaluator emitting a Python solution block on Code (Panel A1) or growing a long re-solve derivation on Math (Panel A2). In both cases the evaluator contributes the dominant share of per-step gradient mass on the shared policy and pulls the captured slot toward the dominant role’s idiom. Panel A3 reports the Voting SP cell 
+
+Voting-SP-4B-Math , which fires the same token-distribution-asymmetry surface on the aggregator slot: the role designed to emit a terse \boxed{N} selection stamp migrates over training toward verbose justification text. Token-level training metrics on the shared policy remain near their first logged values on the Voting cell because the cross-role anchor against the voter slots suppresses the training-side signature, while the trajectory-level signature on the aggregator slot accumulates over training. The slot tasked with scoring the work starts producing the work itself, identical in shape to the long-form re-solve manifestation on Eval-Opt-SP-1.7B-Math (Panel A2). Table 6 reports the Orch-Workers SP cell, where the per-role gradient asymmetry instead surfaces as a per-episode frequency asymmetry: the worker role occupies three of the five episode slots and so contributes the dominant share of per-step gradient mass without any per-rollout token-distribution asymmetry. 
+
+A.5 Hyperparameters 
+
+Table 7 lists the training hyperparameters used across every cell of the workflow × scale × task 
+
+× policy matrix. Values that vary with workflow, task, or policy routing are reported with their per-cell setting; the remaining values are fixed across the matrix. The base model is Qwen3 (Qwen3-0.6B, Qwen3-1.7B, or Qwen3-4B); LoRA adapters are attached to every linear module of the base model. Isolated-Policy attaches one adapter per role type (so the three voting generators share a single generator adapter, and the three Orchestrator-Workers workers share a single worker adapter). Shared-Policy attaches one adapter shared across every role in the workflow. 13 Table 5: Per-role trajectory-level signatures of token-distribution asymmetry on the three SP cells named in §5.2. Panel A1 ( Eval-Opt-SP-0.6B-Code ) classifies the evaluator’s iter-1 out-put into python_code_fence (a Python solution block of ≥ 3 body lines inside a fenced block), bare_stamp (a ≤ 200 -token \boxed{Correct/Incorrect} verdict with no fenced block), or other , and reports the parsed \boxed{Correct} -versus-unparseable rates for the verdict slot alongside the iter-1 generator truncation rate against the 2048-token cap. Panel A2 (Eval-Opt-SP-1.7B-Math ) reports evaluator and generator token-length percentiles and trunca-tion rates against the 5120-token cap at three checkpoints; the generator’s \boxed{} retention rate is the rate at which the iter-1 generator response contains a parseable \boxed{} , and the evaluator’s verdict-tag retention rate is the rate at which the evaluator output contains a parseable 
+
+\boxed{Correct/Incorrect} . Panel A3 ( Voting-SP-4B-Math ) reports aggregator and voter token-length percentiles; the terse rate is the fraction of aggregator turns at ≤ 30 tokens contain-ing a parseable \boxed{} , and voter columns are averages across the three voter slots per problem. 
+
+Panel A1. Eval-Opt-SP-0.6B-Code (deepcoder_primeintellect, 100 problems / step). Evaluator iter-1 form (% of episodes) Evaluator verdict tag Iter-1 gen Iter-2 gen len Step python_code_fence bare_stamp other correct % unknown % trunc % p50 toks (py bucket)                      
+
+> 200 0.91 0.05 0.04 0.10 0.90 0.57 526 390 0.98 0.00 0.02 0.00 1.00 0.80 597 445 0.99 0.00 0.01 0.00 1.00 0.87 1063
+
+Panel A2. Eval-Opt-SP-1.7B-Math (dapo_math, 100 problems / step). Evaluator Generator iter-1 Step median toks p95 toks trunc % verdict-tag retention median toks trunc % \boxed{} retention                      
+
+> 150 131 372 0.00 1.00 1929 0.185 0.820 290 361 5120 0.07 0.94 3299 0.373 0.669 320 986 5120 0.15 0.91 4780 0.465 0.579
+
+Panel A3. Voting-SP-4B-Math (dapo_math, 100 problems / step; 3 voters and 1 aggregator per problem). Aggregator (1 slot, n=100 ) Voter (avg of 3 slots, n=300 )Step median toks p95 toks terse rate median toks p95 toks trunc % \boxed{} retention 
+
+70 6 736 0.61 1350 4852 0.050 0.94 140 6 764 0.72 1446 5120 0.083 0.92 170 173 779 0.49 1533 4818 0.063 0.94 
+
+A.6 Discussion A.6.1 Design Implications 
+
+The choice between Shared-Policy and Isolated-Policy training is workflow- and task-conditional. Each routes training pressure through different channels, and the right choice depends on the workflow, the task, and which role within the workflow is most fragile. Isolated-Policy training is the appropriate choice when role specialization is itself valuable and when the role that carries same-role multiplicity within an episode is not the role most prone to collapse. In that regime, IP preserves role-distinguishing parameters and lets each role pursue its own reward geometry. When the role with same-role multiplicity is also the one most prone to collapse, however, parallel same-role rollouts on the same prompt can drive a coherent gradient direction on that role and accelerate its drift. We therefore recommend auditing which role within a workflow carries multiplicity before defaulting to IP training. Shared-Policy training is the appropriate choice when cross-role parameter coupling is acceptable, that is, when a single policy answering for multiple roles does not violate task semantics. Shared parameters can suppress the same-role amplification that IP training admits, but they introduce their own failure surface. Under workflows with asymmetric per-step gradient contribution across roles, the 14 Table 6: Per-role trajectory-level signatures of worker-shape capture on 
+
+Orch-Workers-SP-4B-Math , named in §5.2. Each row is one trajectory checkpoint with 100 dapo_math problems; each problem yields three worker rollouts, one orchestrator rollout, and one synthesizer rollout. The worker block reports the worker rollout’s mean completion length, the rate at which the rollout hits the 5120-token cap ( finish_reason =length), the rate at which the rollout contains a parseable \boxed{} , the hedging-phrase rate as defined in §A.4, and pairwise inter-worker 3-gram Jaccard averaged across the three worker rollouts within a problem and then across problems. The orchestrator block reports the count of unique 3-word openers across the 100 episodes (a strategy-diversity proxy). The synthesizer block reports the p50 and p95 completion length of the synthesizer rollout; the gap between the two columns captures the bimodalization of synthesizer length. 
+
+Cell: Orch-Workers-SP-4B-Math (dapo_math, 100 problems / step, 3 workers / 1 orch / 1 synth per problem). Worker (300 rollouts / step) Orchestrator Synthesizer (100 / step) Step mean toks trunc % \boxed{} ret. hedge % inter-worker 3-gram J unique 3-word openers (of 100) p50 toks p95 toks                         
+
+> 70 2221 0.080 0.923 0.290 0.105 98 369 768 130 2679 0.183 0.827 0.463 0.098 97 149 1123 170 3213 0.337 0.747 0.653 0.088 100 19 2931
+
+shared policy can be captured on the dominant role’s slot, expressed as the dominant role’s distribution leaking into the captured role’s outputs. Under Voting workflows, this surfaces as capture of the aggregator’s terse-selection slot by the voters’ long-form idiom, with the captured-mode signature visible in the aggregator’s emitted-length distribution while voter-side training metrics remain near their first logged values. Across the workflow, scale, task, and policy-sharing matrix studied here, workflow choice and task fit account for more variance in training stability than the policy-sharing axis does. Policy sharing is one auditable design choice among several; the larger structural choices (which workflow, which task, which roles to compose) should be made first. 
+
+A.6.2 Monitoring Recommendations 
+
+Aggregate metrics miss role drift. Final accuracy and global entropy can remain healthy while a single role’s parameters drift, or while the shared policy is captured by a dominant role on the captured role’s slot. Practitioners training multi-agent RL workflows should therefore monitor three signals beyond aggregate accuracy, each of which fires on a specific failure route from §5. 1. Per-role training metrics, not their aggregate. Per-role perplexity, gradient norm, KL divergence to the reference distribution, and token-level concentration each fire on a different drift signature, and the role with same-role multiplicity is the one to watch most closely. Sharp per-role perplexity rise on one role while aggregate accuracy is stable is the training-side fingerprint of gradient_amplification under IP training. 2. Per-role trajectory inspection at training-relevant checkpoints. Aggregate scores cannot distinguish a role that has lost its template from one that is solving the task differently. Read-ing role outputs at a small number of well-chosen steps surfaces the qualitative signatures of 
+
+sp_role_capture on its token-distribution surfaces (code emission in the evaluator slot under Code, length-inflated re-solving in the evaluator slot under Math) and of cross-role bleed-over more generally; no scalar metric reports them. 3. Per-role response shape on the aggregator slot of Voting workflows. The aggregator slot is designed to emit a terse selection stamp over the voter responses; a Voting SP cell whose aggregator slot migrates toward verbose justification text shaped like the voter responses is one in which the shared policy has been captured by the dominant voter idiom. The diagnostic is the aggregator’s emitted-length distribution (terse-rate, p50 and p95 of emitted characters) tracked across training, contrasted against the per-role response length on the voter slots. Mean accuracy hides this until the validation cliff appears. 15 Table 7: Training hyperparameters used across the workflow × scale × task × policy matrix. Values listed without per-cell variation are fixed across the matrix. Where a value depends on the workflow, task, or policy-routing strategy, the per-cell setting is given. Group Hyperparameter Value Optimization Optimizer AdamW Learning rate 2 × 10 −5                                    
+
+> Warmup style cosine Warmup steps 15 Gradient clipping 1.0 PPO clip ratio (high) 0.28 LoRA adapter Rank r64 Alpha α32 Dropout 0.0 Target modules all linear modules GRPO Algorithm GRPO (no explicit KL) Group size n8Advantage normalization group-relative PPO mini-batch size 64 PPO epochs per update 1Loss aggregation sequence-mean, token-mean Batching Train batch size (problems / step) 64 Validation batch size 2048 Rollout temperature 0.7 Sequence length Eval-Opt, Math (prompt / response) 30720 / 5120 Eval-Opt, Code (prompt / response) 10240 / 2048 Voting, Math (prompt / response) 20480 / 5120 Voting, Code (prompt / response) 10240 / 2048 Orch-Workers, Math (prompt / response) 20480 / 5120 Orch-Workers, Code (prompt / response) 10240 / 2048 Workflow caps Eval-Opt revision rounds, Math 3Eval-Opt revision rounds, Code 2Voting candidate generations per problem 3Orch-Workers worker proposals per problem 3Training schedule Total training steps 500 Validation interval (steps) 10 Checkpoint interval (steps) 5Policy routing Isolated-Policy one LoRA adapter per role type Shared-Policy one shared LoRA adapter across all roles
+
+A.7 Reward Functions Math. A rollout’s outcome reward is computed by parsing the final answer in the trajectory’s terminal \boxed{} expression and comparing it to the ground-truth final answer recorded in the DAPO-Math-17K dataset. A correctly parsed and matching answer receives a reward of 1; a parsed but incorrect answer receives a reward of 0; a missing or malformed boxed answer receives a small format-error penalty. 
+
+Code. A rollout’s outcome reward is the unit-test pass rate of the trajectory’s terminal Python code block evaluated against the problem’s hidden test suite. Code that fails to parse, fails to compile, or hits the per-test execution timeout receives a reward of 0; otherwise the reward is the fraction of tests that pass. 
+
+Per-role advantage assignment. A single outcome reward is computed for the full workflow rollout, and that reward is propagated uniformly to every token emitted by every role in the rollout when computing per-role advantages. No per-step or per-role process reward is used in any of the main experiments. Within each role’s update, gradients are accumulated only over tokens emitted by that role; tokens emitted by other roles in the same rollout are masked out of the role’s loss. 16 Under Shared-Policy, all roles’ tokens contribute to the gradient of a single shared adapter; under Isolated-Policy, each role’s tokens contribute only to the gradient of its own adapter. 
+
+A.8 Compute 
+
+All training runs use a single compute node with two GPUs and a frozen base model with LoRA adapters; the base model parameters are not updated, so memory and bandwidth are dominated by adapter states, optimizer state for the adapters, and the vLLM rollout cache. Our training and rollout stack holds multiple LoRA adapters resident in GPU memory simultaneously and selects the active adapter per role at the granularity of individual rollout requests and per-step gradient updates. Under IP, each role binds to its own adapter; under SP, all roles share a single adapter. Adapter selection is a low-overhead pointer swap rather than a re-load, and the adapter rank is small relative to the frozen base, so the additional adapters used by IP add a negligible increment to GPU memory, optimizer state, and step time. As a result, IP and SP runs have effectively identical wall-clock and memory cost at every scale we study, and the IP versus SP comparison is not confounded by parameter count or compute budget. Training uses Fully Sharded Data Parallel (FSDP) sharding across the two GPUs for the base model and adapter parameters, and a vLLM-backed rollout engine for asynchronous generation; rollout and training share the GPUs and run alternately. Most runs use one of two GPU classes: an H100 (80 GB) two-GPU node, used predominantly for the 1.7B and 4B cells, and an L40s (48 GB) two-GPU node, used predominantly for the 0.6B cells and as a fallback for 1.7B cells. The maximum number of tokens permitted in a single PPO microbatch on each GPU is set per (scale, GPU class) pair so that long Math rollouts fit on the smaller-memory class without out-of-memory errors. Total compute across the matrix is approximately 235 days of aggregate wall-clock as reported by the wandb Total compute field summed over all runs. 17
