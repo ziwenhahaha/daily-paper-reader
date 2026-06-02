@@ -6,120 +6,129 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-06-01
-- 运行时间：2026-06-01 23:19:47 UTC
+- 最新运行日期：2026-06-02
+- 运行时间：2026-06-02 23:21:09 UTC
 - 运行状态：成功
-- 本次总论文数：34
-- 精读区：19
+- 本次总论文数：37
+- 精读区：22
 - 速读区：15
 
 ### 今日简报（AI）
-2026年6月1日成功推荐34篇论文，精读19篇、速读15篇，聚焦通信与强化学习交叉领域；两篇9分精读论文值得重点关注：NR-V2X跨层资源分配采用多智能体强化学习框架，以及流体环境对强化学习的独特挑战；建议重点关注强化学习在自动驾驶、通信系统和机器人安全控制中的实际应用进展。
-- 详情：[/202606/01/README](/202606/01/README)
+今日精读重点关注多智能体协作推理与技能条件自蒸馏两大方向，均获9分高分；速读聚焦持续学习、零信任安全模型及ARC-AGI任务中的探索-求解权衡，平均8分。强烈建议关注合作式LLM推理的信用分配机制研究，以及稀疏自编码器特征蒸馏在LLM持续学习中的应用。
+- 详情：[/202606/02/README](/202606/02/README)
 
 ### 精读区论文标签
-1. [Integrated Sensing, Communication, and Computing for NR-V2X: A Cross-Layer Resource Allocation Framework Using Multi-Agent Reinforcement Learning](/202606/01/2605.24972v1-integrated-sensing-communication-and-computing-for-nr-v2x-a-cross-layer-resource-allocation-framework-using-multi-agent-reinforcement-learning)  
+1. [TRACER: Turn-level Regret Matching with Inner Reinforcement Credit for Cooperative Multi-LLM Reasoning](/202606/02/2605.28699v1-tracer-turn-level-regret-matching-with-inner-reinforcement-credit-for-cooperative-multi-llm-reasoning)  
    标签：评分：9.0/10、query:mas
-   evidence：多智能体强化学习资源分配
-2. [A perspective on fluid mechanical environments for challenges in reinforcement learning](/202606/01/2605.25011v1-a-perspective-on-fluid-mechanical-environments-for-challenges-in-reinforcement-learning)  
-   标签：评分：9.0/10、query:rl
-   evidence：复杂环境中的强化学习智能体
-3. [HyLaT: Efficient Multi-Agent Communication via Hybrid Latent-Text Protocol](/202606/01/2605.25421v1-hylat-efficient-multi-agent-communication-via-hybrid-latent-text-protocol)  
+   evidence：多智能体强化学习与协作推理
+2. [Skill-Conditioned Gated Self-Distillation for LLM Reasoning](/202606/02/2605.28791v1-skill-conditioned-gated-self-distillation-for-llm-reasoning)  
+   标签：评分：9.0/10、query:self-distillation
+   evidence：基于技能教师验证的LLM推理自蒸馏方法
+3. [Improving Collaborative Storytelling with a Multi-Agent Framework Based on Large Language Models](/202606/02/2605.29625v1-improving-collaborative-storytelling-with-a-multi-agent-framework-based-on-large-language-models)  
    标签：评分：9.0/10、query:mas
-   evidence：多智能体通信协议设计
-4. [QUACK: Questioning, Understanding, and Auditing Communicated Knowledge in Multimodal Social Deduction Agents](/202606/01/2605.27068v1-quack-questioning-understanding-and-auditing-communicated-knowledge-in-multimodal-social-deduction-agents)  
+   evidence：多智能体框架结合大语言模型进行协作故事创作
+4. [When Cloud Agents Meet Device Agents: Lessons from Hybrid Multi-Agent Systems](/202606/02/2605.30102v1-when-cloud-agents-meet-device-agents-lessons-from-hybrid-multi-agent-systems)  
+   标签：评分：9.0/10、query:mas
+   evidence：结合云端和设备模型的混合多智能体系统
+5. [Procedural Generation of First Person Shooter Maps using Map-Elites](/202606/02/2605.30570v1-procedural-generation-of-first-person-shooter-maps-using-map-elites)  
    标签：评分：9.0/10、query:game-ai
-   evidence：社会推理游戏中的多智能体LLM协调与博弈
-5. [Guiding LLM Post-training Data Engineering with Model Internals from Sparse Autoencoders](/202606/01/2605.27354v1-guiding-llm-post-training-data-engineering-with-model-internals-from-sparse-autoencoders)  
+   evidence：使用MAP-Elites算法程序化生成FPS游戏地图
+6. [When are LLMs Sufficient Policy Optimizers for Sequential RL Tasks?](/202606/02/2605.30719v1-when-are-llms-sufficient-policy-optimizers-for-sequential-rl-tasks)  
    标签：评分：9.0/10、query:rl
-   evidence：基于稀疏自编码器模型内部特征构建SAERL数据工程框架用于LLM强化学习后训练
-6. [Confidence-Orchestrated Self-Evolution against Uncertain LLM Feedback](/202606/01/2605.28010v1-confidence-orchestrated-self-evolution-against-uncertain-llm-feedback)  
+   evidence：大语言模型作为强化学习任务的策略优化器
+7. [Enhancing Human-Likeness in Reinforcement Learning Agents via Hierarchical Macro Action Quantization](/202606/02/2605.30928v1-enhancing-human-likeness-in-reinforcement-learning-agents-via-hierarchical-macro-action-quantization)  
    标签：评分：9.0/10、query:rl
-   evidence：基于置信度加权PPO和自蒸馏的自我进化大语言模型
-7. [Skill0.5: Joint Skill Internalization and Utilization for Out-of-Distribution Generalization in Agentic Reinforcement Learning](/202606/01/2605.28424v1-skill05-joint-skill-internalization-and-utilization-for-out-of-distribution-generalization-in-agentic-reinforcement-learning)  
+   evidence：类人强化学习智能体
+8. [Emergence of Exploration in Policy Gradient Reinforcement Learning via Retrying](/202606/02/2606.00151v1-emergence-of-exploration-in-policy-gradient-reinforcement-learning-via-retrying)  
    标签：评分：9.0/10、query:rl
-   evidence：Skill0.5框架通过联合技能内化与利用实现智能体强化学习
-8. [Skill-Conditioned Gated Self-Distillation for LLM Reasoning](/202606/01/2605.28791v1-skill-conditioned-gated-self-distillation-for-llm-reasoning)  
+   evidence：强化学习理论与策略梯度算法
+9. [Agentic Transformers Provably Learn to Search via Reinforcement Learning](/202606/02/2606.00183v1-agentic-transformers-provably-learn-to-search-via-reinforcement-learning)  
+   标签：评分：9.0/10、query:rl
+   evidence：基于强化学习的变换器搜索能力理论
+10. [Reinforcement Learning with Pairwise Preferences in Long-Term Decision Problems](/202606/02/2606.00367v1-reinforcement-learning-with-pairwise-preferences-in-long-term-decision-problems)  
+   标签：评分：9.0/10、query:rl
+   evidence：用于长期决策问题的成对偏好强化学习
+11. [Robust Reasoning via Dynamic Token Selection for Distribution-Aligned Self-Distillation](/202606/02/2606.00628v1-robust-reasoning-via-dynamic-token-selection-for-distribution-aligned-self-distillation)  
    标签：评分：9.0/10、query:self-distillation
-   evidence：自蒸馏方法用于大语言模型推理
-9. [Differentiable Belief-based Opponent Shaping](/202606/01/2605.29042v1-differentiable-belief-based-opponent-shaping)  
+   evidence：自蒸馏方法，通过动态标记选择实现鲁棒推理
+12. [Scaling Behavior of Single LLM-Driven Multi-Agent Systems](/202606/02/2606.00655v1-scaling-behavior-of-single-llm-driven-multi-agent-systems)  
    标签：评分：9.0/10、query:mas
-   evidence：多智能体强化学习信念动态对手塑造
-10. [Distributed Non-Uniform Scaling Control of Multi-Agent Formation with Dynamic Agent Joining](/202606/01/2605.29191v1-distributed-non-uniform-scaling-control-of-multi-agent-formation-with-dynamic-agent-joining)  
+   evidence：LLM驱动多智能体系统的扩展行为研究
+13. [The Cartan-Topos Protocol: A Unified Geometric and Categorical Framework for Resilient Multi-Agent Coordination](/202606/02/2606.00714v1-the-cartan-topos-protocol-a-unified-geometric-and-categorical-framework-for-resilient-multi-agent-coordination)  
    标签：评分：9.0/10、query:mas
-   evidence：分布式多智能体编队缩放控制
-11. [LLM-ALSO: LLM-Driven Adaptive Learning-Signal Optimization for Multi-Agent Reinforcement Learning](/202606/01/2605.29293v1-llm-also-llm-driven-adaptive-learning-signal-optimization-for-multi-agent-reinforcement-learning)  
-   标签：评分：9.0/10、query:mas
-   evidence：多智能体强化学习采用LLM驱动的奖励优化
-12. [MIC: Maximizing Informational Capacity in Adaptive Representations via Isotropic Subspace Alignment](/202606/01/2605.29987v1-mic-maximizing-informational-capacity-in-adaptive-representations-via-isotropic-subspace-alignment)  
+   evidence：使用几何方法的多智能体协调框架
+14. [Internalize the Temperature: On-Policy Self-Distillation as Policy Reheater for Reinforcement Learning](/202606/02/2606.00755v1-internalize-the-temperature-on-policy-self-distillation-as-policy-reheater-for-reinforcement-learning)  
    标签：评分：9.0/10、query:self-distillation
-   evidence：自蒸馏目标优化表征学习
-13. [Scalable Constrained Multi-Agent Reinforcement Learning via State Augmentation and Consensus for Separable Dynamics](/202606/01/2605.30461v1-scalable-constrained-multi-agent-reinforcement-learning-via-state-augmentation-and-consensus-for-separable-dynamics)  
+   evidence：自蒸馏方法解决RL熵坍缩问题
+15. [Dynamic Coordination Strategy Selection for Enterprise Multi-Agent Systems](/202606/02/2606.00804v1-dynamic-coordination-strategy-selection-for-enterprise-multi-agent-systems)  
    标签：评分：9.0/10、query:mas
-   evidence：可扩展的约束多智能体强化学习方法
-14. [Your Teacher Can't Help You Here: Combating Supervision Fidelity Decay in On-Policy Distillation](/202606/01/2605.30833v1-your-teacher-cant-help-you-here-combating-supervision-fidelity-decay-in-on-policy-distillation)  
-   标签：评分：9.0/10、query:self-distillation
-   evidence：在线策略蒸馏解决自蒸馏保真度衰减问题
-15. [Safe Equilibrium Policy Optimization for Strategic Agent Policies](/202606/01/2605.30854v1-safe-equilibrium-policy-optimization-for-strategic-agent-policies)  
+   evidence：企业多智能体系统协调策略选择
+16. [Not All Flips Are Conformity: Decomposing Stance Convergence in Multi-Agent LLM Debate](/202606/02/2606.00820v1-not-all-flips-are-conformity-decomposing-stance-convergence-in-multi-agent-llm-debate)  
    标签：评分：9.0/10、query:mas
-   evidence：多智能体强化学习与策略均衡优化
-16. [Enhancing Human-Likeness in Reinforcement Learning Agents via Hierarchical Macro Action Quantization](/202606/01/2605.30928v1-enhancing-human-likeness-in-reinforcement-learning-agents-via-hierarchical-macro-action-quantization)  
+   evidence：多智能体LLM辩论立场收敛分析
+17. [Generative Multi-Robot Motion Planning via Diffusion Modeling with Multi-Agent Reinforcement Learning Guidance](/202606/02/2606.00933v1-generative-multi-robot-motion-planning-via-diffusion-modeling-with-multi-agent-reinforcement-learning-guidance)  
+   标签：评分：9.0/10、query:mas
+   evidence：多智能体强化学习用于协调机器人轨迹规划
+18. [Recognize Your Orchestrator: An Entropy Dynamics Perspective for LLM Multi-Agent Systems](/202606/02/2606.01351v1-recognize-your-orchestrator-an-entropy-dynamics-perspective-for-llm-multi-agent-systems)  
+   标签：评分：9.0/10、query:mas
+   evidence：大语言模型多智能体系统编排分析
+19. [All Models are Wrong, Knowing Where is Useful: On Model Uncertainty in Reinforcement Learning](/202606/02/2606.01363v1-all-models-are-wrong-knowing-where-is-useful-on-model-uncertainty-in-reinforcement-learning)  
    标签：评分：9.0/10、query:rl
-   evidence：强化学习框架，使用分层量化实现类人智能体
-17. [Learning Multi-Agent Coordination via Sheaf-ADMM](/202606/01/2605.31005v1-learning-multi-agent-coordination-via-sheaf-admm)  
+   evidence：基于模型的强化学习模型不确定性框架
+20. [Dynamic Trust-Aware Sparse Communication Topology for LLM-Based Multi-Agent Consensus](/202606/02/2606.01828v1-dynamic-trust-aware-sparse-communication-topology-for-llm-based-multi-agent-consensus)  
    标签：评分：9.0/10、query:mas
-   evidence：细胞丛-ADMM多智能体协调
-18. [Generalized Intention Modeling in Multi-Agent Reinforcement Learning](/202606/01/2605.31318v1-generalized-intention-modeling-in-multi-agent-reinforcement-learning)  
+   evidence：自适应通信拓扑多智能体共识
+21. [Coordination Graphs for Constrained Multi-Agent Reinforcement Learning](/202606/02/2606.02337v1-coordination-graphs-for-constrained-multi-agent-reinforcement-learning)  
    标签：评分：9.0/10、query:mas
-   evidence：多智能体强化学习中的对手意图建模
-19. [Dreaming Of Others: Latent Teammate Modeling In World Models For Multi-Agent Reinforcement Learning](/202606/01/2605.31361v1-dreaming-of-others-latent-teammate-modeling-in-world-models-for-multi-agent-reinforcement-learning)  
+   evidence：约束多智能体强化学习的协调图方法
+22. [Minimax-Optimal Policy Regret in Partially Observable Markov Games](/202606/02/2606.02363v1-minimax-optimal-policy-regret-in-partially-observable-markov-games)  
    标签：评分：9.0/10、query:mas
-   evidence：多智能体强化学习与世界模型
+   evidence：部分可观测马尔可夫博弈中的极小极大最优策略遗憾
 
 ### 速读区论文标签
-1. [ParkingWorld: End-to-End Autonomous Parking Reinforcement Learning from Corrective Experience in 3DGS Simulation](/202606/01/2605.25029v2-parkingworld-end-to-end-autonomous-parking-reinforcement-learning-from-corrective-experience-in-3dgs-simulation)  
-   标签：评分：8.0/10、query:rl
-   evidence：复杂3D环境自动驾驶泊车深度强化学习
-2. [When Agents Control Robots: A Zero Trust Policy Model for Agentic Cyber-Physical Systems](/202606/01/2605.25653v1-when-agents-control-robots-a-zero-trust-policy-model-for-agentic-cyber-physical-systems)  
-   标签：评分：8.0/10、query:mas
-   evidence：用于机器人控制的多智能体系统协调机制
-3. [On the Benefits of Free Exploration for Regret Minimization in Multi-Armed Bandits](/202606/01/2605.25789v1-on-the-benefits-of-free-exploration-for-regret-minimization-in-multi-armed-bandits)  
-   标签：评分：8.0/10、query:rl
-   evidence：多臂老虎机的遗憾最小化是强化学习理论基础
-4. [Explore Before You Solve: The Speed--Depth Trade-off in Epistemic Agents for ARC-AGI-3](/202606/01/2605.25931v1-explore-before-you-solve-the-speed--depth-trade-off-in-epistemic-agents-for-arc-agi-3)  
-   标签：评分：8.0/10、query:game-ai
-   evidence：用于ARC-AGI-3游戏基准的认知智能体
-5. [The Bridge-Garden Dilemma in LLM Distillation: Why Mixing Hard and Soft Labels Works](/202606/01/2605.26246v1-the-bridge-garden-dilemma-in-llm-distillation-why-mixing-hard-and-soft-labels-works)  
+1. [SAE-FD: Sparse Autoencoder Feature Distillation for Continual Learning of Large Language Models](/202606/02/2605.25525v1-sae-fd-sparse-autoencoder-feature-distillation-for-continual-learning-of-large-language-models)  
    标签：评分：8.0/10、query:self-distillation
-   evidence：知识蒸馏中混合硬标签和软标签用于LLM压缩
-6. [PRIMA: Operational Patterns for Resilient Multi-Agent Research with Verifiable Identity and Convergent Feedback](/202606/01/2605.24775v1-prima-operational-patterns-for-resilient-multi-agent-research-with-verifiable-identity-and-convergent-feedback)  
+   evidence：用于持续学习的稀疏自编码器特征蒸馏
+2. [When Agents Control Robots: A Zero Trust Policy Model for Agentic Cyber-Physical Systems](/202606/02/2605.25653v1-when-agents-control-robots-a-zero-trust-policy-model-for-agentic-cyber-physical-systems)  
+   标签：评分：8.0/10、query:mas
+   evidence：基于基础模型控制机器人的多智能体系统安全分析
+3. [Explore Before You Solve: The Speed--Depth Trade-off in Epistemic Agents for ARC-AGI-3](/202606/02/2605.25931v1-explore-before-you-solve-the-speed--depth-trade-off-in-epistemic-agents-for-arc-agi-3)  
+   标签：评分：8.0/10、query:game-ai
+   evidence：具备探索-验证-规划阶段的游戏AI智能体
+4. [Coalition Free Energy and Adaptive Precision in Multi-Agent Cooperation](/202606/02/2605.26278v1-coalition-free-energy-and-adaptive-precision-in-multi-agent-cooperation)  
+   标签：评分：8.0/10、query:mas
+   evidence：多智能体协作中的Shapley值信用分配与自适应精度控制
+5. [Exploiting Local Dynamics Regularity for Reusable Skills in Offline Hierarchical RL](/202606/02/2605.26371v2-exploiting-local-dynamics-regularity-for-reusable-skills-in-offline-hierarchical-rl)  
+   标签：评分：8.0/10、query:rl
+   evidence：层次强化学习实现可重用技能
+6. [CODESKILL: Learning Self-Evolving Skills for Coding Agents](/202606/02/2605.25430v1-codeskill-learning-self-evolving-skills-for-coding-agents)  
+   标签：评分：7.0/10、query:self-distillation
+   evidence：从智能体轨迹中提取技能并使用蒸馏方法
+7. [AgentHijack: Benchmarking Computer Use Agent Robustness to Common Environment Corruptions](/202606/02/2605.25707v1-agenthijack-benchmarking-computer-use-agent-robustness-to-common-environment-corruptions)  
    标签：评分：7.0/10、query:mas
-   evidence：多智能体协调韧性模式
-7. [ProActor: Timing-Aware Reinforcement Learning for Proactive Task Scheduling Agents](/202606/01/2605.24900v1-proactor-timing-aware-reinforcement-learning-for-proactive-task-scheduling-agents)  
+   evidence：计算机使用智能体鲁棒性基准测试
+8. [On the Benefits of Free Exploration for Regret Minimization in Multi-Armed Bandits](/202606/02/2605.25789v1-on-the-benefits-of-free-exploration-for-regret-minimization-in-multi-armed-bandits)  
    标签：评分：7.0/10、query:rl
-   evidence：主动任务调度智能体的强化学习方法
-8. [Learning from Semantic Dictionaries: Discriminative Codebook Contrastive Learning for Unified Visual Representation and Generation](/202606/01/2605.25012v1-learning-from-semantic-dictionaries-discriminative-codebook-contrastive-learning-for-unified-visual-representation-and-generation)  
+   evidence：多臂老虎机遗憾最小化理论
+9. [SPHERE-JEPA: Spherical Prediction with Homogeneous Embeddings](/202606/02/2605.26900v1-sphere-jepa-spherical-prediction-with-homogeneous-embeddings)  
    标签：评分：7.0/10、query:self-distillation
-   evidence：自监督代码本对比学习方法
-9. [Joint Optimization of Training and Inference in Federated Edge Learning via Constrained Multi-Objective Deep Reinforcement Learning](/202606/01/2605.25916v1-joint-optimization-of-training-and-inference-in-federated-edge-learning-via-constrained-multi-objective-deep-reinforcement-learning)  
+   evidence：自监督表征学习理论
+10. [Efficient Agentic Reinforcement Learning with On-Policy Intrinsic Knowledge Boundary Enhancement](/202606/02/2605.26952v1-efficient-agentic-reinforcement-learning-with-on-policy-intrinsic-knowledge-boundary-enhancement)  
    标签：评分：7.0/10、query:rl
-   evidence：深度强化学习应用于联邦边缘学习优化
-10. [Geometry-Aware Contrastive Learning for Few-Shot Automatic Modulation Recognition](/202606/01/2605.26600v1-geometry-aware-contrastive-learning-for-few-shot-automatic-modulation-recognition)  
-   标签：评分：7.0/10、query:self-distillation
-   evidence：自监督对比学习框架
-11. [CRPO: Character-centric Group Relative Policy Optimization for Role-aware Reasoning in Role-playing Agents](/202606/01/2605.25511v1-crpo-character-centric-group-relative-policy-optimization-for-role-aware-reasoning-in-role-playing-agents)  
-   标签：评分：6.0/10、query:rl
-   evidence：角色扮演智能体的RL优化
-12. [SAE-FD: Sparse Autoencoder Feature Distillation for Continual Learning of Large Language Models](/202606/01/2605.25525v1-sae-fd-sparse-autoencoder-feature-distillation-for-continual-learning-of-large-language-models)  
+   evidence：agentic RL提升LLM工具调用边界
+11. [A general tensor-structured compression scheme for efficient large language models](/202606/02/2605.25344v1-a-general-tensor-structured-compression-scheme-for-efficient-large-language-models)  
    标签：评分：6.0/10、query:self-distillation
-   evidence：特征蒸馏用于持续学习模型压缩
-13. [Can LLMs Time Travel? Enhancing Temporal Consistency in Legal Agentic Search through Reinforcement Learning](/202606/01/2605.25920v1-can-llms-time-travel-enhancing-temporal-consistency-in-legal-agentic-search-through-reinforcement-learning)  
-   标签：评分：6.0/10、query:rl
-   evidence：用于法律时序推理的强化学习框架
-14. [Turning Bias into Bugs: Bandit-Guided Style Manipulation Attacks on LLM Judges](/202606/01/2605.26156v1-turning-bias-into-bugs-bandit-guided-style-manipulation-attacks-on-llm-judges)  
-   标签：评分：6.0/10、query:rl
-   evidence：上下文赌博机强化学习方法用于对抗性风格操纵
-15. [Bridging Control with Neural Network Verifier alpha-beta-CROWN: A Tutorial](/202606/01/2605.26577v1-bridging-control-with-neural-network-verifier-alpha-beta-crown-a-tutorial)  
-   标签：评分：6.0/10、query:rl
-   evidence：基于学习的控制器神经网络验证
+   evidence：用于高效大语言模型的张量结构化模型压缩
+12. [Cost of Structural Learning Under Censored Feedback: A Threshold-Bandit Approach](/202606/02/2605.27076v1-cost-of-structural-learning-under-censored-feedback-a-threshold-bandit-approach)  
+   标签：评分：6.0/10、query:mas
+   evidence：阈值 bandit 多智能体协调
+13. [Exploring Agent Interactions in MoltBook through Social Network Analysis](/202606/02/2605.27349v1-exploring-agent-interactions-in-moltbook-through-social-network-analysis)  
+   标签：评分：6.0/10、query:mas
+   evidence：多智能体LLM交互社交网络分析
+14. [Natural Language Query to Configuration for Retrieval Agents](/202606/02/2605.27361v1-natural-language-query-to-configuration-for-retrieval-agents)  
+   标签：评分：6.0/10、query:mas
+   evidence：多智能体协调用于检索智能体配置选择
+15. [Supervised Distributional Reduction via Optimal Transport and Dependence Maximization](/202606/02/2605.27619v1-supervised-distributional-reduction-via-optimal-transport-and-dependence-maximization)  
+   标签：评分：6.0/10、query:self-distillation
+   evidence：基于最优传输的表示学习压缩方法
 
