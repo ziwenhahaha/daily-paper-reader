@@ -1,0 +1,2563 @@
+Title: Efficient Test-Time Finetuning of LLMs via Convex Reconstruction and Gradient Caching
+
+URL Source: https://arxiv.org/pdf/2605.30337v1
+
+Published Time: Fri, 29 May 2026 01:49:37 GMT
+
+Number of Pages: 26
+
+Markdown Content:
+# Efficient Test-Time Finetuning of LLMs via Convex Reconstruction and Gradient Caching 
+
+Alaa Khamis 
+
+Department of Computer Science University of Haifa 
+
+Alaa Maalouf 
+
+Department of Computer Science University of Haifa 
+
+Abstract 
+
+Test-time finetuning (TTFT) is a rapidly evolving paradigm that adapts a language model to each prompt by retrieving related sequences, updating the model on them, and then evaluating the prompt. However, TTFT is only practical if it is fast :selection and finetuning both happen per query, making each a direct bottleneck. Existing methods trade speed for quality: fast retrieval is often redundant, while stronger diversity-aware selection adds prohibitive per-query cost. We introduce 
+
+HullFT 1, a geometric approach to TTFT that addresses both bottlenecks. Given a query, HullFT first represents the query embedding as a sparse convex combination of few training sequences, using efficient projection-free Frank–Wolfe optimization. This yields a support set that is inherently relevant and diverse . We then convert the fractional convex weights into an exact integer multiset for finetuning through a geometric integerization procedure. The resulting multiplicities naturally create repeated examples, which we exploit with Gradient Reuse to amortize forward– backward computation across repeated finetuning steps. Our experiments show that HullFT improves the quality–efficiency tradeoff over current state-of-the-art TTFT methods, achieving lower bits-per-byte at substantially lower total runtime. 
+
+1 Introduction 
+
+Large language models are trained on web-scale corpora and optimized for broad, general-purpose performance across a vast distribution of text [ 1, 2]. As a result, their weights represent a global optimum that is unlikely to be locally optimal for any specific input. Test-time training (TTT) [ 3– 7], also referred to as test-time finetuning (TTFT) in recent influential work [ 8], addresses this directly: at inference time, given a prompt q, we retrieve the N most relevant sequences from a large corpus, take one gradient step per retrieved sequence, and evaluate the finetuned model on q. Retrieving as few as 20 neighbors is enough to substantially close the gap between models differing by more than an order of magnitude in parameter count [5]. Data selection for TTFT runs per prompt at inference time, making it a direct contributor to user-facing latency. Current methods sit at opposite ends of a quality–efficiency tradeoff. Pure nearest-neighbor retrieval [ 5 ] returns the top-N candidates (nearest neighbors in some embedding space) via a FAISS index [ 9]: fast, but blind to redundancy. On large corpora, duplicate content is common [ 10 , 11 ]; without accounting for redundancy, the top-N neighbors can collapse to near-identical sequences, causing every subsequent gradient step to repeat the same signal. Diversity-aware selection methods address this by explicitly penalizing redundancy when choosing examples [ 8], producing more informative batches. The improvement in bits-per-byte (bpb) [ 12 ] over pure retrieval is significant, though such greedy selection introduces overhead, especially at lower N values. 
+
+Novelty. In this work, we take a different route, drawing on provable sparse convex approximation. The key idea is that directions in the embedding space carry meaning: sequences spanning different                           
+
+> 1Code available at https://github.com/alaa-khamis/HullFT .Preprint.
+> arXiv:2605.30337v1 [cs.LG] 28 May 2026 Prompt q
+> 1. Frank-Wolfe Support
+> Data D
+> Top-kNN
+> q
+> w₁
+> w₂
+> w₃
+> q ≈ w₁x₁ + w₂x₂ + w₃x₃
+> 2. Integerization
+> min || q - Σ (cᵢ / N) xᵢ ||² w₁ = 0.42 c₁ = 21
+> w₂ = 0.36 c₂ = 18
+> w₃ = 0.22 c₃ = 11
+> Multiset |M| = N = 50
+> Exact Training Selection M
+> 3. Gradient Reuse
+> N=50 steps, r=2
+> compute g =
+> ∇θ loss(θ; xᵢ) reuse cached g on next step x₁
+> ∇Lg
+> ∇Lg...
+> x₂
+> ∇Lg
+> ∇Lg...
+> x₃
+> ∇Lg
+> ∇Lg...
+> loss-gradient evals: ∑
+> ⌈cᵢ/r
+> ⌉= 26 26 steps - w/ Gradient Reuse
+> 50 steps - Naive (w/o Gradient Reuse)
+> Adapted LLM
+> 4. Evaluation
+> Before adaptation
+> Base LLM qBPB₀
+> (no adaptation)
+> vs.
+> After gradient reuse Adapted LLM qBPB₁ BPB₁ < BPB₀
+
+Figure 1: Our test-time finetuning pipeline. 1. Frank-Wolfe Support: Given a prompt q, we retrieve a candidate pool from the corpus, then approximate q as a sparse convex combination to select a support set. 2. Integerization: Fractional weights are converted to integer counts forming an exact 
+
+N -point multiset. 3. Finetuning & Inference: The base LLM is finetuned on this multiset before evaluating q via gradient reusing on repeated samples. directions cover a broader range of semantic features, while sequences pointing in nearly the same direction are largely redundant [ 13 , 14 ]. Thus, framing data selection as a convex approximation of the prompt q means diversity is inherently derived from the geometry, without explicit penalty terms, greedy heuristics, or expensive search and heavy gradient descent based optimization methods. Once a candidate is selected to help reconstruct q, near-duplicates pointing in the same direction are naturally down-weighted, as they offer little additional value. The optimization naturally (inherently from the convex approximation definition) turns to unexplored directions instead, covering the prompt’s context (in the embedding space) more broadly [15, 16]. Approximating q as a convex combination of candidates is precisely the approximate Carathéodory problem [ 17 – 19 ]: find a small support set with positive weights summing to 1 whose weighted centroid is close to q. The approximate Carathéodory theorem guarantees that an ε-accurate solution (in squared ℓ2 error) using O(1 /ε ) points always exists, regardless of ambient dimension [17]. This gives us a principled way to obtain a sparse, relevance-aware, and diversity-aware representation of the query from a kNN candidate pool. Notably, convex reconstruction alone does not yet specify a TTFT update sequence. It returns fractional weights over selected examples, while TTFT requires an explicit set of N samples. We therefore convert the weighted solution into integer multiplicities that preserve the geometric approximation as closely as possible, see more details in Sec. C.1. Crucially, this discrete reconstruction does more than make the method executable. Once the fractional weights are converted into integers, some selected examples appear multiple times in the final multiset. These repetitions create an opportunity for efficient finetuning: rather than recomputing a fresh forward–backward pass for every repeated occurrence, we can reuse cached gradients across short runs of identical examples. Thus, integerization not only bridges geometry and TTFT, but also induces the structure that enables Gradient Reuse. Figure 1 summarizes the HullFT pipeline. 
+
+Our contributions. We introduce HullFT , an efficient test-time finetuning method that improves the quality–efficiency tradeoff of TTFT through three coupled ideas. 1. We formulate query/prompts-specific data selection as a sparse convex approximation problem over a kNN-retrieved candidate pool, yielding a support set that is both relevant and diverse. We suggest solving it using the Frank–Wolfe algorithm. This efficient projection-free convex approximation procedure selects a small, diverse, and relevant support set from the candidate pool (Alg. 3 in the appendix). 2. We introduce a geometric integerization procedure (Alg. 1) that turns fractional convex weights into an exact N -example training multiset while preserving approximation quality. 3. We show that the resulting multiset (from 2) enables Gradient Reuse , which amortizes gradient computation across repeated training examples and reduces finetuning cost (Alg. 4). Across 12 subsets of The Pile [ 12 ], HullFT strictly outperforms our competing methods (kNN [ 5]and SIFT [8]) on quality–efficiency tradeoffs, with the largest gains in the latency-critical regime. 22 Related work 
+
+Test-time training and finetuning. Instance-specific adaptation traces back to transductive learn-ing [ 20 ] and has recently re-emerged as test-time training (TTT), where deep networks adapt at inference time using self-supervised objectives [ 3, 4, 6, 7]. For language models, nearest-neighbor TTT finetunes on retrieved examples [ 5], while SIFT adds an information-theoretic selection criterion that accounts for redundancy [ 8 ]. Alternatively, retrieval-augmented models place retrieved text in context [ 21 , 22 ], but self-attention cost limits context size and full benefits often require retrieval-aware training [ 5]. Related selection methods balance relevance and diversity via maximal marginal relevance or determinantal point processes [ 13 , 14 ]. Influence-based methods estimate example utility [ 23 , 24 ], including through gradient similarity for LLM finetuning [ 25 – 27 ], but typically score points independently and thus miss redundancy [ 8 ]. Active learning selects diverse subsets to cover the data manifold [15, 16], but is not query-conditioned. 
+
+Data selection. Early transfer-learning work showed that an additional finetuning stage on in-domain text produces large gains across tasks [ 28 , 29 ]. The approach has since been validated in biomedicine [ 30 –32 ], scientific text [ 33 ], legal language [ 34 ], and clinical question answering [ 35 ], establishing domain-specific adaptation as a default recipe. Beyond the choice of domain, the composition of the training subset itself can be decisive: a handful of curated examples sometimes matches full-corpus finetuning [ 36 ], parameter-efficient methods make per-task adaptation practical even for very large models [ 37 ], and recent work explicitly optimizes which data to include for specialization [ 38 , 39 ]. Adaptation benefits extend beyond language; for instance, they have been shown to govern out-of-distribution robustness in vision-based driving [ 40 , 41 ]. At the pre-training scale, a parallel effort in data curation tackles redundancy through deduplication, quality filtering, and domain reweighting [ 10 , 11 , 42 , 43 , 1, 2 ]. Our approach pushes this logic to its extreme: rather than curating a training set once, we curate query-specific subsets at inference time, using convex geometry to jointly enforce relevance and diversity within a single optimization. 
+
+Convex approximation, Frank–Wolfe, and coresets. Carathéodory’s theorem [ 18 ] guarantees that any point in the convex hull of a set in Rd can be written as a convex combination of at most d+1 points, requiring O(n2d) time for constructing such a set. Lately, [ 44 ] proposed a fast construction running in O(nd +d4 log n) time. The approximate variant relaxes this to O(1 /ε 2) points independent of dimension [ 45 , 17 , 46 ]. The Frank–Wolfe (conditional gradient) algorithm [ 47 , 48 ]provides a constructive proof of this result, with each iteration being a sparse convex combination that grows by at most one point [ 19 ]. Other variants achieve faster convergence under favorable geometry [ 49 , 50 ]. The connection between Frank–Wolfe and coresets (small weighted subsets that provably approximate a cost function over the full data) was established by Clarkson [ 51 ] and developed in a rich body of work on geometric data summarization [ 52 – 54 ]. In machine learning, coreset methods have been applied to regression [ 44 , 55 ], data-efficient model training and subset selection for deep learning [ 16 , 15 , 56 –59 ], model compression and network pruning [ 60 –63 ], and general-purpose loss approximation under unified coreset frameworks [ 64 –69 ]. Our selection stage instantiates Frank–Wolfe on the ℓ2-squared objective over the probability simplex, yielding a coreset of the candidate pool. Integerization then converts into a multiset for finetuning. 
+
+3 Method 
+
+Notation. Let ⟨u, v ⟩ = u⊤v be the dot product on Rd, 1[·] the indicator function ( 1[A] = 1 if predicate A is true, 0 otherwise), ∆K the probability simplex in RK , and ei ∈ RK the i-th standard basis vector. We use q ∈ Rd to denote a query, {p1, . . . , p K } ⊂ Rd to denote a candidate training pool, and P ∈ Rd×K to denote the matrix whose i-th column is pi, so P w = P 
+
+> i
+
+wi pi for any w ∈ RK
+
+(all in the embedding space). The final selected support set is S = {s1, . . . , s |S|} ⊆ { p1, . . . , p K },with associated integer counts c ∈ Z|S|≥0, where cj is the count of sj . Throughout, N is the finetuning budget (total multiset size), ε is the Frank–Wolfe tolerance, and m is the support cap. The base model has parameters θ, learning rate η, and per-sequence loss L(θ; s).
+
+3.1 Data selection via convex approximation Frank–Wolfe support set. From the preselected pool of K candidates, we solve the approximate Carathéodory problem by running the Frank–Wolfe (conditional gradient) algorithm [ 47 , 48 ] on the 3Algorithm 1 INTEGERIZE (q, {p1, . . . , p K }, w, N, T )
+
+Input: query q, candidate pool {p1, . . . , p K }, sparse weights w ∈ ∆K , budget N , swap passes 
+
+T (default 2)
+
+Output: support set S = {s1, . . . , s |S|} ⊆ { p1, . . . , p K } and counts c ∈ Z|S|≥0 with P 
+
+> j
+
+cj = N 
+
+> 1:
+
+Let {i1, . . . , i |S|} ← { i : wi > 0}; sj ← pij , ˜wj ← wij ; S ← { s1, . . . , s |S|} 
+
+> 2:
+
+cj ← ⌊ N ˜wj ⌋ for all j 
+
+> 3:
+
+for N − P 
+
+> j
+
+cj steps do ▷ greedy fill  
+
+> 4:
+
+j⋆ ← arg min j q − P 
+
+> ℓcℓ+1[ℓ=j]
+> N
+
+sℓ
+
+> 22
+
+; cj⋆ ← cj⋆ + 1  
+
+> 5:
+
+for t = 1 to T do ▷ local-swap refinement  
+
+> 6:
+
+improved ← false  
+
+> 7:
+
+for each (j, k ) with cj > 0, j̸ = k do  
+
+> 8:
+
+if swapping one unit from j to k strictly reduces Eq. (2) then  
+
+> 9:
+
+cj ← cj − 1; ck ← ck + 1 ; improved ← true  
+
+> 10:
+
+if not improved then break  
+
+> 11:
+
+return S, c ℓ2-squared objective over the probability simplex (Alg. 3). Selection reduces to finding a sparse 
+
+w ∈ ∆K whose convex combination P w approximates q:
+
+min 
+
+> w∈∆K
+
+∥q − P w ∥22. (1) The support of w is the selected subset: pi is picked iff wi > 0. The method is projection-free, requires only inner-product evaluations, and its iterates are sparse convex combinations by design [51]. Starting from the single vertex w = ev⋆ , where v⋆ = arg max i∈[K]⟨q, p i⟩, each iteration forms the residual r = q − P w , picks the vertex index v = arg max i∈[K]⟨r, p i⟩, and takes an exact line search along the edge from w to ev . A step adds at most one new nonzero to w, so iterates stay sparse throughout, and near-duplicates barely move the residual and are naturally skipped. We stop as soon as ∥q − P w ∥22 ≤ ε or |{ i : wi > 0}| = m, whichever comes first. The cap m is the binding constraint in practice: left alone, FW keeps adding vertices and w eventually fills in over most of the pool. The algorithm is defined in the appendix, Sec. B.1 as Alg. 3; we spell out Frank–Wolfe for completeness. 
+
+Geometric integerization. Frank–Wolfe (Alg. 3) returns fractional weights, which cannot be used directly for finetuning. Training on a uniformly weighted subset can outperform loss reweighting, which is prone to variance amplification and overfitting to noisy samples [ 70 ]. We therefore convert the fractional weights into integer counts that define an equally weighted multiset, preserving the geometric approximation quality (Alg. 1). Write the indices of the nonzero entries of w as {i1, . . . , i |S|} := {j | wj > 0}, let S := 
+
+{s1, . . . , s |S|} = {pj | wj > 0} be the corresponding chosen points from Alg. 3, and for ev-ery j ∈ { 1, . . . , |S|} , let ˜wj := wij . We look for integer counts c ∈ Z|S|≥0 with P 
+
+> j
+
+cj = N
+
+minimizing the reconstruction error 
+
+q −
+
+> |S|
+
+X 
+
+> j=1
+> cj
+> N
+
+sj
+
+> 22
+
+, (2) i.e. the N -point multiset over S whose uniform mean is closest to q. Turning the continuous weights into discrete counts is tricky because the rounded multiset must satisfy two constraints at once: it must contain exactly N examples, and its empirical mean should remain close to the Frank–Wolfe convex combination. We therefore view integerization as a small discrete reconstruction problem around the continuous solution. The three steps below progressively restore feasibility and reduce the same geometric objective in Eq. (2): 1. Floor allocation: We start by setting cj = ⌊N ˜wj ⌋. This gives each point the number of copies suggested by its Frank–Wolfe weight, while making sure we do not exceed the budget. Very small-weight points naturally get zero copies at this stage. 4Algorithm 2 HULL FTS ELECT (q, {p1, . . . , p K }, N, ε, m, T )
+
+Input: query q, candidate pool {p1, . . . , p K }, budget N , FW tolerance ε, support cap m, swap passes T
+
+Output: support points S, counts c 
+
+> 1:
+
+w ← FRANK WOLFE (q, {p1, . . . , p K }, ε, m ) 
+
+> 2:
+
+S, c ← INTEGERIZE (q, {p1, . . . , p K }, w, N, T ) 
+
+> 3:
+
+return S, c 
+
+2. Greedy fill: Rounding down leaves a few unallocated copies. We add them one at a time to the point that most reduces the reconstruction error in Eq. (2), so the leftover budget is used to repair the geometric shift introduced by flooring. 3. Local-swap refinement: Finally, we check whether moving one copy from one support point to another improves the reconstruction. This keeps the budget fixed, but corrects small rounding mistakes left by the greedy fill. We run this pairwise check for two passes. After this, each support point sj is included cj times to form the final multiset of exactly N sequences. 
+
+Full selection algorithm. Combining both steps, the selection pipeline (Alg. 2) takes the candidate pool and budget and returns the final training multiset. 
+
+3.2 Efficient finetuning via gradient reuse 
+
+The integerized multiset contains repeated sequences: a support point sj with count cj appears cj
+
+times in the finetuning batch. A naïve implementation treats these copies as independent samples and performs a separate forward-backward pass for each one, causing the computational cost to scale linearly with N regardless of duplication. We exploit the integer multiplicities produced by geometric integerization to amortize gradient computation across repeated optimizer steps (Alg. 4). Rather than recomputing the gradient at every repeated step on sj , we cache and reuse gradients :we refresh ˜g once every r steps and apply the cached value for the intermediate r−1 updates. Let 
+
+t = 0 , 1, . . . , c j − 1 index the repeated steps on sj :
+
+˜gt =
+
+∇θ L(θt; sj ) if t mod r = 0 ,
+
+˜gt−1 otherwise, θt+1 = ADAM STEP (θt, ˜gt, η ). (3) This reduces forward-backward passes from N to ⌈N/r ⌉. For small refresh intervals r, the parameter drift between consecutive steps on identical input is mild enough that reusing a cached gradient preserves convergence quality (see Sec. 4). The full gradient-reuse procedure is defined in Sec. B.1 as Alg. 4. For gradient reuse to work, all copies of a given sequence must appear consecutively in the training order. Integerization gives this property by construction: multiplicities are fixed upfront, so each unique text is trained for all its cj steps in a single consecutive block. We test whether this structure can be imposed on SIFT in Sec. 4. 
+
+4 Experimental results 
+
+The setup. We evaluate on 12 subsets of The Pile [ 12 ] using GPT-2 [ 71 ]. For each subset, we average the results over 150 test queries. All methods share a K=200 nearest-neighbor candidate pool retrieved via a precomputed FAISS index. Following [ 8], we use the normalized RoBERTa encoder for embeddings and finetune with Adam ( lr =5 ×10 −5). Experiments run on a single NVIDIA A100 GPU, except for the CPU evaluation in Sec. 4. Our metric is Bits-Per-Byte (BPB%) relative to a non-finetuned baseline. Since TTFT happens at inference time, we report the BPB% achievable within a given total-runtime budget T (selection + finetuning), sweeping N ∈ [1 , 50] . For more details, see Sec. A and Sec. C for extended experiments and ablations, which cover FW and Carathéodory selection variants, kNN candidate pool sizing, and qualitative selection comparisons. 
+
+Quality–runtime tradeoff. We compare HullFT against SIFT[ 8], which selects examples to reduce response uncertainty by optimizing information gain while accounting for information duplication, and kNN[ 5], which finetunes on top-N nearest neighbors, across a range of total-runtime budgets 
+
+T . Figure 2 reports the average BPB% across all datasets as a function of total runtime, together 50 1 2 3 4 5 6          
+
+> Total wall-clock time (s) [selection + finetuning]
+> 65
+> 70
+> 75
+> 80
+> 85
+> 90
+> 95
+> BPB (in % relative to baseline,  )
+> T= 1.75s, 3.83%
+> T= 2s, 3.44%
+> kNN
+> SIFT
+> HullFT (ours)
+> % diff at budget T
+> 123456
+> Wall-clock budget T(s)
+> 1
+> 0
+> 1
+> 2
+> 3
+> 4
+> BPB gap (\%pts), best baseline  HullFT
+> HullFT better
+> Best baseline better
+
+Figure 2: Left : BPB% vs total runtime (selection + finetuning) as we sweep N ∈ [1 , 50] for each method. Our method (green) is Pareto-dominant for every budget T ≲ 4s. Vertical lines at T =1 .75 s
+
+and T =2 .0s mark the BPB% gap to the best baseline: our method is 3.83% and 3.44% lower than the best baseline at those budgets, respectively. Right : Quality gap (best-baseline BPB% − ours) in 
+
+% as a function of the total-runtime budget T , where the best baseline is the lower-BPB% method among kNN and SIFT at that budget. Positive values (green) mean our method wins at that budget; negative (grey) means the best baseline wins. Our method dominates for every T ≤ 4.5s with largest margins at tight budgets, which is exactly the regime a latency-sensitive deployment cares about. Table 1: Per-subset BPB% at time budgets T =1 .75 s (left) and T =2 .0s (right), using each method’s average selection size. ∆ shows the difference between the best baseline (kNN or SIFT) and HullFT. 
+
+T =1 .75 s
+
+Subset kNN SIFT Ours ∆
+
+ArXiv 91 .33 91 .80 89 .39 1.94 ↓
+
+DM Math. 83 .31 85 .29 84 .12 −0.81 ↑
+
+Enron 66 .47 67 .84 59 .74 6.73 ↓
+
+FreeLaw 73 .99 76 .32 72 .98 1.01 ↓
+
+GitHub 48 .42 48 .95 42 .98 5.44 ↓
+
+HackerNews 87 .52 87 .92 86 .66 0.86 ↓
+
+NIH 83 .46 75 .72 68 .13 7.59 ↓
+
+PubMed Abs. 90 .11 90 .27 88 .33 1.78 ↓
+
+PubMed Cent. 85 .57 86 .47 84 .67 0.90 ↓
+
+StackEx. 81 .16 81 .74 80 .78 0.38 ↓
+
+USPTO 79 .69 74 .92 67 .99 6.93 ↓
+
+Wikipedia 69 .96 72 .54 68 .01 1.95 ↓
+
+Avg. 78 .42 78 .31 74 .48 3.83 ↓
+
+T =2 .0s
+
+Subset kNN SIFT Ours ∆
+
+ArXiv 90 .82 90 .84 88 .57 2.25 ↓
+
+DM Math. 82 .14 83 .97 82 .58 −0.44 ↑
+
+Enron 65 .67 65 .26 57 .32 7.94 ↓
+
+FreeLaw 72 .73 74 .40 71 .63 1.10 ↓
+
+GitHub 46 .97 45 .61 40 .88 4.73 ↓
+
+HackerNews 86 .98 87 .51 85 .83 1.15 ↓
+
+NIH 83 .08 73 .01 66 .05 6.95 ↓
+
+PubMed Abs. 89 .54 89 .30 87 .70 1.60 ↓
+
+PubMed Cent. 85 .03 85 .31 84 .13 0.90 ↓
+
+StackEx. 80 .91 81 .03 80 .37 0.54 ↓
+
+USPTO 78 .86 72 .08 65 .70 6.38 ↓
+
+Wikipedia 68 .83 70 .41 66 .71 2.12 ↓
+
+Avg. 77 .63 76 .56 73 .12 3.44 ↓
+
+with the BPB% gap between HullFT and the best baseline available at each budget. Table 1 reports the corresponding per-subset BPB% values at the two representative budgets T =1 .75 s and T =2 .0s.Across every total-runtime budget T ≤ 4s , our method achieves a strictly lower BPB% than both SIFT and kNN. The gap over the best baseline is largest at tight budgets: 6.4% lower at T =0 .75 s, 3.8%
+
+lower at T =1 .75 s, 3.4% lower at T =2 .0s, and closes only once our method saturates its N budget near 3.8s. In the latency-critical TTFT regime, where every additional second of total runtime is visible in user-facing latency, our method is Pareto-dominant. Figure 2 (right) plots this best-baseline gap continuously as a function of T : our method dominates the strongest competing baseline for every T ≲ 4.5s and the margin grows as the budget tightens, exactly the regime a latency-sensitive deployment cares about. 
+
+Per-subset breakdown. We test whether the aggregate runtime advantage is driven by a few favorable subsets or appears broadly across The Pile. Figure 3 shows the full per-subset quality–runtime curves and best-baseline gaps. Table 1 shows per-subset BPB% for kNN, SIFT, and HullFT at T =1 .75 s
+
+(kNN N ⋆=15 , SIFT N ⋆=11 , HullFT N ⋆=19 ) and at T =2 .0s (kNN N ⋆=17 , SIFT N ⋆=13 , HullFT 
+
+N ⋆=22 ), using the N ⋆ each method attains in our sweep for that time budget. At T =1 .75 s, our method improves over the best performing baseline on 11 of 12 subsets, with an average margin of 
+
+3.83% ; at T =2 .0s the same holds, with an average margin of 3.44% (as in Fig. 2). The quality gap is largest on subsets where finetuning signal continues to improve with larger multisets (Enron, GitHub, USPTO, NIH), which is exactly where our method’s ability to reach a higher N ⋆ within the same time budget matters most. The mechanism is a two-stage speedup: our selection stage is 8.8× faster 60 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+82.5 
+
+85.0 
+
+87.5 
+
+90.0 
+
+92.5 
+
+95.0 
+
+97.5   
+
+> BPB (\%,  )
+> T= 1.75s, 1.94%
+> T= 2s, 2.25%
+
+Arxiv 
+
+kNN 
+
+SIFT 
+
+HullFT (ours) 
+
+% diff at budget T
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+2
+
+1
+
+0
+
+1
+
+2
+
+> BPB gap (\%pts)
+
+HullFT better 
+
+Best baseline better 
+
+0 1 2 3 4 5
+
+Total wall-clock time (s) [selection + finetuning] 
+
+75 
+
+80 
+
+85 
+
+90 
+
+95 
+
+100   
+
+> BPB (\%,  )
+> T= 1.75s, -0.81%
+> T= 2s, -0.44%
+
+Dm Math 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+2.0 
+
+1.5 
+
+1.0 
+
+0.5 
+
+0.0 
+
+0.5 
+
+1.0 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6 7
+
+Total wall-clock time (s) [selection + finetuning] 
+
+50 
+
+60 
+
+70 
+
+80 
+
+90   
+
+> BPB (\%,  )
+> T= 1.75s, 6.73%
+> T= 2s, 7.95%
+
+Enron 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+2
+
+0
+
+2
+
+4
+
+6
+
+8
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+65 
+
+70 
+
+75 
+
+80 
+
+85 
+
+90 
+
+95   
+
+> BPB (\%,  )
+> T= 1.75s, 1.01%
+> T= 2s, 1.10%
+
+Freelaw 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+2
+
+1
+
+0
+
+1
+
+2
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6 7
+
+Total wall-clock time (s) [selection + finetuning] 
+
+30 
+
+40 
+
+50 
+
+60 
+
+70 
+
+80   
+
+> BPB (\%,  )
+> T= 1.75s, 5.43%
+> T= 2s, 4.73%
+
+Github 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+4
+
+2
+
+0
+
+2
+
+4
+
+6
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+84 
+
+86 
+
+88 
+
+90 
+
+92 
+
+94   
+
+> BPB (\%,  )
+> T= 1.75s, 0.86%
+> T= 2s, 1.15%
+
+Hackernews 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0.50 
+
+0.25 
+
+0.00 
+
+0.25 
+
+0.50 
+
+0.75 
+
+1.00 
+
+1.25 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6 7
+
+Total wall-clock time (s) [selection + finetuning] 
+
+60 
+
+65 
+
+70 
+
+75 
+
+80 
+
+85 
+
+90 
+
+95   
+
+> BPB (\%,  )
+> T= 1.75s, 7.59%
+> T= 2s, 6.95%
+
+Nih 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0
+
+2
+
+4
+
+6
+
+8
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6 7
+
+Total wall-clock time (s) [selection + finetuning] 
+
+85.0 
+
+87.5 
+
+90.0 
+
+92.5 
+
+95.0 
+
+97.5   
+
+> BPB (\%,  )
+> T= 1.75s, 1.78%
+> T= 2s, 1.60%
+
+Pubmed Abstracts 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+1.5 
+
+1.0 
+
+0.5 
+
+0.0 
+
+0.5 
+
+1.0 
+
+1.5 
+
+2.0 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5
+
+Total wall-clock time (s) [selection + finetuning] 
+
+80.0 
+
+82.5 
+
+85.0 
+
+87.5 
+
+90.0 
+
+92.5 
+
+95.0 
+
+97.5   
+
+> BPB (\%,  )
+> T= 1.75s, 0.90% T= 2s, 0.90%
+
+Pubmed Central 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+1.0 
+
+0.5 
+
+0.0 
+
+0.5 
+
+1.0 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6 7
+
+Total wall-clock time (s) [selection + finetuning] 
+
+75.0 
+
+77.5 
+
+80.0 
+
+82.5 
+
+85.0 
+
+87.5 
+
+90.0 
+
+92.5   
+
+> BPB (\%,  )
+> T= 1.75s, 0.38% T= 2s, 0.55%
+
+Stackexchange 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+1.5 
+
+1.0 
+
+0.5 
+
+0.0 
+
+0.5 
+
+1.0 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+60 
+
+70 
+
+80 
+
+90   
+
+> BPB (\%,  )
+> T= 1.75s, 6.93%
+> T= 2s, 6.38%
+
+Uspto 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0
+
+2
+
+4
+
+6
+
+8
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+60 
+
+65 
+
+70 
+
+75 
+
+80 
+
+85 
+
+90   
+
+> BPB (\%,  )
+> T= 1.75s, 1.96%
+> T= 2s, 2.12%
+
+Wikipedia 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+1
+
+0
+
+1
+
+2
+
+> BPB gap (\%pts)
+
+Figure 3: Per-subset breakdown for all 12 Pile subsets (2 subsets per row). For each subset we show, 
+
+left : BPB% vs. wall-clock time, and right : the quality gap (best baseline − HullFT, where the best baseline is the better of kNN and SIFT) as a function of the total-runtime budget T .than SIFT at N =50 (0.059 s vs 0.524 s, the saturation point our method reaches near T ≈3.8s) and over 12 × faster averaged across N ∈ [1 , 50] , and Gradient Reuse further cuts finetuning by 1.48 ×
+
+(Tab. 2). These speedups compound so that, inside a given time budget, our method can afford a substantially larger N ⋆, and the extra multiset mass more than offsets matched-N quality differences relative to the baselines. Against kNN at matched N (Fig. 8), our BPB% is lower at every N ≥ 10 :pure nearest-neighbour retrieval saturates because its top-k is redundant under the query embedding, whereas the convex-hull support set keeps adding signal. 1 2 3 4 5
+
+Total runtime (selection + finetuning, seconds) 
+
+68 
+
+70 
+
+72 
+
+74 
+
+76 
+
+78 
+
+80 
+
+82 
+
+> BPB (% of baseline,  )
+
+N = 10 
+
+N = 20 
+
+N = 30 
+
+N = 40 N = 50 
+
+N = 10 
+
+N = 20 
+
+N = 30 
+
+N = 40 
+
+N = 50 
+
+N = 10 
+
+N = 20 
+
+N = 30 
+
+N = 40 
+
+N = 50 
+
+r = 1 
+
+r = 2 (main) 
+
+r = 3 
+
+Figure 4: BPB% vs. total runtime (selection + finetuning) for HullFT at gradient-reuse depths r ∈ { 1, 2, 3}. Points correspond to 
+
+N ∈ { 10 , 20 , 30 , 40 , 50 }. At any given run-time budget, r=2 matches or beats r ∈ { 1, 3},saves wall time at a modest BPB% cost. 
+
+Gradient reuse ablation. Table 2 isolates the effect of Gradient Reuse on our method at N =50 . Aver-aged over 12 subsets, GR yields a 1.48 × finetuning speedup at a cost of only 0.64% of average BPB%. On subsets where integerization produces few repeats (GitHub, Enron) GR is effectively a no-op both in runtime and quality, while on subsets with many repeats the speedup is substantially larger. This is what enables the compounded savings that Fig. 2 and Tab. 1 rely on. Appendix Sec. C shows the BPB-versus-N comparison across all three methods for 
+
+N ∈ { 1, . . . , 50 }. Figure 4 ablates the gradient re-fresh interval r, where r=1 is the standard finetuning without GR; r=2 already delivers a substantial run-time reduction at a very low BPB% cost, while r=3 
+
+saves further wall time at a more noticeable quality cost. We adopt r=2 as our default for the best speedup–accuracy tradeoff. 7Table 2: Ablation: our method with and without Gradient Reuse (at r=2 ) at N =50 . GR yields a 1.48 × average finetuning speedup at a cost of 0.64% average BPB%; on subsets where the integerized multiset has few repeats (GitHub, Enron) GR is a no-op both in time and quality, while on subsets with more repeats the speedup is larger.                                                                                       
+
+> ArXiv DM Math Enron FreeLaw GitHub HackerNews NIH PubMed Abs. PubMed Central StackExchange USPTO Wikipedia Average BPB% ↓w/o 83 .19 74 .08 48 .70 64 .32 29 .64 82 .83 60 .71 84 .42 80 .59 76 .28 58 .08 61 .82 67 .06
+> w/ 83 .90 76 .00 48 .42 65 .58 29 .64 83 .31 61 .08 85 .00 81 .16 77 .08 58 .72 62 .52 67 .70
+> FT (s) w/o 5.40 5.04 3.87 5.47 3.58 6.03 6.62 6.62 5.31 6.38 6.16 6.37 5.57
+> w/ 3.49 3.30 3.88 3.45 3.60 3.87 4.04 4.28 3.43 4.10 3.75 3.92 3.76
+> Speedup 1.54 ×1.53 ×1.00 ×1.59 ×1.00 ×1.56 ×1.64 ×1.55 ×1.55 ×1.56 ×1.64 ×1.63 ×1.48 ×0123456
+> Total runtime (selection + finetuning, seconds)
+> 65
+> 70
+> 75
+> 80
+> 85
+> 90
+> 95
+> BPB (% of baseline,  ) SIFT (baseline) r= 1
+> SIFT + consecutive r= 2
+> SIFT + global dedup r= 2
+> SIFT + global dedup r= 3
+> HullFT (ours) r= 2
+
+Figure 5: Comparison of SIFT gradient-reuse variants across selection budgets and HullFT. Table 3: Gradient-reuse variants applied to SIFT-derived schedules at N =50 , av-eraged over 12 Pile subsets. Both SIFT-based reuse strategies degrade quality relative to plain SIFT, while HullFT avoids the reorder penalty because mul-tiplicities are fixed before finetuning. 
+
+Method r BPB% Time(s) 
+
+SIFT (baseline) 1 65.89 6.38 SIFT + consecutive 2 66.03 6.14 SIFT + global dedup 2 67.45 4.16 SIFT + global dedup 3 68.37 3.51 HullFT (ours) 2 67.70 3.82 
+
+SIFT gradient reuse experiment. We investigate whether Gradient Reuse can be applied to other selection methods to improve their efficiency. While kNN retrieval [ 5 ] returns N distinct sequences without repetitions, SIFT [ 8] can revisit the same sequence at non-consecutive steps. To enable Gradient Reuse for SIFT, we evaluate two modified schedules: global deduplication , which collapses all occurrences of each unique text into a single block with aggregated counts, and consecutive grouping , which merges only adjacent duplicates. Figure 5 reports the BPB%–runtime behavior of these SIFT reuse variants across selection budgets, with HullFT included for reference. Table 3 reports the same comparison at N =50 , averaged over the 12 Pile subsets. The results show that Gradient Reuse accelerates SIFT, presenting a clear quality–efficiency tradeoff. Global deduplication provides a substantial speedup but alters the original training order, increasing the BPB%. Consecutive grouping preserves the schedule better, yielding a smaller runtime gain with minimal quality degradation. Unlike SIFT, HullFT inherently produces repeated contiguous blocks during integerization, allowing it to fully exploit Gradient Reuse without post-hoc reordering. 
+
+CPU-only evaluation. We repeat the N =20 comparison on CPU only over 6 Pile subsets (ArXiv, DM Mathematics, Enron, FreeLaw, GitHub, HackerNews). Figure 6 reports mean CPU selection time, finetuning time, total runtime, and BPB% for kNN, SIFT, and HullFT. HullFT’s FW selector is 
+
+25 .8× faster than SIFT’s on CPU ( 0.036 s vs. 0.934 s). Because Gradient Reuse reduces the number of forward-backward passes, finetuning is also faster: 228 .4s vs. 317 .4s for kNN and 318 .4s for SIFT, saving roughly 89s end-to-end. On BPB%, HullFT ( 72 .05% ) is close to kNN ( 72 .78% ) and within 2.3% of SIFT ( 69 .78% ), while being substantially faster end-to-end (Fig. 6). 
+
+Selection diversity. Figure 7 visualizes, for a representative ArXiv query at N =20 , the support sets chosen by kNN, SIFT, and HullFT in a 3D t-SNE projection of the candidate pool. kNN concentrates its budget in a tight neighborhood of the query, while SIFT places its points more broadly around the query to reduce redundancy. HullFT yields a comparably diverse support, obtained directly from the geometry of the convex approximation in Sec. 3 rather than from any explicit diversity term. This diversity is achieved at a fraction of SIFT’s per-query selection cost (Sec. 4), consistent with our central thesis that geometric reconstruction recovers a comparably diverse selection at substantially lower latency. 8kNN SIFT HullFT (ours)              
+
+> 10 3
+> 10 2
+> 10 1
+> 10 0
+> Selection time (seconds,  )
+> 0.000
+> 0.934
+> 0.036
+> kNN SIFT HullFT (ours)
+> 0
+> 50
+> 100
+> 150
+> 200
+> 250
+> 300
+> Finetune time (seconds,  )
+> 317.4 317.4
+> 228.4
+> kNN SIFT HullFT (ours)
+> 0
+> 50
+> 100
+> 150
+> 200
+> 250
+> 300
+> Total runtime (seconds,  )
+> 317.4 318.4
+> 228.4
+> kNN SIFT HullFT (ours)
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> 80
+> BPB (% of baseline,  )
+> 72.78 69.78 72.05
+
+Figure 6: CPU-only comparison at N =20 over 6 Pile subsets. Left : mean selection time on CPU. 
+
+Middle-left : mean finetuning time. Middle-right : total runtime (selection + finetuning). Right :BPB% relative to the non-finetuned baseline. HullFT is 25 .8× faster than SIFT at selection and saves about 89 s end-to-end, at a modest BPB% cost relative to SIFT. kNN  
+
+> Pool
+> Selected (20)
+> Query
+> SIFT HullFT
+
+Figure 7: 3D t-SNE projection of the candidate pool (gray) and the N =20 points selected by kNN, SIFT, and HullFT (colored) for a representative ArXiv query (pink star). HullFT produces a similarly diverse selection to SIFT through convex geometry, while incurring substantially lower selection latency (Sec. 4). 
+
+More results. The appendix provides extended experiments and results. Specifically, Sec. C includes a comprehensive sweep of the budget N , integerization ablations, Carathéodory variants comparisons, and sensitivity analyses for ε, r, and k. We also provide per-subset breakdowns (Sec. C.6), qualitative results, and text examples (Sec. C.9). 
+
+5 Conclusion and Limitations 
+
+We introduced HullFT , a test-time finetuning pipeline that frames data selection as sparse convex approximation of the query embedding over a candidate pool. Frank–Wolfe yields a diverse, relevance-aware support set without explicit redundancy penalties, geometric integerization converts the resulting fractional weights into an exact N -point training multiset, and Gradient Reuse amortizes the repeated optimizer steps this multiset produces. Across 12 subsets of The Pile, HullFT attains a strictly lower BPB% than both kNN retrieval and SIFT at every total-runtime budget T ≤ 4s , with the margin widening as the budget tightens. The gains come from a compounded two-stage speedup (selection is 12 × faster than SIFT on average and Gradient Reuse cuts finetuning by 1.48 ×), which lets HullFT reach a substantially larger effective N inside a fixed latency budget. These results suggest that convex geometry is a natural vehicle for latency-constrained test-time adaptation, and that the integer structure it induces opens further room for optimizer-level amortization. 
+
+Limitations. Similarly to SIFT [ 8 ], HullFT operates over a kNN-preselected candidate pool rather than the full corpus: the convex approximation is only as expressive as the directions present in this pool, so the quality of the support set ultimately inherits the recall ceiling of the upstream retriever and embedding model. Second, selection runs in a fixed embedding space decoupled from the base LLM: this keeps the method general and model-agnostic, but the geometry is not tailored to the loss landscape of the model being adapted, leaving potential per-model gains on the table. 9References 
+
+[1] Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang, Michael Matena, Yanqi Zhou, Wei Li, and Peter J Liu. Exploring the limits of transfer learning with a unified text-to-text transformer. Journal of Machine Learning Research , 21(140):1–67, 2020. [2] Guilherme Penedo, Quentin Malartic, Daniel Hesslow, Ruxandra Cojocaru, Hamza Alobeidli, Alessandro Cappelli, Baptiste Pannier, Ebtesam Almazrouei, and Julien Launay. The Refined-Web dataset for Falcon LLM: Outperforming curated corpora with web data, and web data only. In Proceedings of the 37th International Conference on Neural Information Processing Systems ,2023. [3] Yu Sun, Xiaolong Wang, Zhuang Liu, John Miller, Alexei Efros, and Moritz Hardt. Test-time training with self-supervision for generalization under distribution shifts. In Proceedings of the 37th International Conference on Machine Learning , pages 9229–9248, 2020. [4] Yossi Gandelsman, Yu Sun, Xinlei Chen, and Alexei A Efros. Test-time training with masked autoencoders. In Advances in Neural Information Processing Systems , 2022. [5] Moritz Hardt and Yu Sun. Test-time training on nearest neighbors for large language models. In The Twelfth International Conference on Learning Representations , 2024. [6] Yu Sun, Xinhao Li, Karan Dalal, Jiarui Xu, Arjun Vikram, Genghan Zhang, Yann Dubois, Xinlei Chen, Xiaolong Wang, Sanmi Koyejo, Tatsunori Hashimoto, and Carlos Guestrin. Learning to (learn at test time): RNNs with expressive hidden states. In Forty-second International Conference on Machine Learning , 2025. [7] Ekin Akyürek, Mehul Damani, Adam Zweiger, Linlu Qiu, Han Guo, Jyothish Pari, Yoon Kim, and Jacob Andreas. The surprising effectiveness of test-time training for abstract reasoning. 
+
+arXiv preprint arXiv:2411.07279 , 2024. [8] Jonas Hübotter, Sascha Bongni, Ido Hakimi, and Andreas Krause. Efficiently learning at test-time: Active fine-tuning of LLMs. In International Conference on Learning Representations ,2025. [9] Jeff Johnson, Matthijs Douze, and Hervé Jégou. Billion-scale similarity search with GPUs. 
+
+IEEE Transactions on Big Data , 7(3):535–547, 2021. [10] Guillaume Wenzek, Marie-Anne Lachaux, Alexis Conneau, Vishrav Chaudhary, Francisco Guzmán, Armand Joulin, and Edouard Grave. CCNet: Extracting high quality monolingual datasets from web crawl data. In Proceedings of the 12th Language Resources and Evaluation Conference , pages 4003–4012, 2020. [11] Amro Abbas, Kushal Tirumala, Daniel Simig, Surya Ganguli, and Ari S Morcos. SemD-eDup: Data-efficient learning at web-scale through semantic deduplication. arXiv preprint arXiv:2303.09540 , 2023. [12] Leo Gao, Stella Biderman, Sid Black, Laurence Golding, Travis Hoppe, Charles Foster, Jason Phang, Horace He, Anish Thite, Noa Nabeshima, Shawn Presser, and Connor Leahy. The Pile: An 800gb dataset of diverse text for language modeling. arXiv preprint arXiv:2101.00027 ,2020. [13] Jaime Carbonell and Jade Goldstein. The use of mmr, diversity-based reranking for reordering documents and producing summaries. In Proceedings of the 21st Annual International ACM SIGIR Conference on Research and Development in Information Retrieval , pages 335–336, 1998. [14] Alex Kulesza and Ben Taskar. Determinantal point processes for machine learning. Foundations and Trends® in Machine Learning , 5(2–3):123–286, 2012. [15] Ozan Sener and Silvio Savarese. Active learning for convolutional neural networks: A core-set approach. In International Conference on Learning Representations , 2018. 10 [16] Baharan Mirzasoleiman, Jeff Bilmes, and Jure Leskovec. Coresets for data-efficient training of machine learning models. In Proceedings of the 37th International Conference on Machine Learning , pages 6950–6960, 2020. [17] Siddharth Barman. Approximating Nash equilibria and dense bipartite subgraphs via an approximate version of Carathéodory’s theorem. In Proceedings of the Forty-Seventh Annual ACM Symposium on Theory of Computing , pages 361–369, 2015. [18] Constantin Carathéodory. Über den Variabilitätsbereich der Koeffizienten von Potenzreihen, die gegebene Werte nicht annehmen. Mathematische Annalen , 64(1):95–115, 1907. [19] Cyrille W. Combettes and Sebastian Pokutta. Revisiting the approximate carathéodory problem via the frank–wolfe algorithm. Mathematical Programming , 197(1):191–214, 2023. [20] Thorsten Joachims. Transductive inference for text classification using support vector machines. In Proceedings of the Sixteenth International Conference on Machine Learning , pages 200–209, 1999. [21] Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir Karpukhin, Naman Goyal, Heinrich Küttler, Mike Lewis, Wen-tau Yih, Tim Rocktäschel, Sebastian Riedel, and Douwe Kiela. Retrieval-augmented generation for knowledge-intensive NLP tasks. In Pro-ceedings of the 34th International Conference on Neural Information Processing Systems ,2020. [22] Sebastian Borgeaud, Arthur Mensch, Jordan Hoffmann, Trevor Cai, Eliza Rutherford, Katie Millican, George Bm Van Den Driessche, Jean-Baptiste Lespiau, Bogdan Damoc, Aidan Clark, Diego De Las Casas, Aurelia Guy, Jacob Menick, Roman Ring, Tom Hennigan, Saffron Huang, Loren Maggiore, Chris Jones, Albin Cassirer, Andy Brock, Michela Paganini, Geoffrey Irving, Oriol Vinyals, Simon Osindero, Karen Simonyan, Jack Rae, Erich Elsen, and Laurent Sifre. Improving language models by retrieving from trillions of tokens. In Proceedings of the 39th International Conference on Machine Learning , pages 2206–2240, 2022. [23] Frank R Hampel. The influence curve and its role in robust estimation. Journal of the American Statistical Association , 69:383–393, 1974. [24] Pang Wei Koh and Percy Liang. Understanding black-box predictions via influence functions. In Proceedings of the 34th International Conference on Machine Learning , pages 1885–1894, 2017. [25] Garima Pruthi, Frederick Liu, Satyen Kale, and Mukund Sundararajan. Estimating training data influence by tracing gradient descent. In Proceedings of the 34th International Conference on Neural Information Processing Systems , volume 33, pages 19920–19930, 2020. [26] Yongchan Kwon, Eric Wu, Kevin Wu, and James Zou. DataInf: Efficiently estimating data influence in LoRA-tuned LLMs and diffusion models. In The Twelfth International Conference on Learning Representations , 2024. [27] Mengzhou Xia, Sadhika Malladi, Suchin Gururangan, Sanjeev Arora, and Danqi Chen. LESS: Selecting influential data for targeted instruction tuning. In International Conference on Machine Learning , 2024. [28] Jeremy Howard and Sebastian Ruder. Universal language model fine-tuning for text classi-fication. In Proceedings of the 56th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 328–339, 2018. [29] Suchin Gururangan, Ana Marasovi´ c, Swabha Swayamdipta, Kyle Lo, Iz Beltagy, Doug Downey, and Noah A. Smith. Don’t stop pretraining: Adapt language models to domains and tasks. In Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics ,pages 8342–8360, 2020. [30] Jinhyuk Lee, Wonjin Yoon, Sungdong Kim, Donghyeon Kim, Sunkyu Kim, Chan Ho So, and Jaewoo Kang. BioBERT: a pre-trained biomedical language representation model for biomedical text mining. Bioinformatics , 36(4):1234–1240, 2020. 11 [31] Emily Alsentzer, John Murphy, William Boag, Wei-Hung Weng, Di Jindi, Tristan Naumann, and Matthew McDermott. Publicly available clinical BERT embeddings. In Proceedings of the 2nd Clinical Natural Language Processing Workshop , pages 72–78, 2019. [32] Kexin Huang, Jaan Altosaar, and Rajesh Ranganath. ClinicalBERT: Modeling clinical notes and predicting hospital readmission. arXiv preprint arXiv:1904.05342 , 2019. [33] Iz Beltagy, Kyle Lo, and Arman Cohan. SciBERT: A pretrained language model for sci-entific text. In Proceedings of the 2019 Conference on Empirical Methods in Natural Lan-guage Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-IJCNLP) , pages 3615–3620, 2019. [34] Ilias Chalkidis, Manos Fergadiotis, Prodromos Malakasiotis, Nikolaos Aletras, and Ion An-droutsopoulos. LEGAL-BERT: The muppets straight out of law school. In Findings of the Association for Computational Linguistics: EMNLP 2020 , pages 2898–2904, 2020. [35] Karan Singhal, Shekoofeh Azizi, Tao Tu, S. Sara Mahdavi, Jason Wei, Hyung Won Chung, Nathan Scales, Ajay Tanwani, Heather Cole-Lewis, Stephen Pfohl, Perry Payne, Martin Senevi-ratne, Paul Gamble, Chris Kelly, Abubakr Babiker, Nathanael Schärli, Aakanksha Chowdhery, Philip Mansfield, Dina Demner-Fushman, Blaise Agüera y Arcas, Dale Webster, Greg S. Corrado, Yossi Matias, Katherine Chou, Juraj Gottweis, Nenad Tomasev, Yun Liu, Alvin Rajko-mar, Joelle Barral, Christopher Semturs, Alan Karthikesalingam, and Vivek Natarajan. Large language models encode clinical knowledge. Nature , 620(7972):172–180, 2023. [36] Chunting Zhou, Pengfei Liu, Puxin Xu, Srinivasan Iyer, Jiao Sun, Yuning Mao, Xuezhe Ma, Avia Efrat, Ping Yu, Lili Yu, Susan Zhang, Gargi Ghosh, Mike Lewis, Luke Zettlemoyer, and Omer Levy. LIMA: Less is more for alignment. In Proceedings of the 37th International Conference on Neural Information Processing Systems , 2023. [37] Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. LoRA: Low-rank adaptation of large language models. In 
+
+International Conference on Learning Representations , 2022. [38] Neha Hulkund, Alaa Maalouf, Levi Cai, Daniel Yang, Tsun-Hsuan Wang, Abigail O’Neil, Timm Haucke, Sandeep Mukherjee, Vikram Ramaswamy, Judy Hansen Shen, Gabriel Tseng, Mike Walmsley, Daniela Rus, Ken Goldberg, Hannah Kerner, Irene Chen, Yogesh Girdhar, and Sara Beery. DataS 3: Dataset subset selection for specialization. arXiv preprint arXiv:2504.16277 ,2025. [39] Shiva Sreeram, Alaa Maalouf, Pratyusha Sharma, and Daniela Rus. Compress to impress: Efficient LLM adaptation using a single gradient step on 100 samples. In The Thirty-Ninth Annual Conference on Neural Information Processing Systems , 2025. [40] Amir Mallak and Alaa Maalouf. Robustness is a function, not a number: A factorized compre-hensive study of OOD robustness in vision-based driving. arXiv preprint arXiv:2602.09018 ,2026. [41] Tsun-Hsuan Wang, Alaa Maalouf, Wei Xiao, Yutong Ban, Alexander Amini, Guy Rosman, Sertac Karaman, and Daniela Rus. Drive anywhere: Generalizable end-to-end autonomous driving with multi-modal foundation models. In 2024 IEEE International Conference on Robotics and Automation (ICRA) , pages 6687–6694. IEEE, 2024. [42] Noveen Sachdeva, Benjamin Coleman, Wang-Cheng Kang, Jianmo Ni, Lichan Hong, Ed H Chi, James Caverlee, Julian McAuley, and Derek Zhiyuan Cheng. How to train data-efficient LLMs. 
+
+arXiv preprint arXiv:2402.09668 , 2024. [43] Alexander Wettig, Aatmik Gupta, Saumya Malik, and Danqi Chen. QuRating: Selecting high-quality data for training language models. In International Conference on Machine Learning ,2024. [44] Alaa Maalouf, Ibrahim Jubran, and Dan Feldman. Fast and accurate least-mean-squares solvers. In Proceedings of the 33rd International Conference on Neural Information Processing Systems ,volume 32, 2019. 12 [45] B. Maurey. Théorèmes de factorisation pour les opérateurs linéaires à valeurs dans un espace 
+
+lp(ω, μ ), 0 < p ≤ +∞. Séminaire Maurey-Schwartz , pages 1–8, 1972-1973. [46] Vahab Mirrokni, Renato Paes Leme, Adrian Vladu, and Sam Chiu-wai Wong. Tight bounds for approximate Carathéodory and beyond. In Proceedings of the 34th International Conference on Machine Learning , pages 2440–2448, 2017. [47] Marguerite Frank and Philip Wolfe. An algorithm for quadratic programming. Naval Research Logistics Quarterly , 3(1–2):95–110, 1956. [48] Martin Jaggi. Revisiting Frank–Wolfe: Projection-free sparse convex optimization. In Proceed-ings of the 30th International Conference on Machine Learning , pages 427–435, 2013. [49] Jacques Guélat and Patrice Marcotte. Some comments on Wolfe’s ‘away step’. Mathematical Programming , 35:110–119, 1986. [50] Simon Lacoste-Julien. Convergence rate of Frank–Wolfe for non-convex objectives. arXiv preprint arXiv:1607.00345 , 2016. [51] Kenneth L Clarkson. Coresets, sparse greedy approximation, and the Frank–Wolfe algorithm. 
+
+ACM Transactions on Algorithms , 6(4):63:1–63:30, 2010. [52] Pankaj K Agarwal, Sariel Har-Peled, and Kasturi R Varadarajan. Geometric approximation via coresets. In Jacob E Goodman, János Pach, and Emo Welzl, editors, Combinatorial and Computational Geometry . Cambridge University Press, 2005. [53] Sariel Har-Peled. Geometric Approximation Algorithms , volume 173 of Mathematical Surveys and Monographs . American Mathematical Society, 2011. [54] Jeff M Phillips. Coresets and sketches. In Handbook of Discrete and Computational Geometry .CRC Press, 2017. [55] Alaa Maalouf, Ibrahim Jubran, Murad Tukan, and Dan Feldman. Coresets for the average case error for finite query sets. Sensors , 21(19), 2021. [56] Murad Tukan, Samson Zhou, Alaa Maalouf, Daniela Rus, Vladimir Braverman, and Dan Feldman. Provable data subset selection for efficient neural networks training. In Proceedings of the 40th International Conference on Machine Learning , pages 34533–34555, 2023. [57] Krishnateja Killamsetty, Durga Sivasubramanian, Ganesh Ramakrishnan, and Rishabh Iyer. GLISTER: Generalization based data subset selection for efficient and robust learning. In 
+
+Proceedings of the AAAI Conference on Artificial Intelligence , volume 35, pages 8110–8118, 2021. [58] Krishnateja Killamsetty, Durga Sivasubramanian, Ganesh Ramakrishnan, Abir De, and Rishabh Iyer. GRAD-MATCH: Gradient matching based data subset selection for efficient deep model training. In Proceedings of the 38th International Conference on Machine Learning , pages 5464–5474, 2021. [59] Cody Coleman, Christopher Yeh, Stephen Mussmann, Baharan Mirzasoleiman, Peter Bailis, Percy Liang, Jure Leskovec, and Matei Zaharia. Selection via proxy: Efficient data selection for deep learning. In International Conference on Learning Representations , 2020. [60] Murad Tukan, Loay Mualem, and Alaa Maalouf. Pruning neural networks via coresets and convex geometry: Towards no assumptions. In Advances in Neural Information Processing Systems , 2022. [61] Lucas Liebenwein, Cenk Baykal, Harry Lang, Dan Feldman, and Daniela Rus. Provable filter pruning for efficient neural networks. In International Conference on Learning Representations ,2020. [62] Ben Mussay, Dan Feldman, Samson Zhou, Vladimir Braverman, and Margarita Osadchy. Data-independent structured pruning of neural networks via coresets. IEEE Transactions on Neural Networks and Learning Systems , 33(12):7829–7841, 2022. 13 [63] Cenk Baykal, Lucas Liebenwein, Igor Gilitschenski, Dan Feldman, and Daniela Rus. Sensitivity-informed provable pruning of neural networks. SIAM Journal on Mathematics of Data Science ,4(1):26–45, 2022. [64] Alaa Maalouf, Murad Tukan, Vladimir Braverman, and Daniela Rus. AutoCoreset: An au-tomatic practical coreset construction framework. In Proceedings of the 40th International Conference on Machine Learning , pages 23451–23466, 2023. [65] Alaa Maalouf, Gilad Eini, Ben Mussay, Dan Feldman, and Margarita Osadchy. A unified approach to coreset learning. IEEE Transactions on Neural Networks and Learning Systems , 35 (5):6893–6905, 2024. [66] Dan Feldman and Michael Langberg. A unified framework for approximating and clustering data. In Proceedings of the Forty-Third Annual ACM Symposium on Theory of Computing ,pages 569–578, 2011. [67] Vladimir Braverman, Dan Feldman, Harry Lang, Adiel Statman, and Samson Zhou. New frameworks for offline and streaming coreset constructions. arXiv preprint arXiv:1612.00889 ,2016. [68] Olivier Bachem, Mario Lucic, and Andreas Krause. Practical coreset constructions for machine learning. arXiv preprint arXiv:1703.06476 , 2017. [69] Alexander Munteanu and Chris Schwiegelshohn. Coresets-methods and history: A theoreticians design pattern for approximation and streaming algorithms. KI - Künstliche Intelligenz , 32(1): 37–53, 2018. [70] Jonathon Byrd and Zachary Lipton. What is the effect of importance weighting in deep learning? In Proceedings of the 36th International Conference on Machine Learning , pages 872–881, 2019. [71] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, and Ilya Sutskever. Language models are unsupervised multitask learners. OpenAI Technical Report, 2019. 14 A Experimental protocol details 
+
+The main experiments use 12 Pile subsets and 150 test queries per subset. This protocol is a compute-conscious version of the evaluation style used by TTT-NN [ 5] and SIFT [ 8], which evaluate approximately 1% of the full Pile test set ( 1812 points) and report only on subsets with more than 10 test examples. We use the larger fixed per-subset sample because our goal is not only to report a single aggregate number, but also to understand whether HullFT’s runtime–quality behavior is stable across domains with different redundancy patterns. A balanced 150-query sample gives each subset enough weight for per-domain comparisons while keeping the full sweep over methods, budgets, and ablations feasible on our available A100 compute. We build and use precomputed per-subset retrieval pools rather than a single live global index. This keeps the comparison focused on the TTFT components studied in the paper: query-conditioned selection from a shared candidate pool and the subsequent finetuning schedule. All methods receive the same K precomputed nearest neighbors for each query, so retrieval differences cannot explain the reported gaps. We also exclude pool retrieval time from the main runtime measurements because it is identical across methods once the candidate pool is fixed; selection and finetuning are the parts changed by HullFT. For context, Hardt and Sun [ 5] report mean distributed Pile retrieval time of 
+
+1.35 s (std. 0.12 s). Unless otherwise stated, all main experiments use normalized RoBERTa embeddings from 
+
+socialfoundations/roberta-large-pile-lr2e-5-bs16-8gpu-1700000 , GPT-2 as the adapted model, Adam with learning rate 5×10 −5, K=200 preselected candidates, and selection budgets N ∈ { 1, . . . , 50 }.
+
+B Algorithmic details 
+
+This section provides pseudocode for the core procedures, algorithmic variants, and baselines referenced in Sec. 3. The variants modify individual stages of the HullFT pipeline. 
+
+B.1 Core HullFT procedures 
+
+Algorithm 3 and Alg. 4 give the procedures referenced in Sec. 3. Frank–Wolfe is a classical conditional-gradient method [ 47 , 48 ]; we include its specialization to our objective for completeness, not as a new algorithmic contribution. 
+
+Algorithm 3 FRANK WOLFE (q, {p1, . . . , p K }, ε, m ) 
+
+> 1:
+
+Input: query q ∈ Rd, candidate pool {p1, . . . , p K } ⊂ Rd, tolerance ε, support cap m 
+
+> 2:
+
+Output: sparse weights w ∈ ∆K 
+
+> 3:
+
+Form P ∈ Rd×K with pi as the i-th column  
+
+> 4:
+
+v⋆ ← arg max i∈[K]⟨q, p i⟩; w ← ev⋆ 
+
+> 5:
+
+while ∥q − P w ∥22 > ε and |{ i : wi > 0}| < m do  
+
+> 6:
+
+r ← q − P w  
+
+> 7:
+
+v ← arg max i∈[K]⟨r, p i⟩ 
+
+> 8:
+
+γ⋆ ← arg min γ∈[0 ,1] ∥r − γ(pv − P w )∥22 ▷ line search  
+
+> 9:
+
+w ← (1 − γ⋆)w + γ⋆ev 
+
+> 10:
+
+return w
+
+15 Algorithm 4 GRAD REUSE (θ0, S, c, r, η ) 
+
+> 1:
+
+Input: Base model θ0, support points S = {s1, . . . , s |S|}, counts c ∈ Z|S|≥0, refresh interval r,learning rate η 
+
+> 2:
+
+Output: Adapted model θ 
+
+> 3:
+
+θ ← θ0 
+
+> 4:
+
+for j = 1 to |S| with cj > 0 do  
+
+> 5:
+
+for t = 0 to cj − 1 do  
+
+> 6:
+
+if t mod r = 0 then  
+
+> 7:
+
+˜g ← ∇ θ L(θ; sj ) ▷ forward-backward pass  
+
+> 8:
+
+θ ← ADAM STEP (θ, ˜g, η ) 
+
+> 9:
+
+return θ
+
+B.2 Exact Carathéodory reduction 
+
+The exact Carathéodory theorem guarantees that any point in the convex hull of a set in Rd can be expressed as a convex combination of at most d + 1 points. Algorithm 5 implements the standard constructive procedure: it iteratively finds an affine dependency among the current support points and eliminates the one that drives a weight to zero, repeating until the size bound d + 1 is met. 
+
+Algorithm 5 CARATHÉODORY ({p1, . . . , p k}, w ) 
+
+> 1:
+
+Input: Set of points {p1, . . . , p k} ⊂ Rd, weights w ∈ ∆k 
+
+> 2:
+
+Output: Support points S ⊆ { p1, . . . , p k}, new weights w′ with |S| ≤ d + 1  
+
+> 3:
+
+A ← { 1, . . . , k } ▷ active index set  
+
+> 4:
+
+while |A| > d + 1 do  
+
+> 5:
+
+Find non-trivial coefficients (αi)i∈A such that P 
+
+> i∈A
+
+αi pi = 0 and P 
+
+> i∈A
+
+αi = 0  
+
+> 6:
+
+i⋆ ← arg min i∈A : αi>0 wi 
+
+> αi
+
+; γ ← wi⋆ /α i⋆ 
+
+> 7:
+
+wi ← wi − γα i for all i ∈ A 
+
+> 8:
+
+A ← A \ { i⋆} 
+
+> 9:
+
+S ← { pi : i ∈ A}; w′ ← (wi)i∈A 
+
+> 10:
+
+return S, w ′
+
+Figure 10 (see Sec. C.2) compares exact Carathéodory selection against HullFT with different integerization strategies. The key finding is that geometric integerization is essential: padding Carathéodory weights directly is unstable as N grows, while FW with geometric integerization (HullFT) matches or beats the best Carathéodory variant at lower selection cost. 
+
+B.3 PCA-reduced convex approximation 
+
+When the embedding dimension d is large, inner-product evaluations inside Frank–Wolfe dominate selection cost. Algorithm 6 mitigates this by projecting the query and candidate pool into a lower-dimensional subspace via PCA before running the geometric selection, then mapping the chosen support back to the original space for integerization. 
+
+Algorithm 6 PCA_S ELECTION (q, {p1, . . . , p K }, N, ε, m, T, d ′) 
+
+> 1:
+
+Input: Query q, candidate pool {p1, . . . , p K }, budget N , FW tolerance ε, support cap m, swap passes T , target dimension d′ 
+
+> 2:
+
+Output: Support points S, integer counts c 
+
+> 3:
+
+Fit PCA on {p1, . . . , p K } ∪ { q} to reduce dimensionality to d′ 
+
+> 4:
+
+q′ ← TRANSFORM (q); p′ 
+
+> i
+
+← TRANSFORM (pi) for i = 1 , . . . , K  
+
+> 5:
+
+w ← FRANK WOLFE (q′, {p′
+
+> 1
+
+, . . . , p ′ 
+
+> K
+
+}, ε, m ) ▷ or C ARATHÉODORY via Alg. 5  
+
+> 6:
+
+S′, c ← INTEGERIZE (q′, {p′
+
+> 1
+
+, . . . , p ′ 
+
+> K
+
+}, w, N, T ) 
+
+> 7:
+
+Map S′ back to the original pool: S ← { pi : p′ 
+
+> i
+
+∈ S′} (preserving order)  
+
+> 8:
+
+return S, c 
+
+16 B.4 Weight-proportional padding 
+
+As a simpler baseline to the full geometric integerization (Alg. 1), Alg. 7 allocates the discrete budget 
+
+N proportionally to the fractional weights via largest-remainder rounding, without the subsequent local-swap refinement step. 
+
+Algorithm 7 PAD BYWEIGHTS (w, N ) 
+
+> 1:
+
+Input: Fractional weights w ∈ ∆k, budget N 
+
+> 2:
+
+Output: Integer counts c ∈ Zk 
+
+> ≥0
+
+such that P 
+
+> i
+
+ci = N 
+
+> 3:
+
+ci ← ⌊ N w i⌋ for all i ∈ { 1, . . . , k } 
+
+> 4:
+
+ρ ← N − P 
+
+> i
+
+ci ▷ remaining budget to allocate  
+
+> 5:
+
+Let I be the list of indices sorted descending by fractional remainder N w i − ci 
+
+> 6:
+
+for j = 1 to ρ do  
+
+> 7:
+
+i ← I[j] 
+
+> 8:
+
+ci ← ci + 1  
+
+> 9:
+
+return c
+
+Figure 9 (see Sec. C.1) compares this simpler baseline against the full geometric integerization used by HullFT. 
+
+C Ablations 
+
+This section isolates the effect of individual design choices. Each ablation sweeps one axis while holding the rest of the pipeline fixed to the configuration used in Sec. 4. For completeness, Fig. 8 reports BPB% as a function of the selection budget N across the three main methods. 0 10 20 30 40 50 
+
+Selection budget N
+
+> 65
+> 70
+> 75
+> 80
+> 85
+> 90
+> 95
+> BPB (in % relative to baseline,  )
+> kNN
+> SIFT
+> HullFT (ours)
+
+Figure 8: BPB% averaged over 12 Pile subsets as a function of selection budget N for kNN, SIFT, and ours. 
+
+C.1 Integerization: pad-by-weights vs. geometric (FW family) 
+
+We compare the fractional FW solution (no integerization), FW followed by padding by weights (Alg. 7), and FW followed by the geometric integerization used by HullFT (Alg. 1). Figure 9 reports BPB% for these three FW-based variants both as a function of selection budget N and as a function of total runtime. The right panel shows the same comparison on a total-runtime x-axis: since all three 17 variants share the same FW selection stage, the runtime difference is negligible and quality vs time differences are the dominant effect. 0 10 20 30 40 50           
+
+> Selection budget N
+> 70
+> 75
+> 80
+> 85
+> 90
+> 95
+> BPB (% of baseline,  )
+> 0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0
+> Total runtime (selection + finetuning, seconds)
+> 70
+> 75
+> 80
+> 85
+> 90
+> 95 FW (unrounded)
+> FW + pad-by-weights
+> HullFT (ours)
+
+Figure 9: BPB% for the three FW integerization strategies. Left : BPB% vs. selection budget N .
+
+Right : BPB% vs. total runtime in seconds. 
+
+C.2 Carathéodory selection and its integerizations 
+
+Replacing FW with exact Carathéodory (Alg. 5) yields a fractional solution with at most d+1 points; we compare its pad-by-weights and geometric integerizations against HullFT. Figure 10 reports BPB% for these Carathéodory-based variants and HullFT, plotted against both selection budget and total runtime. Geometric integerization is essential: padding Carathéodory weights directly is unstable as N grows. The right panel makes the runtime cost of exact Carathéodory visible: its selection time is roughly 14 × higher than FW, so even when its BPB% at matched N is competitive, HullFT dominates on the total-runtime axis. 0 10 20 30 40 50          
+
+> Selection budget N
+> 70
+> 75
+> 80
+> 85
+> 90
+> 95
+> BPB (% of baseline,  )
+> 0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0
+> Total runtime (selection + finetuning, seconds)
+> 70
+> 75
+> 80
+> 85
+> 90
+> 95
+> Carath. (unrounded)
+> Carath. + pad-by-weights
+> Carath. + integerize
+> HullFT (ours)
+
+Figure 10: BPB% for Carathéodory selection (Alg. 5) with three integerization strategies, with HullFT (FW + geometric integerization) plotted for reference. Left : BPB% vs. selection budget N . Right :BPB% vs. total runtime (selection + finetuning, seconds); the Carathéodory curves shift right relative to HullFT, reflecting its higher selection cost. 
+
+C.3 Frank–Wolfe tolerance ε
+
+We sweep the FW stopping tolerance ε ∈ { 0, 10 −8, 10 −5, 10 −2, 10 −1} for HullFT and for the Carathéodory-integerized variant. Figure 11 reports BPB% under this tolerance sweep at N =20 and 
+
+N =50 . The x-axis is inverted : the left end is the loosest tolerance ( ε=10 −1) and the right end is the exact solution ( ε=0 ), so moving right means strictly tighter convergence. HullFT’s BPB% is flat across the entire range up through ε=10 −2, indicating that the support cap m, not the tolerance, is the binding constraint in practice. Meanwhile, the Carathéodory variant degrades noticeably once 
+
+ε> 10 −5, justifying the moderate tolerance used in the main experiments. 18 0 (exact) 10 8           
+
+> 10 5
+> 10 2
+> 10 1
+> Frank--Wolfe tolerance (left = loose, right = exact)
+> 70
+> 80
+> 90
+> 100
+> 110
+> BPB (% of baseline,  )
+> N= 20
+> 0 (exact) 10 8
+> 10 5
+> 10 2
+> 10 1
+> Frank--Wolfe tolerance (left = loose, right = exact)
+> N= 50
+> HullFT (ours)
+> Carath. + integerize
+
+Figure 11: BPB% vs. FW tolerance ε at N =20 (left) and N =50 (right). The x-axis is inverted so that the plot reads left-to-right as loose-to-exact; ε=0 (exact solution) is placed one decade beyond 
+
+10 −8 for visibility. 
+
+C.4 FW variant: forced-unique selection without ε early-stop 
+
+We ask whether the ε early-stop and the allowance for point revisits in standard HullFT are important. The fw_no_epsilon variant disables the ε early-stop and forces each FW iteration to select a previously unchosen point. When FW keeps adding distinct points, the weights assigned to them become spread thinly, so many of the selected points carry negligible weight and contribute little information. Geometric integerization handles this gracefully: by selecting only the most important points from the support, it recovers performance on par with standard HullFT. Variants that use the full point set without this selection step do not benefit from the additional points and perform noticeably worse. Table 4 reports total runtime and BPB% relative to the non-finetuned baseline at 
+
+N ∈ { 20 , 25 , 30 , 35 }; all four variants are within 0.15 s of each other. Table 4: Total runtime (seconds) and BPB% relative to the non-finetuned baseline (lower is better) for forced-unique Frank–Wolfe variants across different selection budgets N .
+
+Method N = 20 N = 25 N = 30 N = 35 
+
+FW no-epsilon 1.93 s (81 .36% ) 2.27 s (80 .80% ) 2.58 s (80 .22% ) 2.88 s (79 .98% )FW no-epsilon + pad-by-weights 1.98 s (81 .60% ) 2.32 s (80 .82% ) 2.63 s (80 .38% ) 2.93 s (80 .14% )FW no-epsilon + integerize 1.78 s (74 .03% ) 2.13 s (71 .93% ) 2.47 s (70 .44% ) 2.81 s (69 .44% )HullFT (ours) 1.81 s (74 .04% ) 2.17 s (72 .00% ) 2.52 s (70 .52% ) 2.84 s (69 .45% )
+
+C.5 kNN pre-selection pool size k
+
+We vary the pre-selection pool k fed to the three selectors at two representative budgets N ∈ { 20 , 50 }.Figure 12 reports BPB% as the pre-selection pool size varies at each of these budgets. All methods improve slightly with larger k, with returns saturating by k=500 ; HullFT stays strictly between kNN and SIFT at matched N and remains Pareto-dominant on total runtime at every k.19 200 500 1000       
+
+> kNN pre-selection pool size k
+> 66
+> 68
+> 70
+> 72
+> 74
+> 76
+> BPB (% of baseline,  )
+> N= 20
+> 200 500 1000
+> kNN pre-selection pool size k
+> N= 50
+> kNN
+> SIFT
+> HullFT (ours)
+
+Figure 12: Effect of the kNN pre-selection pool size k on BPB% at N =20 (left) and N =50 (right). 
+
+C.6 Per-subset breakdown against each baseline individually 
+
+Figure 3 in the main text reports the per-subset gap against the best of kNN and SIFT at each budget. For completeness, Figs. 13 and 14 show the same breakdown against each baseline in isolation, so the reader can see where HullFT’s advantage comes from kNN vs. SIFT separately. At each anchor 
+
+T , N ⋆ is taken from the global aggregate (matching Tab. 1) and per-subset BPB% is read at those fixed N ⋆ values. 20 0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+82.5 
+
+85.0 
+
+87.5 
+
+90.0 
+
+92.5 
+
+95.0 
+
+97.5 
+
+> BPB (\%,  )
+
+T = 1.75s, 2.40% 
+
+T = 2s, 2.27% 
+
+Arxiv 
+
+SIFT 
+
+HullFT (ours) 
+
+% diff at budget T
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+2
+
+1
+
+0
+
+1
+
+2
+
+3
+
+> BPB gap (\%pts)
+
+HullFT better 
+
+SIFT better 
+
+0 1 2 3 4 5
+
+Total wall-clock time (s) [selection + finetuning] 
+
+75 
+
+80 
+
+85 
+
+90 
+
+95 
+
+100 
+
+> BPB (\%,  )
+
+T = 1.75s, 1.17% 
+
+T = 2s, 1.39% 
+
+Dm Math 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+2
+
+0
+
+2
+
+4
+
+6
+
+8
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6 7
+
+Total wall-clock time (s) [selection + finetuning] 
+
+50 
+
+60 
+
+70 
+
+80 
+
+90 
+
+> BPB (\%,  )
+
+T = 1.75s, 8.10% 
+
+T = 2s, 7.95% 
+
+Enron 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+2.5 
+
+0.0 
+
+2.5 
+
+5.0 
+
+7.5 
+
+10.0 
+
+12.5 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+65 
+
+70 
+
+75 
+
+80 
+
+85 
+
+90 
+
+95 
+
+> BPB (\%,  )
+
+T = 1.75s, 3.34% 
+
+T = 2s, 2.77% 
+
+Freelaw 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+2
+
+0
+
+2
+
+4
+
+6
+
+8
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6 7
+
+Total wall-clock time (s) [selection + finetuning] 
+
+30 
+
+40 
+
+50 
+
+60 
+
+70 
+
+80 
+
+> BPB (\%,  )
+
+T = 1.75s, 5.96% 
+
+T = 2s, 4.73% 
+
+Github 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+2.5 
+
+0.0 
+
+2.5 
+
+5.0 
+
+7.5 
+
+10.0 
+
+12.5 
+
+15.0 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+84 
+
+86 
+
+88 
+
+90 
+
+92 
+
+94 
+
+> BPB (\%,  )
+
+T = 1.75s, 1.26% 
+
+T = 2s, 1.68% 
+
+Hackernews 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0
+
+1
+
+2
+
+3
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6 7
+
+Total wall-clock time (s) [selection + finetuning] 
+
+60 
+
+65 
+
+70 
+
+75 
+
+80 
+
+85 
+
+90 
+
+95 
+
+> BPB (\%,  )
+
+T = 1.75s, 7.59% 
+
+T = 2s, 6.95% 
+
+Nih 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0
+
+2
+
+4
+
+6
+
+8
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6 7
+
+Total wall-clock time (s) [selection + finetuning] 
+
+85.0 
+
+87.5 
+
+90.0 
+
+92.5 
+
+95.0 
+
+97.5 
+
+> BPB (\%,  )
+
+T = 1.75s, 1.94% 
+
+T = 2s, 1.60% 
+
+Pubmed Abstracts 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+1
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5
+
+Total wall-clock time (s) [selection + finetuning] 
+
+80.0 
+
+82.5 
+
+85.0 
+
+87.5 
+
+90.0 
+
+92.5 
+
+95.0 
+
+97.5 
+
+> BPB (\%,  )
+
+T = 1.75s, 1.80% T = 2s, 1.17% 
+
+Pubmed Central 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+1
+
+0
+
+1
+
+2
+
+3
+
+4
+
+5
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6 7
+
+Total wall-clock time (s) [selection + finetuning] 
+
+75.0 
+
+77.5 
+
+80.0 
+
+82.5 
+
+85.0 
+
+87.5 
+
+90.0 
+
+92.5 
+
+> BPB (\%,  )
+
+T = 1.75s, 0.96% T = 2s, 0.66% 
+
+Stackexchange 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+2
+
+0
+
+2
+
+4
+
+6
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+60 
+
+70 
+
+80 
+
+90 
+
+> BPB (\%,  )
+
+T = 1.75s, 6.93% 
+
+T = 2s, 6.38% 
+
+Uspto 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0
+
+2
+
+4
+
+6
+
+8
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+60 
+
+65 
+
+70 
+
+75 
+
+80 
+
+85 
+
+90 
+
+> BPB (\%,  )
+
+T = 1.75s, 4.54% 
+
+T = 2s, 3.70% 
+
+Wikipedia 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0
+
+2
+
+4
+
+6
+
+8
+
+10 
+
+> BPB gap (\%pts)
+
+Figure 13: Per-subset breakdown against SIFT for all 12 Pile subsets (2 subsets per row). For each subset we show, left : BPB% vs. wall-clock time, and right : the quality gap (SIFT − HullFT) as a function of the total-runtime budget T .21 0 1 2 3 4 5
+
+Total wall-clock time (s) [selection + finetuning] 
+
+85.0 
+
+87.5 
+
+90.0 
+
+92.5 
+
+95.0 
+
+97.5 
+
+> BPB (\%,  )
+
+T = 1.75s, 1.94% 
+
+T = 2s, 2.25% 
+
+Arxiv 
+
+kNN 
+
+HullFT (ours) 
+
+% diff at budget T
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0
+
+1
+
+2
+
+3
+
+> BPB gap (\%pts)
+
+HullFT better 
+
+kNN better 
+
+0 1 2 3 4 5
+
+Total wall-clock time (s) [selection + finetuning] 
+
+75 
+
+80 
+
+85 
+
+90 
+
+95 
+
+100 
+
+> BPB (\%,  )
+
+T = 1.75s, -0.81% 
+
+T = 2s, -0.44% 
+
+Dm Math 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+2.0 
+
+1.5 
+
+1.0 
+
+0.5 
+
+0.0 
+
+0.5 
+
+1.0 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+50 
+
+60 
+
+70 
+
+80 
+
+90 
+
+> BPB (\%,  )
+
+T = 1.75s, 6.73% 
+
+T = 2s, 8.36% 
+
+Enron 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0
+
+2
+
+4
+
+6
+
+8
+
+10 
+
+12 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5
+
+Total wall-clock time (s) [selection + finetuning] 
+
+65 
+
+70 
+
+75 
+
+80 
+
+85 
+
+90 
+
+95 
+
+> BPB (\%,  )
+
+T = 1.75s, 1.01% 
+
+T = 2s, 1.10% 
+
+Freelaw 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+1.0 
+
+0.5 
+
+0.0 
+
+0.5 
+
+1.0 
+
+1.5 
+
+2.0 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+30 
+
+40 
+
+50 
+
+60 
+
+70 
+
+80 
+
+> BPB (\%,  )
+
+T = 1.75s, 5.43% 
+
+T = 2s, 6.08% 
+
+Github 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+2.5 
+
+0.0 
+
+2.5 
+
+5.0 
+
+7.5 
+
+10.0 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+84 
+
+86 
+
+88 
+
+90 
+
+92 
+
+94 
+
+> BPB (\%,  )
+
+T = 1.75s, 0.86% 
+
+T = 2s, 1.15% 
+
+Hackernews 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0.50 
+
+0.25 
+
+0.00 
+
+0.25 
+
+0.50 
+
+0.75 
+
+1.00 
+
+1.25 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+60 
+
+65 
+
+70 
+
+75 
+
+80 
+
+85 
+
+90 
+
+95 
+
+> BPB (\%,  )
+
+T = 1.75s, 15.33% 
+
+T = 2s, 17.03% 
+
+Nih 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0
+
+5
+
+10 
+
+15 
+
+20 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+84 
+
+86 
+
+88 
+
+90 
+
+92 
+
+94 
+
+96 
+
+98 
+
+> BPB (\%,  )
+
+T = 1.75s, 1.78% 
+
+T = 2s, 1.84% 
+
+Pubmed Abstracts 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0.0 
+
+0.5 
+
+1.0 
+
+1.5 
+
+2.0 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5
+
+Total wall-clock time (s) [selection + finetuning] 
+
+80.0 
+
+82.5 
+
+85.0 
+
+87.5 
+
+90.0 
+
+92.5 
+
+95.0 
+
+97.5 
+
+> BPB (\%,  )
+
+T = 1.75s, 0.90% T = 2s, 0.90% 
+
+Pubmed Central 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0.5 
+
+0.0 
+
+0.5 
+
+1.0 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+77.5 
+
+80.0 
+
+82.5 
+
+85.0 
+
+87.5 
+
+90.0 
+
+92.5 
+
+> BPB (\%,  )
+
+T = 1.75s, 0.38% T = 2s, 0.55% 
+
+Stackexchange 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+1.0 
+
+0.5 
+
+0.0 
+
+0.5 
+
+1.0 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+60 
+
+70 
+
+80 
+
+90 
+
+> BPB (\%,  )
+
+T = 1.75s, 11.71% 
+
+T = 2s, 13.16% 
+
+Uspto 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0.0 
+
+2.5 
+
+5.0 
+
+7.5 
+
+10.0 
+
+12.5 
+
+15.0 
+
+17.5 
+
+> BPB gap (\%pts)
+
+0 1 2 3 4 5 6
+
+Total wall-clock time (s) [selection + finetuning] 
+
+65 
+
+70 
+
+75 
+
+80 
+
+85 
+
+90 
+
+> BPB (\%,  )
+
+T = 1.75s, 1.96% 
+
+T = 2s, 2.12% 
+
+Wikipedia 
+
+1 2 3 4 5 6
+
+Wall-clock budget T (s) 
+
+0.5 
+
+0.0 
+
+0.5 
+
+1.0 
+
+1.5 
+
+2.0 
+
+2.5 
+
+> BPB gap (\%pts)
+
+Figure 14: Per-subset breakdown against kNN for all 12 Pile subsets (2 subsets per row). For each subset we show, left : BPB% vs. wall-clock time, and right : the quality gap (kNN − HullFT) as a function of the total-runtime budget T .
+
+C.7 Fidelity of geometric integerization to Frank–Wolfe weights 
+
+Frank–Wolfe produces fractional weights on a sparse support; geometric integerization converts these into an exact N -tuple of pool indices with multiplicities ci, so the induced empirical weights are 
+
+ˆwi = ci/N on that same support. We quantify how much the discrete allocation departs from the pre-integerization FW vector by the per-query distance ∥w − ˆw∥2, averaged over all test queries in each subset. Fig. 15 reports the mean of these averages across the twelve Pile subsets for which we precomputed embeddings (shaded band: ± one standard deviation across subsets). The distance stays in a moderate range for every N ≤ 50 , which supports the view that integerization preserves the FW weight profile rather than inducing an unrelated discrete selection. 22 0 10 20 30 40 50  
+
+> discrete budget N
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> 0.35
+> 0.40
+> mean  w w 2
+
+Figure 15: Fidelity of geometric integerization to Frank–Wolfe weights. Mean ℓ2 distance between FW weights w on the support and empirical weights ˆw with ˆwi = ci/N . Each point averages over test queries within a subset, then over twelve Pile subsets; the band shows ± one standard deviation across subsets. 
+
+C.8 Selection geometry: t-SNE visualizations 
+
+We extend the qualitative analysis of the main text to two additional subsets, GitHub and FreeLaw, which exhibit different candidate-pool structure. Figure 16 shows a 3D t-SNE projection of the query, candidate pool, and the N =20 points returned by kNN, SIFT, and HullFT on a representative query from each subset. The pattern observed for ArXiv recurs: kNN clusters tightly around the query, SIFT places its points more broadly around the query to reduce redundancy, and HullFT produces a comparably diverse support obtained directly from the convex approximation in Sec. 3. Because the same behavior appears across pools with markedly different topology, the diversity is most plausibly attributable to the geometric mechanism itself rather than to properties specific to a single domain. This diversity is achieved at a fraction of SIFT’s per-query selection cost (Sec. 4), reinforcing the headline efficiency–quality tradeoff reported in the main text. 23 kNN   
+
+> Pool
+> Selected (20)
+> Query
+> SIFT HullFT kNN
+> Pool
+> Selected (20)
+> Query
+> SIFT HullFT
+
+Figure 16: 3D t-SNE projections of the candidate pool (gray) and the N =20 points selected by each method (colored) for a representative test query (pink star) from GitHub (top) and FreeLaw (bottom). HullFT delivers a selection geometry comparable to SIFT through convex reconstruction, at substantially lower selection latency (Sec. 4). 
+
+C.9 Qualitative examples of selected contexts 
+
+For two representative test queries in each of ArXiv, GitHub, and PubMed Central, we show the test query alongside the two candidates with the largest weight in the HullFT support at N =20 . All text below is verbatim from the Pile candidate pool; we truncate each excerpt to roughly 400 characters for readability. 
+
+ArXiv. 
+
+24 prompt The operational meaning of quantum conditional information. Information might be regarded as an answer to a question. To know if it is raining, one need only look outside. However, a person living in a desert would expect a different answer than one living in a climate where on average, it rains every other day. After looking outside, who gains “more” information? The answer to this question has nothing to do with weather . . . 
+
+Example 1 Every forecasting system is noncalibrated for uncountably many data sequences that it might see. This result is strengthened here: from a topological point of view, failure of calibration is typical and calibration rare. Meanwhile, Bayesian forecasters are certain that they are calibrated—this invites worries about the connection between Bayesianism and rationality. . . . 
+
+Example 2 Landauer’s erasure principle exposes an intrinsic relation between thermodynamics and information theory: the erasure of information stored in a system, S, requires an amount of work proportional to the entropy of that system. This entropy, H(S|O), depends on the information that a given observer, O, has about S . . . 
+
+prompt Nanoscale particles embedded in a metallic matrix are of considerable interest as a route towards identifying and tailoring material properties. We present a detailed investigation of the electronic structure, and in particular the Fermi surface, of a nanoscale phase ( L12 Al 3Li) that has so far been inaccessible with conventional techniques . . . 
+
+Example 1 Point defect species and concentrations in metastable Fe–C alloys are determined using density functional theory and a constrained free-energy functional. Carbon interstitials dominate unless iron vacancies are in significant excess, whereas excess carbon causes greatly enhances vacancy concentration . . . 
+
+Example 2 The Fermi surface topology of the shape-memory alloy Ni 0.62 Al 0.38 has been determined using Compton scattering. A large area of this Fermi surface can be made to nest with other areas by translation through a vector of ≈ 0.18 [1 , 1, 0](2 π/a ), which corresponds to the wavevector associated with martensitic precursor phenomena . . . 
+
+GitHub. 
+
+prompt // Debugger.Object referents can be transparent wrappers of objects in the debugger compartment. var g = newGlobal(); g.f = function (a, b) { return a + "/" + b; }; var dbg = Debugger(g); var hits = 0; dbg.onDebuggerStatement = function (frame) { var f = frame.eval("f").return; assertEq(f.call(null, "a", "b").return, "a/b"); hits++; }; g.eval("debugger;"); assertEq(hits, 1); 
+
+Example 1 // setVariable can set variables and arguments in functions. var g = newGlobal(); var dbg = new Debugger(g); dbg.onDebuggerStatement = function (frame) { frame.environment.setVariable("a", 100); frame.environment.setVariable("b", 200); }; g.eval("function f(a) { var b = a + 1; debugger; return a + b; }"); assertEq(g.f(1), 300); 
+
+Example 2 // Referents of Debugger.Objects in other compartments always survive per-compartment GC. var g = newGlobal(); var dbg = Debugger(g); var arr = []; dbg.onDebuggerStatement = function (frame) { arr.push(frame.eval("[]").return); }; g.eval("for (var i = 0; i < 10; i++) debugger;"); assertEq(arr.length, 10); gc(g); 
+
+prompt class Foo { // function fBar (x,y); fOne(argA, argB, argC, argD, argE, argF, argG, argH) { Array<string> numbers = [’one’,’two’,’three’,’four’,’five’,’six’]; var x = ("" + argA) + argB + argC + argD + argE + argF + argG + argH; try { this.fTwo(argA, argB, argC, this.fThree("", argE, argF, argG, argH)); } catch (e,s) {} . . . 
+
+Example 1 class Foo { // function fBar (x,y); fOne(argA, argB, argC, argD, argE, argF, argG, argH) { Array<string> numbers = [’one’,’two’,’three’,’four’,’five’,’six’]; var x = ("" + argA) + argB + argC + argD + argE + argF + argG + argH; try { this.fTwo(argA, argB, argC, this.fThree("", argE, argF, argG, argH)); } catch (error, stack) {} 
+
+. . . 
+
+Example 2 import com.Foo; using com.utils.MathUtil; class Foo { // function fBar (x,y); function fOne(argA:Int, argB, argC, argD, argE, argF, argG, argH) { var numbers:Array<String> = [’one’,’two’,’three’,’four’,’five’,’six’]; var x = ("" + argA) + argB + argC + argD + argE + argF + argG + argH; . . . 
+
+25 PubMed Central. 
+
+prompt Childhood psychiatric disorders are of concern because of the associated negative impact on general wellbeing across the lifespan, for example, lower educational achievements. The findings in several studies suggest that the adverse impact of childhood onset psychiatric disorders on educational attainment is largely accounted for by problems of inattention and conduct . . . 
+
+Example 1 The costs of primary and lower secondary schooling in Denmark are among the highest in OECD. This is in part due to large amounts being spent on children in special needs education; about one third of all the costs of primary and lower secondary education . . . 
+
+Example 2 Juvenile idiopathic arthritis (JIA) is an umbrella term for chronic childhood arthritis and a sig-nificant contributor to chronic disease in children and adolescents. Even in the era of modern treatment with improved outcome on biologic therapies, many children with JIA still experience flares and difficulties to attend daily life activities . . . 
+
+prompt Dengue fever (DF) is an insect-borne disease caused by four different dengue viruses (DENV 1–4), which are mainly transmitted by Ae. aegypti and Ae. Albopictus . DF is endemic to more than 100 countries in tropical and subtropical areas, especially in Southeast Asia, the Americas, the Western Pacific, Africa . . . 
+
+Example 1 Dengue is a vector-borne tropical disease caused by the four dengue virus serotypes (DENV 1–4) that is mainly transmitted by Aedes aegypti and Aedes albopictus mosquitoes. Dengue is an endemic infectious disease in most of the tropical and subtropical regions, especially in Southeast Asia, the Western Pacific, Latin America . . . 
+
+Example 2 Dengue fever, one of the most prevalent mosquito-borne diseases in humans, is mainly transmitted by Aedes aegypti and Aedes albopictus . There are four distinct serotypes for dengue virus, namely DENV 1, 2, 3 and 4. Dengue fever is endemic in more than 100 countries of Southeast Asia . . . 
+
+26
