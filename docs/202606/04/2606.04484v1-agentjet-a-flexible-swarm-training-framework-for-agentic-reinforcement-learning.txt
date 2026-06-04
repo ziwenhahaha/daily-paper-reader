@@ -1,0 +1,996 @@
+Title: AgentJet: A Flexible Swarm Training Framework for Agentic Reinforcement Learning
+
+URL Source: https://arxiv.org/pdf/2606.04484v1
+
+Published Time: Thu, 04 Jun 2026 00:47:34 GMT
+
+Number of Pages: 27
+
+Markdown Content:
+2026-06-04 
+
+# AgentJet: A Flexible Swarm Training Framework for Agentic Reinforcement Learning 
+
+Qingxu Fu ∗
+
+, Boyin Liu, Shuchang Tao, Zhaoyang Liu, Bolin Ding Tongyi Lab, Alibaba Group 
+
+https://github.com/modelscope/AgentJet 
+
+## Abstract 
+
+We present AgentJet , a distributed swarm training framework for large language model (LLM) agent reinforcement learning. Unlike centralized frameworks that tightly couple agent rollouts with model optimization, AgentJet adopts a decou-pled multi-node architecture in which swarm server nodes host trainable models and run optimization on GPU clusters, whereas swarm client nodes execute ar-bitrary agents on arbitrary devices. This design provides capabilities that are difficult to support in centralized frameworks: (1) heterogeneous multi-model re-inforcement learning, enabling the training of heterogeneous multi-agent teams with multiple LLM as brains; (2) multi-task cocktail training with isolated agent runtimes; (3) fault-tolerant execution that prevents external environment fail-ures from interrupting the training process; and (4) live code iteration, which al-lows agents to be edited during training by replacing swarm client nodes. To sup-port efficient RL in multi-model, multi-turn, and multi-agent settings, AgentJet introduces a context tracking module with timeline merging, which consolidates redundant context and achieves a 1.5–10 × training speedup. Finally, AgentJet introduces an automated research system that takes a research topic as input and autonomously conducts long-horizon, multi-day RL studies on large-scale clusters. By leveraging the swarm architecture, this system reproduces key ex-ploratory workflows of RL researchers without human intervention during exe-cution. 
+
+## 1 Introduction 
+
+Large language models (LLMs) have evolved from static text generators into autonomous agents capable of multi-turn reasoning, tool invocation (Yao et al., 2023; Schick et al., 2023), and complex workflow execution (OpenAI, 2024; Guo et al., 2025; Yang et al., 2025). Reinforcement learning (RL) has emerged as a central paradigm for developing these capabilities: DeepSeek-R1 (Guo et al., 2025) demonstrated that advanced reasoning behaviors, including self-reflection, verification, and dynamic strategy adaptation, can emerge through RL without supervised fine-tuning, while the OpenAI o1 series pioneered inference-time scaling through chain-of-thought reasoning (Wei et al., 2022) trained with large-scale RL (OpenAI, 2024). As models transition from single-turn reasoning to long-horizon agentic tasks such as coding across entire repositories (Jimenez et al., 2024), navigating web browsers (Zhou et al., 2024; Deng et al., 2023), and orchestrating office workflows, the demands on RL training infrastructure have become correspondingly more complex. A rich ecosystem of RL training frameworks has emerged to meet this challenge. General-purpose RLHF frameworks such as OpenRLHF (Hu et al., 2024) and veRL (HybridFlow) (Sheng et al., 2024) have es-tablished efficient distributed architectures for post-training LLMs. OpenRLHF pioneered a Ray (Moritz et al., 2018) + vLLM (Kwon et al., 2023) distributed architecture that orchestrates actor, reward, refer-ence, and critic models across GPU clusters with hybrid engine scheduling. veRL introduced a hybrid single-controller/multi-controller programming model that decouples RL control flow from computation flow, achieving state-of-the-art throughput across PPO (Schulman et al., 2017), GRPO (Shao et al., 2024), and other algorithms. However, training agentic models, in which the LLM must interact with external environments over multiple turns, invoke tools, manage context, and coordinate with other agents, introduces qualitatively different challenges that general-purpose RLHF frameworks were not designed to address. Agentic RL tra-jectories are orders of magnitude longer than single-turn reasoning chains, involve heterogeneous external 
+
+> ∗
+
+This work was conducted at Tongyi Lab, Alibaba Group. Correspondence: {fuqingxu.fqx, liuboyin.lby, taoshuchang.tsc, liuzhaoyang.lzy, dingbolin.dbl}@alibaba-inc.com 
+
+1
+
+> arXiv:2606.04484v1 [cs.AI] 3 Jun 2026
+
+environments such as code sandboxes, browsers, and APIs, and exhibit high variance in completion times. These demands have catalyzed a new wave of agent-native RL frameworks. Forge by MiniMax (MiniMax, 2026) introduces a middleware abstraction layer that fully decouples the training-inference engine from the agent scaffolding, treating agents as black boxes. AReaL (Fu et al., 2025) pioneered fully asynchronous training-inference decoupling, achieving 3–5 × speedup in agent search scenarios. Agent Lightning (Luo et al., 2025) converts agent experience into state-action-reward transitions that can be consumed by any RL algorithm. OpenTinker (Zhu & You, 2026) advances the separation-of-concerns paradigm with a Reinforcement Learning as a Service (RLaaS) architecture. OpenClaw-RL (Wang et al., 2026) explores every agent interaction as a live training signal for continuous online policy optimization. Despite this rapid progress, existing frameworks share several critical limitations when applied to real-world LLM agent training: • Runtime Fragility: Most frameworks assume that agent rollout environments and model training coex-ist within the same cluster. When an agent requires specific dependencies, such as Docker containers, browser automation, or database connections, a single component failure can crash the entire training pipeline and lose all progress since the last checkpoint. • Debugging Friction: Modifying agent code or reward functions requires restarting the entire training process, including expensive model loading and vLLM initialization, resulting in 5–10 minute iteration cycles. • Multi-Model Constraints: Current systems predominantly optimize a single policy model, while real-world agentic applications increasingly involve heterogeneous multi-agent systems where different agents use models of different sizes (e.g., 7B for execution, 32B for planning). • Redundant Context: As agents interact with environments over many turns, conversation contexts accumulate substantial redundancy (repeated system prompts, tool definitions, and observation histo-ries), leading to wasted computation during policy gradient updates. • Environment Lock-in: Multi-task cocktail training simultaneously trains on tasks with incompati-ble runtime dependencies and therefore requires strong isolation between task environments, which monolithic architectures struggle to provide. In this paper, we introduce AgentJet , a distributed swarm training framework that addresses these challenges through a fundamental architectural innovation: the complete decoupling of agent runtime from training infrastructure via a client-server paradigm. Our contributions are: 1. Swarm Architecture (Section 3): A flexible client-server paradigm that supports fault-tolerant train-ing, hot-swap debugging, heterogeneous multi-model RL, multi-task cocktail training, and a timeline merging algorithm that achieves 1.5–10 × speedup. 2. Swarm Training Capabilities (Section 5): We demonstrate two higher-level workflows enabled by the swarm architecture: vibe training , in which AI coding assistants generate complete training code from natural language specifications, and benchmark evaluations across diverse agentic tasks. 3. Automated Research Pipelines (Section 6): A fully autonomous system in which an AI research agent plans, executes, and analyzes multi-day experimental campaigns, validated through six independent case studies spanning hyperparameter optimization, model scale comparison, and LoRA configuration analysis. AgentJet is fully open-source and framework-agnostic, supporting integration with LangChain, AgentScope, raw HTTP endpoints, and any agent scaffolding that can issue LLM inference requests. 
+
+## 2 Related Work 
+
+2.1 Reinforcement Learning Frameworks for LLMs 
+
+The rapid development of LLM-based agents has produced a rich landscape of RL training frameworks, which we organize along two axes: general-purpose RLHF systems and agent-native RL systems. 
+
+General-Purpose RLHF Frameworks. OpenRLHF (Hu et al., 2024) pioneered a Ray (Moritz et al., 2018) + vLLM (Kwon et al., 2023) distributed architecture that orchestrates actor, reward, reference, and critic models across GPU clusters with hybrid engine scheduling. veRL (HybridFlow) (Sheng et al., 2024) introduced a hybrid single-controller/multi-controller programming model that decouples RL control flow from computation flow, achieving state-of-the-art throughput across PPO (Schulman et al., 2017), GRPO (Shao et al., 2024), and other algorithms. These frameworks have been instrumental in scaling reasoning RL; however, they were designed primarily for single-turn or short-horizon interactions and assume tightly coupled training-inference environments. 2Agent-Native RL Frameworks. A new wave of frameworks has emerged to address the specific demands of agentic training. Forge by MiniMax (MiniMax, 2026) introduces a middleware abstraction that treats agents as black boxes whose LLM requests are routed through a service gateway, and it integrates Context Management as an explicit agent action within the RL loop to mitigate context rot. AReaL (Fu et al., 2025), jointly developed by Tsinghua University and Ant Group, pioneered fully asynchronous training-inference decoupling, achieving 3–5 × speedup; the v1.0 release introduced Proxy Worker middleware that enables any agent to connect to RL training with a single API endpoint change. Agent Lightning (Luo et al., 2025) from Microsoft Research converts agent experience into state-action-reward transitions, en-abling low-intrusion integration with existing frameworks. OpenTinker (Zhu & You, 2026) advances the separation-of-concerns paradigm with a Reinforcement Learning as a Service (RLaaS) architecture and an Agent Protocol Coordinator for multi-agent training. OpenClaw-RL (Wang et al., 2026) treats every agent interaction as a live training signal for continuous online policy optimization. Compared with these systems, AgentJet provides: (1) complete decoupling of training and inference across arbitrary devices with a many-to-many topology, (2) heterogeneous multi-model multi-agent RL without parameter sharing, (3) architecture-level fault tolerance in which client failures cannot interrupt training, (4) timeline merging for efficient multi-turn training with 1.5–10 × speedup, and (5) framework-agnostic black-box agent support that requires zero code modifications. 
+
+2.2 Automated Scientific Research 
+
+The vision of AI-conducted research has advanced rapidly. AI Scientist from Sakana AI (Lu et al., 2024) demonstrated end-to-end automated research, from idea generation through code implementation, experi-mentation, paper writing, and peer review. AI Co-Scientist from Google DeepMind (Gottweis et al., 2025) further explored AI-driven scientific hypothesis generation and experimental design. AI-Researcher (Tang et al., 2025) from HKU received a NeurIPS 2025 Spotlight. AgentRxiv (Schmidgall & Moor, 2025) em-ploys multi-agent collaboration to iteratively improve results, increasing MATH-500 (Hendrycks et al., 2021; Lightman et al., 2024) accuracy from 70.2% to 78.2% through automated research cycles. OpenAI has identified fully automated AI researchers as a core long-term objective (MIT Technology Review, 2026). However, these systems predominantly focus on generating research papers or optimizing benchmark scores on tasks that complete in minutes. The automated research pipelines of AgentJet target a comple-mentary and less-explored problem: orchestrating long-horizon experimental campaigns in which individ-ual training runs last hours to days, multiple experiments must be scheduled across GPU clusters, and adaptive multi-stage experimental design is required to reach research conclusions. 
+
+## 3 AgentJet 
+
+AgentJet is a distributed agentic reinforcement learning framework that coordinates heterogeneous de-vices, with or without GPUs, to train one LLM model or multiple LLM models simultaneously, thereby improving task performance and model capabilities. AgentJet adopts a swarm architecture in which multiple nodes form a training network for a wide range of agentic training scenarios. 
+
+3.1 Swarm Architecture 
+
+The majority of existing agentic RL frameworks rest on two implicit coupling assumptions. First, all agents within a given task are required to share a single trainable LLM, as prevailing training backends are designed to optimize a single model at a time. Second, rollout workers are tightly coupled to the training process, executing on the same machine and within the same runtime that hosts gradient compu-tation. These assumptions conflate two workloads whose reliability profiles differ substantially: gradient computation is GPU-bound and benefits from tight co-location, whereas agent rollout is dominated by interactions with external tools, MCP (Anthropic, 2024) services, and remote resource access, whose routine failures (e.g., exhausted quotas, rate limits) frequently interrupt training and incur the loss of unsaved progress. This coupling further precludes a number of research directions of growing importance, including hetero-geneous multi-agent RL with non-shared parameters, multi-domain joint training, and on-policy training of agents that depend on heavyweight runtimes. AgentJet addresses both couplings by decoupling the training and rollout planes into a swarm of cooperating nodes. As illustrated in Figure 1, AgentJet employs a swarm-based training architecture orchestrated through two types of nodes, which can be deployed across one or multiple hardware devices, and which may join or leave the swarm at any time: 3Swarm Training Network 
+
+Episode Reward 
+
+Sync Configuration 
+
+Swarm Commander 
+
+LLM Inference APIs 
+
+Auto context tracker 
+
+Swarm Server status 
+
+Auto Research (A3R) 
+
+Module 
+
+Vibe Training 
+
+(AVT) Module 
+
+Multi -Agent Multi -Model Training 
+
+Agent Black 
+
+Box     
+
+> api key as context identifier
+> base url as model identifier
+> Dataset /
+> Local Sandbox
+
+# …
+
+# …        
+
+> Base URL /
+> API KEY
+> episodic timeline merging any agent loop
+> any dataset and
+> simulation environment
+> SS -2: Model 2
+> SS -1: Model 1
+> Agent
+> Loop
+> SC -Train
+> Iteration
+> SS -1: Context Tracker
+> SS -2: Context Tracke r
+
+Research & Experiment 
+
+Assistant Modules  SC 
+
+> (Swarm Client)
+> any device
+> SS
+> (Swarm Server)
+> require GP U
+> Reward
+> Function
+> SS -2
+> with LLM2
+> SS -1
+> with LLM1
+
+Figure 1: AgentJet swarm training architecture. The swarm servers (optimizer nodes) host model weights on GPU clusters, while the swarm clients (sampling nodes) execute agent workflows and collect reinforce-ment learning training trajectories. The swarm network is formed dynamically as clients join and leave, enabling fault-tolerant operation, hot-swap debugging, and multi-model training. • Swarm Server Nodes (Optimizer Nodes). Each server node is a training engine running on a GPU server or cluster. Server nodes execute LLM policy gradient updates, host vLLM (Kwon et al., 2023)/SGLang (Zheng et al., 2024) inference APIs with automatic context tracking, and manage episode lifecycles. Multiple server nodes can operate concurrently, each serving and training a distinct model (e.g., Qwen3-32B and Qwen3-14B), enabling non-shared-parameter multi-agent training. The current server node implementation is verl-based (Sheng et al., 2024) for best compatibility with most RL algorithms. • Swarm Client Nodes (Sampling Nodes). Client nodes are lightweight, CPU-only processes that can run on any device, including workstations, laptops, or the same machines that host servers. Each client executes arbitrary agent workflows, reads datasets, runs agent loops, and computes task-specific rewards. As clients interact with the inference API of a server, the server transparently captures all context for training. Moreover, clients can be authorized to manipulate server nodes to update training configurations, terminate or restart training, and fetch training progress. Client nodes can also restart and rejoin the training network safely without affecting the overall training process. An AgentJet training network (swarm) is composed of server and client nodes that are interconnected yet independently operated. On the one hand, the number of server nodes is determined by the number of models being trained, since each server independently hosts and trains a distinct model. On the other hand, the number of client nodes is highly flexible; researchers can dynamically add nodes to increase redundancy, train on multiple datasets simultaneously, run unscheduled evaluations, debug reward func-tions mid-training, and so on. Individual clients can be freely terminated, modified, and restarted while the rest of the swarm continues training uninterrupted, and different clients may run in entirely isolated runtime environments, such as separate Docker containers, virtual machines, or even distinct operating systems. 
+
+3.2 Swarm Reinforcement Learning Paradigm 
+
+The reinforcement learning procedure in AgentJet is conceptually similar to that of other RL frameworks; what differs is how responsibilities are distributed across the swarm. By decoupling trajectory collection from model optimization, the swarm architecture makes the RL process more flexible and scalable, and accommodates more sophisticated experimental setups. The basic procedure unfolds in the following phases: 
+
+(1) Setting up swarm servers. The swarm servers carry models and model optimizers in the RL training swarm network. When initialized, each swarm server starts from scratch (without loading any training parameters or LLM models) and only claims an address to register itself in the swarm network, waiting to be woken by a swarm client that supplies the training configuration and the booting instruction. 4Swarm Server  Ready               
+
+> Connect! Sending Training Parameters & Code Update
+> Swarm Server 1 Loads Model into GPUs
+> Request to run an episode.
+> Permitted: return authorized Base URL, API Key, Episode ID.
+> Run ⭐Agent Black Box With Base URL + API Key.
+> End or abort episodes: Reward + Task ID + Other Metadata.
+> Confirm, discard or post -process episode timelines.
+> Compute policy gradient and update weight.
+> Connect!
+> Connect!
+> Serve and
+> train model
+> 1
+> 2
+> 3
+> 1
+> 2
+> 3
+> Begin OpenAI -Compatible Service, begin recoding timelines.
+> Save episode timelines into buffer.
+> 123
+> *When the number of buffer samples reach threshold
+
+Figure 2: Swarm reinforcement learning paradigm between server and client nodes, showing network establishment, episode lifecycle, and asynchronous weight update trigger. 
+
+(2) Connecting swarm clients. Swarm clients are agent runners and RL trajectory generators that collect agent trajectories by executing agents using the LLM designated for training. A swarm can include an arbitrary number of swarm clients, ranging from a single client to many, running on any set of devices and operating systems. In either case, one designated client acts as the controller, which activates and deactivates swarm servers and synchronizes training parameters. Once the training parameters have been delivered to the swarm servers, the swarm servers enter the Booting phase, and finally, the Rolling phase when all model weights are loaded into memory. 
+
+(3) Collecting trajectories. Reinforcement learning starts from this phase, wherein swarm servers expose an OpenAI-compatible inference API for swarm clients to execute agent episodes (i.e., agent loops or agent workflows in the context of agent development), while transparently capturing all context and trajectories for subsequent policy training. To begin an episode, a swarm client needs to register the episode at every participating server and obtain from each a dedicated BaseUrl /ApiKey pair (encoded with a unique episode identifier) that is both server-specific (so the client can address the corresponding LLM on that server) and episode-specific (to prevent cross-episode interference). Upon approval, each swarm server creates an internal context tracker bound to the episode to record all agent LLM requests routed through it. In most scenarios, each node in the swarm has to handle multiple episodes concurrently; the per-episode BaseUrl /ApiKey pair routes each inference request to the right context tracker. An episode may be aborted by the client (e.g., external environment failures) or by the server (e.g., upon deadline expiry). Upon successful completion, the swarm client submits the episode reward to the swarm server(s), after which the episode trajectory is admitted into the sample pools of swarm servers. 
+
+(4) Optimizing the model. When the sample pool reaches capacity or other predefined conditions are met (refer to Sec. 3.3), the swarm server transitions into the Weight_Syncing phase to optimize the LLM. First, the timeline merging module of AgentJet merges trajectories from the sample pool to reduce redundancy. Second, policy gradient and other loss terms are computed to perform optimizer steps in accordance with the chosen RL algorithm, updating either the full model weights or the LoRA (Hu et al., 2022) matrix weights. Finally, the swarm server returns to the Rolling phase to resume trajectory collection as described in step (3). 
+
+(5) Evaluation. One advantage of the swarm architecture is that evaluation tasks can be scheduled at any time and on any node. Training and evaluation can proceed simultaneously; the key distinction is that evaluation episodes must be aborted upon completion to prevent their trajectories from entering the training sample pool. 53.3 Episode Batching 
+
+Most traditional RL frameworks adopt pre-scheduled batching behavior, assuming that the episode batch size, group volume, and task composition remain fixed throughout the entire training process. However, this practice hinders the flexible utilization of advanced sampling control methods, such as dynamic sampling in DAPO (Yu et al., 2025), where researchers must apply non-trivial post-hoc filtering to discard samples with zero advantage estimates, a procedure that is fundamentally at odds with pre-scheduled batching. Leveraging its swarm-based architecture, AgentJet supports multiple mechanisms for controlling sample batching, making it unprecedentedly easy and straightforward to blend heterogeneous samples and improve overall sampling efficiency. sample 
+
+> SC -1
+> SC -2
+> SC -3
+
+## Swarm Coordination For Reinforcement Learning                                             
+
+> sample
+> sample
+> Sample Pool
+> 𝑵 𝒕𝒄 =𝟑
+> 𝑵 𝒄 =𝟏 𝟒
+> Choices ( C1, C2, C3 ,C4 ,C5 ) on
+> When to Use Sample Pool to Update Policy
+> Reward
+> =0.7
+> Reward
+> =0.8
+> Task1
+> Task2
+> Task3
+> Task4
+> minimum
+> group size = 3
+> Swarm Server Switches to
+> Training State,
+> Offloads Inference Engine
+> Stop Accepting New Episodes
+> Compute Losses,
+> Apply Optimizer Steps
+> Offload FSDP and
+> Load Inference Engine
+> Number of completed tasks 𝑵 𝒕𝒄 ≥threshold
+> Number of valid task 𝑵 𝒕 𝒗 ≥threshold
+> Number of total episodes 𝑵 𝒄 ≥threshold
+> completed task: atask repeated for enough episode s
+> valid task :atask with reward variance ≠0across episodes
+> C2
+> C1
+> ALL Active Swarm Clients Agree Policy Update
+> C4
+> ANY Active Swarm Clients Agree Policy Update
+> C5
+> C3
+> 𝑵 𝒕𝒗 =𝟐
+> Reward Variance = 0
+
+# …
+
+> Episodic Timelines
+
+Figure 3: Swarm-coordinated reinforcement learning in AgentJet. Swarm clients run agent episodes against OpenAI-compatible inference endpoints exposed by swarm servers; completed episodes with re-wards are accumulated in a task-organized sample pool. Furthermore, the sample pool collecting strategy can be adjusted according to specific experimental requirements. As the episodes complete, the server accumulates them in a sample pool organized by task identity. Let 
+
+B = {(ti, Ei)} denote the pool, where ti is a unique task identifier and Ei = {e1 
+
+> i
+
+, . . . , e |E i| 
+
+> i
+
+} is the set of completed episodes for task ti, each with reward rji . Let B denote the batch size and N the number of rollout repeats per task. AgentJet provides five collection strategies, organized into two groups: server side strategies (C1–C3) and server-client agreement strategies (C4–C5). The former (C1–C3) adopts a pure producer-consumer model, in which the server unilaterally determines when the sample pool B is ready to trigger the next policy update. The latter (C4–C5) incorporates the status of client nodes into the scheduling decision; specifically, the server waits for acknowledgment from one or all client nodes before proceeding with the next policy update. • C1 – Episode-count strategy. Let Nc = ∑ 
+
+> i
+
+|E i| be the total number of completed episodes. Training is triggered when Nc ≥ B × N .• C2 – Task-count strategy. A task ti is considered completed when |E i| ≥ N (i.e., it has accumulated a sufficient number of episode repetitions as a group). Let Ntc = |{ ti : |E i| ≥ N }| denote the number of completed tasks. Training is triggered when Ntc ≥ B.• C3 – Non-dummy task-count strategy. A completed task is further classified as valid (non-dummy) only if its episodes exhibit non-zero reward variance (i.e., ∃ j̸ = k s.t. rji̸ = rki ). Let Ntv denote the number of valid tasks; training is triggered when Ntv ≥ B. This dynamic sampling strategy ensures that all collected samples provide reliable policy gradient signals, at the cost of increased sampling time. • C4 – All-clients-agree strategy. Training is triggered when all active swarm client nodes have signaled agreement. This strategy is appropriate when the proportion of samples contributed by different client nodes should be controlled, or when fine-grained coordination among client nodes is required in heterogeneous multi-agent cooperation scenarios. 6• C5 – Any-client-agrees strategy. Training is triggered as soon as any active swarm client node signals agreement. Once a policy update is triggered, a swarm server node first transitions into the Rolling_Post state, in which new episode claims are rejected while in-flight episodes are allowed to drain. It then advances to the Weight_Syncing state, where the policy gradient step is performed and the updated weights are broadcast to the inference engine. As soon as all the optimizer steps are performed, the server node switches back to Rolling state. 
+
+Figure 4: Swarm server monitoring with live sample-collection progress driving the C1–C5 trigger criteria of Figure 3. 
+
+3.4 Context Tracking and Framework-Agnostic Agent Support 
+
+Many modern agents adopt sophisticated internal designs that manage the LLM context through mech-anisms such as memory, skills, goal loops, and automatic compaction. To improve LLM performance via reinforcement learning within such agents, the training framework must be framework-agnostic and provide support for black-box agents , that is, agent implementations that require zero modification and no framework-level instrumentation. AgentJet achieves this through an episode-level context tracking and reconstruction mechanism that operates independently within each swarm server. 
+
+3.4.1 Framework-Agnostic Integration 
+
+Each swarm server exposes an OpenAI-compatible endpoint. To train an arbitrary agent, the practi-tioner only needs to substitute the LLM base URL and API key of the agent with those provided by AgentJet. The API key is episode-specific and encoded with episode information; see Sec. 3.2. All in-ference requests are intercepted, tokenized, logged, and forwarded to the actual vLLM/SGLang backend. This supports any agent framework that communicates over HTTP, including LangChain (Chase, 2022), AgentScope (Gao et al., 2024), MetaGPT (Hong et al., 2024), AutoGen (Wu et al., 2023), CrewAI (Moura, 2023), the OpenAI SDK, and custom HTTP implementations. 
+
+3.4.2 Context Tracker and Timeline Merging Context Tracker. Each intercepted LLM call produces an independent timeline in the context tracker. Each timeline is an array of message blocks, where each block contains: an author label ( llm , env , user ), a piece of text, a token ID sequence, a per-token log probability sequence, and a binary loss mask sequence. Formally, a timeline Ti for the i-th LLM call is an ordered array of Ki message blocks: 
+
+Ti = (B[1]  
+
+> i
+
+, B [2]  
+
+> i
+
+, . . . , B [Ki]
+
+> i
+
+), B[k] 
+
+> i
+
+= (m[k] 
+
+> i
+
+, x[k] 
+
+> i
+
+, a [k] 
+
+> i
+
+, ℓ[k] 
+
+> i
+
+, μ[k]
+
+> i
+
+), (1) where m[k] 
+
+> i
+
+is the text message, x[k] 
+
+> i
+
+the token ID sequence, a[k] 
+
+> i
+
+∈ { llm , env , user } the author label, ℓ[k]
+
+> i
+
+the per-token log probabilities, and μ[k] 
+
+> i
+
+∈ { 0, 1}|x[k]  
+
+> i|
+
+the loss mask (set to 1 only for LLM-generated tokens). 
+
+Timeline Merging. At the end of each episode, the context tracker holds an ordered list T = ( T1, . . . , T n)
+
+of timelines, one per intercepted LLM call. Because later turns reuse earlier turns as prompt, these timelines share long common prefixes, so treating each as an independent training sample inflates the count without new supervision. Timeline merging absorbs each timeline that matches a prefix of a longer one into that longer one, preserving which tokens were LLM-generated. Concretely, merging proceeds in reverse order (Algorithm 1): Tn absorbs each of Tn−1, . . . , T 1 in turn, then Tn−1 (if not yet absorbed) absorbs the remaining earlier timelines, and so on. The surviving timelines form T ′.7Algorithm 1 Timeline Merging 
+
+Pairwise mergeability. A longer timeline S and shorter timeline T are mergeable when |S| ≥ | T | and Match (S[k], T [k]) = True for all k ∈ [1 , |T |], with Match being token- or text-level equality per the chosen strategy (see Relaxed Matching Strategies below). 
+
+Require: Ordered timelines T = ( T1, T 2, . . . , T n) in collection-time order; matching predicate Match (·, ·).
+
+Ensure: Merged timeline set T ′ with absorbed timelines removed.  
+
+> 1:
+
+A ← ∅ {indices of absorbed timelines}  
+
+> 2:
+
+for i = n downto 2 do  
+
+> 3:
+
+if i ∈ A then  
+
+> 4:
+
+continue  
+
+> 5:
+
+end if  
+
+> 6:
+
+for j = i − 1 downto 1 do  
+
+> 7:
+
+if j ∈ A then  
+
+> 8:
+
+continue  
+
+> 9:
+
+end if  
+
+> 10:
+
+if |Ti| ≥ | Tj | and Match (T [k] 
+
+> i
+
+, T [k]
+
+> j
+
+), ∀k ∈ [1 , |Tj |] then  
+
+> 11:
+
+for k = 1 to |Tj | do  
+
+> 12:
+
+if T [k] 
+
+> j
+
+.author = llm and T [k] 
+
+> i
+
+.author ̸ = llm then  
+
+> 13:
+
+T [k] 
+
+> i
+
+.author ← llm  
+
+> 14:
+
+T [k] 
+
+> i
+
+.tokens ← T [k] 
+
+> j
+
+.tokens  
+
+> 15:
+
+T [k] 
+
+> i
+
+.logprob ← T [k] 
+
+> j
+
+.logprob  
+
+> 16:
+
+end if  
+
+> 17:
+
+end for  
+
+> 18:
+
+A ← A ∪ { j} {Tj absorbed into Ti} 
+
+> 19:
+
+end if  
+
+> 20:
+
+end for  
+
+> 21:
+
+end for  
+
+> 22:
+
+return T ′ = ( Ti)i /∈A in original order 
+
+Relaxed Matching Strategies. To handle real-world tokenization drift (text encoded then re-encoded produces different token sequences), two configurable matching strategy options are provided: 1. token : exact token-id match at every aligned position; suited for strict training/inference consistency. 2. text (default): exact text match at every aligned position; tolerates tokenizer drift and yields more aggressive merging. For the majority of timeline pairs, the two strategies produce identical results, but they diverge precisely at the boundary where researchers must trade training efficiency against train-inference (TI) consistency. Figure 5 illustrates one such case: under the Qwen3 chat template, once a follow-up assistant turn is appended, the tokenizer strips the thinking block from earlier assistant messages, causing token array differences even if the text is the same. Under text-level matching, timelines merge as one, maximizing the training speed at the cost of TI consistency. Under token-level matching, timelines remain separated. Token-level matching is preferred when the workload is sensitive to such tokenizer-induced drift and exact alignment with the inference-time token stream is required. 8User  Promp t
+
+Model Output 1 
+
+Tool Call Result 1 
+
+Model Output 2 
+
+Thinking 
+
+Main Content 
+
+<| im_start |> 
+
+<| im_end |> 
+
+Think & Reason 
+
+Main Content 
+
+<| im_start |> 
+
+<| im_end |> 
+
+… …
+
+Raw Timeline 1  Raw Timeline 2       
+
+> Text:
+> [ <| im_start |>, Thinking, Main
+> Content, <| im_end |> ]
+> Tokenized:
+> [ <| im_start |>, Thinking, Main
+> Content, <| im_end |> ]
+> Text:
+> [ <| im_start |>, Thinking, Main
+> Content, <| im_end |> ]
+> Tokenized:
+> [ <| im_start |>, Thinking , Main
+> Content, <| im_end |> ]
+> Text:
+> [ <| im_start |>, Thinking, Main
+> Content, <| im_end |> ]
+> Tokenized:
+> [ <| im_start |>, Thinking, Main
+> Content, <| im_end |> ]
+> Tokenzier chat template:
+> Remove old thinking block!
+> Timeline Merging:
+> Text Level Timeline
+> Matching Strategy
+> （1 final timeline only ）
+> Timeline Merging:
+> Token Level Timeline
+> Matching Strategy
+> （2 final timelines ）
+
+User  Promp t
+
+Model Output 1 (thinking included) 
+
+Tool Call Result 1 
+
+Model Output 2 (thinking included) 
+
+User  Promp t
+
+Model Output 1 (thinking included) 
+
+User  Promp t
+
+Model Output 1 (no thinking) 
+
+Tool Call Result 1 
+
+Model Output 2 (thinking included) 
+
+…Figure 5: Text-level vs. token-level timeline matching on Qwen3. The earlier assistant message has its thinking block stripped once a later turn is appended, so the two timelines agree on text but diverge in token ids: text-level merges them, token-level keeps them separate. 
+
+## 4 Capabilities Enabled by Swarm Decoupling 
+
+The swarm architecture of AgentJet decouples GPU-heavy model training from agent execution. Swarm servers maintain model weights, optimizer state, inference engines, and training samples, while swarm clients run agent loops, task environments, tools, reward functions, evaluation code, and experiment control logic. This design directly enables the following capabilities. • Heterogeneous Multi-Model Training. Most existing multi-agent RL frameworks can only train agents that share a single model: all agents invoke the same LLM policy and are updated through shared parameters. While this simplifies implementation, it constrains policy diversity, hinders the integration of models with differing costs and capacities, and precludes coordinated training across heterogeneous modalities. AgentJet overcomes these limitations by enabling non-shared-parameter RL training, in which distinct trainable LLMs reside on separate swarm servers. A swarm client routes each action of an agent to the corresponding model, collects role-specific trajectories, and updates each model exclusively from the experience it generated. • Mixed-Task Cocktail Training. Training an LLM across multiple agentic tasks in existing frameworks often requires substantial engineering around sandboxes, network proxies, MCP tools, API services, and task-specific reward code. When all of these components are embedded in one trainer, the training process becomes fragile: an invalid API key, a sandbox crash, or a mid-run IP ban can interrupt the entire run. AgentJet places these unstable task runtimes on separate devices or in separate containers. Different clients can execute different tasks inside their local runtimes, while the server receives their rollouts through a unified sample interface and trains on a mixed task distribution. • Researcher-Friendly Debugging and Evaluation. Existing RL frameworks are difficult to use in a REPL-like research workflow. A small change to the agent loop, prompt, reward function, or evaluation script may require rebooting the whole training job, reloading the model, and losing useful progress. Evaluation also often has to be pre-scheduled, making it hard to flexibly test new cases, inspect failures, or probe forgetting phenomena during training. AgentJet keeps these fast-changing components in swarm clients. Researchers can modify a client, restart or detach it, attach a new debugging or evaluation client, and interact with a live training run without restarting the swarm server. • Decentralized Training. Systems such as Tinker (Thinking Machines Lab, 2025) let researchers run the experiment-facing side of training on their own machines while leaving the optimizer and model servers in the cloud. The swarm architecture of AgentJet provides a similar form of decentralization for agentic RL. A researcher can edit and test the RL algorithm, agent loop, reward design, rollout logic, and evaluation code on a local machine, including a GPU-less laptop used as a swarm client. The local client can then send hyperparameters, instructions, and rollout requests to remote GPU servers. In this architecture, even a laptop can act as the controller of a swarm network that trains a multi-agent system built from many heterogeneous LLMs, subject only to available compute and networking resources. • Automated Research. REPL-style interaction and decentralized training make AgentJet suitable for vibe training and automated research workflows. An AI coding agent can generate or modify swarm clients, implement rewards, adjust prompts, launch rollouts, inspect logs, and iterate on failures with-out rewriting the server-side optimizer. At a larger scale, automated research agents can use GPU 9Table 1: Werewolf training experiments with different trainable agent configurations. Abbreviations:  
+
+> ww
+
+=werewolf, vl =villager, sr =seer, wt =witch, ht =hunter, SR=success rate.                                                                                                 
+
+> Exp Trainable Size Static Model (Qwen3-235B-A22B) Initial SR Final SR
+> 1ww 7B opponents: { vl ,sr ,wt ,ht }23.0 47.2 2ww 14B opponents: { vl ,sr ,wt ,ht }40.9 64.7 3sr 14B opponents: { ww }, collaborators: { vl ,wt ,ht }38.5 46.5 4wt 14B opponents: { ww }, collaborators: { vl ,sr ,ht }38.8 38.9 5ht 14B opponents: { ww }, collaborators: { vl ,sr ,wt }31.9 34.5 6sr ,wt ,ht 14B opponents: { ww }, collaborators: { vl }22.9 35.9 7vl ,sr ,wt ,ht 14B opponents: { ww }23.9 41.6
+
+clusters to run long-term experiment units in parallel, compare hyperparameters or task mixtures, and launch follow-up experiments based on intermediate results. The swarm interface gives these agents a stable training substrate while leaving task design and experiment logic easy to revise. • Fault-Tolerant Training. The swarm architecture can be used to build a fault-tolerant training system without sophisticated engineering in every task runtime. When a client node fails, it can be restarted, terminated, or ignored depending on the swarm composition, without forcing the training server to retreat or discard its optimizer state. Samples that have already been accepted by the server remain available for training, while failed or suspicious episodes can be excluded. This is especially useful for agentic RL, where rollout clients frequently depend on external tools, APIs, sandboxes, and long-horizon environments that fail more often than the optimizer itself. 
+
+## 5 Multi-Agent, Multi-Model and Multi-Task Training 
+
+The swarm architecture of AgentJet enables diverse training paradigms: shared-parameter and non-shared-parameter multi-agent training, and efficient multi-turn training through timeline merging. This section presents these capabilities with experimental validation. 
+
+5.1 Shared-Parameter Multi-Agent Training 
+
+AgentJet provides a researcher-friendly architecture for shared-parameter multi-agent reinforcement learn-ing (MARL). Under this paradigm, all trainable agents share a common model, with each agent making decisions independently based on its own observations. Notably, shared-parameter RL does not preclude the participation of static (non-trainable) LLM agents within the environment; such agents can serve as opponents, collaborators, reward judges, or subagents. More specifically, this experiment employs a 
+
+1-server-1-client swarm RL network, in which a single server hosts both the shared-parameter LLM and its optimizer. 
+
+5.1.1 Werewolves RPG Reinforcement Learning 
+
+The Werewolves game is a social deduction role-playing game that serves as a challenging testbed for multi-agent reinforcement learning. It presents a Partially Observable Markov Decision Process (POMDP) (Kaelbling et al., 1998) where agents must make decisions based on incomplete information while engaging in complex social interactions, including deception, coalition formation, and strategic voting. We configure a 9-player game (nww , n vl , n sr , n wt , n ht ) = (3 , 3, 1, 1, 1) , denoting the number of werewolves, villagers, seers, witches, and hunters respectively. Werewolves secretly kill players at night while hiding their identity; villagers have no special abilities; the seer can check the identity of one player each night; the witch has one healing potion and one poison potion; and the hunter can shoot a player upon death. The trainable agents use shared-parameter Qwen2 model (7B or 14B) , while opponents are controlled by a static Qwen3-235B-A22B model as a strong adversary. This creates an asymmetric training scenario where lighter models learn to compete against significantly larger opponents. Since all trainable agents share the same model, this experiment only needs to allocate one swarm server node, and since no unstable external environment is involved, only one swarm client is required. In the swarm client, a sparse, turn-level reward is employed based on the game outcome: r = 1 if the trainable faction wins, r = 0 otherwise. An exception penalty of r = −0.1 is applied when game execution fails due to illegal or unexpected agent actions. The seat numbers of all agents are randomly assigned at the start of each episode to prevent overfitting to specific roles or positions. 10 Figure 6: Token-level visualization rendered by the AgentJet Beast-Logger of werewolf behavior before and after fine-tuning. Left: once voted out, the base model openly confesses. Right: the fine-tuned agent instead emits a deceptive generate_response .
+
+Results and Analysis. Table 1 reports success rates across seven shared-parameter configurations cover-ing both factions. Training the werewolf faction yields the largest absolute gains: the 7B model improves from 23.0% to 47.2% (Exp 1), and the 14B model from 40.9% to 64.7% (Exp 2), despite both facing a static 235B opponent ensemble. Within the villager faction, training a single specialized role pro-duces the highest per-role win rate when that role is the seer (Exp 3, 38.5% → 46.5%), while the witch (Exp 4) and hunter (Exp 5) show only marginal improvement, suggesting their narrower action spaces and one-shot abilities offer fewer learnable decision points. Jointly training the three special roles (Exp 6, 22.9% → 35.9%) and the full non-werewolf team (Exp 7, 23.9% → 41.6%) recovers most of the gains and confirms that shared-parameter training in AgentJet scales to heterogeneous role sets without per-role reward shaping. Beyond these quantitative gains, the trained agents also exhibit qualitative behavioral improvements, which we examine through concrete trajectories below. 
+
+Case Study. A significant role-playing improvement is observed over the course of training, visible in concrete game trajectories: • Role-playing consistency : When voted out, the original model tends to reveal its identity as a ww ,whereas after fine-tuning the agent maintains its cover, continuing to deceive its opponents and protect its teammates. Figure 6 contrasts the two behaviors at the token level, as rendered by the AgentJet logger. • Social deception strategies : The agent develops multiple tactics for winning, including misdirection (“Let us keep an eye on the seer and the witch. They could be werewolves trying to hide.”), appeals to reason (“We need to be wary of fake seers and watch for inconsistencies in stories; Player-Y as hunter should act carefully.”), and taking advantage of the suspicion between non-werewolf players to eliminate opponents. • Implicit coordination : Werewolf agents learn to coordinate voting without explicit communication, leveraging shared-parameter training to develop emergent team strategies. 
+
+5.2 Non-Shared Parameter Multi-Agent Training 
+
+While shared-parameter training enables efficient learning for homogeneous agent teams, many real-world scenarios require heterogeneous agents with distinct objectives, capabilities, or adversarial relationships. Non-shared-parameter multi-agent training allows each agent (or each agent group) to maintain indepen-dent model weights, thereby facilitating the study of emergent behaviors in competitive, cooperative, or mixed-cooperative-competitive environments. AgentJet Swarm supports this paradigm by allocating ded-icated swarm server nodes to each trainable model. In these experiments, we adopt a many-server-1-client 
+
+swarm network configuration. 
+
+5.2.1 Adversarial Werewolves RPG Reinforcement Learning 
+
+In Section 5.1.1, all trainable agents shared the same model, which limited the diversity of learned behaviors and strategies. With AgentJet Swarm, we can study how different models enable agents to learn collaboration and competition within the same task. Here, we still focus on cooperation , where all trainable models remain in the same faction. 11 Table 2: Non-shared parameter multi-agent training experiments. Multiple 14B models with LoRA are trained simultaneously, each controlling different roles. Abbreviations: ww =werewolf, vl =villager,  
+
+> sr
+
+=seer, wt =witch, ht =hunter, SR=success rate.                                                     
+
+> Exp Trainable Model Trained Role Static Model (235B) Initial SR Final SR
+> 1M1 (14B-LoRA, 4 GPUs) ht ,vl opponents: { ww }22.5 30.5 M2 (14B-LoRA, 4 GPUs) wt ,sr
+> 2M1 (14B-LoRA, 3 GPUs) vl
+> opponents: { ww }22.0 34.2 M2 (14B-LoRA, 3 GPUs) sr ,wt
+> M3 (14B-LoRA, 2 GPUs) ht
+> 3M1 (14B-LoRA, 3 GPUs) ww 1
+> opponents: { vl ,sr ,wt ,ht }40.8 66.5 M2 (14B-LoRA, 3 GPUs) ww 2
+> M3 (14B-LoRA, 2 GPUs) ww 3
+> 4M1 (14B-LoRA, 4 GPUs) 50% random non-ww opponents: { ww }24.0 37.0 M2 (14B-LoRA, 4 GPUs) remaining 50% non-ww
+
+Table 2 presents results from four non-shared parameter training configurations. Several findings emerge: In general, werewolves are easier to train than the villager faction. This is consistent with Table 1, where shared-parameter training of werewolves achieves a higher final success rate (64.7%). An interesting finding emerges when comparing shared-parameter and non-shared-parameter training for werewolves. Table 1 Exp 2 uses a single 14B model for all werewolves, achieving 64.7% final success rate, while Table 2 Exp 3 uses three separate 14B-LoRA models, achieving 66.5%. Despite nearly identical initial success rates (40.9% vs. 40.8%), training separate models for each werewolf player yields a 1.8% improvement. This gain comes from behavioral diversity: when werewolves share parameters, they tend to exhibit similar speech patterns and voting behaviors, which experienced villagers can exploit to identify the werewolf team. With independent parameters, each werewolf develops a distinct persona, breaking this correlation and making coordinated identification significantly harder. This result highlights the unique advantage of non-shared parameter training in social deduction games, where behavioral diversity is crucial for deception. For the villager faction, we observe nuanced trade-offs between specialization and generalization. Com-paring Exp 1 (2 models) and Exp 2 (3 models), finer-grained role specialization yields better performance (34.2% vs 30.5%), as the hunter agent can develop strategies for its unique night-kill ability without compromising other roles. However, Exp 4 with random role assignment achieves the best result (37.0%), outperforming both fixed-assignment configurations. This suggests that effective cooperation requires perspective-taking: by experiencing the constraints and decision-making processes of other collabora-tor roles, each model develops a better understanding of teammate behaviors, enabling more effective coordination during the cooperation process. 
+
+5.2.2 Hierarchical Multi-agent Academic Translation 
+
+Academic translation at scale demands high throughput, low latency, and precise adherence to domain-specific conventions. These requirements favor smaller models that can process massive corpora efficiently, yet small models typically struggle with instruction following in long contexts. A natural solution is to design a multi-agent workflow on smaller models (e.g., 7B parameters) and use reinforcement learning to cultivate precise instruction-following behavior, thereby improving accuracy in specialized academic translation without sacrificing throughput. The pipeline consists of three agents collaborating to translate English academic abstracts into Chinese. Agent 1 (Qwen2.5-7B-Instruct (Qwen et al., 2024)) produces an initial rough translation, focusing on fluency and adherence to Chinese academic writing conventions: replacing first-person pronouns (e.g., “we”) with impersonal constructions (e.g., “this study”), intelligently handling abbreviations (using Chi-nese for short terms, retaining English for long ones with full expansion on first mention), and adjusting word order to match Chinese rhetorical emphasis. Agent 2 (Qwen2.5-14B-Instruct) reviews the rough translation and detects errors in discipline-specific proper nouns, outputting a structured JSON list of corrections with original term, erroneous translation, error reason, and suggested fix. Agent 3 (the same 7B model) applies these corrections to produce the final polished translation. This hierarchical design leverages model specialization: the larger 14B model handles the cognitively demanding terminology verification, while the efficient 7B model handles the bulk translation work. The reward model is constructed using OpenJudge, an LLM-as-a-judge (Zheng et al., 2023) grader, with a rigorous evaluation protocol. Rather than assessing general translation quality, the grader focuses on spe-cific error categories demonstrated through few-shot examples: first-person pronoun misuse, abbreviation 12 translation errors, word order problems violating Chinese academic style, subject-verb inconsistencies from improper restructuring, inappropriate colloquial word choices, redundant punctuation disrupting reading flow, and unclear or missing subjects. Translations are scored on a 0–2 scale: 0 for severe errors impairing readability, 1 for noticeable errors reducing reading efficiency, and 2 for error-free output. Table 3 presents representative examples comparing the fine-tuned 7B model against baselines. The base 7B model exhibits characteristic failures: mixed Chinese-English output, loss of semantic details, and retention of inappropriate first-person pronouns. After fine-tuning, the model correctly expands abbre-viations on first mention, replaces “we” with appropriate impersonal subjects, and accurately translates domain-specific terms. Table 3: Translation comparison between base and fine-tuned Qwen2.5-7B-Instruct. The fine-tuned model correctly handles abbreviation expansion, first-person pronoun replacement, and proper noun translation.                                       
+
+> Source (English) Base 7B Fine-tuned 7B
+> ...feasible densities are Gaussian and the projective integral up-dates yield quasi-Newton varia-tional Bayes (QNVB). ... 可行的分布为高斯分布，项目积分更新则会 产生准牛顿变分贝叶斯（ QNVB ）。
+> Missing English expansion
+> ... 可行的分布为高斯分布，项目积分更新则会 产生准牛顿变分贝叶斯（ Quasi-Newton Varia-tional Bayes, QNVB ）。
+> Correct expansion on first mention
+> Our new observations further con-firm the scenario of an outflow aris-ing from IRAS 16293-2422 interact-ing with the prestellar core 16293E.
+> 我们的新观测结果进一步证实了 IRAS 16293-2422 与其周围预星核 16293E 之间的出 flow 情景。
+> Mixed Chinese-English; wrong term “ 预星核 ”
+> 新观测结果进一步证实了 IRAS 16293-2422 与前置星核 16293E 相互作用而导致喷流的情景。
+> Correct term; no first-person
+> ...we introduce anovel and ef-fective module, named Domain Transferable-guided Attention Block (DTAB). ... 我们引入了一个新颖且有效的模块，称为域 可迁移引导注意力块（ DTAB ）
+> First-person “ 我们 ”; missing expansion
+> ... 本 文 引 入 了 名 为 “域 可 迁 移 引 导 注 意 力 块”（Domain Transferable-guided Attention Block ，DTAB ）的新颖且有效的模块。
+> Impersonal “ 本文 ”; full expansion
+
+5.3 Multi-Task Cocktail Training 
+
+A central promise of the AgentJet swarm architecture is that a single trainable model can be jointly optimized over a heterogeneous mixture of agentic tasks, a paradigm we call cocktail training . Each task brings its own runtime: AppWorld requires a containerized execution backend with stateful application APIs, while AIME mathematical reasoning only needs a lightweight verifier. In a monolithic trainer, the two stacks would have to coexist inside the same process, causing dependency conflicts and unstable rollouts. AgentJet avoids this issue: the AppWorld and AIME swarm clients run in separate environments and stream rollouts to a shared swarm server, which performs unified policy gradient updates over the mixed batch. In this experiment, we train Qwen3-8B with GRPO on a single 8-GPU node. The cocktail run attaches two swarm clients (AppWorld and AIME) to one swarm server, with a per-step batch of 16 AppWorld trajectories plus 16 AIME trajectories and GRPO group size 8. We compare it against two separate single-task runs (AppWorld only and AIME only) that use a per-step batch of 32 trajectories and otherwise share the same model, optimizer, and hardware. Figure 7 summarizes the result. On AIME, the two regimes track each other closely: their reward curves overlap for most of training and their means over the full run differ by less than one reward point (0.72 versus 0.73), with the separate run opening only a small late-stage margin (a last-20-step mean of 0.80 versus 0.75). On AppWorld, the gap is more pronounced: the separate run holds a consistent margin over the cocktail run, roughly 10 reward points higher both on average over training and over the last 20 steps (0.68 versus 0.58). This asymmetric tax is consistent with the intuition that AppWorld requires longer, tool-using trajectories whose gradients are more easily diluted when mixed with shorter, single-shot AIME rollouts. We do not claim that cocktail training matches separate training on every task. On a tool-heavy benchmark like AppWorld a dedicated specialist run remains the stronger choice, and the curves should be read with that asymmetry in mind. The value of cocktail training lies elsewhere. First, it produces one model that is competent across the entire task mixture rather than a separate specialist per benchmark. Because the model is exposed within a single optimization to qualitatively different reasoning regimes (long-horizon tool use in AppWorld, short-horizon symbolic reasoning in AIME), it must maintain a shared representation that supports both, which we expect to translate into better cross-task generalization than a specialist that has only ever seen one regime. Second, it substantially reduces overall training cost. Producing N specialists requires N
+
+independent training campaigns, each paying its own warmup, optimizer state, and rollout-cluster setup; cocktail training amortizes all of these across one shared run on one shared model copy. Adding a task increases per-step rollout volume but does not multiply the run count, the GPU-time footprint, or the engineering overhead. We therefore recommend cocktail training when the goal is a single deployable 13 20 40 60 80 100 120 140 160        
+
+> Training step
+> 0.40
+> 0.50
+> 0.60
+> 0.70
+> 0.80
+> 0.90
+> 1.00
+> Mean training reward
+> AIME
+> 20 40 60 80 100 120 140 160
+> Training step
+> 0.10
+> 0.20
+> 0.30
+> 0.40
+> 0.50
+> 0.60
+> 0.70
+> 0.80
+> 0.90
+> 1.00
+> Mean training reward
+> AppWorld
+> cocktail (1 server with Qwen3-8B, 2 clients running AppWorld and math agents respectively, batch size 16+16)
+> separate AIME (1 dedicated Qwen3-8B, AIME only, batch size 32)
+> separate AppWorld (1 dedicated Qwen3-8B, AppWorld only, batch size 32)
+
+Figure 7: Per-step training reward on AIME (left) and AppWorld (right), comparing cocktail joint training (orange, the same single run shown in both panels) against two separate single-task specialists: a dedicated AIME run (green) and a dedicated AppWorld run (blue). Thin lines and markers show raw step rewards; thick lines show a 5-step rolling average. Both regimes use Qwen3-8B with GRPO on the same 8-GPU node; the cocktail run uses a per-step batch of 16 (AppWorld) plus 16 (AIME), while each separate run uses a per-step batch of 32. All curves are clipped to the common 163-step range covered by every run. generalist at low marginal cost per added task, and reserve separate single-task training for cases where squeezing out the last few points on a specific benchmark is the explicit objective. A common recipe for building a single multi-skill model is the two-stage on-policy distillation (OPD) (Agar-wal et al., 2024) pipeline: first, train a separate specialist model for each task with RL; then, distill all specialists into one student by sampling trajectories on-policy from the student and matching the per-token distribution of each specialist on its respective task. OPD is effective but expensive: it requires 
+
+N + 1 training runs for N tasks, N teacher checkpoints kept resident for sampling, and a careful gat-ing mechanism to route each student rollout to the right teacher. Cocktail training, as enabled by the AgentJet swarm, offers an alternative that collapses this pipeline into a single run. Instead of distilling skills back together after the fact, the swarm server receives on-policy rollouts from every task client simultaneously and applies a unified policy gradient update over the mixed batch. There is no teacher, no second stage, and no routing logic; the only “mixing” decision is the relative rollout budget per client, which is controlled directly by the per-client batch configuration. Crucially, cocktail training optimizes for the same goal as OPD: a single multi-skill model. The trade-off is different, however. Cocktail training accepts a per-task gap relative to dedicated specialists in exchange for skipping the specialist-training and distillation stages entirely, removing N teacher checkpoints and the associated routing logic from the pipeline. We view the two approaches as complementary: OPD remains attractive when strong specialists already exist, or when tasks demand teacher supervision beyond reward signals, while cocktail training is preferable when one wishes to obtain a multi-skill generalist from scratch in a single training campaign with bounded total compute. 
+
+5.4 Regular Multi-Turn training 
+
+For less sophisticated RL tasks, AgentJet demonstrate higher training efficiency, stability, and flexibility. • Fully automated and configurable timeline merging. AgentJet automatically consolidates the redun-dant context that accumulates across multi-turn agent rollouts (Section 3.4.2), requiring no change to the task, model, or learning algorithm. Figure 8 compares two otherwise identical AppWorld swarm RL experiments over the first 25 training steps, one with timeline merging disabled and one with it enabled. AppWorld (Trivedi et al., 2024) is an interactive coding benchmark in which an agent com-pletes everyday digital tasks (e.g., managing email and music) by issuing multi-turn API calls against a high-fidelity simulated world of nine apps and roughly 450 APIs. The real-reward curves overlap closely and the per-step LLM-call counts stay comparable ( 11 .4±0.7 versus 12 .6±1.0), confirming that merging preserves training quality and agent behavior; meanwhile, the average per-step actor-update wall time falls from 2160 ± 171 s to 346 ± 13 s, a 6.25 × speedup. • Performance stability and consistency across versions. As shown in Figure 9, the continuous-14 5 10 15 20 25 
+
+> Training step
+> 0.20
+> 0.25
+> 0.30
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+
+Real reward     
+
+> 510 15 20 25
+> Training step
+> 10
+> 11
+> 12
+> 13
+> 14
+> 15
+
+LLM calls per step      
+
+> 510 15 20 25
+> Training step
+> 500
+> 1000
+> 1500
+> 2000
+> 2500 6.25x faster
+
+Actor-update wall time (s)  
+
+> Without timeline merging With timeline merging
+
+Figure 8: Effect of timeline merging on a multi-turn AppWorld swarm RL task (first 25 training steps; two runs identical except for the merging switch). Left: real reward; center: LLM calls per step; right: actor-update wall-clock time. The reward and call-count curves track each other closely while the actor-update time is reduced by 6.25 × on average, so the large speedup comes at no cost to training quality. 0 10 20 30                                                                                                        
+
+> 0.25
+> 0.50
+> 0.75
+> local-avg reward
+> 2026-01-31
+> 3bb6f290
+> 010 20 30
+> 2026-02-15
+> ef4adc77
+> 010 20 30
+> 2026-03-02
+> 69c62eb3
+> 010 20 30
+> 2026-03-04
+> 642eddc1
+> 010 20 30
+> 2026-03-11
+> 504c5e48
+> 010 20 30
+> 2026-03-26
+> 694752ed
+> 010 20 30
+> math
+> 2026-05-02
+> 0baaf2fb
+> 010 20 30
+> 0.4
+> 0.5
+> 0.6
+> local-avg reward
+> 010 20 30 010 20 30 010 20 30 010 20 30 010 20 30 010 20 30
+> appworld
+> 050 100 150
+> 0.2
+> 0.4
+> 0.6
+> local-avg reward
+> 050 100 150 050 100 150 050 100 150 050 100 150 050 100 150 050 100 150 countdown
+> 0100 200
+> 0.2
+> 0.4
+> 0.6
+> local-avg reward
+> 0100 200 0100 200 0100 200 0100 200 0100 200 0100 200 frozenlake
+> 0100 200
+> training step
+> 1
+> 2
+> 3
+> local-avg reward
+> 0100 200
+> training step
+> 0100 200
+> training step
+> 0100 200
+> training step
+> 0100 200
+> training step
+> 0100 200
+> training step
+> 0100 200
+> training step
+> learn2ask
+
+Figure 9: Per-step rolling-average reward across benchmark tasks (rows) and AgentJet git commits (columns, sorted by commit date). These baselines are performed regularly by auto research agents, reflecting the stability of the AgentJet’s framework during the rapid iteration. benchmarking experiment 1 re-runs a fixed suite of multi-turn RL tasks regularly for important versions. Each row in Figure 9 is one benchmark task and each column is one git commit (ordered by commit date); the per-step training reward curves overlap closely, confirming that algorithmic refactors and infrastructure optimizations do not regress training quality. • Framework-agnostic agent loops. AgentJet captures the RL training signal at the swarm’s OpenAI-compatible endpoint rather than inside the agent loop: any client library that issues OpenAI-style 
+
+chat.completions requests against the endpoint is captured by the per-episode timeline cache, and the same dense-LLM update follows. We verify this empirically with a four-arm framework ablation in which the same multi-turn math-reasoning GRPO recipe (Qwen3-8B base, DAPO-Math-17k (Yu et al., 2025) training data with a Python tool, validation on AIME-2025, AIME-2026, and DAPO-Math-Tiny-Val, 100 training steps, batch = 32 , grpo_repeat = 8 , val_pass_n = 4 , default learning rate) is driven by four different agent-loop implementations: the OpenAI Python SDK, LangChain, AgentScope, and a hand-written Raw HTTP client. The system prompt, Python tool sandbox, reward function, dataset, hyperparameters, and per-step batch/group structure are held byte-identical across the four runs; the only variable is the agent-loop framework. As shown in Figure 10, the four training and evaluation reward curves overlap closely throughout training. The final-checkpoint (step 90) evaluation rewards averaged across the three held-out sets are 0.536 (OpenAI SDK), 0.542 (LangChain), 0.517 
+
+1https://benchmark.agentjet.top 
+
+15 0 20 40 60 80 100        
+
+> Training step
+> 0.40
+> 0.50
+> 0.60
+> 0.70
+> 0.80
+> 0.90
+> Mean training reward
+> Training reward (DAPO-Math-17k)
+> 020 40 60 80
+> Training step
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> Eval mean reward
+> spread = 0.025
+> Held-out eval reward
+> (average of AIME-2025, AIME-2026 and DAPO-Math-Tiny-Val)
+> OpenAI SDK LangChain AgentScope Raw HTTP
+
+Figure 10: Framework-agnostic training of four agent-loop implementations (OpenAI SDK, LangChain, AgentScope, Raw HTTP) under an otherwise identical Qwen3-8B GRPO recipe on DAPO-Math-17k for 100 steps. Left: per-step training reward ( critic/rewards/mean ); thin lines and markers are raw values, thick lines are a 5-step rolling average. Right: held-out evaluation reward averaged across AIME-2025, AIME-2026, and DAPO-Math-Tiny-Val, sampled at ten checkpoints; the final-step cross-arm spread is 
+
+0.025 , and the maximum cross-arm gap at any aligned checkpoint stays below 0.04 , confirming that the choice of agent-loop framework is transparent to AgentJet’s training. (AgentScope), and 0.525 (Raw HTTP); the spread across the four frameworks is only 0.025 , and the maximum cross-arm gap at any aligned checkpoint stays below 0.04 for the entire run. This confirms that AgentJet’s training capture is framework-agnostic: practitioners can pick whichever agent framework best fits their workflow and obtain essentially the same RL training dynamics. 
+
+## 6 Automated Research 
+
+Artificial intelligence research assistance for LLM reinforcement learning is increasingly important as training pipelines become more complex and experiments scale up. On the one hand, conventional RL research typically involves only a few dozen hyperparameters, whereas LLM RL frameworks can include hundreds of core training hyperparameters because of hardware, model, and algorithmic diversity. Groups of settings often have unknown effects until ablation studies are performed. For example, many vLLM engine arguments are suspected in the community to cause RL failures, yet little evidence exists to support or refute these claims. As a result, determining whether seemingly minor settings can cause significant deviations has become a substantial burden for human researchers. On the other hand, most agentic training setups are bundled with sophisticated external services, such as sandboxes, search services, reward models, and application simulators. These external dependencies are orthogonal to research innovation, yet a minor failure or misconfiguration can invalidate algorithmic advances entirely. For this reason, we introduce automated research pipelines in AgentJet: they offload tedious but critical tasks, including hyperparameter investigation, infrastructure debugging, and systematic ablation, to autonomous agents, allowing researchers to focus on algorithmic innovation rather than engineering overhead. The swarm architecture of AgentJet enables two complementary agent-assisted capabilities that facilitate RL academic research: 1. AgentJet vibe training , which enables researchers to rapidly create new RL tasks, test and deploy external training dependencies (such as LLM-as-judge reward services and AppWorld services) with limited human attention, convert agentic loops (white-box or black-box, human-in-the-loop or fully autonomous) into trainable pipelines, and migrate tasks from other frameworks. 2. AgentJet Alpha Auto Research (A3R) module , which enables long-running autonomous research projects with parallel experiment execution, efficient GPU cluster utilization, and cost-effective automation powered by fully open-source models and coding agents. 
+
+6.1 Vibe Training 
+
+A recurring barrier in agentic reinforcement learning research is the significant engineering overhead required to go from a training idea to the first successful training curve. Researchers must establish agent logic, design reward functions, prepare datasets, configure distributed training infrastructure, and debug failures across all of these components before an experiment can begin. AgentJet addresses this barrier 16 through vibe training . A significant drawback of conventional RL frameworks is that even a small change in the agent loop or reward design may require a complete reboot of the training process. In contrast, the AgentJet swarm training framework fully decouples agent logic from model optimization and reduces the time required to apply agent modifications from minutes to a few seconds, allowing coding agents to take over the agent development process and establish a rapid iteration cycle for agent loops and rewards in reinforcement learning. A typical workflow using the AgentJet vibe training module is as follows: (1) First, researchers describe a training task in natural language, specifying the environment dynamics, agent objectives, and reward criteria, and important training settings such as the number of GPUs to allocate. (2) Second, the vibe training module spawns and monitors a coding agent to progressively read swarm training manuals, create swarm client nodes, download or mock training and test datasets, and establish a reward function or LLM grader using OpenJudge. (3) Third, the correctness of the training loop still needs to be verified in a real training cycle. At this stage, the vibe training module initializes the swarm server node(s) in the background, then attaches the swarm client(s) to the training network and starts the training process. Whenever a failure is encountered and a patch is applied, an AgentJet client node can choose between (i) restarting itself and reattaching to the swarm, which takes only seconds, or (ii) restarting itself while also sending a “force-restart” instruction the next time it attaches to the swarm server, thereby resetting the full training process, which takes minutes. (4) Fourth, after all problems are resolved, the training process is left running until a human researcher checks the final training curve or provides additional requirements. The AgentJet vibe training module does not start from scratch. Instead, AgentJet uses a set of swarm utilization skills to guide and control coding agents from the broader community, such as OpenCode Open-Code Contributors (2025) and ClaudeCode (Anthropic, 2025). The entire vibe training procedure can be completed on a CPU-only laptop with network connection to a remote swarm server. The AgentJet vibe training module enables four distinct pathways for constructing RL training pipelines. (1) First, researchers can create new RL tasks from scratch by describing a novel training task in natural language, specifying the environment dynamics, agent workflow, and reward criteria, and receiving a complete, runnable training client. This pathway is ideal for exploring new research directions and fol-lowing the fail-fast philosophy to quickly identify directions that are not feasible. (2) Second, researchers can attach existing agents for RL training even if these agents are hidden in black-box systems, such as ClaudeCode, or designed as passive responders, such as OpenClaw. This makes it possible to RL fine-tune production agents without rewriting their core logic. (3) Third, RL tasks originally developed in other frameworks (e.g., OpenAI Gym, Gymnasium, or custom research codebases) can be ported to swarm-compatible clients for cross-algorithm comparison. (4) Fourth, researchers can reroute non-Python agents into the AgentJet framework. Agents implemented in other languages (TypeScript, Rust, Go) or deployed as external services can participate in swarm training, enabling organizations to train agents built on diverse technology stacks without rewriting them in Python. 5 10 15 20 25 30 35        
+
+> Training step
+> -0.20
+> 0.00
+> 0.20
+> 0.40
+> 0.60
+> 0.80
+> 1.00
+> Mean reward
+> 510 15 20 25 30 35
+> Training step
+> 0.45
+> 0.48
+> 0.50
+> 0.53
+> 0.55
+> 0.58
+> 0.60
+> 0.62
+> 0.65
+> Policy entropy
+> No human intervention Human-intervention patch
+
+Figure 11: Example vibe training curves for the “Who is the Spy” multi-agent game. To illustrate, we describe a case study in which a “Who is the Spy” multi-agent game trainer is built entirely through natural language prompting. The practitioner provides a single prompt (Box A of Appendix A) specifying the game rules, the base model, the hardware budget, a request to generate mock game data, and two training modes: cooperative (civilians share a trainable 7B model while spies use a fixed frontier model) and adversarial (both teams use separate trainable 7B models on two swarm 17 servers). Figure 11 shows the resulting training dynamics for the cooperative configuration: without human intervention (red), the trainable 7B civilian policy lifts mean reward from 0.73 to 0.96 across 39 
+
+GRPO steps, while policy entropy contracts (notably after step 28). One limitation is that the AgentJet vibe training module, while effective at establishing a working training loop from natural language, offers no built-in safeguard against reward hacking. Inspecting the rollout trajectories, we found that the agents had converged on a degenerate strategy: rather than producing genuinely informative descriptions, players largely paraphrased or directly echoed prior speech from other players. This occurs because the reward function does not penalize paraphrasing behavior. We then applied a short patch to the vibe training module to detect repeated player descriptions and fix the reward function. The blue curves in Figure 11 show the patched run over the same step range. Without the patch, mean reward remains artificially high from the first step ( ≈ 0.73 ) as agents pad their replies with copied content. With the patched reward, training instead starts from a strongly negative reward (≈ − 0.10 ) and is already climbing back through zero by step 39 (it eventually recovers to ≈ 0.90 over 
+
+∼ 90 total steps); policy entropy first expands as the agent explores away from the copying attractor before contracting later in training, indicating that the agent is learning to describe the word concisely rather than mimic its peers. 
+
+6.2 Automated Research Pipelines 
+
+Figure 12: AgentJet Alpha Auto Research (A3R) pipeline. The AgentJet vibe training module is specialized for engineering agent-loop innovations and establishing task baselines. Nevertheless, this capability is not sufficient for in-depth reinforcement learning research. Many emerging auto-research projects in the community cannot satisfy the requirements of reinforcement learning research. (1) An RL experiment usually lasts more than 10 hours, and sometimes several days, which requires the auto-research agent to manage long-running tasks efficiently. (2) Researchers often need to run multiple experiments in parallel for ablation studies, manage multiple servers, or interact with GPU cluster APIs, which requires the auto-research agent to form a hierarchical multi-agent structure and collaborate across machines. Within the AgentJet framework, we present the AgentJet Alpha Auto Research (A3R) module to help RL researchers convert ideas into reliable experimental results and use multiple GPU servers to explore more possibilities simultaneously. A3R employs two types of agents that work collaboratively. (1) The leader agent plays the role of a chief scientist that forms hypotheses, designs experiments, dispatches work, collects results, and then draws conclusions or designs the next stage of experiments. There is no hardware requirement for the leader agent. (2) The worker agent runs a specific experiment according to the requirements of the leader agent. Worker agents must run on GPU servers. 18 Stage 1 
+
+> Coarse-grained Exploration
+> Stage 2
+> Fine-grained Refinement
+> Stage 3
+> Architecture Variation
+
+# · · · Stage K 
+
+> Final Validation
+> Research Report
+> findings findings
+> Blueprints
+> Execute
+> Analyze
+> Blueprints
+> Execute
+> Analyze
+> Blueprints
+> Execute
+> Analyze
+> Blueprints
+> Execute
+> Analyze
+> Adaptive multi-stage exploration (typically 2–5 stages over several days)
+
+Figure 13: Multi-stage research loop. Each stage consists of blueprint generation, parallel experiment execution on GPU clusters, and result analysis. Findings from each stage inform the design of the next, enabling adaptive convergence toward the research objective. A3R can run long-running experiments in parallel across multiple distributed servers. Depending on the user choice, A3R can use either cloud cluster APIs or regular SSH to access GPU servers and dis-patch experiments. To coordinate distributed experiments across multiple devices, A3R uses experiment blueprints as the primary medium for communication between the leader and worker agents. Each ex-periment blueprint is a document containing the following sections: 1. Purpose. The objective, hypothesis, and controlled variables of the experiment. 2. Codebase. The absolute path to the experiment code. 3. Virtual Environment. The primary Python virtual environment path. 4. Configuration. The path to the configuration file (usually YAML) specifying model, dataset, training algorithm, and all hyperparameters. 5. Command. The shell command used to prepare and start training. This command is for reference only, as the worker agent may need to modify it according to runtime conditions. 6. Result Directory. The path where the worker agent should write current results when the experiment finishes or fails in an unrecoverable way. 7. Time Budget. The maximum allowed runtime, after which the experiment is terminated by force. 8. Additional Notes. Any additional information relevant to the experiment, such as environment prepa-ration steps, key configuration references, and pre-experiment predictions. This standardized format ensures that blueprints are both human-auditable and machine-parseable, and that any experiment is fully reproducible from its blueprint alone. 
+
+6.2.1 Advantages of A3R 
+
+A3R inherits much of its reliability from the existing swarm infrastructure of AgentJet, and a few addi-tional design choices proved decisive in the case studies above. 
+
+Parallel Experimentation. Most existing auto-research systems are designed around a single workstation and stall as soon as an experiment claims the local GPUs. A3R is built on top of the AgentJet swarm dispatch path: the leader agent ships experiment blueprints to as many GPU servers as the cluster offers, through either cloud cluster APIs or plain SSH. 
+
+Effective Experiment Supervision. In general, agents without dedicated instructions tend to redirect terminal output to a file and poll it at fixed intervals when monitoring long-running experiments. However, this approach is ineffective for timely crash detection, potentially leading to wasted time and resources. A3R addresses this limitation by providing well-defined, empirically validated skills for leveraging tmux (a widely adopted terminal multiplexer on Linux). Consequently, when a worker agent is idle between observation intervals, unexpected crashes can immediately wake it for diagnosis and recovery, rather than waiting until the next scheduled check, thereby significantly accelerating the research process. 
+
+Cost Efficiency. Non-open-source models are too expensive to be used as researcher agents in long-running experiments, limiting the scalability and accessibility of automated research. A3R addresses this problem by reducing the difficulty of steps where agents are more likely to make mistakes. For example, the A3R module (1) provides a simpler CLI for remote server manipulation and (2) automatically guides agents back on track when they become stuck due to network or permission errors. 19 Algorithm 2 AgentJet Alpha Auto Research (A3R) Pipeline 
+
+Require: Research topic in natural language  
+
+> 1:
+
+The A3R module takes the research topic as input.  
+
+> 2:
+
+A leader agent is created to orchestrate the entire research project.  
+
+> 3:
+
+The leader agent decomposes the research topic and sketches a multi-stage experimental plan. At each stage, the leader agent plans a set of experiments to be carried out. For each experiment, the leader agent generates a detailed specification document, which we refer to as an experiment blueprint , containing key information such as the experiment purpose, codebase path, time budget, GPU requirements, and the recommended command line to start the experiment. Once the blueprints are generated, the leader agent uses server cluster APIs or regular SSH to deliver them to the partic-ipating GPU servers and initializes a number of worker agents on these servers equal to the number of blueprints.  
+
+> 4:
+
+On each distributed server, the worker agent conducts the experiment according to the blueprint assigned to it. Depending on the sophistication of the experiment, the worker agent may need to complete preparation jobs such as setting up the workspace, installing dependencies, and preparing datasets.  
+
+> 5:
+
+Once preparation is finished, the worker agent launches the training process and continuously monitors its progress. It diagnoses and attempts to recover from runtime errors (e.g., out-of-memory failures, GPU resource conflicts, dependency mismatches), enforces the time budget of the blueprint, and writes structured intermediate results (validation metrics, training curves, and logs) to a shared result directory.  
+
+> 6:
+
+Meanwhile, the leader agent polls the result directories of all dispatched experiments at regular intervals. As each experiment finishes, the leader ingests the structured results and accumulates them into the findings of the current stage, while still-running experiments continue without interruption.  
+
+> 7:
+
+Once all experiments in a stage complete, the leader agent synthesizes their results into a stage conclusion document, compares the observed outcome against the pre-registered contingency plan, and then decides whether the findings are conclusive enough to end the research project or whether further experimentation is warranted (in which case the loop returns to step 3).  
+
+> 8:
+
+In the final phase, the leader agent writes either a short experiment report or a full academic paper according to the user requirement, using the core experimental discoveries to populate comprehensive tables and figures. The leader agent then pauses and waits for the human researcher to provide further instructions. 20 Benefiting from these guardrails, each shell step the agent issues is less likely to derail the run, so the per-decision capability bar drops and smaller open-weight models become viable. In practice, A3R can be driven by MiniMax-M2.7 to power both leader and worker agents, which makes A3R both low-cost and free of frontier-API dependencies. 
+
+6.2.2 Research Case Study: Minimum Stable Batch Size for AIME Swarm RL 
+
+To illustrate how the A3R pipeline transforms a one-paragraph natural-language brief into a full ablation study, this subsection walks through a representative case in which the leader agent was asked to identify the minimum stable training batch size for AIME swarm-mode GRPO on Qwen3-8B, and to determine whether the per-turn response budget ( max_response_length_in_one_turn , abbreviated mr ) shifts that minimum. The original input from the researcher is the verbatim prompt reproduced in Box B of Ap-pendix B; everything that follows, including stage decomposition, blueprint authoring, parallel dispatch, crash recovery, and final synthesis, was performed autonomously over roughly three calendar days and 19 PAI jobs. Table 4 reproduces, in chronological order, every artifact produced by the leader and worker agents. 
+
+Protocol. The protocol sweeps train_batch_size ∈ {1, 2, 3, 4, 8, 16 , 32 , 64 } on Qwen3-8B at max_ response_length_in_one_turn = 10000 , then probes the most informative subset at mr ∈ { 8000 , 12000 }.All runs train for 60 steps with GRPO (kl_loss_coef = 2 ×10 −3, low_var_kl , clip_ratio = 0 .2, ppo_ epochs = 1, mini-batch num = 1), one swarm server with 8-GPU FSDP (Zhao et al., 2023) per experiment, and validate on 30 AIME-2024 problems with val_pass_n = 4 rollouts. The case study highlights three properties of A3R that are absent from single-shot prompting: (i) each stage is conditional on the previous one, with the leader narrowing the response-length probe only to the regime that the batch sweep flagged as informative, rather than committing to a fixed grid up front; (ii) the worker agent absorbs the bs = 64 interruption at step 30 by writing a partial record and queueing a clean rerun (PAI dlcy0znkazok0pvo ) without leader or human intervention; and (iii) the interrupted run is reported alongside the rerun in the final trace, preserving a complete audit trail rather than silently dropping the failed point. 21 Table 4: Chronological trace of the AIME minimum-stable-batch-size case study. Each row is a self-contained artifact emitted by either the leader agent (planning, synthesis) or worker agents (execution). All runs use Qwen3-8B + GRPO with ppo_epoch = 1 , mini-batch num = 1 , 8-GPU FSDP per experiment, and total_training_steps = 60 .
+
+Phase Content 
+
+Researcher in-put 
+
+“Find the minimum batch_size (range 1–64 ) that still trains the AIME agent efficiently, and determine whether max_response_length_in_one_turn influences that value.” Constraints (Box B): codebase agentjet_codebase , tutorial tutorial/opencode_build_aime , model Qwen3-8B ,
+
+≤ 60 training steps, 8 GPUs/exp, ppo_epoch = 1 , mini-batch num = 1 .Leader plan Three-stage adaptive design. Stage 1 : coarse low-end sweep bs ∈ { 1, 2, 4, 8} at mr = 10000 
+
+to bracket the lower frontier. Stage 2 : extend upward ( bs ∈ { 3, 16 , 32 , 64 }) at mr = 10000 to find the upper plateau. Stage 3 : response-length probes ( mr ∈ { 8000 , 12000 }) on the most informative batch sizes. Pre-registered contingency table maps frontier patterns (monotonic / saturating / non-monotonic) to next actions. Stage 1blueprints &execution Four blueprints ( bs1_mr10000 , bs2 , bs4 , bs8 ) at mr = 10000 , dispatched as PAI jobs. All four reached step 60 without infrastructure faults. Stage 1 results bs init p@1 final p@1 init p@2 final p@2 mean reward 1 48.33 36.67 53.33 53.33 0.3667 2 41.67 41.67 50.00 50.00 0.4167 4 38.33 45.00 50.00 60.00 0.4500 
+
+8 41.67 51.67 53.33 60.00 0.5167 
+
+Stability std (pass@1 across steps): bs = 1 : 4.47 % (unstable); 2: 2.59 %; 4: 2.44 %; 8: 4.18 %(stable). Stage 1 finding bs = 1 falls below its zero-shot baseline and shows the highest step-to-step std; bs ∈ { 2, 4} are stable but underperform bs = 8 on the final frontier. The lower edge of the curve is established, but the upper plateau is not yet reached, so the next stage must extend toward larger batches. Stage 2blueprints &execution Four blueprints ( bs ∈ { 3, 16 , 32 , 64 } at mr = 10000 ) dispatched 2026-04-29 19:04 CST as PAI jobs dlc1w6i0i2ojuhax , dlcra32iv1d7gaae , dlc4d4t1mu1p0fjf , dlc7yzj0qe2uty4w . The first bs =64 run was interrupted at step 30; the worker agent wrote a partial-results record, and the leader queued a clean rerun (PAI dlcy0znkazok0pvo ) without human intervention. Stage 2 results bs final p@1 final p@2 mean reward 3 43.33 56.67 0.4333 
+
+16 53.33 73.33 0.5333 
+
+32 51.67 63.33 0.4997 64 (clean rerun) 50.00 60.00 0.5000 The interrupted bs = 64 run is reported alongside the clean rerun rather than silently dropped. Stage 2 finding bs = 16 is the new frontier; bs = 32 and the clean bs = 64 rerun both plateau at around 50 .00 %pass@1 / 0.5000 mean reward, slightly trailing bs = 16 . Increasing batch beyond 16 does not improve performance at mr = 10000 . The minimum stable high-performing batch size at this response budget is bs = 16 .Stage 3blueprints &execution Two mr = 8000 blueprints ( bs ∈ { 8, 16 }) and five mr = 12000 blueprints ( bs ∈ { 1, 2, 4, 8, 16 })dispatched as seven parallel PAI jobs. All seven reached step 60 without infrastructure faults. Stage 3 results mr bs final p@1 final p@2 mean reward 8000 8 38.33 46.67 0.3833 8000 16 35.00 40.00 0.3500 12000 1 48.33 63.33 0.4833 12000 2 48.33 60.00 0.4833 12000 4 56.67 63.33 0.5667 12000 8 56.67 66.67 0.5667 
+
+12000 16 60.00 73.33 0.6000 
+
+Stage 3 finding mr = 8000 is non-competitive ( −13 to −18 pts pass@1 vs. mr = 10000 ). mr = 12000 lifts the entire family; bs16_mr12000 is the strongest configuration overall, and the efficient lower bound under mr = 12000 shifts up to bs = 4 (which ties bs = 8 on pass@1 and mean reward). The leader closes the loop. Final recommen-dation 
+
+Cheapest stable: bs = 4 , mr = 12000 . Overall best: bs = 16 , mr = 12000 . Versus the bs = 8 
+
+/ mr = 10000 stage-1 leader, the recommended configuration improves pass@1 by +8 .3 pts (51 .67 → 60 .00 ) and pass@2 by +13 .3 pts ( 60 .00 → 73 .33 ). Larger batches ( bs ≥ 32 ) are explicitly not recommended: they consume more compute without moving the frontier. 
+
+Findings. Three conclusions follow from the chronological trace in Table 4. (i) The minimum stable high-performing batch size at mr = 10000 is bs = 16 . Below this point pass@1 and mean reward both degrade monotonically ( bs = 1 falls below its zero-shot baseline and exhibits 4.47 % step-to-step std), and very small batches fail to integrate enough GRPO group statistics to produce a stable advantage signal. 
+
+(ii) Increasing batch beyond 16 does not move the mr = 10000 frontier: bs = 32 and the clean bs = 64 
+
+rerun both finish at 50 .00 % pass@1 / 0.5000 mean reward, slightly trailing bs = 16 . Extra GPUs are 22 therefore better spent on the response budget than on a wider batch, a recommendation A3R surfaces directly in its final report. (iii) Response length dominates batch size for this workload. Shrinking mr 
+
+to 8000 collapses both bs = 8 and bs = 16 (−13 to −18 pts pass@1), while extending mr to 12000 lifts the entire family: bs16_mr12000 is the strongest configuration at 60 .00 % pass@1, 73 .33 % pass@2, and 
+
+0.6000 mean reward, and the efficient lower bound shifts up to bs = 4 (which ties bs = 8 on pass@1 and mean reward at mr = 12000 ). mr = 8000 is non-competitive in this setup. 
+
+## 7 Conclusion 
+
+We presented AgentJet , a novel LLM post-training architecture for agentic reinforcement learning. Its key design choice is to separate the model optimization plane from the agent-execution plane. This separation gives agentic RL a cleaner interface: the optimization side can focus on model training, while the execution side can focus on running agents, tasks, rewards, and evaluations. As a result, AgentJet is framework-agnostic and supports training black-box agents that use OpenAI-compatible endpoints. This decoupled interface also provides fault tolerance, runtime isolation, and hot-swap debugging. Failed clients can be restarted, removed, or replaced without killing the server or interrupting training progress, and different tasks can run on separate machines, containers, virtual environments, or operating systems. Because clients are isolated and replaceable, researchers can edit agent code, training algorithms, rewards, datasets, or evaluation plans on the client side, creating a more REPL-like training paradigm for agentic RL. Building on this interface, AgentJet enables more sophisticated training paradigms, including shared-parameter and non-shared-parameter heterogeneous multi-model training and multi-task cocktail training. These paradigms are supported by flexible episode batching and sample-pool control, powerful context tracking, and efficient timeline merging. Like Tinker (Thinking Machines Lab, 2025), AgentJet also achieves decentralized training; Alpha Auto Research further extends the swarm and vibe-training ideas to long-running RL research campaigns with multi-day experiments, parallel cluster utilization, and adaptive ablation studies. Overall, AgentJet contributes infrastructure for agentic RL: reliability, composability, iteration speed, heterogeneous training, and broader experiment automation. 
+
+## References 
+
+Rishabh Agarwal, Nino Vieillard, Yongchao Zhou, Piotr Stanczyk, Sabela Ramos, Matthieu Geist, and Olivier Bachem. On-policy distillation of language models: Learning from self-generated mistakes. In 
+
+International Conference on Learning Representations (ICLR) , 2024. Anthropic. Introducing the Model Context Protocol. https://www.anthropic.com/news/ model-context-protocol , 2024. Anthropic. Claude Code. https://www.anthropic.com/claude-code , 2025. Harrison Chase. LangChain. https://github.com/langchain-ai/langchain , 2022. Xiang Deng, Yu Gu, Boyuan Zheng, Shijie Chen, Samuel Stevens, Boshi Wang, Huan Sun, and Yu Su. Mind2Web: Towards a generalist agent for the web. In Advances in Neural Information Processing Systems (NeurIPS) , 2023. Wei Fu, Jiaxuan Gao, Xujie Shen, Chen Zhu, Zhiyu Mei, Chuyi He, Shusheng Xu, Guo Wei, Jun Mei, Jiashu Wang, Tongkai Yang, Binhang Yuan, and Yi Wu. AReaL: A large-scale asynchronous reinforce-ment learning system for language reasoning. arXiv preprint arXiv:2505.24298 , 2025. Dawei Gao, Zitao Li, Xuchen Pan, Weirui Kuang, Zhijian Ma, Bingchen Qian, Fei Wei, Wenhao Zhang, Yuexiang Xie, Daoyuan Chen, Liuyi Yao, Hongyi Peng, Zeyu Zhang, Lin Zhu, Chen Cheng, Hongzhu Shi, Yaliang Li, Bolin Ding, and Jingren Zhou. AgentScope: A flexible yet robust multi-agent platform. 
+
+arXiv preprint arXiv:2402.14034 , 2024. Juraj Gottweis, Wei-Hung Weng, Alexander Daryin, Tao Tu, Anil Palepu, Petar Sirkovic, Artiom Myaskovsky, Felix Weissenberger, Keran Rong, Ryutaro Tanno, Khaled Saab, et al. Towards an AI co-scientist. arXiv preprint arXiv:2502.18864 , 2025. Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong Ma, Peiyi Wang, Xiao Bi, et al. DeepSeek-R1: Incentivizing reasoning capability in LLMs via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. 23 Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the MATH dataset. In Advances in Neural Information Processing Systems (NeurIPS), Datasets and Benchmarks Track , 2021. Sirui Hong, Mingchen Zhuge, Jiaqi Chen, Xiawu Zheng, Yuheng Cheng, Ceyao Zhang, Jinlin Wang, Zili Wang, Steven Ka Shing Yau, Zijuan Lin, Liyang Zhou, Chenyu Ran, Lingfeng Xiao, Chenglin Wu, and Jürgen Schmidhuber. MetaGPT: Meta programming for a multi-agent collaborative framework. In 
+
+International Conference on Learning Representations (ICLR) , 2024. Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. LoRA: Low-rank adaptation of large language models. In International Conference on Learning Representations (ICLR) , 2022. Jian Hu, Xibin Wu, Wei Shen, Jason Klein Liu, Zilin Zhu, Weixun Wang, Songlin Jiang, Haoran Wang, Hao Chen, Bin Chen, et al. OpenRLHF: An easy-to-use, scalable and high-performance RLHF frame-work. arXiv preprint arXiv:2405.11143 , 2024. Carlos E. Jimenez, John Yang, Alexander Wettig, Shunyu Yao, Kexin Pei, Ofir Press, and Karthik Narasimhan. SWE-bench: Can language models resolve real-world github issues? In International Conference on Learning Representations (ICLR) , 2024. Leslie Pack Kaelbling, Michael L. Littman, and Anthony R. Cassandra. Planning and acting in partially observable stochastic domains. Artificial Intelligence , 101(1-2):99–134, 1998. Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with PagedAttention. In Proceedings of the 29th Symposium on Operating Systems Principles (SOSP) ,2023. Hunter Lightman, Vineet Kosaraju, Yura Burda, Harri Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. In International Conference on Learning Representations (ICLR) , 2024. Chris Lu, Cong Lu, Robert Tjarko Lange, Jakob Foerster, Jeff Clune, and David Ha. The AI scientist: Towards fully automated open-ended scientific discovery. arXiv preprint arXiv:2408.06292 , 2024. Xufang Luo, Yuge Zhang, Zhiyuan He, Zilong Wang, Siyun Zhao, Dongsheng Li, Luna K. Qiu, and Yuqing Yang. Agent lightning: Train ANY AI agents with reinforcement learning. arXiv preprint arXiv:2508.03680 , 2025. MiniMax. Forge: Scalable agent RL framework and algorithm. https://huggingface.co/blog/ MiniMax-AI/forge-scalable-agent-rl-framework-and-algorithm , 2026. MIT Technology Review. OpenAI is throwing everything into building a fully au-tomated researcher. https://www.technologyreview.com/2026/03/20/1134438/ openai-is-throwing-everything-into-building-a-fully-automated-researcher/ , 2026. Philipp Moritz, Robert Nishihara, Stephanie Wang, Alexey Tumanov, Richard Liaw, Eric Liang, Melih Elibol, Zongheng Yang, William Paul, Michael I. Jordan, and Ion Stoica. Ray: A distributed frame-work for emerging AI applications. In 13th USENIX Symposium on Operating Systems Design and Implementation (OSDI) , 2018. João Moura. CrewAI: Framework for orchestrating role-playing, autonomous AI agents. https://github. com/crewAIInc/crewAI , 2023. OpenAI. Openai o1 system card, 2024. OpenCode Contributors. OpenCode: An open-source agentic coding assistant. https://github.com/ anomalyco/opencode , 2025. Qwen, An Yang, Baosong Yang, et al. Qwen2.5 technical report. arXiv preprint arXiv:2412.15115 , 2024. Timo Schick, Jane Dwivedi-Yu, Roberto Dessì, Roberta Raileanu, Maria Lomeli, Eric Hambro, Luke Zettlemoyer, Nicola Cancedda, and Thomas Scialom. Toolformer: Language models can teach them-selves to use tools. In Advances in Neural Information Processing Systems (NeurIPS) , 2023. Samuel Schmidgall and Michael Moor. AgentRxiv: Towards collaborative autonomous research. arXiv preprint arXiv:2503.18102 , 2025. 24 John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. DeepSeekMath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin Lian, et al. HybridFlow: A flexible and efficient RLHF framework. arXiv preprint arXiv:2409.19256 , 2024. Jiabin Tang, Lianghao Xia, Zhonghang Li, and Chao Huang. AI-Researcher: Autonomous scientific innovation. arXiv preprint arXiv:2505.18705 , 2025. NeurIPS 2025 Spotlight. Thinking Machines Lab. Tinker: A low-level training api for distributed LLM fine-tuning. https: //thinkingmachines.ai/tinker/ , 2025. Harsh Trivedi, Tushar Khot, Mareike Hartmann, Ruskin Manku, Vinty Dong, Edward Li, Shashank Gupta, Ashish Sabharwal, and Niranjan Balasubramanian. AppWorld: A controllable world of apps and people for benchmarking interactive coding agents. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (ACL) , 2024. Yinjie Wang, Xuyang Chen, Xiaolong Jin, Mengdi Wang, and Ling Yang. OpenClaw-RL: Train any agent simply by talking. arXiv preprint arXiv:2603.10165 , 2026. Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Brian Ichter, Fei Xia, Ed H. Chi, Quoc V. Le, and Denny Zhou. Chain-of-thought prompting elicits reasoning in large language models. In 
+
+Advances in Neural Information Processing Systems (NeurIPS) , 2022. Qingyun Wu, Gagan Bansal, Jieyu Zhang, Yiran Wu, Beibin Li, Erkang Zhu, Li Jiang, Xiaoyun Zhang, Shaokun Zhang, Jiale Liu, Ahmed Hassan Awadallah, Ryen W. White, Doug Burger, and Chi Wang. AutoGen: Enabling next-gen LLM applications via multi-agent conversation. arXiv preprint arXiv:2308.08155 , 2023. An Yang, Baosong Yang, Beichen Zhang, Binyuan Wang, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan, and Yuan Cao. Re-Act: Synergizing reasoning and acting in language models. In International Conference on Learning Representations (ICLR) , 2023. Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Tiantian Fan, Gaohong Liu, Lingjun Liu, Xin Liu, Haibin Lin, Zhiqi Lin, Bole Ma, Guangming Sheng, Yuxuan Tong, Chi Zhang, Mofan Zhang, Wang Zhang, Hang Zhu, Jinhua Zhu, Jiaze Chen, Jiangjie Chen, Chengyi Wang, Hongli Yu, Weinan Dai, Yuxuan Song, Xiangpeng Wei, Hao Zhou, Jingjing Liu, Wei-Ying Ma, Ya-Qin Zhang, Lin Yan, Mu Qiao, Yonghui Wu, and Mingxuan Wang. DAPO: An open-source LLM reinforcement learning system at scale. arXiv preprint arXiv:2503.14476 , 2025. Yanli Zhao, Andrew Gu, Rohan Varma, Liang Luo, Chien-Chin Huang, Min Xu, Less Wright, Hamid Shojanazeri, Myle Ott, Sam Shleifer, Alban Desmaison, Can Balioglu, Pritam Damania, Bernard Nguyen, Geeta Chauhan, Yuchen Hao, Ajit Mathews, and Shen Li. PyTorch FSDP: Experiences on scaling fully sharded data parallel. Proceedings of the VLDB Endowment , 16(12):3848–3860, 2023. Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric P. Xing, Hao Zhang, Joseph E. Gonzalez, and Ion Stoica. Judging LLM-as-a-judge with MT-Bench and chatbot arena. In Advances in Neural Information Processing Systems (NeurIPS), Datasets and Benchmarks Track , 2023. Lianmin Zheng, Liangsheng Yin, Zhiqiang Xie, Chuyue Sun, Jeff Huang, Cody Hao Yu, Shiyi Cao, Christos Kozyrakis, Ion Stoica, Joseph E. Gonzalez, Clark Barrett, and Ying Sheng. SGLang: Efficient execution of structured language model programs. In Advances in Neural Information Processing Systems (NeurIPS) , 2024. Shuyan Zhou, Frank F. Xu, Hao Zhu, Xuhui Zhou, Robert Lo, Abishek Sridhar, Xianyi Cheng, Tianyue Ou, Yonatan Bisk, Daniel Fried, Uri Alon, and Graham Neubig. WebArena: A realistic web envi-ronment for building autonomous agents. In International Conference on Learning Representations (ICLR) , 2024. Siqi Zhu and Jiaxuan You. OpenTinker: Separating concerns in agentic reinforcement learning. arXiv preprint arXiv:2601.07376 , 2026. 25 A Who is the Spy – Vibe Training Prompt 
+
+Box A reproduces the full natural language prompt used in the “Who is the Spy” vibe training case study discussed in Section 6.1. The practitioner supplies this single prompt to the coding assistant; all dataset mocking, game engine implementation, agent executors, and swarm client scripts are generated from it. 
+
+Vibe Training Prompt: “Who is the Spy” Multi-Agent Game Trainer 
+
+Your task: 
+
+• Write an agent that learns the “Who is the Spy” task, trained via a combination of reinforcement learning and supervised learning. Game rules are as follows: 
+
+– The game has N players in total, most of whom are civilians , and a few are spies .
+
+– At the start of the game, each civilian receives the same civilian word , and each spy receives a spy word that is similar but different from the civilian word (e.g., civilian word is “apple”, spy word is “pear”). 
+
+– In each round, all players take turns giving a verbal description of the word they were given. The description must truthfully reflect their own word, but must not state the word itself directly, nor reveal their identity too obviously. 
+
+– After all players finish describing, the game enters the voting phase , where all players vote for whom they consider the most suspicious spy. The player with the most votes is eliminated. 
+
+– The game continues for multiple rounds until one of the following end conditions is met: ∗ Civilians win : all spies have been eliminated. ∗ Spies win : the number of spies ≥ the number of civilians (spies gain a numerical advantage). 
+
+– The agent needs to master two core capabilities through extensive self-play training: ∗ Description strategy learning : learn to generate the optimal description based on its own word and the current situation – one that neither reveals its identity nor fails to win recognition from teammates. ∗ Reasoning and decision learning : learn to accurately identify spies and make optimal voting deci-sions based on dialogue history, other players’ description patterns, and behavioral features. 
+
+– Training objective: maximize the agent’s win rate across different roles (civilian/spy), continuously optimizing strategy via self-play and reward mechanisms. • Use the base model Qwen/Qwen2.5-7B-Instruct .• Train with 8 GPUs. • Batch size 16. • I currently have no dataset; you need to help me mock a small amount of game episode data for testing and initial training. • Use the OpenAI SDK, flexibly using Tools. • No Chinese characters are allowed in the code. 
+
+Your skill (read this SKILL file first to acquire the necessary knowledge): 
+
+./ajet/copilot/write-swarm-client/SKILL.md 
+
+Additional requirements: 
+
+• optional 0. (agent_roll ) team A civilians share a single 7B model; team B spies use qwen-max 
+
+(DASHSCOPE_API_KEY is already in the environment variables). For each episode, randomly assign everyone’s ID and name (randomly generate a long list of random full names). Winners get reward 1, losers get reward 0. • optional 1. ( agent_roll_adv ) adversarial training: team A civilians share one 7B model (swarm server 1), team B spies share another 7B model (swarm server 2). For each episode, randomly assign everyone’s ID and name (randomly generate a long list of random full names). Winners get reward 1, losers get reward 0. 
+
+Additional requirements: 
+
+• agent_roll : use 4 GPUs. • agent_roll_adv : swarm server 1 and swarm server 2 each use 4 GPUs (8 GPUs in total). 
+
+Additional requirements: debug using tmux + uv ’s .venv until all bugs are cleared and training starts nor-mally. You may use the three tmux sessions spy-swarm-server , spy-swarm-server-2 , spy-swarm-client .• Current debugging stage: 
+
+– Debug agent_roll [execute debugging]. 
+
+– Debug agent_roll_adv [skip debugging]. 
+
+26 B AIME Minimum-Stable-Batch-Size Research Objective 
+
+Box B reproduces the verbatim research objective handed to the AgentJet Alpha Auto Research (A3R) module for the case study in Section 6 (Table 4) and the standalone analysis in Section 6.2.2. A3R received only the goal sentence and the constraint list; everything that followed (stage decomposition, blueprint authoring, parallel dispatch, crash recovery, and final synthesis) was executed autonomously. 
+
+Original research objective (delivered verbatim to the auto-research agent) 
+
+Goal. Find the minimum batch_size that still trains the AIME agent efficiently ( batch_size from 1 to 64 ), and determine whether max_response_length_in_one_turn influences that value. 
+
+Constraints. 
+
+• Base code project directory: agentjet_codebase .• Reference tutorial: agentjet_codebase/tutorial/opencode_build_aime .• Create new swarm training clients under agentjet_codebase/tutorial/opencode_build_aime/auto_ research/ .• Model: Qwen3-8B .• Python interpreter: agentjet_codebase/.venv/bin/python .• Max total_training_steps : 60 .• 8 GPUs per experiment. • PPO_EPOCH = 1 , MINI_BATCH_NUM = 1 .
+
+27
