@@ -1,0 +1,1215 @@
+Title: Automatically Differentiable Nonlinear Tensor Networks (ADNTNs) for Exponential Compression of Deep Neural Networks
+
+URL Source: https://arxiv.org/pdf/2606.00130v1
+
+Published Time: Tue, 02 Jun 2026 00:05:07 GMT
+
+Number of Pages: 28
+
+Markdown Content:
+# Automatically Differentiable Nonlinear Tensor Networks (ADNTNs) for Exponential Compression of Deep Neural Networks 
+
+Andrzej Cichocki Michał Więtczak June 2, 2026 
+
+Abstract 
+
+Large neural networks often work well precisely because they contain more parameters than the immediate task appears to require. That surplus can make training easier and can improve expressivity, but it also creates a practical problem: at deployment time the same parameters must be stored, moved through memory, and evaluated under tight latency and energy budgets. This paper asks whether selected dense, convolutional, and attention layers can be stored not as large tables of numbers, but as the output of much smaller differentiable tensor network generators. We study Automatically Differentiable Nonlinear Tensor Networks (ADNTNs), a family of structured weight generators whose compact core tensors are trained end-to-end by reverse-mode automatic differentiation (AD). The approach can be viewed as a natural extension of low-rank adaptation and tensor factorisation: instead of using one low-rank matrix update, an ADNTN builds a large weight tensor through a hierarchy of small cores, nonlinear activations, and optional lateral mixing tensors. The paper focuses on three architectures: Tree Tensor Networks (TTNs), augmented TTNs (aTTNs) with boundary disentanglers, and Multi-scale Entanglement Renormalisation Ansätze (MERA). Our main mathematical contribution is a unified forward-adjoint calculus for these generators. For each architecture we state the forward contraction, the pre-activation adjoints, and the contracted-environment gradients of the core tensors. These formulae make transparent what an AD system computes when loss.backward() is called. The formulation supports nonlinear activations, task-aware objectives, batching, and hardware-aware execution schedules. At the same time, the paper keeps a clear distinction between 
+
+differentiating a contraction program and making contraction free: AD does not remove the cost of large intermediates, poor contraction orders, or exact contraction of general loopy tensor networks. The key modelling idea is simple. The layer used by the neural network may remain linear in its input, for example y =̂ WΘx, while the generator that produces ̂ WΘ is nonlinear in its small trainable cores. This nonlinearity relaxes the fixed multilinear rank restrictions of classical tensor networks and allows the generated weights to live on richer low-dimensional manifolds. We also standardise notation and initialisation across the architectures, because the variance of the latent tensor, expansion cores, and disentanglers strongly affects AD stability in deep hierarchical generators. Preliminary simulations on AlexNet and VGG-16 layers show per-layer compression ratios from roughly 2,000 × to 77 ,000 × in the studied settings, with accuracy often matching the dense baseline and, in several VGG-16 cases, improving it. These results are encouraging rather than final: they suggest that ADNTNs are a promising, mathematically structured, and hardware-aware route toward much smaller neural networks, provided that optimisation, contraction schedules, and deployment kernels are designed together. 
+
+1
+
+> arXiv:2606.00130v1 [cs.LG] 28 May 2026
+
+# 1 Introduction 
+
+Modern state-of-the-art DNNs and LLMs often contain hundreds of millions or billions of parameters. They are trained on large distributed hardware clusters and then deployed in latency-sensitive applications such as image classification, clustering, recognition, medical screening, interactive dialogue, search, and mobile assistance. This scale is beneficial for expressivity, optimisation landscape, and emergent capabilities, but it creates practical obstacles at inference time: a large model requires high memory capacity, large memory bandwidth, expensive accelerators, and non-negligible energy per query. A substantial empirical literature shows that many trained networks are functionally redundant: parameters can often be pruned, quantised, factorised, shared, or distilled with limited loss of accuracy in the moderate-compression regime (Blalock et al., 2020; Ganesh et al., 2020). Tensor decompositions provide a structured way to exploit this redundancy because they replace a dense tensor by a network of smaller factors whose parameter count can scale linearly (or near-linearly) in the number of tensor modes rather than exponentially (Kolda and Bader, 2009; Cichocki et al., 2016; Oseledets, 2011). Recent work on automatically differentiable tensor networks for neural-network compression further suggests that deep tensor-network generators can represent large neural weights with very few trainable degrees of freedom (Qing et al., 2025; Wang et al., 2023). 
+
+1.1 Motivation and Compression Objectives 
+
+Model compression is a multi-objective design problem that seeks to balance several competing goals simultaneously. 
+
+• Memory reduction: reduce the number of stored parameters and the bytes per parameter. 
+
+• Latency reduction: reduce wall-clock inference time, not merely the formal parameter count. 
+
+• Energy and cost reduction: reduce accelerator memory traffic, arithmetic intensity, and operational cost. 
+
+• Accuracy preservation: maintain the predictive performance of the original model on the target task. 
+
+• Behavioural fidelity: preserve the teacher (dense) model’s output distribution, calibration, intermediate representations, and safety-relevant behaviour. 
+
+• Deployability: produce structures that can be executed efficiently by available libraries and hardware. Although all of these objectives are desirable, they can be mutually contradictory. Unstructured sparsity may reduce the parameter count but often fail to accelerate inference on dense hardware. Very aggressive quantisation may reduce memory bandwidth but damage rare capabilities. Domain-specific compression may improve a specialised benchmark while weakening general-purpose behaviour. Compression is therefore best understood as a Pareto frontier, 
+
+> (
+
+size , latency , energy , accuracy , fidelity ),
+
+rather than as a single universal ratio. 21.2 Classical Compression Families 
+
+The principal classical compression families are the following. 
+
+• Pruning: removing individual weights, channels, heads, neurons, filters, or blocks according to a saliency criterion (Blalock et al., 2020). 
+
+• Quantisation: replacing 32-bit or 16-bit floating-point parameters and activations by lower-precision formats, commonly 8-bit, 4-bit, or mixed precision (Dettmers et al., 2023; Frantar et al., 2023). 
+
+• Knowledge distillation: training a compact student to imitate the logits, probabilities, hidden states, attention maps, or behaviour of a larger (dense) pre-trained teacher (Hinton et al., 2015; Ganesh et al., 2020). 
+
+• Parameter-efficient adaptation: freezing a pre-trained model and learning a small struc-tured update, as in LoRA, where ∆W = BA is low-rank (Hu et al., 2022). 
+
+• Low-rank and tensor-network factorisation: approximating a weight matrix by W ≈
+
+AB with a small inner dimension, or approximating a higher-order tensor Tensor Train (TT/MPS), Tensor Ring (TR), Matrix Product Operator (MPO), Tucker, Canonical Polyadic Decomposition (CPD), Tree Tensor Network (TTN), and MERA or related decompositions (Phan et al., 2020; Gusak et al., 2019; Qing et al., 2025; Gu et al., 2025; Javanmard et al., 2026; Wang et al., 2023). LoRA illustrates the conceptual transition from dense retraining to structured low-dimensional adaptation. Tensor-network compression generalises this idea: instead of a single rank-r matrix update, a large weight matrix or convolutional kernel is represented as the contraction of many small core tensors. The principal examples are the TT/TR, MPO, CPD, Tucker, TTN, and MERA (Cichocki et al., 2016, 2017; Oseledets, 2011; Kolda and Bader, 2009; Zhao et al., 2016; Vidal, 2007). 
+
+1.3 From ADTN to ADNTN: Key Definitions 
+
+Definition 1 (ADTN) . An Automatically Differentiable Tensor Network (ADTN) is a tensor network implemented as a differentiable computation graph so that its core tensors can be optimised by automatic differentiation (AD), with optional ReLU nonlinearities (Liao et al., 2019; Liao and Liu, 2021; Qing et al., 2025). 
+
+Definition 2 (ADNTN) . An Automatically Differentiable Nonlinear Tensor Network (ADNTN) is an ADTN in which nonlinear activation functions, normalisation, gates, or other optimised differentiable, learnable, nonlinearities are inserted between tensor contractions. 
+
+In a classical tensor network, all contractions are multilinear in the cores. In an ADNTN, the contractions remain differentiable but are no longer multilinear, because activations such as ELU or GELU are interleaved with the contraction layers (Hendrycks and Gimpel, 2016; Clevert et al., 2015). This modification is essential when small-radix ( d = 2 ) cores are used to generate expressive neural weights, as discussed in Section 4. 
+
+1.4 Main Contributions 
+
+The main contributions of this paper are as follows. 1. We formulate ADNTNs as hierarchical nonlinear tensor-network generators for dense, convo-lutional, and attention-layer weights. 32. We give explicit reverse-mode AD equations and training algorithms for the three architectures studied in detail: TTN, aTTN, and MERA. 3. We clarify why nonlinear generation can be useful even when the generated layer is used linearly, while avoiding the overclaim that a fixed tiny-bond generator is universal for all dense matrices. 4. We synchronise the notation for generated tensors, target tensors, adjoints, bond dimensions, physical radix, and layer indices, and we introduce a global initialisation convention for stable AD training. 5. We report proof-of-concept simulations on AlexNet and VGG-16 layers, including parameter counts, compression ratios, and validation accuracy changes relative to dense baselines. 
+
+1.5 Paper Organisation 
+
+Section 2 introduces tensorisations of DNN layers. Section 3 describes the hierarchical nonlinear tensor network decoders used in the paper. Section 4 explains why a nonlinear generator can be beneficial even when the generated DNN layer is linear or multilinear in the data. Section 5 discusses reconstruction, task-aware, distillation, regularisation, and quantisation-aware losses. Section 6 reviews automatic differentiation and differentiable programming. Section 7 derives the AD learning algorithms. Section 8 reports implementation details and proof-of-concept simulations. Section 9 concludes and outlines future directions. 
+
+Notation Guide 
+
+The following typographic conventions are used consistently throughout the paper. 
+
+• Scalars are plain italic letters, for example d, Q, L, Nℓ, χ, η, λ, and εopt .
+
+• Vectors are bold lowercase, for example x, y, h, and w.
+
+• Matrices are bold uppercase, for example W, A, B, and S.
+
+• Tensors of order at least three are underlined bold uppercase, for example W , K, V , U ,and C.
+
+• Generated quantities carry a hat, for example ̂ W Θ or ̂ WΘ; target quantities carry the subscript “tar”, for example W tar .
+
+• Adjoints are denoted by an overline: X := ∂L/∂ X and ¯v := ∂L/∂v . This convention is used for both manual formulae and AD-computed gradients. A summary of the principal symbols is given in Table 1. 4Table 1: Notation used throughout the paper. The table synchronises the symbols used in the tensorisation, forward-contraction, adjoint, optimisation, and experimental sections. In code, indices may be zero-based; in the mathematical formulae we use [d] = {1, . . . , d }.
+
+Symbol Type Meaning 
+
+x, y, h, w vector input, label/target, hidden activation, and vectorised weight 
+
+W,̂ WΘ matrix dense weight matrix and generated/compressed weight matrix 
+
+K,̂ KΘ tensor convolutional kernel and generated/compressed con-volutional kernel 
+
+W tar tensor tensorised target obtained by padding and folding a dense layer ̂
+
+W Θ tensor tensor generated by the ADNTN decoder before re-shaping into a layer 
+
+W (ℓ), Z(ℓ) tensor state tensor and pre-activation tensor at generator layer ℓ
+
+C, Θ tensor/set a generic trainable core and the full set of trainable latent tensors and cores 
+
+V (ℓ,k ) tensor binary expansion core at layer ℓ, branch/node k
+
+U (ℓ,k ) tensor two-site disentangler or lateral mixing core at layer ℓ,position k
+
+X tensor adjoint ∂L/∂ X with the same shape as X
+
+L scalar scalar objective optimised by AD 
+
+d, χ scalar physical radix and virtual/bond dimension 
+
+Q, Qbot , Nℓ, L scalar target tensor order, latent bottleneck order, number of modes after layer ℓ, and generator depth 
+
+σ, ϕℓ function base nonlinearity and layer-dependent activation, with ϕL = id at the output 
+
+η, λ, εopt scalar learning rate, AdamW weight decay, and numerical stabiliser in AdamW 
+
+Din , Dout scalar input and output dimensions of the original layer 
+
+P , ¯P , ρpar scalar dense parameter count, trainable generator parameter count, and compression ratio P/ ¯P
+
+# 2 Tensorizing DNN Layers 
+
+Before an ADNTN decoder can replace a classical layer, the layer parameters must be mapped into a high-dimensional tensor with well-defined index conventions. Let d ≥ 2 be the physical radix. For a vector of P parameters we choose Q = ⌈log d P ⌉, pad to length dQ, and fold the padded vector into an order-Q tensor. Throughout the paper 
+
+[d] := {1, . . . , d },
+
+although zero-based indexing may be used in code. 
+
+2.1 Large Linear (Fully Connected) Layers 
+
+A standard linear layer has a weight matrix W ∈ RDout ×Din . With P = Dout Din , let vec (W) ∈ RP
+
+denote a fixed column-major or row-major vectorisation. The tensorised target is 
+
+W tar = fold d,Q (pad dQ (vec( W))) ∈ R
+
+d × · · · × d︸ ︷︷ ︸  
+
+> Qmodes
+
+. (1) 5The inverse map removes the padding and reshapes the generated tensor back into ̂ WΘ ∈
+
+RDout ×Din .When the input and output dimensions have meaningful factors, Dout ≤ ∏sq=1 Oq and Din ≤
+
+∏sq=1 Iq, a paired tensorisation is often preferable: 
+
+Wo,i ←→ W o1,i 1,...,o s,i s , o ↔ (o1, . . . , o s), i ↔ (i1, . . . , i s). (2) This ordering keeps local input-output interactions close in the tensor network and is usually better than a blind flattening. 
+
+2.2 Large Convolutional Kernels 
+
+A two-dimensional convolutional layer has a fourth-order kernel 
+
+K ∈ RCout ×Cin ×KH ×KW . (3) The simplest unified representation flattens all indices and then applies the same fold as in Eq. (1): 
+
+K vec 
+
+−−−→ k ∈ RCout Cin KH KW pad , fold d,Q 
+
+−−−−−−−−−→ W tar ∈ Rd×···× d. (4) For high accuracy it is often useful to preserve channel/spatial semantics in the mode order: channel factors typically carry most of the parameter mass, whereas KH and KW are small and should not be interleaved arbitrarily. 
+
+2.3 Tensorising the Multi-Head Attention (MHA) Block 
+
+In a Transformer attention block with embedding dimension D, the four dense projection matrices are 
+
+WQ, WK , WV , WO ∈ RD×D. (5) The three input projections can be compressed jointly by concatenating them along the output-projection dimension, 
+
+WQKV = [ WQ WK WV ] ∈ RD×3D, (6) and then tensorising WQKV by Eq. (1) . This joint tensorisation can expose shared structure among attention heads and is consistent with recent tensorisation approaches to MHA compression (Gu et al., 2025). The output projection WO can be compressed by a separate generator or by a larger joint tensor if memory and optimisation budget allow. 
+
+# 3 Hierarchical Nonlinear Tensor Networks for DNN Compres-sion 
+
+We consider three top-down decoders: the Tree Tensor Network (TTN), the augmented TTN (aTTN), and the Multi-scale Entanglement Renormalisation Ansatz (MERA). In all cases, a small latent/root tensor is expanded through local core tensors into a high-order tensor which is finally reshaped into the weight matrix or convolutional kernel required by the neural network layer. A multilinear TTN, also known in numerical multilinear algebra as a hierarchical Tucker-type model, recursively expands a parent index into two child indices. The topology is loop-free: cutting an internal bond separates the tree into two subtrees. This makes TTNs simple to batch and easy to train, but it can create boundary artefacts between neighbouring leaves that are separated early in the tree. Nonlinear TTNs retain the same sparse connectivity but apply an 6activation after each layerwise expansion, allowing the generator to represent richer families of weights than a purely multilinear tree. 
+
+Figure 1: Nonlinear Tree Tensor Network (TTN) decoder used as a weight generator. A small latent tensor W (0) with bottleneck order Qbot = 5 is expanded layer by layer by rank-3 cores 
+
+V (ℓ,k ). ELU-type activations are applied after hidden expansion layers, while the final layer is left linear so that the generated tensor can be reshaped into an ordinary linear or convolutional weight. The aTTN augments a TTN by adding one or more layers of local two-site disentanglers near the physical boundary. These lateral tensors mix neighbouring branches before the final generated tensor is read out. The goal is to reduce cross-branch discontinuities at modest additional parameter cost. MERA pushes this idea further by inserting disentanglers at every scale, thereby creating overlapping causal cones and stronger multi-scale mixing (Vidal, 2007; Evenbly and Vidal, 2014). 
+
+Figure 2: Augmented TTN (aTTN) decoders with one and two boundary-disentangler layers. The green TTN expansion cores create the hierarchical tensor, while the red/orange two-site cores mix neighbouring physical branches before readout. These lateral tensors are intended to reduce boundary artefacts at modest parameter cost; unlike quantum MERA, they are trained as unconstrained real-valued neural-network parameters unless a soft regulariser is added. 7Figure 3: Nonlinear MERA-style decoder for ADNTN weight generation. Each scale alternates vertical expansion cores V (ℓ,k ) with lateral disentanglers U (ℓ,k ), producing overlapping causal cones and stronger multi-scale mixing than a strict tree. The diagram shows the open-boundary version used in the paper, with nonlinear activations placed between complete generator layers. 
+
+3.1 Quantised Local Cores Nonlinearly Interconnected 
+
+A central design principle in ADNTN compression is to keep all local dimensions small. For a homogeneous binary architecture we often use physical radix d = 2 and bond dimension χ = 2 .The canonical core shapes are chain/branching core: G ∈ Rχ×d×χ, (7) binary expansion core: V ∈ Rχ×χ×χ, (8) two-site disentangler: U ∈ Rχ×χ×χ×χ, (9) leaf map: P ∈ Rχ×d. (10) For a binary tree with Q leaves and bounded χ, a representative parameter count is 
+
+¯PTTN ≈ (Q − 1) χ3 + Qχd, (11) whereas a dense order-Q target tensor has dQ entries. Thus, for fixed d and χ, the nominal parameter compression grows exponentially with Q. This is a parameter-count statement; accuracy, latency, and energy gains must still be verified empirically and hardware-specifically. The binary radix d = 2 is attractive because it gives extreme compression, uniform tensor legs, and power-of-two memory layouts. Larger d or χ can be introduced adaptively when validation loss indicates that the bottleneck is too restrictive. 
+
+3.2 Practical Architectural Choices 
+
+Mode ordering. Mode ordering is a modelling choice, not a cosmetic detail. For matrices, paired indices (oq, i q) often preserve local input-output structure. For convolutional kernels, spatial modes and channel modes should usually be treated differently because the spatial modes are small while channels dominate the parameter count. Poor ordering can hide low-dimensional structure from the network and force unnecessary growth in χ.83.3 Topology Comparison: TTN, aTTN, and MERA 
+
+Table 2: Qualitative comparison of the three ADNTN topologies studied in the paper. TTN is the lowest-cost baseline, aTTN adds boundary mixing to reduce tree artefacts, and MERA applies mixing at every scale for greater expressivity at higher implementation cost. 
+
+Topology Advantages Limitations 
+
+TTN Simple O( log Q) depth, low param-eter count, and strong batching po-tential. Possible boundary artefacts and weaker interactions across early tree splits. aTTN Boundary disentanglers improve lateral information flow at modest cost. Extra permutations and boundary contractions add implementation complexity. MERA Overlapping light cones and multi-scale mixing; often more expres-sive. Larger constants in memory, ten-sor permutation, and contraction scheduling. A practical design path is to begin with TTN, move to aTTN when generated weights show block artefacts, and use MERA when multi-scale or long-range mixing is essential. 
+
+3.4 Dynamic Rank and Radix Growth 
+
+Using d = 2 and χ = 2 maximises compression, but some layers require more capacity. A simple growth step expands a core by 
+
+V ∈ Rχ×χ×χ −→ V ′ ∈ R(χ+∆ χ)×(χ+∆ χ)×(χ+∆ χ), (12) copying the old entries into the leading block and initialising the new entries near zero. This approximately preserves the learned function while giving the optimiser additional degrees of freedom only where needed. 
+
+3.5 Initialisation 
+
+Initialisation is especially important in ADNTNs because a signal travels through many small contractions before it reaches the generated weight tensor. If the core variances are too large, intermediate tensors can explode or drive the nonlinearities into saturated regions; if they are too small, the adjoints can vanish before reaching the latent tensor. For this reason we use one global initialisation convention across TTN, aTTN, and MERA rather than mixing He Normal, Xavier Uniform, and ad-hoc Gaussian rules from one experiment to another. For a core C, define its effective fan-in and fan-out by grouping the legs that are contracted with the incoming state and the legs that are exposed to the outgoing state: 
+
+nin (C) = ∏
+
+> q∈Iin (C)
+
+nq, nout (C) = ∏
+
+> q∈Iout (C)
+
+nq, (13) where nq is the size of leg q. For the homogeneous binary expansion core Vp,a,b this gives nin = d
+
+and nout = d2; for a two-site mixing core Uα,β,a,b it gives nin = nout = d2. If physical and virtual dimensions differ, the same rule is applied using the actual leg sizes. For hidden cores followed by ELU, GELU, Swish/SiLU, ReLU, or PReLU-type activations, the default is a He/Kaiming-style normal initialisation (He et al., 2015): 
+
+Ci ∼ N 
+
+> (
+
+0, g2
+
+> σ
+
+nin (C)
+
+> )
+
+, gσ ≈ √2 for ReLU-family activations . (14) 9For PReLU with negative slope a, a useful gain is gσ = √2/(1 + a2) (He et al., 2015). For final linear readout cores, for approximately linear activations, or when the next activation is close to odd and variance preserving near the origin, we use Xavier/Glorot scaling (Glorot and Bengio, 2010): 
+
+Ci ∼ U 
+
+> [
+
+−gσ
+
+> √
+
+6
+
+nin + nout 
+
+, g σ
+
+> √
+
+6
+
+nin + nout 
+
+> ]
+
+. (15) SIREN-style periodic activations require their own scaling: the first layer and subsequent layers should follow the frequency-dependent rules in Sitzmann et al. (2020), otherwise the sine generator can become either nearly constant or chaotic. The latent root is initialised separately, 
+
+W (0) 
+
+> i1...i Qbot
+
+∼ N (0 , s 20), (16) with s0 chosen so that the first generated weights have a reasonable scale. In the simulations in Section 8 we use s0 = 0 .05 unless a teacher-based warm start is available. Disentanglers are preferably initialised near the identity map, 
+
+Uα,β,a,b = δαa δβb + τ R α,β,a,b , Rα,β,a,b ∼ N 
+
+> (
+
+0, g2
+
+> σ
+
+nin 
+
+> )
+
+, (17) with a small τ such as 10 −3–10 −1. This allows aTTN and MERA to start close to the corre-sponding TTN while leaving AD free to learn lateral mixing. In practice, the following reproducible policy is recommended: use Eq. (14) for hidden nonlinear expansion cores, Eq. (15) for final linear readout cores, Eq. (17) for lateral disentanglers, and Eq. (16) for the latent root. After the first forward pass, a lightweight calibration step can rescale each hidden layer so that Var [Z(ℓ)] remains close to a chosen target, typically one. When a dense teacher weight is available and small enough to tensorise, TT-SVD or Tucker initialisation followed by nonlinear fine-tuning can further accelerate convergence (Oseledets, 2011; Kolda and Bader, 2009). 
+
+3.6 Physics Tensor Networks versus Machine-Learning Generators 
+
+Tensor networks originated in quantum many-body physics, where tensors represent normalised wavefunctions and many cores are constrained to be isometric or unitary. For real-valued cores, representative constraints are 
+
+> ∑
+> a,b
+
+Vi,a,b Vj,a,b = δij , ∑
+
+> a,b
+
+Ua,b,i,j Ua,b,i ′,j ′ = δii ′ δjj ′ . (18) In neural-network compression, the generated object is an unconstrained real-valued weight tensor. Strict isometry/unitarity is therefore not imposed by default: neural weights may need arbitrary scale, sign, and anisotropic spectra. However, soft penalties such as 
+
+Liso = λV
+
+> ∑
+> ℓ,k
+> ∥∥∥
+
+V(ℓ,k )(i),(ab )V(ℓ,k ) T 
+
+> (i),(ab )
+
+− I 
+
+> ∥∥∥2
+> F
+
++ λU
+
+> ∑
+> ℓ,k
+> ∥∥∥
+
+U(ℓ,k )(ab ),(ij )U(ℓ,k ) T 
+
+> (ab ),(ij )
+
+− I 
+
+> ∥∥∥2
+> F
+
+(19) can be useful regularisers when numerical stability or bounded activations are important. DMRG/TEBD-type methods optimise one core at a time by constructing environment tensors and performing local solves or SVD sweeps. These methods are powerful for multilinear physics models, but nonlinear activations and end-to-end task losses break the local linear subproblem. AD is therefore more natural for ADNTNs: it differentiates the complete executed program, including nonlinearities, loss terms, batching, and any downstream network layers (Liao et al., 2019; Qing et al., 2025). 10 4 Why we Use Nonlinearity to Generate a Linear Layer? 
+
+There is no contradiction in using a nonlinear generator for a layer that is linear at inference time. The ADNTN construction separates two computational graphs. 
+
+• The execution graph maps data to predictions, for example y =̂ WΘx or Y =̂ KΘ ⋆ X.This graph may remain linear in the input. 
+
+• The generation graph maps a latent tensor and core tensors to weights, ̂ W Θ = GΘ(W (0) ).This map may be nonlinear in the cores and intermediate states. Thus the generated operator can be used as an ordinary linear layer even when its parameterisation is nonlinear. 
+
+Relaxing multilinear rank restrictions. For a purely multilinear tensor network, any bipartition A|B of the physical indices satisfies a cut-rank bound 
+
+rank 
+
+> (
+
+unfold A|B (W )
+
+> )
+
+≤ ∏
+
+> e∈∂(A,B )
+
+χe ≤ χ|∂(A,B )|, (20) where ∂(A, B ) is the set of virtual bonds cut by the bipartition. For a TT/MPS cut, |∂(A, B )| = 1 ,giving the familiar rank bound ≤ χ. For TTN and MERA the bound depends on the chosen cut and topology, but the key point remains: a linear tensor network has algebraic ranks controlled by its virtual bonds. Elementwise nonlinearities break the multilinear factorisation. A layer of the form 
+
+W (ℓ) = ϕℓ
+
+> (
+
+Contract ℓ
+
+> (
+
+W (ℓ−1) , {C(ℓ,k )}k
+
+> ))
+
+(21) is no longer multilinear in the cores. Even in the matrix case, if M = AB has rank (M) ≤ χ, the matrix ϕ(M) obtained by applying a nonlinear function entrywise can be full rank for generic A
+
+and B. Consequently, the fixed-cut rank bound in Eq. (20) no longer directly characterises the final generated weight matrix. 
+
+Remark 1. Nonlinear TN generators remove the strict multilinear rank bottleneck and allow the model to learn a richer low-dimensional manifold of weights. The optimistic empirical hypothesis, supported by compression results, is that many trained DNN layers lie close enough to such structured nonlinear manifolds to be approximated with very few trainable degrees of freedom. 
+
+Gradient flow. The activation should preserve useful derivatives along the deep generator. A standard ReLU has zero derivative for negative pre-activations, which can freeze paths through a small-bond tree. Smooth activations with nonzero or learnable negative-side behaviour are therefore preferable in very narrow tensor networks. 
+
+4.1 Frontier Learnable Nonlinearities for Enhanced Expressivity 
+
+Useful default activations include GELU and ELU: 
+
+GELU( x) = xΦ( x) = x
+
+2
+
+> (
+
+1 + erf  
+
+> (
+
+x
+
+√2
+
+> ))
+
+, (22) 
+
+ELU α(x) = 
+
+> {
+
+x, x > 0,α(ex − 1) , x ≤ 0. (23) GELU weights inputs by their Gaussian cumulative probability (Hendrycks and Gimpel, 2016), while ELU shifts negative activations below zero and can improve mean activation dynamics (Clevert et al., 2015). Other promising choices are the following. 11 Periodic activations. SIREN-style activations use 
+
+ϕ(x) = sin( ω0x), (24) with careful initialisation. They can represent high-frequency patterns and may be useful when generated weights contain oscillatory or sharp local structure (Sitzmann et al., 2020). 
+
+Learnable rational activations. A rational activation can be written as 
+
+ϕ(x) = Pm(x)
+
+Qn(x) = a0 + a1x + · · · + amxm
+
+1 + b1x + · · · + bnxn , (25) where the coefficients are trainable. Rational neural networks can approximate smooth functions efficiently and provide a flexible activation family (Boullé et al., 2020). 
+
+Self-gating functions. Swish/SiLU uses 
+
+ϕ(x) = x sigmoid( βx ) = x
+
+1 + e−βx , (26) and provides a smooth non-monotone self-gating mechanism (Ramachandran et al., 2017). 
+
+Parametric rectifiers. PReLU learns the negative slope, 
+
+ϕ(x) = 
+
+> {
+
+x, x ≥ 0,ax, x < 0, (27) which can adapt gradient flow differently at different generator depths (He et al., 2015). In ADNTNs, a layer-dependent slope a(ℓ) is often more useful than a single global value. 
+
+# 5 General Loss Functions for AD Training 
+
+ADNTNs are not restricted to a Frobenius reconstruction objective. Since the generator is a differentiable program, any differentiable or subdifferentiable scalar loss can be used, including reconstruction, cross-entropy, distillation, regularisation, quantisation-aware, and hardware-aware terms. Historically, tensor-network compression matched a pre-trained target tensor by minimising 
+
+LFrob (Θ) = 12
+
+> ∥∥∥̂
+
+W Θ − W tar  
+
+> ∥∥∥2
+> F
+
+. (28) This objective is useful for layer-wise fitting, but it treats all parameter entries as equally important. In classification, the task loss depends on the logits, not directly on entrywise reconstruction error. For a mini-batch {(xb, yb)}Bb=1 with logits zb = F (xb;̂ W Θ) and predicted probabilities ̂ yb =softmax( zb), the cross-entropy loss is 
+
+LCE (Θ) = − 1
+
+B
+
+> B∑
+> b=1
+> ∑
+> c
+
+yb,c log ̂ yb,c . (29) The adjoint entering the generator is obtained by the vector-Jacobian product 
+
+W := ∂LCE 
+
+∂̂ W Θ
+
+= 1
+
+B 
+
+> B∑
+> b=1
+> (
+
+∂zb
+
+∂̂ W Θ
+
+> )∗
+
+(̂ yb − yb) , (30) 12 where ∗ denotes the adjoint (transpose for real tensors) of the local Jacobian map. This expression is exactly what reverse-mode AD computes without forming the Jacobian explicitly. A general nonnegative mixture is 
+
+L(Θ) = 
+
+> M∑
+> m=1
+
+λmLm(Θ) + λreg Lreg (Θ) , λm ≥ 0. (31) Representative terms include the following. 
+
+Sampled Frobenius reconstruction. For very large tensors, evaluate only a mini-batch Ω
+
+of entries: 
+
+LΩ(Θ) = 12|Ω|
+
+> ∑
+> i∈Ω
+> (̂
+
+Wi(Θ) − Wtar ,i
+
+> )2
+
+. (32) 
+
+Entrywise robust reconstruction. An L1 or Huber term can reduce sensitivity to outlier weights: 
+
+L1(Θ) = ∑
+
+> i
+> ∣∣∣̂
+
+Wi(Θ) − Wtar ,i 
+
+> ∣∣∣
+
+. (33) AD frameworks use a valid subgradient or a smooth surrogate at zero. 
+
+Distillation and KL divergence. If pT is a teacher probability vector and pΘ is the compressed model probability vector, then 
+
+LKL (Θ) = ∑
+
+> c
+
+pT,c log pT,c + δpΘ,c + δ , δ > 0. (34) This term can be combined with Eq. (29) to preserve teacher behaviour beyond top-1 accuracy (Hinton et al., 2015). 
+
+Regularisation, sparsity, and quantisation. Useful regularisers include weight decay, the soft isometry penalty in Eq. (19) , gate sparsity, activation scale control, and quantisation-aware penalties. A practical objective is therefore 
+
+L(Θ) = λFLFrob + λΩLΩ + λCE LCE + λKL LKL 
+
++ λiso Liso + λsp Lsp + λqLq. (35) The training algorithms below do not hard-code any one of these losses. They execute the chosen generator and downstream model, evaluate the scalar L(Θ) , and use reverse-mode AD to compute ∇ΘL.
+
+# 6 Automatic Differentiation and Differentiable Programming 
+
+6.1 Efficient Gradient Computation 
+
+Automatic differentiation (AD) represents a program as elementary differentiable operations and applies the chain rule to the executed computation. It produces derivatives exact up to floating-point round-off, unlike finite differences, which are approximate and step-size dependent (Baydin et al., 2018). For a supervised objective 
+
+L(θ) = 1
+
+N
+
+> N∑
+> i=1
+
+ℓ(fθ(xi), yi) , (36) 13 training requires ∇θL even when θ contains millions or billions of parameters. Reverse-mode AD computes this gradient at a cost that is typically a small constant multiple of the forward execution, assuming that intermediate values are stored or recomputed by checkpointing (Baydin et al., 2018). 
+
+6.2 Computational Graphs and Elementary Operations 
+
+Let a program produce intermediate variables vj = fj (vpa( j)) on a computational directed acyclic graph (DAG). For a scalar loss L, define the adjoint of any variable by 
+
+¯vj := ∂L
+
+∂v j
+
+. (37) Reverse-mode AD applies the local vector-Jacobian product 
+
+¯vi ← ¯vi + 
+
+> (
+
+∂f j
+
+∂v i
+
+> )∗
+
+¯vj , i ∈ pa( j), (38) for all nodes in reverse topological order. This is the precise sense in which backpropagation is the chain rule applied to the executed program. For a fully connected layer, 
+
+h(ℓ) = σ
+
+> (
+
+W(ℓ)h(ℓ−1) + b(ℓ))
+
+, (39) the graph contains matrix-vector multiplication, addition, and a pointwise nonlinearity. Tensor-network generators are handled in exactly the same way: contractions, reshapes, permutations, activations, and losses are all graph nodes with local backward rules. 
+
+6.3 Forward-Mode and Reverse-Mode AD 
+
+AD has two complementary modes (Baydin et al., 2018). 
+
+• Forward mode propagates tangents. Given a direction ˙θ, it computes ˙L = ∇θL · ˙θ.
+
+• Reverse mode propagates adjoints. Starting with ¯L = 1 , it computes all parameter adjoints by repeated use of Eq. (38). Forward mode is efficient when the number of inputs is small; reverse mode is efficient when the number of scalar outputs is small. Since training normally uses one scalar loss and many parameters, reverse mode is the natural choice. Modern systems such as TensorFlow, PyTorch, and JAX provide reverse-mode AD, checkpointing, compilation, batching, mixed precision, and custom gradients (Abadi et al., 2016; Paszke et al., 2019; Bradbury et al., 2018). 
+
+6.4 Advantages over Numerical and Symbolic Differentiation 
+
+Compared with finite differences and symbolic differentiation, AD is attractive because it 
+
+• avoids finite-difference truncation and cancellation errors; 
+
+• avoids symbolic expression blow-up by differentiating the executed program; and 
+
+• composes cleanly through arbitrary differentiable modules, including tensor contractions and downstream neural-network losses. Recent analyses in scientific machine learning also emphasise that replacing AD by finite differences can alter optimisation dynamics, not only derivative accuracy (Chen et al., 2025). 14 6.5 Differentiable Programming 
+
+Differentiable programming treats whole programs as trainable maps. Tensor network contrac-tions, iterative solvers, spectral routines, and neural-network layers can be combined in one differentiable objective, provided that the implemented primitives have valid local backward rules (Liao et al., 2019; Liao and Liu, 2021). For ADNTNs this means that the same code can support Frobenius reconstruction, end-to-end cross-entropy, distillation, quantisation-aware fine-tuning, and hardware-aware penalties without deriving a new optimisation algorithm for each loss. 
+
+# 7 Automatic-Differentiation Training Algorithms for Fundamen-tal Nonlinear Tensor Networks 
+
+Classical TT-SVD, HOSVD, alternating least squares, and DMRG-style updates rely on multilin-earity: after all other cores are fixed, the model is linear in the selected core. Once an activation is inserted between contractions, this local linear subproblem disappears. In general, 
+
+σ(AB )̸ = σ(A)σ(B), (40) where σ is applied elementwise. A nonlinear tensor network should therefore be optimised as a differentiable program: define a forward contraction schedule, evaluate a scalar loss, and apply reverse-mode AD to that executed program. This does not mean that AD makes tensor contraction free. The memory and time costs are controlled by the contraction order, the largest materialised intermediate, batching strategy, checkpointing, and whether the full generated weight tensor is cached or sampled. 
+
+7.1 Core Tensor Estimation via AD and Adam/SGD Optimisation 
+
+Let Θ denote all trainable cores and latent tensors. For any core C ∈ Θ, the AD gradient is a tensor of the same shape, 
+
+GC,t := ∇C L(Θ t) = ∂L(Θ t)
+
+∂C . (41) For a local operation Y = F (X, C), the two reverse rules are 
+
+X = 
+
+> (
+
+∂F ∂X
+
+> )∗
+
+Y , C = 
+
+> (
+
+∂F ∂C
+
+> )∗
+
+Y . (42) For a bilinear contraction, Eq. (42) becomes a contraction of the forward activation with the output adjoint over all indices except the core indices. It is therefore better to write the gradient as a contracted “environment” than as a simple outer product. With stochastic gradient descent, 
+
+Ct+1 = Ct − ηGC,t . (43) For AdamW, using elementwise products and division, the update is 
+
+M t = β1M t−1 + (1 − β1)GC,t , (44) 
+
+St = β2St−1 + (1 − β2)( GC,t ⊙ GC,t ), (45) ̂
+
+M t = M t/(1 − βt
+
+> 1
+
+),̂ St = St/(1 − βt
+
+> 2
+
+), (46) 
+
+Ct+1 = (1 − ηλ )Ct − η̂ M t
+
+> √̂
+
+St + εopt 
+
+. (47) Here λ is decoupled weight decay (Kingma and Ba, 2015; Loshchilov and Hutter, 2019). All cores are updated simultaneously after the backward pass. 15 7.2 Tree Tensor Network (TTN) Decoder 
+
+Layerwise forward model. Let W (0) ∈ Rd×···× d be a latent tensor of order N0 = Qbot . A binary TTN doubles the number of modes at each layer, Nℓ = 2 Nℓ−1. For layer ℓ and branch k,let 
+
+V (ℓ,k ) ∈ Rd×d×d, V (ℓ,k ) 
+
+> p,a,b
+
+, (48) where p is the parent index and (a, b ) are child indices. The linear pre-activation is 
+
+Z(ℓ)
+
+> c1...c Nℓ
+
+= ∑
+
+> p∈[d]Nℓ−1
+
+W (ℓ−1) 
+
+> p1...p Nℓ−1
+> Nℓ−1
+
+∏
+
+> k=1
+
+V (ℓ,k )  
+
+> pk,c 2k−1,c 2k
+
+. (49) The layer output is 
+
+W (ℓ) = ϕℓ(Z(ℓ)), ϕℓ =
+
+{σ, ℓ < L, 
+
+id , ℓ = L. (50) The generated tensor is ̂ W Θ = W (L).
+
+Adjoint equations. Given W (ℓ) = ∂L/∂ W (ℓ), the pre-activation adjoint is 
+
+Z(ℓ) = W (ℓ) ⊙ ϕ′
+
+> ℓ
+
+(
+
+Z(ℓ))
+
+. (51) The adjoint of the previous layer is 
+
+W (ℓ−1) 
+
+> p1...p Nℓ−1
+
+= ∑
+
+> c∈[d]Nℓ
+
+Z(ℓ)
+
+> c1...c Nℓ
+> Nℓ−1
+
+∏
+
+> k=1
+
+V (ℓ,k )  
+
+> pk,c 2k−1,c 2k
+
+. (52) The exact gradient of branch core V (ℓ,k ) is 
+
+V (ℓ,k ) 
+
+> p,a,b
+
+= ∑    
+
+> p∈[d]Nℓ−1,c∈[d]Nℓ
+> pk=p, c 2k−1=a, c 2k=b
+
+W (ℓ−1) 
+
+> p1...p Nℓ−1
+
+Z(ℓ)
+
+> c1...c Nℓ
+
+×
+
+> Nℓ−1
+
+∏
+
+> h=1
+> h̸=k
+
+V (ℓ,h ) 
+
+> ph,c 2h−1,c 2h
+
+.
+
+(53) Equation (53) is the manual environment expression that AD constructs automatically from the contraction trace. 
+
+Algorithm 1 Reverse-mode AD training for a nonlinear TTN decoder. The algorithm generates a tensor by repeated expansion, evaluates a scalar reconstruction or task loss, and lets AD compute the adjoints in Eqs. (51)–(53). 
+
+Require: Target data or task loss; depth L; latent order N0; activation σ; optimiser. 
+
+1: Initialise W (0) and TTN cores {V (ℓ,k )}.
+
+2: Θ ← { W (0) } ∪ { V (ℓ,k )}.
+
+3: for training step t = 1 , 2, . . . do 
+
+4: Clear gradients for all Θ.
+
+5: for ℓ = 1 to L do 
+
+6: Compute Z(ℓ) by Eq. (49). 
+
+7: Compute W (ℓ) by Eq. (50). 
+
+8: end for 
+
+9: Insert ̂ W Θ = W (L) into the layer/model and evaluate L(Θ) .
+
+10: Call reverse-mode AD; this applies Eqs. (51)–(53) implicitly. 
+
+11: Update all cores using SGD or AdamW. 
+
+12: end for Ensure: Optimised TTN parameters Θ.16 7.3 Augmented TTN (aTTN): The Simplified MERA Decoder 
+
+The aTTN uses TTN expansions in the hidden layers and applies lateral disentanglers only at the final physical layer. This is a compromise between a strict TTN and a full MERA: it improves boundary mixing while keeping most of the tree loop-free. For hidden layers 1 ≤ ℓ < L , the forward equations are Eqs. (49) –(50) . At the final layer, first compute the ordinary TTN expansion 
+
+˜W (L) 
+
+> c1...c M
+
+= ∑
+
+> p∈[d]NL−1
+
+W (L−1) 
+
+> p1...p NL−1
+> NL−1
+
+∏
+
+> k=1
+
+V (L,k )  
+
+> pk,c 2k−1,c 2k
+
+, M = NL = 2 NL−1. (54) Then apply open-boundary disentanglers to neighbouring pairs (c2k, c 2k+1 ):
+
+Z(L) 
+
+> e1...e M
+
+= ∑
+
+> c∈[d]M
+
+B(L) 
+
+> e,c
+
+˜W (L) 
+
+> c1...c M
+
+, (55) where 
+
+B(L) 
+
+> e,c
+
+= δe1c1 δeM cM
+
+> NL−1−1
+
+∏
+
+> k=1
+
+U (L,k )   
+
+> e2k,e 2k+1 ,c 2k,c 2k+1
+
+. (56) The generated tensor is ̂ W Θ = Z(L).The adjoint of the unmixed final tensor is 
+
+˜W (L) 
+
+> c
+
+= ∑
+
+> e∈[d]M
+
+B(L) 
+
+> e,c
+
+Z(L) 
+
+> e
+
+. (57) The disentangler gradient is 
+
+U (L,k ) 
+
+> α,β,a,b
+
+= ∑  
+
+> e,c∈[d]M
+> e2k=α, e 2k+1 =β, c 2k=a, c 2k+1 =b
+
+Z(L) 
+
+> e
+
+˜W (L) 
+
+> c
+
+δe1c1 δeM cM
+
+×
+
+> NL−1−1
+
+∏
+
+> h=1
+> h̸=k
+
+U (L,h ) 
+
+> e2h,e 2h+1 ,c 2h,c 2h+1
+
+.
+
+(58) Finally, ˜W (L)
+
+is propagated through the final TTN expansion using the TTN adjoint formulae in Eqs. (52)–(53). 17 Algorithm 2 Reverse-mode AD training for an augmented TTN decoder. Hidden layers follow the TTN expansion, while the final layer applies boundary disentanglers before the scalar loss is evaluated and differentiated. 
+
+Require: Target data or task loss; depth L; activation σ; optimiser.  
+
+> 1:
+
+Initialise W (0) , TTN cores {V (ℓ,k )}, and boundary disentanglers {U (L,k )}. 
+
+> 2:
+
+Θ ← { W (0) , V (ℓ,k ), U (L,k )}. 
+
+> 3:
+
+for training step t = 1 , 2, . . . do  
+
+> 4:
+
+Clear gradients.  
+
+> 5:
+
+for ℓ = 1 to L − 1 do  
+
+> 6:
+
+Apply TTN expansion and activation.  
+
+> 7:
+
+end for  
+
+> 8:
+
+Compute final expansion by Eq. (54).  
+
+> 9:
+
+Apply boundary disentanglers by Eq. (55).  
+
+> 10:
+
+Evaluate L(Θ) and call reverse-mode AD.  
+
+> 11:
+
+Update all cores with SGD or AdamW.  
+
+> 12:
+
+end for Ensure: Optimised aTTN parameters Θ.
+
+7.4 Nonlinear MERA Hierarchical Decoder 
+
+A MERA-like decoder interleaves expansion tensors and disentanglers at every scale. For each layer ℓ, first expand as in a TTN, 
+
+˜W (ℓ)
+
+> c1...c Nℓ
+
+= ∑
+
+> p∈[d]Nℓ−1
+
+W (ℓ−1) 
+
+> p1...p Nℓ−1
+> Nℓ−1
+
+∏
+
+> k=1
+
+V (ℓ,k )  
+
+> pk,c 2k−1,c 2k
+
+. (59) Then mix adjacent boundary pairs using 
+
+Z(ℓ) 
+
+> e
+
+= ∑
+
+> c∈[d]Nℓ
+
+B(ℓ) 
+
+> e,c
+
+˜W (ℓ) 
+
+> c
+
+, (60) with 
+
+B(ℓ) 
+
+> e,c
+
+= δe1c1 δeNℓ cNℓ
+
+> Nℓ−1−1
+
+∏
+
+> k=1
+
+U (ℓ,k )   
+
+> e2k,e 2k+1 ,c 2k,c 2k+1
+
+. (61) The layer output is again 
+
+W (ℓ) = ϕℓ(Z(ℓ)), ϕℓ = σ (ℓ < L ), ϕL = id . (62) In reverse mode, 
+
+Z(ℓ) = W (ℓ) ⊙ ϕ′
+
+> ℓ
+
+(Z(ℓ)), (63) 
+
+˜W (ℓ)
+
+= ( DU (ℓ) )∗Z(ℓ), (64) 
+
+W (ℓ−1) = ( EV (ℓ) )∗ ˜W (ℓ)
+
+, (65) where D denotes the mixing operator in Eq. (60) and E denotes the expansion operator in Eq. (59) . The gradients of U (ℓ,k ) and V (ℓ,k ) are obtained by the same contracted-environment forms as Eqs. (58) and (53), with L replaced by ℓ.18 Algorithm 3 Reverse-mode AD training for a nonlinear MERA decoder. Each generator layer expands the state, mixes neighbouring branches with disentanglers, applies the layer activation, and then relies on reverse-mode AD to update all cores jointly. 
+
+Require: Target data or task loss; depth L; activation σ; optimiser.  
+
+> 1:
+
+Initialise W (0) , expansion cores {V (ℓ,k )}, and disentanglers {U (ℓ,k )}. 
+
+> 2:
+
+Θ ← { W (0) , V (ℓ,k ), U (ℓ,k )}. 
+
+> 3:
+
+for training step t = 1 , 2, . . . do  
+
+> 4:
+
+Clear gradients.  
+
+> 5:
+
+for ℓ = 1 to L do  
+
+> 6:
+
+Expand by Eq. (59).  
+
+> 7:
+
+Mix by Eq. (60).  
+
+> 8:
+
+Apply Eq. (62).  
+
+> 9:
+
+end for  
+
+> 10:
+
+Evaluate the scalar objective and call reverse-mode AD.  
+
+> 11:
+
+Optionally add soft isometry, scale, sparsity, or quantisation penalties.  
+
+> 12:
+
+Update all cores with SGD or AdamW.  
+
+> 13:
+
+end for Ensure: Optimised MERA parameters Θ.
+
+7.5 Advantages of AD vs. Classical Algorithms (SVD, DMRG, HOSVD) 
+
+Nonlinear generators. SVD, HOSVD, ALS, and standard DMRG updates exploit multilinear-ity. AD only requires differentiable primitives, so it can train ELU/GELU/Swish/SIREN/rational ADNTNs without deriving a new environment equation for each activation. 
+
+Task-aware losses. Classical decompositions most naturally minimise Frobenius reconstruction error. AD can optimise cross-entropy, KL distillation, calibration, robustness, quantisation, or hardware penalties directly. 
+
+Correct treatment of contraction complexity. AD does not make exact contraction of arbitrary loopy tensor networks easy. It computes exact gradients of the contraction program that is actually executed. For TTNs this program is naturally tree-structured. For aTTN and MERA, the chosen open-boundary expansion-mixing schedule and bounded local dimensions keep intermediates manageable in the studied architectures. More general PEPS-like loopy networks would still require approximate contraction, sampling, or careful contraction-order optimisation (Ran et al., 2020). 
+
+7.6 Training Pipeline 
+
+A robust ADNTN training schedule is as follows. 1. Select layers. Compress the largest linear, convolutional, or attention projection layers first. 2. Tensorise. Choose radix d, mode ordering, latent order Qbot , bond dimension χ, and topology. 3. Initialise consistently. Use the global policy in Section 3.5: He/Kaiming scaling for hidden nonlinear cores, Xavier/Glorot scaling for final linear cores, identity-plus-noise for disentanglers, and optional TT-SVD/Tucker warm starts. 4. Block-wise fitting. Fit one block or group at a time by reconstruction, input-output matching, or task loss. 5. End-to-end fine-tuning. Insert generated weights into the model and optimise the composite loss in Eq. (35). 19 6. Adaptive growth. Increase χ, d, or selected disentangler layers where validation loss or gradient saliency indicates underfitting. 7. Quantisation-aware training. Add fake quantisation or quantisation penalties after the floating-point model has stabilised. 8. Prune, cache, and export. Remove small gates, fold constants, cache generated weights when appropriate, and export fused kernels. 
+
+# 8 Practical Implementations of ADNTNs and Computer Simu-lation Results 
+
+This section summarises the implementation choices and preliminary simulations. Each com-pressed layer is implemented as a differentiable module: the generator produces ̂ WΘ or ̂ KΘ in the forward pass, the generated weight is used by the dense or convolutional operation, and reverse-mode AD propagates gradients through both the operation and the generator. The experiments are intended as proof-of-concept evidence for the ADNTN approach rather than a final benchmark suite. 
+
+8.1 Grouped Weight Generation 
+
+Very large layers can be difficult to generate with one deep decoder. We therefore allow row grouping. Partition Dout into G groups of size Dblock = Dout /G . Group g has its own latent tensor and cores, ̂
+
+W(g) = Generator g
+
+> (
+
+W (0 ,g ), Θg
+
+> )
+
+∈ RDblock ×Din . (66) The full matrix is reconstructed by row concatenation, ̂
+
+WΘ = concat rows 
+
+> (̂
+
+W(1) , . . . , ̂ W(G))
+
+. (67) Grouping reduces generator depth, allows parallel independent generation, and lets different row blocks specialise to different low-dimensional manifolds. It also introduces a modelling trade-off: cross-group interactions are not directly parameterised inside the generator and must be captured by the task loss and surrounding layers. 
+
+8.2 Training Modality: End-to-end optimisation of task-aware loss functions 
+
+In the experiments reported here, the compressed networks are trained from scratch using the global initialisation policy in Section 3.5. In particular, the latent tensor is initialised as 
+
+W (0) ∼ N (0 , 0.05 2), hidden expansion cores followed by ELU use He-style scaling, final linear readout cores use Xavier-style scaling, and lateral disentanglers start near the identity map with small noise. Using the same policy for TTN, aTTN, and MERA makes topology comparisons more meaningful and reduces variance-related AD failures. The primary objective is cross-entropy, optimised with AdamW. This end-to-end mode lets the model search directly within the low-dimensional ADNTN manifold; in practice, the manifold acts as a structural regulariser because many degrees of freedom that mainly support overfitting are never introduced. 
+
+8.3 Experimental Results 
+
+Experimental setup. Unless otherwise stated, the reported simulations use a single group (G = 1 ), latent bottleneck order Qbot = 5 , ELU activations between generator layers, random initialisation, reverse-mode AD, cross-entropy loss, and AdamW. We compare TTN, aTTN, and MERA decoders with a Brick-Wall ADTN reference architecture inspired by Qing et al. (2025). 20 Dense baselines are standard AlexNet and VGG-16 style models on CIFAR-10 (Krizhevsky et al., 2012; Simonyan and Zisserman, 2015). 
+
+Experiment 1: fully connected layer compression. The VGG-16 FC2 layer contains 
+
+4096 × 4096 = 16 ,777 ,216 parameters. The TTN version uses only 216 trainable generator parameters, corresponding to 77 ,672 × parameter compression, with a small accuracy change of −0.07 percentage points. The aTTN version uses 392 parameters and improves accuracy by 
+
++0 .54 percentage points. This is a promising indication that the ADNTN manifold can act as a useful implicit regulariser. Table 3: Proof-of-concept CIFAR-10 results for ADNTN layer compression. Each row specifies the original model and layer group, the tensor-network generator used to replace that group, the dense parameter count P , the trainable generator parameter count ¯P , the parameter compression ratio ρpar = P/ ¯P , and the validation accuracy with the change ∆ relative to the corresponding dense baseline. Reported deviations are standard deviations over repeated runs when available; 
+
+ρpar is a storage-parameter ratio, not a guaranteed wall-clock speedup.                                                                                                                                         
+
+> Layer type DNN model TN arch. Layers P¯Pρpar Accuracy / ∆
+> Linear VGG-16 FC2 TTN 1 FC 16,777,216 216 77 ,672 ×90 .12 ±0.19% /−0.07 p.p. Linear VGG-16 FC2 aTTN 1 FC 16,777,216 392 42 ,799 ×90 .73 ±0.11% /+0 .54 p.p. Linear VGG-16 FC2 MERA 1 FC 16,777,216 536 31 ,301 ×89 .94 ±0.24% /−0.25 p.p. Conv VGG-16 TTN 5 Conv 11,796,480 1,020 11 ,565 ×91 .29 ±0.11% /+0 .54 p.p. Conv VGG-16 aTTN 5 Conv 11,796,480 1,820 6,481 ×91 .37 ±0.05% /+0 .62 p.p. Conv VGG-16 MERA 5 Conv 11,796,480 2,540 4,644 ×91 .54 ±0.18% /+0 .79 p.p. Conv VGG-16 Brick Wall 5 Conv 11,796,480 1,820 6,481 ×91 .09% /+0 .34 p.p. Conv AlexNet TTN 2 Conv 1,572,864 304 5,173 ×86 .58 ±0.26% /−0.84 p.p. Conv AlexNet aTTN 2 Conv 1,572,864 592 2,656 ×85 .90 ±0.20% /−1.52 p.p. Conv AlexNet MERA 2 Conv 1,572,864 720 2,184 ×86 .79 ±0.34% /−0.63 p.p. Conv AlexNet Brick Wall 2 Conv 1,572,864 364 4,321 ×81 .09% /−6.33 p.p.
+
+Figure 4: Parameter compression ratios ρpar = P/ ¯P for the studied compressed layers. The bars compare TTN, aTTN, MERA, and the Brick-Wall reference on AlexNet convolutional layers, VGG-16 convolutional layers, and the VGG-16 FC2 layer. The vertical axis is logarithmic; the ratios count trainable generator parameters only and should not be interpreted as direct latency or energy speedups. 21 Experiment 2: deep convolutional compression in VGG-16. Compressing the five largest VGG-16 convolutional layers gives strong results across all three hierarchical generators. At 
+
+11 ,565 × compression, the TTN model improves accuracy by +0 .54 percentage points; the MERA model reaches +0 .79 percentage points at 4,644 × compression. The low standard deviations suggest that the optimisation is stable in this setting. 
+
+Figure 5: Validation accuracy on CIFAR-10 after replacing selected dense or convolutional layers by ADNTN generators. The plot compares the dense baseline with TTN, aTTN, MERA, and Brick-Wall variants for the same layer groups as in Table 3. The VGG-16 results show that the compressed manifold can sometimes improve generalisation, whereas the more compact AlexNet baseline leaves less redundancy for extreme compression. 
+
+Experiment 3: convolutional compression in AlexNet. AlexNet has less redundancy than VGG-16 in this setup, so accuracy decreases slightly under extreme compression. MERA is the most resilient hierarchical variant, with a drop of 0.63 percentage points at 2,184 × compression. All three hierarchical variants outperform the Brick-Wall reference in this experiment, which points to the value of tree or multi-scale inductive bias. 
+
+8.4 Optimising DNN Inference Latency: SRAM Implementation and Caching Strategies for Nonlinear Tensor Networks 
+
+Extreme parameter compression does not automatically imply latency reduction. If a generated dense weight is reconstructed on every inference call, the generator can dominate runtime. A deployment-oriented ADNTN implementation therefore has two modes. 
+
+• Cached-weight mode: generate ̂ WΘ once, cache it, and run the original dense/convolutional kernel. This is simplest and usually fastest when memory allows. 
+
+• On-the-fly mode: evaluate the tensor generator inside a fused kernel. This is attractive when weights are too large to store or when inputs allow activation reuse, but it requires careful compilation. 
+
+SRAM/cache residency. The core tensors in Table 3 occupy from hundreds of bytes to a few tens of kilobytes depending on precision. Such parameter sets can often reside in L1/L2 cache, 22 GPU shared memory, or microcontroller SRAM/TCM. In a custom CUDA kernel, cores can be loaded into __shared__ memory at kernel start; on edge devices, cores can be allocated in tightly coupled memory where available. This reduces memory traffic, but the actual latency gain must be measured on the target hardware. 
+
+Activation reuse. For structured inputs with repeated local patterns, the first one or two tree levels may repeatedly receive identical sub-vectors. A small look-up table can cache post-activation values of the form σ(Core × InputSubvector ). This is most useful for sparse, padded, or repeated inputs; it should be disabled when cache lookups exceed saved arithmetic. 
+
+Graph compilation and fusion. Dozens of small contractions can be slower than one dense kernel if executed as separate framework operations. JAX jit , PyTorch compile , XLA, and Triton-style custom kernels can fuse contractions, activations, and reshapes so that intermedi-ates remain in registers or shared memory (Bradbury et al., 2018; Paszke et al., 2019). The implementation target is a small number of fused kernels per compressed layer, not a Python loop over individual cores. 
+
+Branch-level parallelism. In TTN and aTTN hidden layers, all branches at the same depth are independent. They should be mapped to parallel threads, warps, or vector lanes. MERA adds lateral mixing, but contractions within a scale still expose useful parallelism. In preliminary cached-weight implementations, this approach produced inference latencies in the range of 12 –18 
+
+ms/image; these numbers should be treated as hardware- and implementation-dependent rather than universal. 
+
+Figure 6: Deployment pipeline for turning extreme parameter compression into practical inference speed. A large dense layer is replaced by a compact nonlinear TTN/MERA generator whose cores can be pinned in cache or SRAM. Low latency then depends on implementation choices–cached weights when memory allows, fused on-the-fly generation when memory is the bottleneck, and branch-level parallelism to avoid many small sequential kernel launches. The most realistic near-term deployment strategy is optimistic but pragmatic: train ADNTNs end-to-end, cache generated weights when memory allows, and use fused on-the-fly generation only for layers or devices where the memory savings outweigh the additional arithmetic. 
+
+# 9 Conclusions and Future Directions 
+
+9.1 Summary of Contributions 
+
+This paper has developed ADNTNs as compact, differentiable generators of neural network weights. The central idea is to separate two roles that are often implicitly fused: the layer used 23 during inference can remain an ordinary linear, convolutional, or attention projection, while the parameters of that layer are produced by a much smaller nonlinear tensor-network program. This separation is useful because it preserves familiar neural-network operations while moving the storage and optimisation burden into a structured low-dimensional generator. 
+
+Theoretical. We made explicit the cut-rank restrictions that govern purely multilinear tensor networks and explained why inserting nonlinear activations between contraction layers changes the picture. The claim is deliberately cautious: a fixed χ = 2 generator is not a universal representation of all dense matrices. Nevertheless, nonlinear generators can explore weight families that are much richer than the corresponding multilinear tensor networks, and this matches the practical hypothesis that many trained DNN layers occupy structured, highly compressible regions of parameter space. 
+
+Architectural. We described TTN, aTTN, and MERA decoders using the same notation for state tensors, pre-activations, expansion cores, disentanglers, and generated weights. TTN gives the simplest and most economical hierarchy; aTTN adds a targeted boundary-mixing mechanism; MERA gives the strongest multi-scale mixing, at the price of more permutations and larger contraction constants. The revised initialisation policy also makes these architectures easier to compare because core variance, latent scale, and disentangler perturbations are handled in a single consistent way. 
+
+Algorithmic. We derived forward-adjoint equations for the studied generators. These for-mulae show that reverse-mode AD computes pre-activation adjoints, parent-state adjoints, and contracted-environment gradients for every trainable core. This is valuable not because AD makes tensor contractions costless, but because it lets nonlinearities, task-aware losses, batching, modern optimisers, and hardware-aware schedules be handled inside one differentiable program. 
+
+Empirical. The preliminary CIFAR-10 experiments on AlexNet and VGG-16 are encouraging. They show compression ratios from roughly 2,000 × to 77 ,000 × in the studied layers, with several VGG-16 settings matching or improving the dense baseline. These results should be read as proof of concept rather than a final benchmark: they indicate that the ADNTN manifold can act as a useful implicit regulariser, but broader validation is still needed. 
+
+9.2 Limitations 
+
+• Optimisation remains non-convex. AD supplies accurate gradients of the executed program, not global optima. Initialisation, activation scaling, optimiser choice, and learning-rate schedules materially affect the result. 
+
+• Variance control matters. Deep generators with many small cores are sensitive to the initial scale of latent tensors, expansion cores, and disentanglers. The global initialisation convention proposed here should therefore be treated as part of the model specification, not as an implementation afterthought. 
+
+• Contraction and materialisation costs remain real. If a full generated weight is materialised at every training or inference step, memory and runtime can dominate. Sampling, caching, checkpointing, and careful contraction ordering are important. 
+
+• Latency is hardware-dependent. Parameter compression does not automatically imply wall-clock speedup. Practical acceleration requires fused kernels, cache/SRAM residency, and hardware-specific measurement. 24 • The evidence is preliminary. The reported simulations are promising but limited. Larger datasets, transformer blocks, LLM projections, ablations, and reproducible implementations are important next steps. 
+
+9.3 Future Directions 
+
+ADNTNs are best understood as trainable weight generators rather than fixed post-hoc decom-positions. That viewpoint opens several constructive research directions. 
+
+• Adaptive topology search. Learn mode ordering, tree connectivity, bond dimensions, and disentangler placement jointly with the core tensors. 
+
+• Faithful compression. Combine cross-entropy with logit distillation, feature matching, at-tention transfer, calibration losses, and safety-relevant behavioural tests so that the compressed model preserves more than top-1 accuracy. 
+
+• Hardware-aware co-design. Optimise contraction order, precision, caching strategy, quantisation format, and kernel fusion with hardware-in-the-loop feedback. 
+
+• Dynamic growth and pruning. Grow χ, d, or selected disentangler layers only where validation loss or gradient saliency indicates underfitting, and prune gates or cores where sparsity penalties indicate redundancy. 
+
+• Operator learning. Use encoder-decoder TTN/MERA topologies as compact nonlinear operators for images, signals, and scientific-computing surrogates. 
+
+• Quantum and neuromorphic links. MERA-like causal structures connect naturally to quantum circuits and specialised accelerators; as hardware evolves, such generators may become even more attractive. The overall message is optimistic but pragmatic. The transition from classical tensor algorithms (SVD, HOSVD, DMRG) to automatic differentiation is not a software convenience — it is a mathematical and conceptual necessity for deep nonlinear generators. ADNTNs do not remove the need for careful mathematics, stable initialisation, or hardware-aware engineering. What they do offer is a coherent way to combine tensor-network structure with modern differentiable programming. If future experiments confirm the early compression and generalisation trends reported here, ADNTNs could become a credible path toward neural networks that are far smaller, easier to deploy, and still expressive enough for demanding tasks. 
+
+# References 
+
+Abadi, M., Agarwal, A., Barham, P., Brevdo, E., Chen, Z., Citro, C., Corrado, G.S., Davis, A., Dean, J., Devin, M. et al. (2016) ‘TensorFlow: Large-scale machine learning on heterogeneous distributed systems’, arXiv preprint, arXiv:1603.04467. Baydin, A.G., Pearlmutter, B.A., Radul, A.A. and Siskind, J.M. (2018) ‘Automatic differentiation in machine learning: a survey’, Journal of Machine Learning Research , 18(153), pp. 1–43. Blalock, D., Ortiz, J.J.G., Frankle, J. and Guttag, J. (2020) ‘What is the state of neural network pruning?’, Proceedings of Machine Learning and Systems , 2, pp. 129–146. Boullé, N., Nakatsukasa, Y. and Townsend, A. (2020) ‘Rational neural networks’, Advances in Neural Information Processing Systems , 33, pp. 14243–14253. Bradbury, J., Frostig, R., Hawkins, P., Johnson, M.J., Leary, C., Maclaurin, D. and Wanderman-Milne, S. (2018) JAX: composable transformations of Python+NumPy programs . Available at: 
+
+https://github.com/jax-ml/jax .25 Chen, C., Yang, Y., Xiang, Y. and Hao, W. (2025) ‘Automatic differentiation is essential in training neural networks for solving differential equations’, Journal of Scientific Computing ,104, Article 54. Cichocki, A., Lee, N., Oseledets, I.V., Phan, A.-H., Zhao, Q. and Mandic, D.P. (2016) ‘Tensor networks for dimensionality reduction and large-scale optimisation: Part 1 low-rank tensor decompositions’, Foundations and Trends in Machine Learning , 9(4–5), pp. 249–429. Cichocki, A., Phan, A.H., Zhao, Q., Lee, N., Oseledets, I., Sugiyama, M. and Mandic, D. (2017) ‘Tensor networks for dimensionality reduction and large-scale optimisation: Part 2 applications and future perspectives’, Foundations and Trends in Machine Learning , 9(6), pp. 431–673. Clevert, D.-A., Unterthiner, T. and Hochreiter, S. (2015) ‘Fast and accurate deep network learning by exponential linear units (ELUs)’, arXiv preprint, arXiv:1511.07289. Dettmers, T., Pagnoni, A., Holtzman, A. and Zettlemoyer, L. (2023) ‘QLoRA: Efficient finetuning of quantized LLMs’, Advances in Neural Information Processing Systems , 36. Domke, J. (2010) Automatic Differentiation and Neural Networks , lecture notes, University of Massachusetts Amherst. Available at: https://people.cs.umass.edu/~domke/courses/ sml2010/07autodiff_nnets.pdf (Accessed: 19 May 2026). Evenbly, G. and Vidal, G. (2014) ‘Algorithms for entanglement renormalization’, Physical Review B, 89(23), Article 235113. Frantar, E., Ashkboos, S., Hoefler, T. and Alistarh, D. (2023) ‘GPTQ: Accurate post-training quantization for generative pre-trained transformers’, International Conference on Learning Representations .Ganesh, P., Chen, Y., Lou, X., Khan, M.A., Yang, Y., Sajjad, H., Nakov, P., Chen, D. and Winslett, M. (2020) ‘Compression of deep learning models for text: A survey’, ACM Transactions on Knowledge Discovery from Data , 15(5), Article 78. Glorot, X. and Bengio, Y. (2010) ‘Understanding the difficulty of training deep feedforward neural networks’, Proceedings of the Thirteenth International Conference on Artificial Intelligence and Statistics , pp. 249–256. Gu, Y., Zhou, W., Iacovides, G. and Mandic, D.P. (2025) ‘TensorLLM: Tensorising multi-head attention for enhanced reasoning and compression in LLMs’, Proceedings of the International Joint Conference on Neural Networks (IJCNN) , pp. 1–8. Gusak, J., Kholiavchenko, M., Ponomarev, E., Markeeva, L., Blagoveschensky, P., Cichocki, A. and Oseledets, I. (2019) ‘Automated multi-stage compression of neural networks’, Proceedings of the IEEE/CVF International Conference on Computer Vision Workshops .Halim, M.A.S. (2024) ‘Introduction to automatic differentiation and neural differentiation’, 
+
+Proceedings of Science and Mathematics , 4(1), pp. 81–89. Han, S., Mao, H. and Dally, W.J. (2016) ‘Deep compression: Compressing deep neural networks with pruning, trained quantization and Huffman coding’, International Conference on Learning Representations .He, K., Zhang, X., Ren, S. and Sun, J. (2015) ‘Delving deep into rectifiers: Surpassing human-level performance on ImageNet classification’, IEEE International Conference on Computer Vision , pp. 1026–1034. Hendrycks, D. and Gimpel, K. (2016) ‘Gaussian error linear units (GELUs)’, arXiv preprint, arXiv:1606.08415. 26 Hinton, G., Vinyals, O. and Dean, J. (2015) ‘Distilling the knowledge in a neural network’, arXiv preprint, arXiv:1503.02531. Holm, A. (2024) ‘What is automatic differentiation?’, Hugging Face Blog . Available at: https: //huggingface.co/blog/andmholm/what-is-automatic-differentiation (Accessed: 19 May 2026). Hu, E.J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L. and Chen, W. (2022) ‘LoRA: Low-rank adaptation of large language models’, International Conference on Learning Representations .Javanmard, Y., Pandit, T. and Mardani, M. (2026) ‘Compressing transformer language models via Matrix Product Operator decomposition: A case study on PicoGPT’, arXiv preprint, arXiv:2603.28534. Kingma, D.P. and Ba, J. (2015) ‘Adam: A method for stochastic optimisation’, International Conference on Learning Representations .Kolda, T.G. and Bader, B.W. (2009) ‘Tensor decompositions and applications’, SIAM Review ,51(3), pp. 455–500. Krizhevsky, A., Sutskever, I. and Hinton, G.E. (2012) ‘ImageNet classification with deep convolutional neural networks’, Advances in Neural Information Processing Systems , 25. De Lathauwer, L., De Moor, B. and Vandewalle, J. (2000) ‘A multilinear singular value decom-position’, SIAM Journal on Matrix Analysis and Applications , 21(4), pp. 1253–1278. Liao, H.-J., Liu, J.-G., Wang, L. and Xiang, T. (2019) ‘Differentiable programming tensor networks’, Physical Review X , 9(3), Article 031041. Liao, H.-J. and Liu, Z.-Y. (2021) ‘Differentiable programming of isometric tensor networks’, arXiv preprint, arXiv:2110.03898. Loshchilov, I. and Hutter, F. (2019) ‘Decoupled weight decay regularization’, International Conference on Learning Representations .Novikov, A., Podoprikhin, D., Osokin, A. and Vetrov, D.P. (2015) ‘Tensorising neural networks’, 
+
+Advances in Neural Information Processing Systems , 28, pp. 442–450. Orús, R. (2014) ‘A practical introduction to tensor networks: matrix product states and projected entangled pair states’, Annals of Physics , 349, pp. 117–158. Oseledets, I.V. (2011) ‘Tensor-train decomposition’, SIAM Journal on Scientific Computing ,33(5), pp. 2295–2317. Paszke, A., Gross, S., Massa, F., Lerer, A., Bradbury, J., Chanan, G., Killeen, T., Lin, Z., Gimelshein, N., Antiga, L. et al. (2019) ‘PyTorch: An imperative style, high-performance deep learning library’, Advances in Neural Information Processing Systems , 32. Phan, A.H., Sobolev, K., Sozykin, K., Ermilov, D., Gusak, J., Tichavský, P. and Cichocki, A. (2020) ‘Stable low-rank tensor decomposition for compression of convolutional neural networks’, 
+
+European Conference on Computer Vision , Springer, pp. 522–539. Qing, Y., Li, K., Zhou, P.-F. and Ran, S.-J. (2025) ‘Compressing neural networks using tensor networks with exponentially fewer variational parameters’, Intelligent Computing , 4, Article 0123. Ramachandran, P., Zoph, B. and Le, Q.V. (2017) ‘Searching for activation functions’, arXiv preprint, arXiv:1710.05941. 27 Ran, S.-J., Tirrito, E., Peng, C., Chen, X., Tagliacozzo, L., Su, G. and Lewenstein, M. (2020) 
+
+Tensor Network Contractions: Methods and Applications to Quantum Many-Body Systems ,Springer, Cham. Shi, Y.-Y., Duan, L.-M. and Vidal, G. (2006) ‘Classical simulation of quantum many-body systems with a tree tensor network’, Physical Review A , 74(2), Article 022320. Simonyan, K. and Zisserman, A. (2015) ‘Very deep convolutional networks for large-scale image recognition’, International Conference on Learning Representations .Sitzmann, V., Martel, J.N.P., Bergman, A.W., Lindell, D.B. and Wetzstein, G. (2020) ‘Implicit neural representations with periodic activation functions’, Advances in Neural Information Processing Systems , 33, pp. 7462–7473. Stoudenmire, E.M. and Schwab, D.J. (2016) ‘Supervised learning with tensor networks’, Advances in Neural Information Processing Systems , 29. Vidal, G. (2007) ‘Entanglement renormalization’, Physical Review Letters , 99(22), Article 220405. Wang, M., Pan, Y., Xu, Z., Li, G., Yang, X., Mandic, D. and Cichocki, A. (2023) ‘Tensor networks meet neural networks: A survey and future perspectives’, arXiv preprint, arXiv:2302.09019. Zhao, Q., Zhou, G., Xie, S., Zhang, L. and Cichocki, A. (2016) ‘Tensor ring decomposition’, arXiv preprint, arXiv:1606.05535. 28

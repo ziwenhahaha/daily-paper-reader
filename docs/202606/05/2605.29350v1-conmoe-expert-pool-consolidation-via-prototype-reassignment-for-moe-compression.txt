@@ -1,0 +1,613 @@
+Title: ConMoE: Expert-Pool Consolidation via Prototype Reassignment for MoE Compression
+
+URL Source: https://arxiv.org/pdf/2605.29350v1
+
+Published Time: Fri, 29 May 2026 00:35:39 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# ConMoE: Expert-Pool Consolidation via Prototype Reassignment for MoE Compression 
+
+Yilun Yao 1, Jiaming Pan 1, Elsie Dai 1, Peizhuang Cong 1, Yaoming Li 1, Tong Yang 1,
+
+> 1
+
+Peking University 
+
+Abstract 
+
+Mixture-of-Experts (MoE) language models re-duce per-token computation but still require storing and serving all experts, making de-ployment memory-intensive. Existing post-training compression methods mainly shrink this cost by pruning experts or merging their weights. We formulate post-training MoE compression as expert-pool consolidation : re-taining a smaller set of pretrained experts as reusable prototypes and deterministically remapping each original expert reference to one selected prototype. This view separates the re-duced expert pool from the reuse structure that represents the original expert slots, and allows prototype sharing within local layer scopes while preserving the original router interface. We propose ConMoE, a train-free prototype remapping framework that selects retained ex-perts using calibration-based contribution and replaceability signals, then redirects original expert calls to the selected prototypes with-out weight updates or post-compression fine-tuning. Experiments on three pretrained MoE language models show that ConMoE matches or outperforms strong pruning and merging baselines in several settings, achieving the best average score on deepseek-moe-16b-base at both 25% and 50% routed-expert reduction, while remaining competitive on Qwen3-30B-A3B and OLMoE-1B-7B-0125. Ablations indi-cate that deterministic reassignment is the most stable component, whereas broader cross-layer sharing and post-hoc weight fusion are model-dependent. 
+
+1 Introduction 
+
+Mixture-of-Experts (MoE) architectures scale lan-guage models by activating only a small subset of experts for each token, allowing large parameter counts with relatively low per-token computation (Shazeer et al., 2017; Lepikhin et al., 2020; Lewis et al., 2021; Fedus et al., 2022). This design has been adopted in recent MoE language models such as Mixtral, DeepSeekMoE, Qwen-MoE, and OL-MoE (Jiang et al., 2024; Dai et al., 2024; Yang et al., 2025; Muennighoff et al., 2025). However, sparsity mainly reduces computation rather than storage: the full routed expert pool must still be stored and served even though each token uses only a few experts. As MoE models grow, expert stor-age becomes a major obstacle to efficient deploy-ment (Rajbhandari et al., 2022; Gale et al., 2022). Existing post-training MoE compression meth-ods typically reduce this cost by pruning experts (Lu et al., 2024; Chen et al., 2022; Lasby et al., 2026) or merging multiple experts into fewer mod-ules (Li et al., 2024; Chen et al., 2025; Miao et al., 2025; LI et al., 2026). These methods shrink the expert pool, but they often conflate two distinct questions: which expert parameters should be re-tained, and how the router’s original expert ref-erences should be represented after compression. In this work, we study a complementary view in which a compressed MoE retains a smaller set of pretrained experts as reusable prototypes, while ex-plicitly mapping each original expert reference to the retained pool. We formulate this view as expert-pool consolida-tion . Under a fixed reduction budget, a compressed MoE consists of a reduced prototype pool and a de-terministic reassignment map from original experts to selected prototypes. This separates two decisions that are usually coupled in pruning and merging: which expert parameters are stored, and how the original router-facing expert slots are represented. The original router interface can therefore be pre-served by redirecting each expert call through the reassignment map, while multiple original expert slots may share the same stored prototype. The same formulation also permits local cross-layer reuse: nearby layers may share prototypes when they contain reusable redundancy, but we restrict sharing to bounded local scopes to avoid mismatch from model-wide expert reuse. 1
+
+> arXiv:2605.29350v1 [cs.AI] 28 May 2026
+
+Based on this formulation, we propose ConMoE, a train-free prototype remapping framework for post-training MoE compression. ConMoE selects a budgeted subset of pretrained experts as prototypes and deterministically reassigns each original expert to one selected prototype. The selected prototypes are reused directly, without weight updates or post-compression fine-tuning, and the original router is kept unchanged. Post-hoc weight fusion is studied only as a diagnostic sensitivity analysis, not as part of the default ConMoE pipeline (Wortsman et al., 2022; Yadav et al., 2023). We report logical routed-expert reduction: a selected prototype is counted once even if it represents multiple original expert slots, while realizing the corresponding physical memory savings requires a shared-prototype check-point or runtime. In summary, this work makes three contributions. First, we formulate one-shot MoE compression as expert-pool consolidation with explicit proto-type reassignment. Second, we propose ConMoE, a train-free remapping method that preserves the original router interface while reducing the log-ical routed-expert pool. Third, we empirically show across multiple pretrained MoE language models that remapping-based consolidation is a viable alternative to pruning and merging under matched logical routed-expert budgets. Our abla-tions further indicate that deterministic reassign-ment is the most stable component, while broader cross-layer sharing and post-hoc weight fusion are model-dependent. 
+
+2 Related Work 
+
+Post-training MoE compression. Sparse MoE language models reduce per-token computation by activating only a few experts, but their full routed expert pool still creates substantial memory and de-ployment overhead. Existing post-training MoE compression methods mainly shrink this expert pool through expert pruning or expert merging. Expert pruning removes experts according to us-age frequency, routing mass, activation statistics, or searched importance scores (Lu et al., 2024; Yang et al., 2024; Chen et al., 2022; Lasby et al., 2026; Liu et al., 2026). Expert merging instead combines multiple experts into fewer modules us-ing routing statistics, output similarity, clustering, alignment, or subspace fusion, as in M-SMoE/MC-SMoE, HC-SMoE, MergeMoE, and Sub-MoE (Li et al., 2024; Chen et al., 2025; Miao et al., 2025; LI et al., 2026). These methods are closest to ours in objective, since they also aim to reduce routed-expert storage after pretraining. However, pruning removes experts and merging constructs new or fused expert modules, whereas ConMoE keeps se-lected pretrained experts as reusable prototypes and explicitly remaps original expert references to them. This makes the reuse structure part of the compressed model rather than a by-product of deletion or fusion. 
+
+Non-uniform budgets and local cross-layer reuse. Recent pruning and compression meth-ods show that expert redundancy is heterogeneous across layers, making uniform layer-wise bud-gets suboptimal. DiEP learns layer-level pruning rates, while EvoESAP decouples within-layer ex-pert ranking from across-layer budget allocation (Bai et al., 2025; Liu et al., 2026). Related shared-pool architectures such as UniPool further chal-lenge the assumption that each layer must own a private expert set (Huang et al., 2026). ConMoE is complementary to these works: it targets exist-ing pretrained checkpoints, requires no gradient updates, and preserves the original router-facing expert slots. Instead of training a globally shared expert pool from scratch, ConMoE performs post-training prototype remapping and allows neighbor-ing layers to share a local candidate pool when beneficial. This local-scope view avoids assuming that experts from distant layers are interchange-able, while still permitting cross-layer reuse within bounded neighborhoods. 
+
+3 Problem Formulation 
+
+3.1 Sparse MoE Expert Pools 
+
+Consider a decoder-only Transformer with MoE layers indexed by l ∈ { 1, . . . , L }. The routed feed-forward block at layer l contains an expert pool 
+
+E(l) = {E(l)1 , . . . , E (l) 
+
+> Nl
+
+}. For an input token rep-resentation h(l) 
+
+> t
+
+, the router selects a top-k expert set T (l)(t) and assigns normalized routing weights 
+
+g(l) 
+
+> i
+
+(t) to the selected experts. The MoE output is 
+
+MoE (l)(h(l) 
+
+> t
+
+) = X 
+
+> i∈T(l)(t)
+
+g(l) 
+
+> i
+
+(t)E(l) 
+
+> i
+
+(h(l) 
+
+> t
+
+).
+
+Although each token activates only a few experts, every routed expert must remain stored and address-able because routing decisions vary across tokens and inputs. We focus on compressing this routed-expert pool, while keeping shared experts, routers, 2(1) Original MoE Transformer 
+
+Calibration Statistics    
+
+> Demand Score
+> Layer L Layer L+1
+> Expert distance
+> Expert distance
+> 2342n ... 1
+
++
+
+(2) Expert-Pool Consolidation                           
+
+> Selected prototype base PkReduced prototype k
+> ......
+> Cluster 2 E5LE1LE4LE2L+1 E11 L+1 P2
+> ......
+> Cluster 1 E3LE6L+1 E9LE3L+1 E1L+1 P1
+> ......
+> Cluster k-1 E18 L+1 E10 LE21 LE20
+> L+1 E19 LPk-1
+> ......
+> Cluster k E24 LE17 LE21 L+1 E19
+> L+1 E17 LPk
+> ......
+> Prototype Selection and Expert Reassignment Across Layers
+
+(3) Compressed MoE with Prototype Pools          
+
+> Prototype Pool
+> P1
+> P2
+> Pn
+> ......
+> Output
+> Input
+> Attention
+> Layer 1
+> MLP(MoE)
+> Router
+> Attention
+> Layer L
+> Attention
+> Layer 2
+> MLP(MoE)
+> Router
+> Attention
+> Layer L+1
+> MLP(MoE)
+> Router
+> ......
+> MLP(MoE)
+> Router
+> Output
+> Input
+> Attention
+> Layer L
+> MLP(MoE)
+> Router
+> EnLE3L
+> E1LE2L......
+> ......
+> Attention
+> Layer 1
+> MLP(MoE)
+> En1E31
+> E11E21......
+> Router
+> Attention
+> Layer 2
+> MLP(MoE)
+> En2E32
+> E12E22......
+> Router
+> Attention
+> Layer L+1
+> MLP(MoE)
+> E3L+1
+> E1L+1 E2L+1 ...... EnL+1
+> Router
+> Prototype Pool
+> P1
+> P2
+> Pn
+> ......
+
+Figure 1: Overview of ConMoE. Starting from a pretrained MoE with layer-wise routed expert pools, ConMoE performs prototype-based expert-pool consolidation within local scopes, each containing one or more neighboring MoE layers. It uses calibration statistics and expert distances to select pretrained experts as reusable prototypes, and deterministically reassigns each original expert reference to one selected prototype. The compressed MoE preserves the original router interface by redirecting original expert calls to their assigned prototypes in the logical reduced pool. 
+
+attention blocks, embeddings, and other non-routed modules unchanged. 
+
+3.2 Expert-Pool Consolidation 
+
+Let G ⊆ { 1, . . . , L } be a local scope containing one or more neighboring MoE layers, and let 
+
+EG = [
+
+l∈G
+
+E(l)
+
+denote the original routed expert pool in this scope. Given a routed-expert reduction ratio ρ ∈ [0 , 1) ,we aim to construct a reduced prototype pool PG
+
+with 
+
+|PG| = K, K = max(1 , round((1 −ρ)|E G|)) .
+
+Thus, ρ = 25% corresponds to retaining approx-imately 75% of the routed experts in the logical prototype pool, while ρ = 50% retains approxi-mately half of them. Expert-pool consolidation also specifies how the original expert pool is represented by the reduced pool. We denote this reassignment by 
+
+mG : EG → PG,
+
+where mG(e) is the stored prototype that repre-sents the original expert reference e. A compressed scope is therefore described by two objects: the reduced prototype pool PG and the reassignment map mG.This formulation separates two coupled deci-sions in MoE compression: which expert parame-ters are stored, and how the original router-facing expert slots are represented. In this work, ConMoE uses retained pretrained experts directly as proto-types, i.e., PG ⊆ E G, and does not update or fuse expert weights in the default setting. When G con-tains multiple neighboring layers, the fixed budget can be allocated non-uniformly across layers; when 
+
+G contains a single layer, the formulation reduces to layer-local consolidation. 
+
+3.3 Consolidation Objective 
+
+An ideal reduced pool should represent the original experts with low reassignment cost. Let d(e, p )
+
+be the cost of representing original expert e by prototype p, and let we measure the importance of e under the original model. For a candidate prototype pool P ⊆ E G, define 
+
+D(e, P ) = min 
+
+p∈P d(e, p ), LG(P ) = X
+
+e∈E G
+
+weD(e, P ).
+
+The ideal remapping-only consolidation problem is 
+
+P ⋆G = arg min 
+
+P ⊆E G, |P |=K
+
+LG(P ).
+
+3Given a selected prototype pool PG, each original expert is assigned to its nearest prototype: 
+
+mG(e) = arg min 
+
+> p∈PG
+
+d(e, p ).
+
+This objective captures the central trade-off of expert-pool consolidation: the reduced pool should prioritize important experts while also covering the original expert pool with low reassignment er-ror. Directly minimizing LG(P ) is a combinatorial prototype-selection problem. ConMoE therefore uses this objective as a guiding principle and intro-duces an efficient score-based prototype selection rule in the next section. 
+
+4 Method 
+
+ConMoE performs expert-pool consolidation by selecting a reduced set of pretrained experts as pro-totypes and defining a deterministic reassignment map from original experts to those prototypes. For each local scope G, let EG be the original routed expert pool and let K be the prototype budget. Con-MoE constructs a prototype set 
+
+PG ⊆ E G, |PG| = K, 
+
+together with a reassignment map 
+
+mG : EG → PG.
+
+Each original expert is therefore represented by one selected pretrained prototype. No expert weights are updated or fused in the default construction. 
+
+4.1 Prototype Scoring 
+
+The prototype set should retain experts that are use-ful under the pretrained routing distribution and difficult to substitute within the same scope. Con-MoE estimates these two properties using a routing-conditioned contribution score and a replaceability score. For each expert e ∈ E G, let De be the calibra-tion tokens that activate it. We define its routing-conditioned contribution as 
+
+ae = 1
+
+|D e|
+
+X
+
+> t∈D e
+
+ge(t)∥e(ht)∥2,
+
+with ae = 0 when De is empty. This score mea-sures the average contribution of e conditional on being selected. To estimate replaceability, we use the nearest-neighbor distance within the scope: 
+
+be = min  
+
+> e′∈E G\{ e}
+
+d(e, e ′).
+
+Here d(e, e ′) is a normalized parameter distance between experts; its exact form is given in Ap-pendix B.1. A larger be indicates that e has no close substitute in EG.We normalize ae and be within the scope, 
+
+¯ae = Norm G(ae), ¯be = Norm G(be),
+
+where Norm G(·) denotes min–max normalization over experts in EG. The final prototype score is 
+
+se = ¯ ae¯be.
+
+This score favors experts that are both useful when routed to and hard to replace. 
+
+4.2 Prototype Selection and Reassignment 
+
+Given the prototype score, ConMoE selects the top-K experts as the reduced prototype set: 
+
+PG = TopK e∈E G (se, K ).
+
+Each original expert is then assigned to its nearest selected prototype: 
+
+mG(e) = arg min 
+
+> p∈PG
+
+d(e, p ).
+
+This induces a prototype-centered partition of the original expert pool: 
+
+Ap = {e ∈ E G : mG(e) = p}, p ∈ PG.
+
+The clusters Ap define the reuse structure of the compressed expert pool. Unlike expert merging methods, ConMoE does not combine the weights of experts in Ap; the selected prototype p remains the original pretrained expert. The top-K selection rule is a computationally simple heuristic guided by the consolidation ob-jective in Section 3. It does not attempt to exactly solve the combinatorial prototype-selection prob-lem. 
+
+4.3 Consolidated MoE Operator 
+
+For a layer l ∈ G, let T (l)(t) be the set of experts selected by the pretrained router for token t, with routing weights g(l) 
+
+> i
+
+(t). The consolidated MoE op-erator replaces each selected expert by its assigned prototype: 
+
+gMoE (l)(h(l) 
+
+> t
+
+) = X
+
+> p∈PG
+
+α(l) 
+
+> p
+
+(t) p(h(l) 
+
+> t
+
+),
+
+4where 
+
+α(l) 
+
+> p
+
+(t) = X  
+
+> i∈T(l)(t)
+> mG(E(l)
+> i)= p
+
+g(l) 
+
+> i
+
+(t).
+
+Thus, when multiple routed experts selected for the same token are assigned to the same prototype, their routing weights are aggregated into a single coefficient. Applying this construction independently to all scopes yields the compressed MoE. When a scope contains one layer, ConMoE reduces to layer-local consolidation. When a scope contains multiple neighboring layers, the same formulation allows local cross-layer prototype reuse. 
+
+5 Experiments 
+
+We evaluate ConMoE from three perspectives. First, we compare its quality–storage trade-off against pruning and merging baselines under matched logical routed-expert reduction budgets. Second, we use controlled ablations to isolate re-assignment structure, cross-layer scope, prototype selection, and post-hoc fusion. Third, we analyze whether pretrained MoE checkpoints contain local cross-layer expert substitutability. 
+
+5.1 Experimental Setup Models. We evaluate on three pretrained MoE language models with different scales and expert layouts: Qwen3-30B-A3B (Yang et al., 2025), deepseek-moe-16b-base (Dai et al., 2024), and OLMoE-1B-7B-0125 (Muennighoff et al., 2025). Unless otherwise stated, all methods are one-shot and train-free, and ConMoE denotes the default remapping-only method. We compress only routed experts, while keeping shared experts, routers, at-tention blocks, embeddings, layer norms, and out-put heads unchanged. 
+
+Calibration and evaluation. We use unlabeled calibration text only to collect routing statistics, expert usage, and expert-output norms. No la-bels, losses, gradients, or post-compression fine-tuning are used. All downstream evaluations are run with lm-eval (Gao et al., 2024); calibration sources, prompt sampling, and metric definitions are detailed in Appendices B.3 and B.4. The main comparison uses six multiple-choice benchmarks: WinoGrande, ARC-C, ARC-E, BoolQ, HellaSwag, and PIQA (Sakaguchi et al., 2019; Clark et al., 2018, 2019; Zellers et al., 2019; Bisk et al., 2019). We report task accuracy or normalized accuracy and the average score across the suite. For con-trolled ablations, we additionally include MMLU (Hendrycks et al., 2021). For compression, we report the logical routed-expert reduction ratio, where each selected proto-type is counted once. Thus, 25% reduction keeps approximately 75% of routed experts as logical pro-totypes, while 50% reduction keeps approximately half. Materialized checkpoints are used only for evaluation compatibility and are not counted as compressed storage. 
+
+Baselines. We compare against representative pruning and merging baselines. For pruning, we use Frequency pruning as a simple routing-saliency baseline and REAP pruning as a stronger contribution-based baseline (Lasby et al., 2026). For merging, we compare against M-SMoE and HC-SMoE, two retraining-free expert merging methods (Li et al., 2024; Chen et al., 2025). All methods are evaluated at matched logical routed-expert reduction budgets. For ConMoE, the main table uses local scopes: scope size 4 for Qwen3-30B-A3B and scope size 1 for deepseek-moe-16b-base and OLMoE-1B-7B-0125. We study scope size explicitly in Section 5.3. 
+
+5.2 Main Results 
+
+Table 1 reports the main comparison across three MoE models and two routed-expert reduction ra-tios, 25% and 50%. The table groups methods into pruning, merging, and remapping-based expert-pool consolidation. The key question is whether representing original expert slots by retained proto-types provides a competitive quality–storage trade-off. Across models and reduction ratios, ConMoE is competitive with strong pruning and merging baselines and achieves the best or near-best average performance in several settings. On DeepSeek, ConMoE obtains the best average score at both reduction ratios. On OLMoE, it performs best at 25% reduction and remains close to the strongest baselines at 50% reduction. On Qwen3, pruning is particularly strong, especially at 50% reduction, while ConMoE remains competitive and preserves strong performance on WinoGrande and BoolQ. These results suggest that deterministic proto-type remapping is a useful alternative to directly deleting or merging experts. Compared with prun-ing, ConMoE also defines how original expert refer-5Table 1: Main results on six multiple-choice benchmarks. All compressed methods are one-shot and use no post-compression fine-tuning. Reduction denotes the logical routed-expert reduction ratio. 
+
+Model Reduction Type Method WinoGrande ARC-C ARC-E BoolQ HellaSwag PIQA Avg. Qwen3-30B-A3B – Original 0.707 0.564 0.791 0.887 0.776 0.805 0.755 25% 
+
+Merging M-SMoE 0.710 0.552 0.788 0.884 0.775 0.804 0.751 HC-SMoE 0.694 0.465 0.728 0.859 0.653 0.758 0.693 
+
+Pruning Frequency 0.705 0.559 0.791 0.885 0.776 0.804 0.754 
+
+REAP 0.698 0.550 0.795 0.881 0.768 0.797 0.748 – ConMoE 0.710 0.546 0.786 0.885 0.772 0.804 0.751 50% 
+
+Merging M-SMoE 0.696 0.507 0.777 0.818 0.735 0.751 0.714 HC-SMoE 0.521 0.307 0.503 0.734 0.370 0.630 0.511 
+
+Pruning Frequency 0.690 0.520 0.773 0.874 0.747 0.794 0.733 
+
+REAP 0.685 0.549 0.765 0.861 0.736 0.790 0.731 – ConMoE 0.715 0.514 0.731 0.851 0.715 0.780 0.717 deepseek-moe-16b -base – Original 0.701 0.459 0.695 0.740 0.772 0.797 0.694 25% 
+
+Merging M-SMoE 0.683 0.411 0.676 0.738 0.682 0.772 0.660 HC-SMoE 0.691 0.418 0.667 0.755 0.740 0.785 0.676 
+
+Pruning Frequency 0.691 0.432 0.680 0.699 0.747 0.791 0.673 REAP 0.693 0.447 0.690 0.692 0.765 0.798 0.681 – ConMoE 0.696 0.447 0.706 0.745 0.757 0.796 0.691 
+
+50% 
+
+Merging M-SMoE 0.563 0.335 0.568 0.619 0.269 0.704 0.510 HC-SMoE 0.648 0.371 0.609 0.678 0.629 0.746 0.613 
+
+Pruning Frequency 0.628 0.392 0.626 0.635 0.678 0.773 0.622 REAP 0.654 0.409 0.678 0.631 0.699 0.780 0.642 – ConMoE 0.674 0.398 0.663 0.697 0.690 0.781 0.651 
+
+OLMoE-1B-7B -0125 – Original 0.689 0.492 0.770 0.704 0.782 0.796 0.705 25% 
+
+Merging M-SMoE 0.626 0.465 0.705 0.631 0.627 0.782 0.639 HC-SMoE 0.662 0.451 0.729 0.659 0.712 0.762 0.662 
+
+Pruning Frequency 0.665 0.452 0.702 0.643 0.668 0.775 0.651 REAP 0.674 0.470 0.753 0.589 0.747 0.779 0.669 – ConMoE 0.678 0.488 0.756 0.618 0.741 0.778 0.676 
+
+50% 
+
+Merging M-SMoE 0.515 0.365 0.593 0.429 0.327 0.620 0.475 HC-SMoE 0.564 0.364 0.606 0.578 0.528 0.671 0.552 Pruning Frequency 0.570 0.343 0.547 0.573 0.494 0.704 0.539 REAP 0.575 0.343 0.582 0.499 0.563 0.710 0.545 – ConMoE 0.570 0.327 0.577 0.579 0.498 0.683 0.540 
+
+ences are reassigned to reusable prototypes. Com-pared with merging, default ConMoE reuses se-lected pretrained experts directly rather than con-structing fused expert weights. 
+
+5.3 Ablation Studies 
+
+We next isolate the main design choices in Con-MoE. Unless otherwise stated, ablations are con-ducted on Qwen3-30B-A3B at 50% routed-expert reduction. To reduce cost while preserving task di-versity, we report ARC-C, HellaSwag, and MMLU. ARC-C and HellaSwag report normalized accuracy, while MMLU reports accuracy. 
+
+Consolidation structure. Table 2 isolates how the reduced prototype pool and reassignment struc-ture are constructed. All variants are remapping-only and use the same expert-to-prototype reas-signment mechanism; they differ only in candidate 
+
+Table 2: Consolidation-structure ablation on Qwen3-30B-A3B at 50% routed-expert reduction. All variants are remapping-only. ARC-C and HellaSwag report nor-malized accuracy; MMLU reports accuracy. 
+
+Component variant ARC-C HellaSwag MMLU Avg. Layer-local 0.515 0.715 0.651 0.627 Cross-layer fixed-k 0.515 0.720 0.647 0.627 Adaptive prototype 0.504 0.716 0.639 0.620 
+
+scope and selection policy. We use descriptive com-ponent names because these variants analyze mech-anisms inside ConMoE rather than define separate algorithms. The layer-local variant already provides a strong consolidation baseline, indicating that explicit reas-signment to retained prototypes can preserve much of the original expert-pool behavior without mod-61 2 4 8 16 
+
+> Scope Size
+> 0.40
+> 0.50
+> 0.60
+> 0.70
+> 0.80
+> Score
+> Scope Ablation
+> ARC-C
+> HellaSwag
+> MMLU
+> Average
+
+Figure 2: Effect of scope size on Qwen3-30B-A3B at 50% routed-expert reduction. Small scopes achieve comparable performance, and scope 4 gives the best average score on this representative subset. Expanding the scope to 8 or 16 layers substantially degrades all tasks, indicating that cross-layer expert reuse is benefi-cial mainly within a local neighborhood. 
+
+ifying weights. Allowing a cross-layer candidate pool with a fixed per-layer budget slightly improves HellaSwag while maintaining a similar average score, suggesting that neighboring layers can pro-vide useful substitutes. Adaptive prototype selec-tion replaces the uniform per-layer budget with a contribution–replaceability-aware rule. On these representative Qwen3 tasks, it remains close to cross-layer fixed-k, so adaptive selection is better viewed as a controlled capacity-allocation mech-anism than as a uniform improvement on every task. 
+
+Effect of scope size. Figure 2 studies how the size of the cross-layer candidate pool affects con-solidation. All variants use the same prototype-selection and remapping procedure, and only differ in the number of neighboring MoE layers grouped into one scope. The results show that cross-layer reuse is useful mainly within a limited local range. Scope sizes 1, 2, and 4 obtain comparable perfor-mance, while the best scope depends on the task. Scope 4 gives the best average score on this repre-sentative subset. In contrast, larger scopes perform substantially worse: when the scope is increased to 8 or 16 layers, all three tasks degrade, with espe-cially large drops on HellaSwag and MMLU. This suggests that nearby layers can sometimes share useful prototypes, but distant layers likely corre-spond to different depth-specific transformations. 
+
+Prototype selection. Table 3 compares different prototype-selection policies under the same remap-
+
+Table 3: Prototype-selection ablation on Qwen3-30B-A3B at 50% routed-expert reduction. All variants use the same remapping mechanism. ARC-C and Hel-laSwag report normalized accuracy; MMLU reports accuracy.                     
+
+> Selection policy ARC-C HellaSwag MMLU Avg. Usage top-k0.509 0.586 0.630 0.575 REAP top-k0.504 0.718 0.639 0.620 Distance-only 0.242 0.319 0.231 0.264 Adaptive prototype 0.504 0.716 0.640 0.620
+
+ping mechanism. The results show that routing-conditioned contribution is the dominant selection signal. Distance-only selection performs poorly, in-dicating that retaining hard-to-replace experts with-out considering routed contribution can preserve experts with limited downstream impact. Usage top-k is also weaker, mainly due to a large drop on HellaSwag. REAP top-k provides a much stronger contribution signal and matches adaptive prototype selection on this subset, suggesting that replaceabil-ity is best used as a controlled complement rather than as a standalone criterion. 
+
+Table 4: Post-hoc fusion diagnostics on Qwen3-30B-A3B at 50% routed-expert reduction. “None” is the default remapping-only ConMoE setting. All variants use the same adaptive prototype selection and reassign-ment structure.                 
+
+> Fusion ARC-C HellaSwag MMLU Avg. None 0.504 0.716 0.639 0.620 Arcee 0.488 0.531 0.512 0.510 Weighted average 0.451 0.469 0.358 0.426
+
+Post-hoc fusion diagnostics. Table 4 evaluates whether weight-level fusion improves the selected prototype pool after the remapping structure is fixed. The “None” row is the default ConMoE setting used in the main experiments, where se-lected pretrained prototypes are reused directly. On Qwen3, direct prototype remapping is more stable than both tested fusion operators: Arcee fusion (Goddard et al., 2025) substantially re-duces HellaSwag and MMLU, and weighted av-eraging (Wortsman et al., 2022) degrades perfor-mance further. These results indicate that the gains of ConMoE come from deterministic reassignment to retained pretrained prototypes, rather than from a particular weight-merging operator. 70 6 12 18 24 30 36 42        
+
+> Nearest-neighbor layer
+> 0
+> 6
+> 12
+> 18
+> 24
+> 30
+> 36
+> 42
+> Source layer
+> (a) Source-to-nearest layer distribution
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Row fraction
+> 0612 18 24 30 36 42
+> Layer
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Cross-layer fraction
+> (b) Cross-layer nearest-neighbor rate
+> Mean=50.4%
+
+Figure 3: Cross-layer nearest-neighbor analysis on Qwen3-30B-A3B. Left: source-layer to nearest-neighbor-layer distribution under normalized parameter distance within four-layer scopes. Right: fraction of experts in each layer whose nearest neighbor lies in a different layer. Overall, 50.4% of routed experts have a cross-layer nearest neighbor, indicating that expert substitutability is not strictly layer-local. The near-diagonal structure further suggests that such substitutability is local rather than model-wide. 
+
+5.4 Analysis: Local Cross-layer Expert Substitutability 
+
+We further analyze whether pretrained MoE check-points contain reusable expert structure across neighboring layers. Rather than measuring down-stream accuracy, this analysis tests whether a strictly layer-local redundancy assumption is con-sistent with the geometry of pretrained experts. For each routed expert, we compute its nearest neighbor under the normalized parameter distance used by ConMoE within local four-layer scopes, and record whether the nearest neighbor lies in the same layer or in a different layer. Figure 3 reports the source-to-nearest-layer distribution and the cross-layer nearest-neighbor fraction for each layer. The heatmap shows that nearest neighbors con-centrate in local near-diagonal blocks, indicating that expert proximity is structured by depth rather than randomly distributed across the model. How-ever, this structure is not purely layer-local: on Qwen3-30B-A3B, 50.4% of routed experts have a cross-layer nearest neighbor under four-layer scopes, and several middle layers exceed 70%. This motivates local cross-layer candidate pools in Con-MoE, while still cautioning against interpreting parameter-space proximity as evidence that cross-layer sharing is always preferable. The locality of the heatmap also explains why ConMoE uses bounded cross-layer scopes rather than a single model-wide expert pool. Neighboring layers expose reusable redundancy, while distant layers may correspond to different depth-specific transformations, consistent with the scope ablation where moderate scopes share expert capacity with-out forcing all layers into one global pool. 
+
+6 Discussion 
+
+The experiments suggest three practical lessons. First, deterministic reassignment is the most sta-ble component: even layer-local consolidation pre-serves much of the original expert-pool behavior without modifying weights. Second, cross-layer reuse should remain local. Moderate scopes can ex-pose nearby reusable prototypes, whereas broader scopes introduce depth mismatch and degrade per-formance. Third, routing-conditioned contribution is the primary prototype-selection signal, while re-placeability mainly regularizes capacity allocation by discouraging redundant selections. Post-hoc fu-sion is not the source of the gains in our setting: the remapping-only model is more stable than the tested fusion operators, distinguishing ConMoE from methods that construct new fused experts. 
+
+7 Conclusion 
+
+We presented ConMoE, a train-free framework that casts one-shot MoE compression as prototype se-lection plus deterministic expert-slot remapping. By reusing selected pretrained experts directly, ConMoE reduces the logical routed-expert pool while preserving the original router interface. Ex-periments across pretrained MoE language models show competitive quality–storage trade-offs, with ablations highlighting deterministic remapping as the most robust component. 8Limitations 
+
+ConMoE is train-free but relies on calibration data to estimate routing demand and expert saliency. Its cross-layer reuse is also local: overly broad scopes can introduce depth mismatch and reduce performance. In addition, prototype refinement is model-dependent and should be viewed as an optional module rather than the core contribution. Finally, our compression ratios measure the logical routed-expert budget; realizing the same memory savings in deployment requires a shared-prototype runtime or checkpoint format rather than a fully materialized compatibility checkpoint. 
+
+References 
+
+Sikai Bai, Haoxi Li, Jie Zhang, Zicong Hong, and Song Guo. 2025. Diep: Adaptive mixture-of-experts compression through differentiable expert pruning. 
+
+Preprint , arXiv:2509.16105. Yonatan Bisk, Rowan Zellers, Ronan Le Bras, Jianfeng Gao, and Yejin Choi. 2019. Piqa: Reasoning about physical commonsense in natural language. Preprint ,arXiv:1911.11641. I-Chun Chen, Hsu-Shen Liu, Wei-Fang Sun, Chen-Hao Chao, Yen-Chang Hsu, and Chun-Yi Lee. 2025. Retraining-free merging of sparse moe via hierarchi-cal clustering. Tianyu Chen, Shaohan Huang, Yuan Xie, Binxing Jiao, Daxin Jiang, Haoyi Zhou, Jianxin Li, and Furu Wei. 2022. Task-specific expert pruning for sparse mixture-of-experts. Preprint , arXiv:2206.00277. Christopher Clark, Kenton Lee, Ming-Wei Chang, Tom Kwiatkowski, Michael Collins, and Kristina Toutanova. 2019. Boolq: Exploring the surpris-ing difficulty of natural yes/no questions. Preprint ,arXiv:1905.10044. Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. 2018. Think you have solved question answering? try arc, the ai2 reasoning challenge. 
+
+arXiv:1803.05457v1 .Damai Dai, Chengqi Deng, Chenggang Zhao, R. X. Xu, Huazuo Gao, Deli Chen, Jiashi Li, Wangding Zeng, Xingkai Yu, Y. Wu, Zhenda Xie, Y. K. Li, Panpan Huang, Fuli Luo, Chong Ruan, Zhifang Sui, and Wenfeng Liang. 2024. Deepseekmoe: Towards ultimate expert specialization in mixture-of-experts language models. Preprint , arXiv:2401.06066. William Fedus, Barret Zoph, and Noam Shazeer. 2022. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. Preprint ,arXiv:2101.03961. Trevor Gale, Deepak Narayanan, Cliff Young, and Matei Zaharia. 2022. Megablocks: Efficient sparse training with mixture-of-experts. Preprint ,arXiv:2211.15841. Leo Gao, Jonathan Tow, Baber Abbasi, Stella Bider-man, Sid Black, Anthony DiPofi, Charles Foster, Laurence Golding, Jeffrey Hsu, Alain Le Noac’h, Haonan Li, Kyle McDonell, Niklas Muennighoff, Chris Ociepa, Jason Phang, Laria Reynolds, Hailey Schoelkopf, Aviya Skowron, Lintang Sutawika, and 5 others. 2024. The language model evaluation har-ness. Charles Goddard, Shamane Siriwardhana, Malikeh Ehghaghi, Luke Meyers, Vlad Karpukhin, Brian Benedict, Mark McQuade, and Jacob Solawetz. 2025. Arcee’s mergekit: A toolkit for merging large lan-guage models. Preprint , arXiv:2403.13257. Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Song, and Jacob Steinhardt. 2021. Measuring massive multitask language under-standing. Preprint , arXiv:2009.03300. Minbin Huang, Han Shi, Chuanyang Zheng, Yimeng Wu, Guoxuan Chen, Xintong Yu, Yichun Yin, and Hong Cheng. 2026. Unipool: A globally shared expert pool for mixture-of-experts. Preprint ,arXiv:2605.06665. Albert Q. Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Mensch, Blanche Savary, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Emma Bou Hanna, Florian Bressand, Gi-anna Lengyel, Guillaume Bour, Guillaume Lam-ple, Lélio Renard Lavaud, Lucile Saulnier, Marie-Anne Lachaux, Pierre Stock, Sandeep Subramanian, Sophia Yang, and 7 others. 2024. Mixtral of experts. 
+
+Preprint , arXiv:2401.04088. Mike Lasby, Ivan Lazarevich, Nish Sinnadurai, Sean Lie, Yani Ioannou, and Vithursan Thangarasa. 2026. Reap the experts: Why pruning prevails for one-shot moe compression. Preprint , arXiv:2510.13999. Dmitry Lepikhin, HyoukJoong Lee, Yuanzhong Xu, Dehao Chen, Orhan Firat, Yanping Huang, Maxim Krikun, Noam Shazeer, and Zhifeng Chen. 2020. Gshard: Scaling giant models with conditional computation and automatic sharding. Preprint ,arXiv:2006.16668. Mike Lewis, Shruti Bhosale, Tim Dettmers, Naman Goyal, and Luke Zettlemoyer. 2021. Base lay-ers: Simplifying training of large, sparse models. 
+
+Preprint , arXiv:2103.16716. Lujun LI, Qiyuan ZHU, Jiacheng WANG, Wei LI, Hao GU, Sirui HAN, and Yike GUO. 2026. Sub-moe: Efficient mixture-of-expert llms compression via sub-space expert merging. In Proceedings of the 40th Annual AAAI Conference on Artificial Intelligence .Pingzhi Li, Zhenyu Zhang, Prateek Yadav, Yi-Lin Sung, Yu Cheng, Mohit Bansal, and Tianlong Chen. 
+
+92024. Merge, then compress: Demystify efficient smoe with hints from its routing policy. Preprint ,arXiv:2310.01334. Zongfang Liu, Shengkun Tang, Boyang Sun, Zhiqiang Shen, and Xin Yuan. 2026. Evoesap: Non-uniform expert pruning for sparse moe. Preprint ,arXiv:2603.06003. Xudong Lu, Qi Liu, Yuhui Xu, Aojun Zhou, Siyuan Huang, Bo Zhang, Junchi Yan, and Hongsheng Li. 2024. Not all experts are equal: Efficient expert pruning and skipping for mixture-of-experts large language models. In Proceedings of the 62nd Annual Meeting of the Association for Computational Lin-guistics (Volume 1: Long Papers) , pages 6159–6172, Bangkok, Thailand. Association for Computational Linguistics. Ruijie Miao, Yilun Yao, Zihan Wang, Zhiming Wang, Bairen Yi, LingJun Liu, Yikai Zhao, and Tong Yang. 2025. Mergemoe: Efficient compression of moe models via expert output merging. Preprint ,arXiv:2510.14436. Niklas Muennighoff, Luca Soldaini, Dirk Groeneveld, Kyle Lo, Jacob Morrison, Sewon Min, Weijia Shi, Pete Walsh, Oyvind Tafjord, Nathan Lambert, Yuling Gu, Shane Arora, Akshita Bhagia, Dustin Schwenk, David Wadden, Alexander Wettig, Binyuan Hui, Tim Dettmers, Douwe Kiela, and 5 others. 2025. Olmoe: Open mixture-of-experts language models. Preprint ,arXiv:2409.02060. Samyam Rajbhandari, Conglong Li, Zhewei Yao, Min-jia Zhang, Reza Yazdani Aminabadi, Ammar Ah-mad Awan, Jeff Rasley, and Yuxiong He. 2022. Deepspeed-moe: Advancing mixture-of-experts in-ference and training to power next-generation ai scale. 
+
+Preprint , arXiv:2201.05596. Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavat-ula, and Yejin Choi. 2019. Winogrande: An adver-sarial winograd schema challenge at scale. Preprint ,arXiv:1907.10641. Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton, and Jeff Dean. 2017. Outrageously large neural net-works: The sparsely-gated mixture-of-experts layer. 
+
+Preprint , arXiv:1701.06538. Mitchell Wortsman, Gabriel Ilharco, Samir Ya Gadre, Rebecca Roelofs, Raphael Gontijo-Lopes, Ari S Mor-cos, Hongseok Namkoong, Ali Farhadi, Yair Car-mon, Simon Kornblith, and Ludwig Schmidt. 2022. Model soups: averaging weights of multiple fine-tuned models improves accuracy without increasing inference time. In Proceedings of the 39th Interna-tional Conference on Machine Learning , volume 162 of Proceedings of Machine Learning Research , pages 23965–23998. PMLR. Prateek Yadav, Derek Tam, Leshem Choshen, Colin Raffel, and Mohit Bansal. 2023. TIES-merging: Re-solving interference when merging models. In Thirty-seventh Conference on Neural Information Process-ing Systems .An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, Day-iheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao Ge, Haoran Wei, Huan Lin, Jialong Tang, and 41 others. 2025. Qwen3 technical report. Preprint ,arXiv:2505.09388. Cheng Yang, Yang Sui, Jinqi Xiao, Lingyi Huang, Yu Gong, Yuanlin Duan, Wenqi Jia, Miao Yin, Yu Cheng, and Bo Yuan. 2024. MoE-i 2: Compress-ing mixture of experts models through inter-expert pruning and intra-expert low-rank decomposition. In 
+
+Findings of the Association for Computational Lin-guistics: EMNLP 2024 , pages 10456–10466, Miami, Florida, USA. Association for Computational Lin-guistics. Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. 2019. Hellaswag: Can a machine really finish your sentence? In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics .
+
+10 A Reproducibility and Compliance 
+
+AI assistant use. AI assistants were used to sup-port manuscript writing, language polishing, and statistical analysis. All AI-assisted analyses, re-sults, claims, and final text were reviewed and veri-fied by the authors. 
+
+Artifacts and licenses. We use publicly avail-able pretrained MoE checkpoints and benchmark datasets according to their released licenses and terms of use. Our experiments are for research pur-poses. We do not redistribute the original model weights or benchmark data; the released code con-tains scripts for reproducing compression and eval-uation with user-provided access to the correspond-ing artifacts. 
+
+Compute. All experiments, including expert-pool consolidation and downstream evaluation, were implemented and run on two NVIDIA A100-SXM4-80GB GPUs. 
+
+B Implementation Details 
+
+B.1 Distance and Normalization 
+
+Let M = {gate , up , down } denote the set of routed expert projections. For each projection 
+
+m ∈ M , we define 
+
+δm(e, e ′) = 2∥W em − W e′ 
+
+> m
+
+∥F
+
+∥W em∥F + ∥W e′ 
+
+> m
+
+∥F + 2 ϵ .
+
+The expert distance is the average projection dis-tance: 
+
+d(e, e ′) = 1
+
+|M| 
+
+X
+
+> m∈M
+
+δm(e, e ′).
+
+This normalization prevents projections with larger parameter norms from dominating the distance. For any scope-level score xe, min–max normal-ization is 
+
+Norm G(xe) = xe − xmin 
+
+> G
+
+xmax  
+
+> G
+
+− xmin  
+
+> G
+
++ ϵ ,
+
+where 
+
+xmin  
+
+> G
+
+= min 
+
+> u∈E G
+
+xu, xmax  
+
+> G
+
+= max 
+
+> u∈E G
+
+xu.
+
+B.2 Compression Accounting and Evaluation Checkpoints 
+
+All methods compress only routed experts. Shared experts, routers, attention blocks, embeddings, nor-malization layers, and output heads are kept un-changed. We report the logical routed-expert reduction ra-tio. A selected prototype is counted once in the logical reduced pool, even if multiple original ex-pert slots are assigned to it. For compatibility with standard HuggingFace evaluation pipelines, we ma-terialize an evaluation checkpoint by filling each original expert slot with the weights of its assigned prototype. This materialized checkpoint preserves the original architecture for evaluation only and is not counted as compressed storage. 
+
+B.3 Calibration Data 
+
+ConMoE and the pruning baselines use unlabeled calibration text to estimate routing statistics and expert-output saliency. Calibration uses only text prompts; it does not use labels, losses, gradients, or post-compression fine-tuning. The default cali-bration source is matched to the benchmark family used in evaluation. For each task, we sample 128 examples with seed 42 and format them as multiple-choice prompts.                 
+
+> Table 5: Default calibration sources. Calibration uses only text prompts and does not use labels or losses.
+> Task Source Split ARC-C AI2 ARC-Challenge validation ARC-E AI2 ARC-Easy validation BoolQ SuperGLUE BoolQ train HellaSwag HellaSwag train MMLU MMLU all validation PIQA PIQA train WinoGrande WinoGrande-XL train
+
+B.4 Evaluation Metrics 
+
+The main table reports six multiple-choice bench-marks: WinoGrande, ARC-C, ARC-E, BoolQ, Hel-laSwag, and PIQA. The ablations additionally use MMLU as one representative knowledge-intensive task. We report normalized accuracy for ARC-C, ARC-E, and HellaSwag, and accuracy for BoolQ, MMLU, PIQA, and WinoGrande. All averages are simple arithmetic means over the tasks included in the corresponding table or figure. 
+
+C Baseline and Ablation Details 
+
+Frequency pruning. Frequency pruning is a routing-only pruning baseline. It ranks routed ex-perts by the number of calibration tokens for which they appear in the router top-k set, and keeps the highest-frequency experts under the matched ex-pert budget. It tests whether a simple usage signal is sufficient for expert-pool reduction. 11 REAP pruning. The REAP pruning baseline ranks experts by a contribution score based on router weight and expert-output norm on calibra-tion tokens. For each expert, the score is computed over tokens that route to that expert. This provides a stronger pruning baseline than frequency alone because it accounts for both routing selection and the magnitude of expert contribution. In the main comparison, REAP pruning uses a uniform per-layer budget, matching the pruning setup used by this class of post-training expert pruning methods. 
+
+M-SMoE merging. The M-SMoE baseline first selects high-usage core experts and assigns the re-maining experts to similar cores. The resulting groups are merged with usage-weighted averaging. This baseline represents routing-statistics-guided expert merging. 
+
+HC-SMoE merging. The HC-SMoE baseline groups experts by output behavior on calibration inputs. It clusters expert-output features and uses a representative expert for each cluster before apply-ing the same budgeted merging protocol. This base-line represents output-feature-based expert merg-ing. 
+
+Layer-local consolidation. Layer-local consol-idation uses the same expert-to-prototype remap-ping mechanism as ConMoE, but restricts the pro-totype pool to each layer independently. This vari-ant isolates explicit reassignment without allowing cross-layer reuse. 
+
+Cross-layer fixed-k consolidation. Cross-layer fixed-k consolidation allows experts in neighboring layers to share a candidate prototype pool, but still assigns an equal number of prototypes to each layer. This variant isolates the effect of the cross-layer candidate pool before adaptive prototype selection. 
+
+Adaptive prototype selection. Adaptive proto-type selection is the selection rule used by Con-MoE in the ablation tables. It selects prototypes using both routing-conditioned contribution and replaceability. Contribution measures how much an expert contributes when selected by the router, while replaceability measures how difficult it is to substitute that expert with another expert in the same local scope. 
+
+Usage top-k, REAP top-k, and distance-only se-lection. The prototype-selection ablation com-pares adaptive prototype selection against three controlled alternatives. Usage top-k selects proto-types using only routing frequency. REAP top-k
+
+selects prototypes using only the REAP contribu-tion score. Distance-only selection ignores routing contribution and keeps experts that are hardest to re-place under the normalized expert distance. These variants separate usage-only, contribution-only, and replaceability-only signals. 
+
+Post-hoc fusion diagnostics. The default Con-MoE model is remapping-only: the selected pre-trained prototypes are reused directly. For diag-nostic ablations, we also test two post-hoc fusion operators after the prototype set and reassignment map have already been fixed. Arcee applies a base-preserving selective weight fusion operator to each prototype-centered cluster. Weighted average aver-ages cluster experts using routing-derived weights. These fusion operators are not part of the default ConMoE pipeline. 
+
+D Analysis Protocols 
+
+Cross-layer nearest-neighbor analysis. The cross-layer analysis in Section 5.4 uses the same normalized expert distance as ConMoE. For each routed expert, we find its nearest neighbor within the local scope and record whether the nearest neighbor lies in the same layer or a different layer. This analysis does not depend on downstream la-bels and is used only to examine whether expert substitutability is strictly layer-local. 
+
+Scope-size analysis. The scope-size ablation varies the number of neighboring MoE layers that share a candidate prototype pool. Scope size one corresponds to layer-local consolidation. Larger scopes allow local cross-layer reuse, while overly large scopes test whether distant layers introduce depth mismatch. All points in the scope-size fig-ure use the same routed-expert reduction ratio and differ only in scope size. 12
