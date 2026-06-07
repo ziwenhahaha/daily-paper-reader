@@ -1,0 +1,3032 @@
+Title: Demystifying Pipeline Parallelism: First Theory for PipeDream
+
+URL Source: https://arxiv.org/pdf/2606.03498v1
+
+Published Time: Wed, 03 Jun 2026 01:01:56 GMT
+
+Number of Pages: 40
+
+Markdown Content:
+# Demystifying Pipeline Parallelism: First Theory for PipeDream 
+
+Ivan Ilin 
+
+KAUST 
+
+ivan.ilin@kaust.edu.sa 
+
+Peter Richtárik 
+
+KAUST 
+
+peter.richtarik@kaust.edu.sa 
+
+## Abstract 
+
+Training modern machine learning models increasingly requires computation to be distributed across many accelerators. Data parallelism remains the default choice and is often paired with tensor-parallel sharding, but model parallelism becomes unavoidable once parameters, activations, or optimizer states no longer fit on a single device. This paper studies pipeline model parallelism through the lens of PipeDream ( PD ) (Harlap et al., 2018). Our first contribution is theoretical: we introduce Randomized PipeDream ( RPD ), a stale block-SGD abstraction that yields, to our knowledge, the first clean nonconvex convergence guarantee for a 
+
+PD -style method. Our second contribution is a scaling diagnosis: we prove that the delay induced by steady-state PD grows as S2 − S/2 + O(1) for S stages, so the stale-read contribution in the convergence theorem scales as Θ( γ2S4), equivalently as Θ( S4/K ) in the tuned-rate form. Our third contribution is a comparison with 
+
+LocalSGD , whose periodic model averaging trades weight staleness for synchro-nization bubbles. In our reported simulated-time experiments, the better-performing method depends on the objective: PD performs better on the quadratic objective and on a small language-modeling training-loss task, while for logistic regression 
+
+LocalSGD becomes superior as the number of stages increases. 
+
+## 1 Introduction 
+
+The recent success of deep learning has been driven in part by scaling: larger models, larger datasets, and longer training runs typically deliver better downstream performance. That scaling pressure immediately creates a systems problem. Even when a model fits on one accelerator, training time can be prohibitive; once the parameters, activations, and optimizer states no longer fit on one accelerator, single-device training is impossible. Distributed optimization is therefore not an implementation detail but a prerequisite for modern large-scale learning (Dean et al., 2012; Goyal et al., 2017). The most widely used training strategy is data parallelism: each worker holds a model replica, computes gradients on different mini-batches, and synchronizes updates across workers. In practice, large training stacks often combine this outer-loop data parallelism with tensor-parallel sharding inside layers to spread matrix multiplications across multiple devices (Shoeybi et al., 2019). By contrast, model parallelism partitions the model itself across devices. This partition can be even or uneven, and it may follow layers, tensor dimensions, or other architectural boundaries. Model parallelism is less ubiquitous than pure data parallelism, but it is equally important whenever the model simply cannot be stored or executed on a single device (Huang et al., 2019; Narayanan et al., 2019). This paper focuses on pipeline model parallelism. The basic idea is simple: split a deep network into 
+
+S stages, place stage s on device s, and stream microbatches through the stage sequence. However, the naive schedule is painfully inefficient. If a model is partitioned across four devices, a single microbatch moves forward from stage 1 to stage 4 and then backward from stage 4 to stage 1.
+
+> Preprint.
+> arXiv:2606.03498v1 [cs.LG] 2 Jun 2026
+
+During much of that time, several machines are idle (Figure 1a). These idle regions are the classic 
+
+pipeline bubbles . PipeDream ( PD ) (Narayanan et al., 2019) was one of the first influential methods to attack this issue: it overlaps multiple microbatches and uses a one-forward-one-backward (1F1B) steady-state schedule so that machines spend far less time doing nothing (Figure 1b). The systems advantage of PD is clear, but its optimization behavior is hard to analyze. The core obstacle is not merely delay; it is structured , stage-dependent delay produced by weight stashing and by the deterministic 1F1B schedule. Each backward pass uses a collection of stage-local weight versions encountered earlier during the corresponding forward pass, and these versions are coupled through the pipeline timeline. Existing literature provides excellent systems insight into pipeline-parallel training, yet a tractable convergence theory for PD itself remains largely missing. This paper has three main contributions. 1. We introduce Randomized PipeDream ( RPD ), a mathematical abstraction in which the active stage and mini-batch are sampled uniformly and the stage-wise staleness is arbitrary but bounded by a hyperparameter δ. For this abstraction we prove a clean nonconvex convergence rate, and we then connect the theory back to the original method by showing that steady-state PD is described by 
+
+δ = S2 − S/2 + O(1) .2. We use this theory to explain why PD scales poorly with the number of stages. Because the theorem contains a δ2 term and because δ = Θ( S2), the stale-read term grows as Θ( γ2S4), or 
+
+Θ( S4/K ) after the tuned stepsize substitution. Under a fixed iteration budget, increasing the number of stages slows objective decrease substantially. 3. We study LocalSGD as an alternative schedule that trades PipeDream-style stale weight versions for synchronization barriers and local-replica drift. The resulting comparison is not one-sided: our experiments on quadratic objectives, logistic regression, and an 11 .1M-parameter NanoChat-style Transformer show that the better schedule depends on the objective and scaling regime. PD is stronger on the quadratic and language-modeling tasks, while LocalSGD outperforms it on logistic regression when the number of stages is large and gradients are noisy. The implementation and code for reproducing our experiments are available at 
+
+github.com/vectozavr/randomized-pipedream .
+
+1.1 Notation 
+
+All key notation used in this paper is summarized in a tabular form in Section A; see Table 2. 
+
+## 2 Related Work 
+
+Distributed and pipeline-parallel training. Distributed training is central to scaling modern deep networks, either by replicating models across workers in data-parallel SGD (Dean et al., 2012; Goyal et al., 2017), or by partitioning computation, parameters, activations, and optimizer states across devices. Tensor-parallel systems such as Megatron-LM split large Transformer layers across accelerators (Shoeybi et al., 2019), while ZeRO reduces data-parallel memory redundancy by partitioning optimizer states, gradients, and parameters (Rajbhandari et al., 2020). More general systems such as FlexFlow and Alpa search over hybrid parallelization plans that combine data, operator, tensor, and pipeline parallelism (Jia et al., 2019; Zheng et al., 2022). Our work is orthogonal to these systems contributions: we isolate the optimization effect of the stale weights induced by pipeline-parallel execution. Pipeline parallelism partitions a model into consecutive stages and streams microbatches through them. GPipe uses synchronous microbatch pipelining and updates weights only after a mini-batch has been flushed through the pipeline (Huang et al., 2019). PD instead uses inter-batch pipelining with a one-forward-one-backward schedule to keep stages active (Harlap et al., 2018; Narayanan et al., 2019). Its weight-stashing mechanism preserves consistency between the forward and backward pass of each microbatch, but gradients are evaluated using stale stage-local weights. Subsequent systems such as PipeDream-2BW and DAPPLE reduce memory overhead, improve scheduling, or combine pipeline and data parallelism (Narayanan et al., 2021; Fan et al., 2021). These works primarily optimize throughput, memory, placement, and scheduling. In contrast, we study the nonconvex optimization cost of the stale weight versions created by PipeDream-style execution. 2Stale-gradient and randomized block optimization. The stale gradients arising in pipeline parallelism are related to asynchronous optimization. Hogwild! established convergence of lock-free stochastic updates under sparsity assumptions (Recht et al., 2011), while later work analyzed asynchronous SGD for nonconvex objectives under bounded delays (Lian et al., 2015). The perturbed-iterate framework models stale reads as gradients evaluated at perturbed versions of the current iterate (Mania et al., 2017), and delay compensation methods attempt to correct staleness using Taylor or Hessian-based approximations (Zheng et al., 2017). Our setting differs from generic asynchronous SGD because the delay structure is generated by a deterministic pipeline schedule, stage-local weight stashing, and forward/backward ordering. Our Randomized PipeDream abstraction keeps the stale block-gradient structure while removing the deterministic scheduling combinatorics. Our abstraction also connects to randomized coordinate and block-coordinate methods, which update only part of the variable at each iteration (Nesterov, 2012; Richtárik and Takáˇ c, 2014). Block stochastic-gradient methods combine data sampling with block-wise updates and have been analyzed in convex and nonconvex settings (Xu and Yin, 2015). However, unlike standard block-coordinate methods, our active block gradient is evaluated at a stale model assembled from different stage-local weight versions. 
+
+Local SGD and model averaging. LocalSGD reduces communication by letting workers perform several local stochastic-gradient steps before averaging their models. This idea goes back to paral-lelized SGD with model averaging (Zinkevich et al., 2010); later work showed that LocalSGD can match mini-batch SGD rates with fewer communication rounds in convex settings (Stich, 2018), and explained its behavior for nonconvex deep learning objectives (Yu et al., 2019). Empirical work also suggests that local updates can improve efficiency and generalization compared with simply increasing the mini-batch size (Lin et al., 2018). We use LocalSGD as an alternative policy for stage-distributed training: several full-model trajectories are executed through the same pipeline stages and periodically averaged. This avoids PD ’s cross-stage weight staleness, but introduces synchronization barriers and local-replica drift, yielding a concrete staleness-versus-synchronization comparison. 
+
+## 3 Background: Why Pipeline Parallelism? 
+
+We study the finite-sum problem 
+
+min 
+
+> w∈Rd
+
+f (w), f (w) = 1
+
+M
+
+> M
+
+X
+
+> m=1
+
+fm(w), (1) where the model is partitioned into S blocks 
+
+w =  w(1) , . . . , w (S), w(s) ∈ Rds ,
+
+> S
+
+X
+
+> s=1
+
+ds = d. 
+
+Each block corresponds to one pipeline stage. In practice, the partition may be balanced or intention-ally uneven to match heterogeneous devices or layer costs. 
+
+Naive pipelining. If we send a single microbatch through the pipeline, the forward pass proceeds stage-by-stage from 1 to S, and the backward pass returns from S to 1. This schedule is functionally correct but extremely inefficient because most devices are idle during startup and drain. The result is a large bubble fraction, especially for deep pipelines (Figure 1a). 
+
+PipeDream. PD reduces these bubbles by admitting multiple microbatches into the pipeline and switching each stage into a 1F1B steady state after startup (Narayanan et al., 2019). The price is that gradients become stale: a backward pass does not use the newest global model, but rather the stage-local weights that were seen earlier during the corresponding forward pass. Weight stashing preserves forward/backward consistency within each stage, but it also creates a complicated pattern of cross-stage version dependencies. Figure 1 visualizes the contrast between PD and a naive pipeline. The systems motivation for PD is therefore immediate: it converts idle pipeline time into useful work. The theoretical question is more 30 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23       
+
+> Time step
+> Machine 4
+> Machine 3
+> Machine 2
+> Machine 1 1
+> 1
+> 1
+> 11
+> 1
+> 1
+> 12
+> 2
+> 2
+> 22
+> 2
+> 2
+> 23
+> 3
+> 3
+> 33
+> 3
+> 3
+> 3
+> Naive Scheduling
+> Forward
+> Backward
+> Idle
+
+(a) Naive pipeline for one microbatch. The blank area is pure idle time. 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19   
+
+> Time step
+> Machine 4
+> Machine 3
+> Machine 2
+> Machine 1 12
+> 1
+> 3
+> 2
+> 1
+> 4
+> 3
+> 2
+> 1
+> 4
+> 3
+> 1
+> 1
+> 2
+> 1
+> 4
+> 2
+> 1
+> 2
+> 3
+> 5
+> 2
+> 3
+> 2
+> 5
+> 3
+> 4
+> 6
+> 3
+> 5
+> 4
+> 3
+> 6
+> 4
+> 5
+> 7
+> 4
+> 6
+> 5
+> 4
+> 7
+> 5
+> 6
+> 8
+> 5
+> 7
+> 6
+> 5
+> 8
+> 6
+> 7
+> 9
+> 6
+> 8
+> 7
+> 6
+> 9
+> 7
+> 8
+> 10
+> 7
+> 9
+> 8
+> 7
+> 10
+> 8
+> 9
+> PD-style 1F1B Schedule
+> Forward
+> Backward
+> Idle
+
+(b) PD 1F1B schedule fills most of the bubble after startup. 
+
+Figure 1: Pipeline scheduling for a four-stage model. The naive schedule is sequential and wastes hardware; PD overlaps multiple microbatches to keep stages busy. subtle: what is the optimization cost of the induced staleness, and how does that cost scale with the number of stages? The discrete-event procedure used to generate the PD timelines in our experiments is described in Appendix E.1. 
+
+From schedules to optimization updates. A pipeline schedule determines not only which device is active, but also which parameter version is used when a gradient is computed. We distinguish two notions of progress. The first is the block-update budget K, which counts how many individual stage/block updates have been applied. This is the natural unit for the convergence theory. The second is simulator time , which counts discrete pipeline time steps and is closer to a wall-clock proxy: in one simulator step, several stages may perform work in parallel. We use K for theoretical comparisons and simulator time for experiments that study hardware-utilization tradeoffs. This distinction is important because increasing the number of stages can increase parallel work per time step while also increasing the staleness of the gradients being applied. 
+
+## 4 Randomized PipeDream: A Tractable Theory 
+
+The exact deterministic PD schedule is difficult to analyze because the active stage, the microbatch identity, and the stage-wise weight versions are all jointly coupled by the 1F1B timeline. We therefore introduce Randomized PipeDream ( RPD ), a simplified model that keeps the essential stale block-gradient structure while removing the deterministic scheduling combinatorics. At iteration k, let 
+
+wk =  w(1)  
+
+> k
+
+, . . . , w (S)
+
+> k
+
+
+
+denote the current model after k block updates, where w(s) 
+
+> k
+
+is the current value of the sth stage/block. 
+
+RPD first chooses a delay vector 
+
+jk =  j(1)  
+
+> k
+
+, . . . , j (S)
+
+> k
+
+
+
+using only randomness available before the current active stage and mini-batch are sampled, with 
+
+0 ≤ k − j(s) 
+
+> k
+
+≤ δ
+
+for all s. It then forms a stale model 
+
+zk =  w(1) 
+
+> j(1)
+> k
+
+, . . . , w (S)
+
+> j(S)
+> k
+
+,
+
+4where j(s) 
+
+> k
+
+is the past global iteration whose stage-s block is used in the stale read. Conditional on this stale read, RPD samples a pair (sk, m k) uniformly from {1, . . . , S } × { 1, . . . , M } and updates only the active block: 
+
+w(sk ) 
+
+> k+1
+
+= w(sk ) 
+
+> k
+
+− γ∇w(sk ) fmk (zk), w(i) 
+
+> k+1
+
+= w(i) 
+
+> k
+
+∀i̸ = sk. (2) Here δ is a tunable staleness bound. Unlike original PD , which visits stages and microbatches in a highly structured order, RPD randomizes both. This is the key simplification that makes a rigorous analysis possible. The resulting randomized version of PD is summarized in Algorithm 1. 
+
+Algorithm 1 Randomized PipeDream ( RPD ) 
+
+> 1:
+
+Input: stepsize γ > 0, number of stages S, delay bound δ, initial point w0 ∈ Rd 
+
+> 2:
+
+Initialize: k = 0 , jk = ( j(1)  
+
+> k
+
+, . . . , j (S) 
+
+> k
+
+) = (0 , . . . , 0) ∈ ZS . 
+
+> 3:
+
+for k = 0 , 1, 2, . . . do  
+
+> 4:
+
+Select a delay vector: jk = ( j(1)  
+
+> k
+
+, . . . , j (S) 
+
+> k
+
+), with 0 ≤ k − j(i) 
+
+> k
+
+≤ δ ∀i 
+
+> 5:
+
+Form a stale model: zk :=  w(1) 
+
+> j(1)
+> k
+
+, . . . , w (S)
+
+> j(S)
+> k
+
+ 
+
+> 6:
+
+Sample (sk, m k) uniformly from {1, . . . , S } × { 1, . . . , M }, cond. independently of zk. 
+
+> 7:
+
+Update the active stage block: w(sk ) 
+
+> k+1
+
+= w(sk ) 
+
+> k
+
+− γ ∇w(sk ) fmk (zk) 
+
+> 8:
+
+Keep the remaining blocks unchanged: w(i) 
+
+> k+1
+
+= w(i) 
+
+> k
+
+∀i̸ = sk 
+
+> 9:
+
+end for 
+
+We now analyze Algorithm 1 as a randomized stale block-SGD method. Let ∆0 := f (w0) − f⋆.Two elementary facts drive the proof. First, because (sk, m k) is sampled uniformly after the stale read is fixed, the randomized block update is an unbiased estimate of the full gradient direction up to the factor 1/S . Second, trajectory-bounded block gradients and bounded delay imply that the stale read cannot be too far from the current iterate: ∥wk − zk∥ ≤ γδG . Combining these facts with 
+
+L-smoothness gives the following convergence guarantee. 
+
+Theorem 4.1 (Convergence of RPD ). 
+
+Consider (1) and the RPD update (2) . Suppose that, at each iteration, the delay vector is fixed before sampling (sk, m k), and that conditional on the past and this delay vector, (sk, m k) is sampled uniformly. Suppose further that (i) f is lower bounded, (ii) L-smooth, (iii) there exists G ≥ 0 such that the block gradients along the stale-read trajectory satisfy 
+
+∥∇ w(s) fm(zk)∥ ≤ G
+
+for all k, m, s almost surely, and (iv) the stage-wise staleness is bounded by δ ≥ 0.If the stepsize satisfies 0 < γ ≤ 1/L , then for every K ≥ 1, the iterates of RPD satisfy 
+
+1
+
+K
+
+> K−1
+
+X
+
+> k=0
+
+E∥∇ f (wk)∥2 ≤ 2S∆0
+
+γK + γSLG 2 + γ2L2δ2G2. (3) The proof is given in Appendix B. The bound separates three effects. The first term is the usual optimization term and decreases with the number of block updates K. The second term is the stochastic block-update price: at each iteration, RPD updates only one of the S blocks. The third term is the stale-read penalty. Its dependence on δ2 is the key structural fact that will later explain the scaling behavior of PD .5For later comparison, it is useful to tune the stepsize in (3). If we choose 
+
+γ = min 
+
+(
+
+1
+
+L ,
+
+r 2∆ 0
+
+LG 2K
+
+)
+
+,
+
+then the RPD rate becomes 
+
+1
+
+K
+
+> K−1
+
+X
+
+> k=0
+
+E∥∇ f (wk)∥2 = O
+
+ S
+
+√K + δ2
+
+K
+
+
+
+.
+
+From RPD back to PD . The point of RPD is not to claim that the deterministic PD scheduler samples stages and mini-batches uniformly. Rather, RPD is a deliberately simplified stale block-SGD model: it preserves the feature of PD that matters for the analysis—gradients are computed on stage-wise stale models—while replacing the deterministic 1F1B combinatorics by uniform sampling. The link back to the original 1F1B method is captured by the next result. 
+
+Proposition 4.1 (Steady-state PD delay). 
+
+Embed a steady-state S-stage PD 1F1B execution into the global-history model of RPD . Under the slot-batched global-history embedding used by our simulator, the worst-case delay satisfies 
+
+δPD := S2 − S
+
+2 + O(1) . (4) 
+
+For even S, this becomes the exact identity 
+
+δPD = S2 − S
+
+2 .
+
+The proof is given in Appendix C. This proposition identifies the delay parameter that should be used when RPD is used as a proxy for the original deterministic PD schedule. In particular, although  
+
+> RPD
+
+randomizes the active stage and mini-batch, the worst-case stage-wise staleness produced by steady-state 1F1B PD scales as δPD = S2 − S/2 + O(1) . Under the slot-batched convention, each backward operation in a simulator slot appends one block update to the global history. Thus, to model the delay scale of real PD within the RPD abstraction, we should instantiate RPD with δ = δPD .Thus Theorem 4.1 should be read as a convergence theorem for a randomized PD -style abstraction, not as a direct theorem for deterministic PD . The role of Proposition 4.1 is to transfer the scheduler-induced delay scale of PD into this abstraction. 
+
+## 5 Scaling Limits of PipeDream 
+
+By Proposition 4.1, steady-state PD induces δ = δPD = Θ( S2). Plugging this into Equation (3) yields the staleness contribution Θ( γ2S4), or Θ( S4/K ) in the tuned-rate form. Thus the stale-read part of the worst-case theorem has quartic dependence on the number of pipeline stages. This does not mean that throughput scaling disappears; PD still reduces idle time very effectively. The point is instead that better utilization can come with a rapidly growing optimization penalty. Under a fixed computational budget, i.e., a fixed number of block updates or iterations, increasing the number of stages makes the final objective decrease more slowly. Reaching a target solution quality therefore requires substantially more optimization steps as S grows. 
+
+## 6 LocalSGD as an Alternative 
+
+The scaling diagnosis above suggests that the central weakness of PD is not pipelining itself, but the particular way in which PD buys utilization: it keeps stages busy by allowing different parts of the model to participate in gradients computed from old stage-local versions. A natural alternative is to recover consistency through occasional synchronization. This leads to LocalSGD : instead of 60 500 1000 1500 2000 2500 3000                            
+
+> Number of block updates, K
+> 10 10
+> 10 8
+> 10 6
+> 10 4
+> 10 2
+> 10 0
+> 10 2
+> f(wk) f
+> PD vs. RPD ( S= 8)
+> PD, = 6.2 e02
+> RPD, = 8, = 1.2 e01
+> RPD, = 30, = 1.2 e01
+> RPD, = 60 ( = S2S
+> 2), = 6.2 e02
+> RPD, = 180, = 6.2 e02
+> RPD, = 420, = 3.1 e02
+
+(a) Random quadratic objective: best-tuned PD and 
+
+RPD trajectories. S = 8 , batch size is 10 , M = 60 ,trained for 5 epochs. 10 1 10 2          
+
+> Number of stages, S
+> 10 2f(wk) f
+> Scaling with number of stages (Fixed-time budget)
+> PD
+> RPD, =S2S
+> 2
+> LocalSGD, R=S,H= 5
+
+(b) Logistic regression: final objective versus the num-ber of stages S under a fixed simulator-time budget. Batch size is 10 , M = 60 , trained for 5 epochs. 
+
+H = 5 , λ = 10 −4.
+
+Figure 2: The left plot validates RPD as a theoretical proxy for PD : when RPD is instantiated in the delay regime predicted for steady-state 1F1B execution, its trajectory closely matches that of PD 
+
+on the quadratic objective. The right plot studies scaling on logistic regression: for each method and each stage count S, we measure the final objective reached under the same fixed simulator-time budget. d = 512 .maintaining one stale pipeline trajectory, we maintain several full-model trajectories, execute them through the same pipeline stages, and periodically average them. In standard LocalSGD , each replica stores a full parameter vector, performs several local SGD steps, and then synchronizes with the other replicas by model averaging. In our pipeline-parallel setting, each full replica is itself partitioned across the same S stages used by the pipeline. We write 
+
+wq,r =  w(1)  
+
+> q,r
+
+, . . . , w (S)
+
+> q,r
+
+ ∈ Rd, w(s) 
+
+> q,r
+
+∈ Rds ,
+
+for the logical model of replica r after q local steps. Here s indexes the pipeline stage, r indexes the replica, and q indexes local full-model steps performed by each replica. This model uses additional replica memory: LocalSGD stores R logical copies of the model, par-titioned across the stages, whereas the basic PD simulator follows a single stale trajectory with weight stashing. Our theory and plots compare optimization progress under matched block-update or simulated-time budgets; they do not charge this extra memory as a separate resource cost. A logical LocalSGD step of replica r is realized by a full forward/backward pass through the S-stage pipeline. During this pass, each stage updates its own block w(s) 
+
+> q,r
+
+when the corresponding backward computation is executed. After every H local steps, the replicas are synchronized by stage-wise averaging: 
+
+¯w(s) 
+
+> q
+
+= 1
+
+R
+
+> R
+
+X
+
+> r=1
+
+w(s) 
+
+> q,r
+
+, w(s) 
+
+> q,r
+
+← ¯w(s) 
+
+> q
+
+∀r ∈ { 1, . . . , R }, s ∈ { 1, . . . , S }.
+
+The resulting LocalSGD algorithm is summarized in Algorithm 2 located in Appendix D. In all experiments, we choose R = S in order to keep the pipeline highly utilized. The corresponding 1F1B timeline generation procedure, including the local-step dependencies and synchronization barriers, is given in Appendix E.2. 
+
+Relation to standard LocalSGD . Algorithm 2 is a stage-distributed version of the usual LocalSGD .At the optimization level, each replica performs H local stochastic-gradient steps and then the replicas are averaged. At the systems level, one such local step is not executed as one atomic full-vector operation: because the model is split across S stages, the forward and backward passes are scheduled through the pipeline, and each stage updates its own block when its backward computation is executed. This distinction matters for the iteration count. For RPD and PD , one iteration means one stage/block update. We therefore let K denote the common block-update budget used in the theory comparison. 70 4 8 13 17 21 26 30 34 39 43 48 52 56 61 65 69 74 78 83  
+
+> Time step
+> Machine 4
+> Machine 3
+> Machine 2
+> Machine 1
+> Local SGD pipeline Schedule ( H= 1)
+> Forward
+> Backward
+> Idle
+
+(a) H = 1 , R = S = 4 : frequent synchronization introduces visible bubbles. 0 3 6 9 12 15 18 21 24 27 31 34 37 40 43 46 49 52 55 59  
+
+> Time step
+> Machine 4
+> Machine 3
+> Machine 2
+> Machine 1
+> Local SGD pipeline Schedule ( H= 3)
+> Forward
+> Backward
+> Idle
+
+(b) H = 3 , R = S = 4 : synchronization is sparse and the schedule approaches pipeline-style utilization. 
+
+Figure 3: Scheduling intuition for LocalSGD . Increasing the number of local steps H shrinks synchronization overhead but increases replica drift between averaging events. For LocalSGD , we let T denote the number of logical full-model local SGD steps performed by each replica. Since one logical local step updates all S blocks of one replica, and there are R replicas, the common block-update budget is K = RST .The parameter H is the main scheduling knob. If H is small, synchronization is frequent and the system incurs visible synchronization bubbles (Figure 3a). If H is large, synchronization becomes rare and the execution visually starts to resemble PD : machines spend most of their time computing, with only occasional global coordination (Figure 3b). This trade-off is qualitatively different from the trade-off in PD . PD reduces hardware idle time by accepting stale gradients tied to old weight versions. LocalSGD avoids that particular staleness mechanism, but it pays for it with synchronization pauses and with drift between replicas. 
+
+Convergence analysis. We use the standard nonconvex LocalSGD analysis of Yu et al. (2019) in the homogeneous-worker case. To avoid overloading the finite-sum components fm from (1) ,denote the objective assigned to replica r in the standard LocalSGD formulation by ϕr . In our setting, 
+
+ϕ1 = · · · = ϕR = f, where R is the number of replicas, i.e., the number of parallel local trajectories. Thus, the worker count in Yu et al. (2019) corresponds to our R.Let ¯wq := 1
+
+> R
+
+PRr=1 wq,r be the averaged logical model after q local steps per replica. Assume that 
+
+f is lower bounded by f⋆ and L-smooth. For uniformly sampled mini-batches mq,r ∈ { 1, . . . , M },assume 
+
+E∇fmq,r (wq,r ) | wq,r 
+
+ = ∇f (wq,r ),
+
+and 
+
+E
+
+h
+
+∇fmq,r (wq,r ) − ∇ f (wq,r ) 2i
+
+≤ σ2, E
+
+h
+
+∇fmq,r (wq,r ) 2i
+
+≤ B2.
+
+In all experiments we choose R = S to keep the 1F1B pipeline highly utilized. Assume K is divisible by RS ; otherwise one can replace K/ (RS ) by ⌊K/ (RS )⌋ throughout. Since the common block-update budget satisfies K = RST , the choice R = S gives T = K/S 2. Applying the standard 
+
+LocalSGD guarantee under this budget gives, for 0 < γ ≤ 1/L ,
+
+S2
+
+K
+
+> K/S 2−1
+
+X
+
+> q=0
+
+E∥∇ f ( ¯ wq )∥2 ≤ 2S2∆0
+
+γK + 4 γ2H2B2L2 + Lγσ 2
+
+S . (5) 80 200 400 600 800                    
+
+> Time step (simulated wall-clock time)
+> 10 2
+> 10 1
+> f(wk) f
+> PD vs. LocalSGD ( R=S= 16), Logistic Regression
+> PD, = 3.1 e02
+> LocalSGD, H= 2, = 5.0 e01
+> LocalSGD, H= 5, = 5.0 e01
+> LocalSGD, H= 30, = 2.5 e01
+
+(a) Logistic regression. 0 200 400 600 800 1000 1200                   
+
+> Time step (simulated wall-clock time)
+> 10 1
+> 10 2
+> f(wk) f
+> PD vs. LocalSGD ( R=S= 16), Nesterov's quadratic
+> PD, = 3.9 e03
+> LocalSGD, H= 2, = 3.1 e02
+> LocalSGD, H= 5, = 3.1 e02
+> LocalSGD, H= 30, = 3.9 e03
+
+(b) Nesterov-style tridiagonal quadratic objective. 0 500 1000 1500 2000                     
+
+> Time step (simulated wall-clock time)
+> 3 × 10 0
+> 4 × 10 0
+> last-stage forward loss
+> PD vs. LocalSGD on NanoChat
+> PD, = 1.2 e01
+> LocalSGD, R= 16, H= 1, = 1.2 e01
+> LocalSGD, R= 16, H= 4, = 1.2 e01
+> LocalSGD, R= 16, H= 8, = 1.2 e01
+
+(c) NanoChat character language modeling. 
+
+Figure 4: PD versus LocalSGD at S = 16 . Panels (a,b) use synthetic finite-sum objectives with 
+
+d = 512 , batch size 10 , and M = 60 ; panel (c) uses an 11 .1M-parameter NanoChat-style Transformer on Tiny Shakespeare with sequence length 128 , batch size 32 , embedding dimension 256 , 8 attention heads, and tuned learning rates. PD is stronger on the quadratic and NanoChat tasks, while LocalSGD 
+
+is stronger on logistic regression. The derivation from the standard rate of Yu et al. (2019) and the substitution T = K/ (RS ) are given in Appendix D. The first term of (5) is the optimization term, the second is the local-drift penalty caused by taking 
+
+H unsynchronized local steps, and the third is the stochastic-gradient variance term reduced by averaging across the S replicas. The tuned form below uses the corollary of Yu et al. (2019): choose γ = min {1/L, √R/ (L√T )}.In the regime where the second term is active, R = S and T = K/S 2 give the R = S rate under the common block-update budget: 
+
+S2
+
+K
+
+K/S 2−1
+
+X
+
+q=0 
+
+E∥∇ f ( ¯ wq )∥2 = O
+
+r SK + S3H2
+
+K
+
+!
+
+. (6) The LocalSGD guarantee is for the logical averaged model ¯wq , whereas RPD /PD are measured along a single stale block-update trajectory. In contrast to the RPD /PD abstraction, the LocalSGD bound does not contain a stale-weight term of the form δ2/K . The dominant additional error is instead the local-replica drift caused by taking H unsynchronized steps. 
+
+Which method is better in which regime? The two bounds should not be read as proving that one schedule is uniformly better than the other. Instead, they expose two different failure modes. PD can suffer when stage-wise stale reads dominate, especially as δPD grows with S. LocalSGD removes this particular stale-version mechanism, but can suffer from local-replica drift when H is large. The empirical question is therefore not whether LocalSGD always improves over PD , but which error source is more damaging for a given objective and scaling regime. Table 1 highlights the basic tradeoff between the two methods under the common block-update budget K. For PD , the main difficulty is pipeline staleness: after substituting δ = δPD = Θ( S2)
+
+9Method Bound for block-update budget K Tuned rate Assumptions 
+
+RPD 2S∆0              
+
+> γK +γSLG 2+γ2L2δ2G2O
+> S
+> √K+δ2
+> K
+> 
+> L-smooth, lower bounded, trajectory-bounded block gradients, uniform stage-batch sampling after delay selection, delay ≤δ,0< γ ≤1/L
+
+RPD proxy for PD          
+
+> 2S∆0
+> γK +γSLG 2+γ2L2δ2PD G2O
+> S
+> √K+S4
+> K
+> 
+> same as
+
+RPD , with δ = δPD 
+
+LocalSGD 2S2∆0           
+
+> γK + 4 γ2H2B2L2+Lγσ 2
+> SO
+> rSK+S3H2
+> K
+> !L-smooth, lower bounded, unbiased gradients, bounded variance and second moments,
+> 0< γ ≤1/L
+
+Table 1: Comparison of rates for the studied optimization models. The PD row is obtained by inserting the steady-state PD delay scale δ = δPD into the RPD theorem. For RPD and PD , K directly counts stage/block updates. For LocalSGD , T denotes the number of logical full-model local SGD steps per replica, and the staged implementation satisfies K = RST .into the RPD bound, the staleness contribution becomes Θ( S4/K ). Thus, as the number of stages S
+
+increases, PD becomes increasingly sensitive to stale gradients. LocalSGD avoids this particular stale-version mechanism, but pays a different price: the LocalSGD rate contains a local-drift term of order 
+
+S3H2/K . In this sense, the theory isolates a staleness-versus-drift tradeoff: PD is harmed by deep pipelines through the Θ( S4/K ) staleness term, while LocalSGD is harmed by long unsynchronized local trajectories through the H2 drift term. Table 1 also clarifies the role of H. Taking H very large makes LocalSGD visually resemble pipeline execution and reduces synchronization bubbles, but the LocalSGD bound shows that the drift penalty grows quadratically in H. Taking H very small keeps the method close to synchronized mini-batch SGD, but loses more simulator time to synchronization barriers (Figure 3). Hence the design problem for LocalSGD is to choose H large enough to reduce idle time, but not so large that replica drift dominates. We therefore tune the synchronization period H empirically. 
+
+## 7 Experiments 
+
+Our experiments are designed to test three questions. First, does the randomized RPD abstraction predict the behavior of deterministic 1F1B PD when instantiated with the delay scale δPD ? Second, does the degradation predicted by the δ2 term become visible as the number of stages S increases? Third, is the resulting staleness-versus-synchronization tradeoff objective-dependent? We answer these questions on three regimes: controlled quadratic objectives, nonlinear logistic regression, and an 11 .1M-parameter NanoChat-style Transformer language-modeling task (Karpathy, 2025; 2022). The first two allow exact full-objective measurement, while the Transformer experiment tests whether the observed optimization behavior persists beyond synthetic finite-sum objectives. 
+
+Experimental objectives. We compare PD , RPD , and LocalSGD on synthetic quadratic and logistic-regression finite-sum objectives whose full losses can be evaluated exactly. Each method is tuned separately, and PD /LocalSGD are run by replaying static 1F1B timelines in a discrete-event simulator. Objective definitions, seeds, learning-rate grids, simulator budgets, simulator scope, and compute resources are given in Appendix G. 
+
+PD versus RPD . The left panel of Figure 2 shows that RPD closely tracks deterministic PD on the quadratic objective when instantiated with the delay scale predicted by Proposition 4.1, namely 
+
+δ = δPD . This supports the use of RPD as a tractable proxy for the dominant optimization effect of 1F1B execution: stage-wise stale model versions. 
+
+Scaling with the number of stages. The right panel of Figure 2 studies logistic regression under a fixed simulator-time budget while varying S. This is an empirical wall-clock-proxy experiment 10 rather than a direct corollary of Theorem 4.1, whose comparison unit is the block-update budget K.For PD and LocalSGD , one simulator tick is one row of the static pipeline timeline; for RPD , the same clock determines the number of block updates by counting how many backward operations PD 
+
+completes within the matched timeline at that value of S. Thus increasing S can give RPD /PD more block updates within the same simulated-time horizon, while also increasing the delay scale. Even with this parallel-work advantage, stale-gradient pipeline methods deteriorate as S grows, consistent with the δPD = Θ( S2) delay law and the δ2 term in the convergence bound. LocalSGD scales more favorably in this experiment.  
+
+> PD
+
+versus LocalSGD . The experiments isolate optimization effects rather than full systems perfor-mance. We use synthetic quadratic and logistic-regression objectives with exactly measurable losses, and a NanoChat (Karpathy, 2025; 2022) character-level language-modeling task on Tiny Shakespeare (Karpathy, 2015) whose 11 ,123 ,200 -parameter causal Transformer is split across S = 16 stages. All methods are tuned separately and replay static 1F1B timelines; details are in Appendix G. Figure 2 shows that RPD tracks deterministic PD when instantiated with δ = δPD , and that stale-gradient methods deteriorate as S grows under a fixed simulator-time budget. Figure 4 shows that PD is better on the quadratic and NanoChat tasks, while LocalSGD is better on logistic regression. 
+
+Results summary. Overall, the experiments support the theoretical picture while showing that the practical tradeoff is objective-dependent. On the random quadratic, RPD with the PD -predicted delay closely follows deterministic PD , suggesting that the stale-block abstraction captures the dominant optimization effect of weight stashing. On logistic regression, increasing the number of stages under a fixed simulator-time budget makes stale-gradient pipeline methods less effective, while LocalSGD 
+
+is more robust. At S = 16 , however, PD still obtains the best tuned performance on the tridiagonal quadratic and NanoChat experiments, so synchronization is not uniformly preferable to stale pipeline execution. 
+
+## 8 Conclusion 
+
+We studied PD as an optimization algorithm induced by a pipeline schedule. Directly analyzing deterministic 1F1B PD is difficult because the active stages, microbatches, and stage-wise weight versions are coupled through the schedule and weight stashing. To make this structure tractable, we introduced RPD , a randomized stale block-SGD proxy that preserves the key optimization feature of PD : gradients are evaluated on models assembled from stale stage-local parameter versions. For this proxy, we proved a nonconvex convergence guarantee and connected it back to real 1F1B PD 
+
+by showing that the induced worst-case delay scales as δPD = S2 − S/2 + O(1) . Substituting this delay into the RPD theorem exposes a Θ( γ2S4) stale-read term, or Θ( S4/K ) after tuned stepsize substitution, suggesting that deeper pipelines can incur a rapidly growing optimization cost. We also compared this stale-version mechanism with LocalSGD , which avoids PipeDream-style cross-stage staleness but introduces synchronization bubbles and local-replica drift. Our experiments support this tradeoff view: PD is stronger on the quadratic objective and on the NanoChat-style language-modeling task, while LocalSGD is stronger on logistic regression at larger numbers of stages. A natural next step is to analyze deterministic PD directly, incorporating the exact 1F1B scheduling pattern and its deterministic staleness indices into the convergence argument. 
+
+## Acknowledgments and Disclosure of Funding 
+
+The research reported in this publication was supported by funding from King Abdullah University of Science and Technology (KAUST): i) KAUST Baseline Research Scheme, ii) CRG Grant ORFS-CRG12-2024-6460, and iii) Center of Excellence for Generative AI, under award number 5940. 
+
+References 
+
+Jeffrey Dean, Greg Corrado, Rajat Monga, Kai Chen, Matthieu Devin, Mark Mao, Marc’aurelio Ranzato, Andrew Senior, Paul Tucker, Ke Yang, et al. Large scale distributed deep networks. 
+
+Advances in neural information processing systems , 25, 2012. 11 Shiqing Fan, Yi Rong, Chen Meng, Zongyan Cao, Siyu Wang, Zhen Zheng, Chuan Wu, Guoping Long, Jun Yang, Lixue Xia, et al. Dapple: A pipelined data parallel approach for training large models. In Proceedings of the 26th ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming , pages 431–445, 2021. Priya Goyal, Piotr Dollár, Ross Girshick, Pieter Noordhuis, Lukasz Wesolowski, Aapo Kyrola, Andrew Tulloch, Yangqing Jia, and Kaiming He. Accurate, large minibatch sgd: Training imagenet in 1 hour. arXiv preprint arXiv:1706.02677 , 2017. Aaron Harlap, Deepak Narayanan, Amar Phanishayee, Vivek Seshadri, Nikhil Devanur, Greg Ganger, and Phil Gibbons. Pipedream: Fast and efficient pipeline parallel dnn training. arXiv preprint arXiv:1806.03377 , 2018. Yanping Huang, Youlong Cheng, Ankur Bapna, Orhan Firat, Dehao Chen, Mia Chen, HyoukJoong Lee, Jiquan Ngiam, Quoc V Le, Yonghui Wu, et al. Gpipe: Efficient training of giant neural networks using pipeline parallelism. Advances in neural information processing systems , 32, 2019. Zhihao Jia, Matei Zaharia, and Alex Aiken. Beyond data and model parallelism for deep neural networks. Proceedings of Machine Learning and Systems , 1:1–13, 2019. Andrej Karpathy. char-rnn. https://github.com/karpathy/char-rnn , 2015. Tiny Shakespeare dataset source. Andrej Karpathy. nanogpt. https://github.com/karpathy/nanoGPT , 2022. MIT License. Andrej Karpathy. nanochat: The best chatgpt that $100 can buy. https://github.com/karpathy/ nanochat , 2025. MIT License. Xiangru Lian, Yijun Huang, Yuncheng Li, and Ji Liu. Asynchronous parallel stochastic gradient for nonconvex optimization. Advances in neural information processing systems , 28, 2015. Tao Lin, Sebastian U Stich, Kumar Kshitij Patel, and Martin Jaggi. Don’t use large mini-batches, use local sgd. arXiv preprint arXiv:1808.07217 , 2018. Horia Mania, Xinghao Pan, Dimitris Papailiopoulos, Benjamin Recht, Kannan Ramchandran, and Michael I Jordan. Perturbed iterate analysis for asynchronous stochastic optimization. SIAM Journal on Optimization , 27(4):2202–2229, 2017. Deepak Narayanan, Aaron Harlap, Amar Phanishayee, Vivek Seshadri, Nikhil R Devanur, Gregory R Ganger, Phillip B Gibbons, and Matei Zaharia. Pipedream: Generalized pipeline parallelism for dnn training. In Proceedings of the 27th ACM symposium on operating systems principles , pages 1–15, 2019. Deepak Narayanan, Amar Phanishayee, Kaiyu Shi, Xie Chen, and Matei Zaharia. Memory-efficient pipeline-parallel dnn training. In International Conference on Machine Learning , pages 7937–7947. PMLR, 2021. Yu Nesterov. Efficiency of coordinate descent methods on huge-scale optimization problems. SIAM Journal on Optimization , 22(2):341–362, 2012. Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase, and Yuxiong He. Zero: Memory optimizations toward training trillion parameter models. In SC20: international conference for high performance computing, networking, storage and analysis , pages 1–16. IEEE, 2020. Benjamin Recht, Christopher Re, Stephen Wright, and Feng Niu. Hogwild!: A lock-free approach to parallelizing stochastic gradient descent. Advances in neural information processing systems , 24, 2011. Peter Richtárik and Martin Takáˇ c. Iteration complexity of randomized block-coordinate descent methods for minimizing a composite function. Mathematical Programming , 144(1):1–38, 2014. Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper, and Bryan Catan-zaro. Megatron-lm: Training multi-billion parameter language models using model parallelism. 
+
+arXiv preprint arXiv:1909.08053 , 2019. 12 Sebastian U Stich. Local sgd converges fast and communicates little. arXiv preprint arXiv:1805.09767 ,2018. Yangyang Xu and Wotao Yin. Block stochastic gradient iteration for convex and nonconvex opti-mization. SIAM Journal on Optimization , 25(3):1686–1716, 2015. Hao Yu, Sen Yang, and Shenghuo Zhu. Parallel restarted sgd with faster convergence and less communication: Demystifying why model averaging works for deep learning. In Proceedings of the AAAI conference on artificial intelligence , volume 33, pages 5693–5700, 2019. Lianmin Zheng, Zhuohan Li, Hao Zhang, Yonghao Zhuang, Zhifeng Chen, Yanping Huang, Yida Wang, Yuanzhong Xu, Danyang Zhuo, Eric P Xing, et al. Alpa: Automating inter-and {Intra-Operator } parallelism for distributed deep learning. In 16th USENIX Symposium on Operating Systems Design and Implementation (OSDI 22) , pages 559–578, 2022. Shuxin Zheng, Qi Meng, Taifeng Wang, Wei Chen, Nenghai Yu, Zhi-Ming Ma, and Tie-Yan Liu. Asynchronous stochastic gradient descent with delay compensation. In International conference on machine learning , pages 4120–4129. PMLR, 2017. Martin Zinkevich, Markus Weimer, Lihong Li, and Alex Smola. Parallelized stochastic gradient descent. Advances in neural information processing systems , 23, 2010. 13 A Table of Frequently Used Notation 
+
+Table 2: Notation table 
+
+d – Total dimension of the model parameters. 
+
+M – Number of finite-sum components, corresponding to data mini-batches in our experiments. 
+
+S – Number of pipeline stages (or partitioned blocks of the model). 
+
+ds – Dimension of the sth block of the model, such that PSs=1 ds = d.
+
+w – Full model parameter vector, w ∈ Rd.
+
+w(s) – The sth block of the model weights, corresponding to the sth stage, w(s) ∈ Rds .
+
+f (w) – Global objective function to minimize. 
+
+fm(w) – Loss function evaluated on the mth data batch. 
+
+f⋆ – Global lower bound of the objective function f .
+
+∆0 := Initial objective gap; for RPD /PD , ∆0 = f (w0) − f⋆, and for LocalSGD , ∆0 = f ( ¯ w0) − f⋆.
+
+k – Global iteration counter (for block updates). 
+
+K – Block-update budget. For RPD and PD , K counts stage/block updates directly. For LocalSGD ,
+
+K = RST , where T is the number of logical local steps per replica. 
+
+sk , m k – Active stage index and batch index sampled uniformly at iteration k, after the delay vector is selected. 
+
+j(s) 
+
+> k
+
+– The global history index whose stage-s block is used in the stale read at iteration k.
+
+zk :=  w(1) 
+
+> j(1)
+> k
+
+, . . . , w (S)
+
+> j(S)
+> k
+
+ – Stale model read at iteration k.
+
+bzk – Extrapolated stale model used in the NAG-RPD .
+
+δ – Upper bound on the stage-wise staleness/delay, such that k − j(s) 
+
+> k
+
+≤ δ.
+
+δPD – Exact worst-case global-history delay of the steady-state PD 1F1B schedule. 
+
+δ(s) 
+
+> k
+
+– Exact global-history delay of stale block s at backward-update event k for a PD 1F1B schedule. 
+
+ak – Active backward stage at the kth PD backward-update event. 
+
+¯δ – Average global-history delay over the steady-state execution for a PD 1F1B schedule. 
+
+γ – Stepsize (learning rate). 
+
+L – Smoothness constant of the objective function f .
+
+G – Trajectory bound on the norm of the block gradients used in the analysis. 
+
+μ – Strong convexity or Polyak–Łojasiewicz (PL) condition parameter. 
+
+α – Prediction/momentum parameter used in NAG-RPD .
+
+Us – Canonical embedding matrix from the block space Rds into the full space Rd.
+
+gk := Usk ∇w(sk ) fmk (zk ) – Full-space update vector at iteration k.
+
+R – Number of independent replicas in LocalSGD ; in the experiments we use R = S.
+
+T – Number of logical local SGD steps performed by each replica. Block-update budget K = RST .
+
+H – Synchronization period in LocalSGD ; replicas are averaged every H local steps. 
+
+q – Logical local-step index for LocalSGD .
+
+r – Replica index, r ∈ { 1, . . . , R }.
+
+mq,r – Mini-batch/component index sampled by replica r at local step q.
+
+wq,r – Full model of replica r after q local steps. 
+
+w(s) 
+
+> q,r
+
+– Stage-s block of replica r after q local steps. 
+
+¯wq := 1
+
+> R
+
+PRr=1 wq,r – Averaged logical model after q local steps per replica. 
+
+B – Uniform second-moment bound for stochastic gradients in the LocalSGD analysis. 
+
+σ2 – Uniform variance bound for stochastic gradients in the LocalSGD analysis. 
+
+14 B Convergence of RPD 
+
+We will analyze RPD (Algorithm 1) under a random pair sampling assumption. The original PD 
+
+schedule is deterministic and couples stage order, mini-batch order, and delay vectors through the 1F1B timeline. In this appendix we analyze the randomized abstraction used in the main text, where the delay vector is selected first and then the active stage and mini-batch are sampled uniformly. This abstraction is designed to isolate the effect of bounded stale block gradients while avoiding the combinatorial complexity of the exact scheduler. We assume that the delay vector used at iteration k is chosen before the current active stage and mini-batch. We then sample the pair 
+
+(sk, m k) ∈ { 1, . . . , S } × { 1, . . . , M }
+
+randomly. 
+
+Assumption B.1 (Uniform random pair sampling after delay selection) . Let Fk denote the sigma-field generated by all randomness before the current stage/mini-batch draw, including the current delay vector jk and therefore the stale point zk. For every k ≥ 0, conditioned on Fk, the pair (sk, m k) is sampled uniformly from 
+
+{1, . . . , S } × { 1, . . . , M },
+
+and is independent of all previous randomness not already contained in Fk.
+
+Assumption B.2 (Bounded staleness) . There exists an integer δ ≥ 0 such that for every k ≥ 0,
+
+zk =  w(1) 
+
+> j(1)
+> k
+
+, . . . , w (S)
+
+> j(S)
+> k
+
+, j(s) 
+
+> k
+
+≤ k, k − j(s) 
+
+> k
+
+≤ δ ∀s ∈ { 1, . . . , S }.
+
+B.1 Assumptions on the problem Assumption B.3 (Lower boundedness) . The function f is bounded from below: 
+
+f (w) ≥ f⋆ ∀w ∈ Rd.
+
+Assumption B.4 (L-smoothness) . The function f : Rd → R is differentiable and L-smooth: 
+
+∥∇ f (x) − ∇ f (y)∥ ≤ L∥x − y∥ ∀x, y ∈ Rd.
+
+Assumption B.5 (Trajectory-bounded block gradients) . There exists G ≥ 0 such that 
+
+∥∇ w(s) fm(zk)∥ ≤ G ∀k ≥ 0, ∀s ∈ { 1, . . . , S }, ∀m ∈ { 1, . . . , M },
+
+almost surely along the trajectory generated by the algorithm. 
+
+B.2 Analysis 
+
+Recall that the RPD update is 
+
+w(sk ) 
+
+> k+1
+
+= w(sk ) 
+
+> k
+
+− γ ∇w(sk ) fmk (zk), w(r) 
+
+> k+1
+
+= w(r) 
+
+> k
+
+∀r̸ = sk.
+
+For convenience, define the full-space update vector 
+
+gk := Usk ∇w(sk ) fmk (zk),
+
+where Us : Rds → Rd is the canonical embedding of block s into the full space. Then the update can be written compactly as 
+
+wk+1 = wk − γg k.
+
+15 Lemma B.1 (Unbiasedness of the RPD update). 
+
+Let Assumption B.1 (uniform random pair sampling) hold. Then 
+
+E [Sg k | F k] = ∇f (zk),
+
+where Fk is the sigma-field in Assumption B.1. Proof. Conditioned on Fk, the stale point zk is fixed. Hence 
+
+E [gk | F k] = 1
+
+SM 
+
+> S
+
+X
+
+> s=1
+> M
+
+X
+
+> m=1
+
+Us∇w(s) fm(zk)= 1
+
+S
+
+> S
+
+X
+
+> s=1
+
+Us
+
+1
+
+M
+
+> M
+
+X
+
+> m=1
+
+∇w(s) fm(zk)
+
+!
+
+= 1
+
+S
+
+> S
+
+X
+
+> s=1
+
+Us∇w(s) f (zk) = 1
+
+S ∇f (zk).
+
+Lemma B.2 (Distance between current and stale models). 
+
+Let Assumption B.2 ( δ-bounded staleness) and Assumption B.5 (trajectory-bounded block gradients) hold. Then for every k ≥ 0,
+
+∥wk − zk∥ ≤ γδG. 
+
+Proof. At each iteration, only one block is updated, so 
+
+∥wt+1 − wt∥ = γ∥gt∥ = γ∥∇ w(st) fmt (zt)∥ ≤ γG. 
+
+Now zk is assembled from block values that are at most δ iterations old. Hence wk − zk consists only of block increments accumulated during the last δ iterations. Therefore 
+
+∥wk − zk∥ ≤ 
+
+> k−1
+
+X
+
+> t=k−δ
+
+∥wt+1 − wt∥ ≤ 
+
+> k−1
+
+X
+
+> t=k−δ
+
+γG = γδG. 
+
+We can now proceed to the main theorem. 16 Theorem B.1 (Convergence of RPD ). 
+
+Let Assumption B.1 (uniform random pair sampling after delay selection), Assumption B.3 (lower boundedness), Assumption B.4 ( L-smoothness), Assumption B.2 ( δ-bounded staleness), Assumption B.5 (trajectory-bounded block gradients) hold. Assume 
+
+0 < γ ≤ 1
+
+L .
+
+Then for every integer K ≥ 1,
+
+1
+
+K
+
+> K−1
+
+X
+
+> k=0
+
+E ∥∇ f (wk)∥2 ≤ 2S f (w0) − f⋆
+
+
+
+γK + γSLG 2 + γ2L2δ2G2. (7) 
+
+Proof. By L-smoothness of f ,
+
+f (wk+1 ) ≤ f (wk) + ⟨∇ f (wk), w k+1 − wk⟩ + L
+
+2 ∥wk+1 − wk∥2.
+
+Since wk+1 = wk − γg k, this becomes 
+
+f (wk+1 ) ≤ f (wk) − γ ⟨∇ f (wk), g k⟩ + γ2L
+
+2 ∥gk∥2.
+
+Taking conditional expectation with respect to Fk, and using Lemma B.1, 
+
+E [f (wk+1 ) | F k] ≤ f (wk) − γS ⟨∇ f (wk), ∇f (zk)⟩ + γ2L
+
+2 E ∥gk∥2 | F k
+
+ . (8) In view of Assumption B.5 (trajectory-bounded block gradients), we have ∥gk∥ =
+
+∥∇ w(sk ) fmk (zk)∥ ≤ G, and hence 
+
+E ∥gk∥2 | F k
+
+ ≤ G2.
+
+Plugging this estimate into (8), we get 
+
+E [f (wk+1 ) | F k] ≤ f (wk) − γS ⟨∇ f (wk), ∇f (zk)⟩ + γ2LG 2
+
+2 . (9) Let us now use the elementary inequality 
+
+⟨a, b ⟩ = 12 ∥a∥2 + 12 ∥b∥2 − 12 ∥a − b∥2 ≥ 12 ∥a∥2 − 12 ∥a − b∥2,
+
+with a = ∇f (wk) and b = ∇f (zk) to estimate the inner product in (9). This gives 
+
+− γS ⟨∇ f (wk), ∇f (zk)⟩ ≤ − γ
+
+2S ∥∇ f (wk)∥2 + γ
+
+2S ∥∇ f (wk) − ∇ f (zk)∥2.
+
+Plugging this estimate into (9), we get 
+
+E [f (wk+1 ) | F k] ≤ f (wk) − γ
+
+2S ∥∇ f (wk)∥2 + γ
+
+2S ∥∇ f (wk) − ∇ f (zk)∥2 + γ2LG 2
+
+2 . (10) Since f is L-smooth, we know that ∥∇ f (wk) − ∇ f (zk)∥ ≤ L∥wk − zk∥. Further, using Lemma B.2, we get ∥wk − zk∥ ≤ γδG. Therefore, 
+
+∥∇ f (wk) − ∇ f (zk)∥2 ≤ γ2A, A := L2δ2G2.
+
+Substituting this into (10) yields 
+
+E [f (wk+1 ) | F k] ≤ f (wk) − γ
+
+2S ∥∇ f (wk)∥2 + γ3A
+
+2S + γ2LG 2
+
+2 .
+
+17 Taking expectation and applying the tower property, we get 
+
+E [f (wk+1 )] ≤ E [f (wk)] − γ
+
+2S E ∥∇ f (wk)∥2 + γ3A
+
+2S + γ2LG 2
+
+2 .
+
+Summing from k = 0 to K − 1 gives 
+
+E [f (wK )] ≤ f (w0) − γ
+
+2S
+
+> K−1
+
+X
+
+> k=0
+
+E ∥∇ f (wk)∥2 + K γ3A
+
+2S + K γ2LG 2
+
+2 .
+
+Since we know that E [f (wK )] ≥ f⋆, we obtain 
+
+γ
+
+2S
+
+> K−1
+
+X
+
+> k=0
+
+E ∥∇ f (wk)∥2 ≤ f (w0) − f⋆ + K γ3A
+
+2S + K γ2LG 2
+
+2 .
+
+Multiply by 2S/ (γK ) to get 
+
+1
+
+K
+
+> K−1
+
+X
+
+> k=0
+
+E ∥∇ f (wk)∥2 ≤ 2S(f (w0) − f⋆)
+
+γK + γ2A + γSLG 2,
+
+which establishes (7). 
+
+Corollary B.1 (Stepsize choice). 
+
+Let the assumptions of Theorem B.1 hold, fix K ≥ 1, and choose the stepsize 
+
+γ = min 
+
+(
+
+1
+
+L ,
+
+r 2( f (w0) − f⋆)
+
+LG 2K
+
+)
+
+.
+
+Then 
+
+1
+
+K
+
+> K−1
+
+X
+
+> k=0
+
+E ∥∇ f (wk)∥2 = O
+
+ δ2
+
+K + S
+
+√K
+
+
+
+.
+
+For fixed S and fixed delay bound δ, this recovers the standard O(K−1/2) stationarity rate of gradient-type methods for smooth nonconvex optimization. 
+
+18 Startup stage 
+
+> 1
+> S
+> …
+> 2
+> S+1
+> …
+> 2S
+> Steady state
+> 1
+> S
+> …
+> 2
+> S+1
+> …
+> 2S
+> S+2
+
+An even number of stages Odd number of stages      
+
+> S+2
+> 2𝑆 −12𝑆 −1
+
+Figure 5: Steady-state counting argument for the exact global-history delay in PD 1F1B. The red staircase highlights the forward-to-backward traversal that determines a stale-read window. For a stale block from stage r used at an active backward stage a, the window length is 2S − r − a + 1 ; the worst case is r = a = 1 , with length 2S − 1. In each steady-state pipeline slot, approximately half of the stages perform backward updates: exactly S/ 2 when S is even (left), and alternating between 
+
+(S − 1) /2 and (S + 1) /2 when S is odd (right). 
+
+## C Scaling of delay for PD 
+
+The global-history embedding used in this appendix is the same one used by the simulator. A pipeline slot is first generated as a row of simultaneous stage operations; every backward operation in that row then appends one block update to the global history in stage order. The counting below is exact for this slot-batched linearization. Changing only the within-slot ordering can move individual finite-S delays by lower-order terms, but it does not change the quadratic delay law that drives the convergence comparison. 
+
+Lemma C.1 (Steady-state scaling of the exact PD delay). 
+
+Consider a PD 1F1B pipeline with S stages, embedded into the global-history RPD model. For each steady-state backward update iteration k and each stage s ∈ { 1, . . . , S }, let δ(s) 
+
+> k
+
+denote the exact global-history delay of stage s at iteration k. Define 
+
+δPD := max  
+
+> k∈{ 1,...,K }
+
+max  
+
+> r∈{ 1,...,S }
+
+δ(r) 
+
+> k
+
+, ¯δ := 1
+
+KS 
+
+> K
+
+X
+
+> k=1
+> S
+
+X
+
+> r=1
+
+δ(r) 
+
+> k
+
+,
+
+where K is the number of steady-state backward-update iterations under consideration. Under the slot-counting convention used in the global-history embedding, the delay window for stale block r at active stage ak has length 
+
+Lr,a k = 2 S − r − ak + 1 .
+
+Consequently, over a full steady-state period, 
+
+δPD = S2 − S
+
+2 + O(1) , ¯δ = S2
+
+2 + O(1) .
+
+For even S, the leading formula is exact: 
+
+δ(r) 
+
+> k
+
+= S
+
+2
+
+ 2S − r − ak + 1 , δPD = S2 − S
+
+2 , ¯δ = S2
+
+2 .
+
+Proof. We work in the global-history RPD embedding of PD . Thus, every backward update appends one new entry to the global history, and the delay of a stale block is the number of global-history 19 increments between the forward use of that block and the backward event that consumes the resulting stale model. Fix a steady-state backward event whose active stage is a ∈ { 1, . . . , S }, and fix a stale block index 
+
+r ∈ { 1, . . . , S }. The microbatch whose gradient is being applied at stage a saw block r during its forward pass on stage r. From that forward use, the microbatch must traverse the remaining forward stages r + 1 , . . . , S and then traverse the backward path from stage S down to stage a. Including the active backward slot, this gives the window length 
+
+Lr,a = ( S − r) + ( S − a + 1) = 2 S − r − a + 1 .
+
+The longest window occurs at r = a = 1 and has length 2S − 1.Let bt denote the number of backward operations performed in steady-state pipeline slot t. Since the global history increases by one after each backward update, the delay is obtained by summing bt over the corresponding window of length Lr,a .
+
+Case 1: S even. In steady state, exactly half of the stages execute backward and half execute forward in every pipeline slot; see the left panel of Figure 5. Therefore bt = S/ 2 for every steady-state slot t,and hence 
+
+δ(r) 
+
+> k
+
+= S
+
+2 Lr,a k = S
+
+2
+
+ 2S − r − ak + 1 .
+
+Taking r = 1 and ak = 1 gives 
+
+δPD = S
+
+2 (2 S − 1) = S2 − S
+
+2 .
+
+To compute the average delay over a full steady-state period, note that each active stage appears equally often. Thus 
+
+¯δ = 1
+
+S2
+
+> S
+
+X
+
+> a=1
+> S
+
+X
+
+> r=1
+
+S
+
+2
+
+ 2S − r − a + 1 
+
+= S
+
+2
+
+
+
+2S + 1 − S + 1 2 − S + 1 2
+
+
+
+= S2
+
+2 .
+
+Case 2: S odd. In steady state, the number of backward operations per slot alternates between 
+
+j S
+
+2
+
+k
+
+= S − 12 and 
+
+l S
+
+2
+
+m
+
+= S + 1 2 ,
+
+as shown in the right panel of Figure 5. Therefore, over any contiguous window of length L,
+
+> L
+
+X
+
+> t=1
+
+bt = S
+
+2 L + ε, |ε| ≤ 12 .
+
+Applying this with L = Lr,a k yields 
+
+δ(r) 
+
+> k
+
+= S
+
+2
+
+ 2S − r − ak + 1  + ε(r) 
+
+> k
+
+, |ε(r) 
+
+> k
+
+| ≤ 12 .
+
+The maximum again occurs at r = 1 and ak = 1 , up to the bounded parity correction, so 
+
+δPD = S2 − S
+
+2 + O(1) .
+
+Averaging the leading term over stale blocks and active stages gives S2/2, and the averaged parity corrections remain bounded. Hence 
+
+¯δ = S2
+
+2 + O(1) .
+
+Combining the two parity cases proves the result. 20 10 1 10 2      
+
+> Number of stages S
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> Staleness ( k j(s)
+> k )
+> PipeDream exact delay statistics vs number of stages
+> 10th percentile max range
+> Mean staleness
+> Quadratic fit (0.5 S2)
+> Quadratic fit (1.0 S20.5 S)
+
+Figure 6: Steady-state statistics of the exact global-history delay δ(s) 
+
+> k
+
+induced by PD 1F1B as a function of the number of pipeline stages S. For each value of S, we generated the corresponding 1F1B timeline, reconstructed the exact delays δ(s) 
+
+> k
+
+directly from the timeline, discarded the first half of the resulting delay sequence to remove the startup transient, and then computed statistics on the remaining steady-state part. The solid blue curve shows the empirical mean delay ¯δ, while the shaded region spans from the 10 th percentile to the maximum delay. Both statistics exhibit quadratic growth in S. The orange dashed curve corresponds to the fit ¯δ(S) ≈ 12 S2, while the green dashed curve corresponds to δ(S) ≈ S2 − 12 S, where δ = max k max s δ(s) 
+
+> k
+
+.
+
+Corollary C.1 (Quadratic scaling of PD staleness). 
+
+Consider PD 1F1B embedded into the global-history RPD model. Let 
+
+δPD := max  
+
+> k∈{ 1,...,K }
+
+max  
+
+> s∈{ 1,...,S }
+
+δ(s) 
+
+> k
+
+, ¯δ := 1
+
+KS 
+
+> K
+
+X
+
+> k=1
+> S
+
+X
+
+> s=1
+
+δ(s) 
+
+> k
+
+,
+
+where δ(s) 
+
+> k
+
+is the exact global-history delay of stale block s at backward-update event k, and K
+
+is the number of steady-state backward-update iterations under consideration. Then 
+
+δPD = S2 − S
+
+2 + O(1) , ¯δ = S2
+
+2 + O(1) .
+
+Proof. This follows directly from Lemma C.1. For even S, the identities 
+
+δPD = S2 − S
+
+2 , ¯δ = S2
+
+2
+
+hold exactly. For odd S, Lemma C.1 gives 
+
+δPD = S2 − S
+
+2 + O(1) , ¯δ = S2
+
+2 + O(1) .
+
+Combining the two cases yields the claim. To validate the asymptotic scaling predicted by Lemma C.1, we computed the exact global-history delays induced by PD 1F1B over a wide range of pipeline depths. For each stage count S, we first 21 generated the corresponding 1F1B schedule and then reconstructed the exact delay matrix directly from the timeline. More precisely, for every steady-state backward-update iteration k and every stage 
+
+s, we computed 
+
+δ(s) 
+
+> k
+
+= k − j(s) 
+
+> k
+
+,
+
+where j(s) 
+
+> k
+
+is the global history index of the snapshot used by the corresponding microbatch during its forward pass on stage s. Since our goal is to measure the steady-state behavior rather than the startup transient, we discarded the first half of the resulting exact-delay sequence and analyzed only the remaining part, where the pipeline has entered its periodic 1F1B regime. Figure 6 reports the resulting statistics as functions of S. The solid blue curve plots the empirical average delay 
+
+¯δ = 1
+
+KS 
+
+> K
+
+X
+
+> k=1
+> S
+
+X
+
+> s=1
+
+δ(s) 
+
+> k
+
+,
+
+while the shaded region shows the spread from the 10 th percentile to the largest observed delay. The two dashed curves correspond to the quadratic laws predicted by the steady-state counting argument: 
+
+¯δ(S) ≈ S2
+
+2 = ¯δ, δ(S) ≈ S2 − S
+
+2 = δPD ,
+
+where 
+
+δPD = max  
+
+> k∈{ 1,...,K }
+
+max  
+
+> s∈{ 1,...,S }
+
+δ(s) 
+
+> k
+
+.
+
+The agreement is remarkably tight. In particular, the average delay grows as 12 S2, while the worst-case delay grows as S2 − 12 S, confirming that the exact global-history staleness induced by PD scales quadratically with the number of stages. This observation is important for the RPD analysis. In our theoretical convergence bound, the staleness parameter δ appears explicitly, so a quadratic growth of δ with S implies a corresponding degradation of the theoretical guarantee as the pipeline depth increases. Thus, even though PD 
+
+1F1B achieves high hardware utilization, in the global-history RPD abstraction it induces a staleness regime that becomes progressively less favorable for optimization as S grows. This motivates the search for alternative scheduling policies that preserve good utilization while reducing the effective global-history delay. 22 D Derivation of the LocalSGD rate under the block-update budget 
+
+We study the following variation of the LocalSGD algorithm for solving (1): 
+
+Algorithm 2 Stage-distributed LocalSGD  
+
+> 1:
+
+Input: stepsize γ > 0, number of stages S, number of replicas R, synchronization period H,initial model w0 = ( w(1) 0 , . . . , w (S)0 ) 
+
+> 2:
+
+Initialize replicas: w(s)0,r = w(s)0 ∀r ∈ { 1, . . . , R }, ∀s ∈ { 1, . . . , S }. 
+
+> 3:
+
+for q = 0 , 1, . . . do  
+
+> 4:
+
+for each replica r = 1 , . . . , R do  
+
+> 5:
+
+Sample mq,r ∈ { 1, . . . , M }. 
+
+> 6:
+
+Run a 1F1B pass for replica r on mq,r across S stages.  
+
+> 7:
+
+Update replica r: w(s) 
+
+> q+1 ,r
+
+= w(s) 
+
+> q,r
+
+− γ∇w(s) fmq,r (wq,r ) ∀s ∈ { 1, . . . , S }. 
+
+> 8:
+
+end for  
+
+> 9:
+
+if q + 1 is divisible by H then  
+
+> 10:
+
+Average weights between replicas: ¯w(s) 
+
+> q+1
+
+= 1
+
+> R
+
+PRr=1 w(s) 
+
+> q+1 ,r
+
+∀s ∈ { 1, . . . , S }. 
+
+> 11:
+
+Synchronize replicas: w(s) 
+
+> q+1 ,r
+
+← ¯w(s) 
+
+> q+1
+
+∀r ∈ { 1, . . . , R }, ∀s ∈ { 1, . . . , S }. 
+
+> 12:
+
+end if  
+
+> 13:
+
+end for 
+
+We use the standard nonconvex LocalSGD analysis of Yu et al. (2019) in the homogeneous-worker case. To avoid overloading the finite-sum components fm from (1) , denote the objective assigned to replica r in the standard LocalSGD formulation by ϕr . In our setting, 
+
+ϕ1 = · · · = ϕR = f, 
+
+where R is the number of replicas, i.e., the number of parallel local trajectories. Thus, the worker count in Yu et al. (2019) corresponds to our R, not to the finite-sum size M in (1). Let 
+
+¯wq := 1
+
+R
+
+> R
+
+X
+
+> r=1
+
+wq,r 
+
+be the averaged logical model after q local steps per replica. Assume that f is lower bounded by f⋆
+
+and L-smooth. For uniformly sampled mini-batches mq,r ∈ { 1, . . . , M }, assume 
+
+E∇fmq,r (wq,r ) | wq,r 
+
+ = ∇f (wq,r ),
+
+and 
+
+E
+
+h
+
+∇fmq,r (wq,r ) − ∇ f (wq,r ) 2i
+
+≤ σ2, E
+
+h
+
+∇fmq,r (wq,r ) 2i
+
+≤ B2.
+
+We use B for the second-moment bound in order to avoid confusion with the block-gradient bound G
+
+used in the RPD analysis. The standard periodic-averaging LocalSGD guarantee gives that, for 0 < γ ≤ 1/L and T local steps per replica, 
+
+1
+
+T 
+
+> T−1
+
+X
+
+> q=0
+
+E∥∇ f ( ¯ wq )∥2 ≤ 2 f ( ¯ w0) − f⋆
+
+
+
+γT + 4 γ2H2B2L2 + Lγσ 2
+
+R . (11) In our staged implementation, one logical local SGD step updates all S blocks of one replica. Since there are R replicas, T local steps per replica correspond to 
+
+K = RST 
+
+stage/block updates. Equivalently, 
+
+T = KRS .
+
+23 Substituting this relation into (11) gives the bound under the common block-update budget: 
+
+RS K
+
+> K/ (RS )−1
+
+X
+
+> q=0
+
+E∥∇ f ( ¯ wq )∥2 ≤ 2RS  f ( ¯ w0) − f⋆
+
+
+
+γK + 4 γ2H2B2L2 + Lγσ 2
+
+R . (12) Using the stepsize choice from the corollary of Yu et al. (2019), 
+
+γ =
+
+√RL√T ,
+
+truncated at 1/L when necessary, balances the optimization term and the stochastic-variance term in (11) and yields 
+
+1
+
+T 
+
+> T−1
+
+X
+
+> q=0
+
+E∥∇ f ( ¯ wq )∥2 = O
+
+ 1
+
+√RT + RH 2
+
+T
+
+
+
+.
+
+Their linear-speedup corollary additionally requires H ≤ T 1/4/R 3/4 to make the local-drift contribu-tion no larger than the 1/√RT term. We do not impose this restriction in the displayed comparison; instead we retain the explicit H-dependent term. Finally, using T = K/ (RS ), we obtain 
+
+1
+
+√RT =
+
+r SK , RH 2
+
+T = R2SH 2
+
+K .
+
+Therefore, 
+
+RS K
+
+> K/ (RS )−1
+
+X
+
+> q=0
+
+E∥∇ f ( ¯ wq )∥2 = O
+
+r SK + R2SH 2
+
+K
+
+!
+
+. (13) For the experimental choice R = S, this reduces to 
+
+RS K
+
+> K/ (RS )−1
+
+X
+
+> q=0
+
+E∥∇ f ( ¯ wq )∥2 = O
+
+r SK + S3H2
+
+K
+
+!
+
+.
+
+24 E Discrete 1F1B Scheduling Simulators 
+
+This appendix describes the discrete-event schedulers used to generate the pipeline timelines in our experiments. The purpose of these schedulers is to separate the systems-level ordering of forward and backward computations from the optimization dynamics. We first generate a static timeline of pipeline actions and then replay this timeline during optimization. This makes the comparison between PD and LocalSGD independent of low-level runtime effects such as kernel launch overheads, communication latency, or device-specific implementation details. We consider a straight pipeline with S stages. Time is discrete. At every time step, each stage can execute at most one action: 
+
+at,s ∈ {∅} ∪ { Fm : m ∈ M} ∪ { Bm : m ∈ M} ,
+
+where Fm denotes the forward computation of microbatch m, Bm denotes the corresponding back-ward computation, and ∅ denotes an idle slot. The complete schedule is therefore a timeline 
+
+T =  at, 1, . . . , a t,S 
+
+
+
+> t≥0
+
+.
+
+In all schedulers, data movement is strictly causal: a computation that depends on another stage may start only at a later discrete time step, not in the same slot. 
+
+E.1 PD 1F1B schedule 
+
+The PD scheduler follows a one-forward-one-backward (1F1B) policy after pipeline startup. The input stage admits at most A active microbatches into the pipeline, where A is the number of outstanding active microbatches allowed by the schedule. In our experiments we use the standard one-machine-per- stage choice A = S, corresponding to the NOAM (number of outstanding active microbatches) parameter in the original PD implementation. For each stage s and microbatch m, we store two completion times: 
+
+τ Fs,m , τ Bs,m ,
+
+where τ Fs,m is the time at which the forward computation of microbatch m finishes at stage s, and 
+
+τ Bs,m is the time at which its backward computation finishes at stage s. A value of −1 means that the corresponding operation has not yet been completed. At time t, a forward operation Fm is ready at stage s if 
+
+
+
+m is the next unlaunched microbatch, and the number of active microbatches is less than A, 
+
+if s = 1 ,τ Fs−1,m ̸ = −1 and τ Fs−1,m < t, if s > 1.
+
+A backward operation Bm is ready at stage s if the forward computation has already completed at that stage and either s is the last stage or the backward computation has already completed at the next stage: 
+
+τ Fs,m ̸ = −1, τ Fs,m < t, 
+
+and true , s = S, τ Bs+1 ,m ̸ = −1 and τ Bs+1 ,m < t, s < S. 
+
+The strict inequalities enforce that activations and gradients cannot propagate through multiple stages in a single discrete slot. Each stage begins in a startup phase. During startup, the stage prioritizes forward work until the first backward operation becomes ready. Once a backward operation becomes available, the stage enters steady state. In steady state, the stage alternates between backward and forward work whenever both are ready. If only one type of work is ready, it executes that available operation rather than idling. Equivalently, each stage stores a local preference variable 
+
+ps ∈ { F, B }.
+
+25 Initially ps = F . After executing a backward operation, the stage sets ps = F ; after executing a forward operation in steady state, it sets ps = B. Thus the local decision rule is: 
+
+at,s =
+
+
+
+Bm, if backward work is ready and either the stage is not yet in steady state, 
+
+ps = B, or no forward work is ready ,Fm, if forward work is ready ,
+
+∅, otherwise .
+
+After all stages have selected their actions for time t, the completion-time arrays are updated simultaneously. This simultaneous update is important: it prevents one stage from using information produced by another stage in the same time slot. The active-microbatch counter is updated only at the input stage. A microbatch becomes active when its forward computation at stage 1 completes, and it stops being active when its backward computation at stage 1 completes. The schedule terminates when the final microbatch has completed its backward computation at stage 1.
+
+E.2 LocalSGD 1F1B schedule 
+
+The LocalSGD scheduler uses the same stage-level 1F1B execution rule, but the admissible forward operations are constrained by the local-training and synchronization structure. Instead of one pipeline trajectory, we run R independent local trajectories, which we call runs or replicas. Each synchronization round consists of H local steps for each replica. Therefore one round contains 
+
+RH 
+
+pipeline microbatch jobs. We index the scheduled pipeline jobs by a single integer m = 0 , 1, . . . , N − 1. This index can be decoded as 
+
+q(m) = 
+
+j mRH 
+
+k
+
+, ℓ(m) = 
+
+ m mod RH R
+
+
+
+, r(m) = m mod R, 
+
+where q(m) is the synchronization round, ℓ(m) ∈ { 0, . . . , H − 1} is the local step inside that round, and r(m) ∈ { 0, . . . , R − 1} is the replica index. Thus the microbatches in a round are ordered as 
+
+(r = 0 , ℓ = 0) , . . . , (r = R − 1, ℓ = 0) ,
+
+(r = 0 , ℓ = 1) , . . . , (r = R − 1, ℓ = 1) , . . . , (r = R − 1, ℓ = H − 1) .
+
+The readiness rule for backward operations is identical to the PD scheduler. The difference is in the readiness rule for forward operations. A forward operation Fm at stage s must satisfy three conditions. First, the usual pipeline dependency must hold: 
+
+true , s = 1 ,τ Fs−1,m ̸ = −1 and τ Fs−1,m < t, s > 1.
+
+Second, if m is not the first local step of its replica inside the current round, then the previous local step of the same replica must already have completed its backward computation at the same stage. Since replicas are ordered fastest within each local-step group, the previous local step of the same replica has index m − R. Hence, for ℓ(m) > 0, we require 
+
+τ Bs,m −R̸ = −1, τ Bs,m −R < t. 
+
+This condition enforces that a stage does not start the next local step of a replica before its own block has been updated by the previous local step. Third, if m belongs to a new synchronization round, then the previous round must be fully complete before any microbatch from the new round is launched. Let q(m) > 0. The last microbatch of the previous round is 
+
+mlast (q(m) − 1) = q(m)RH − 1.
+
+26 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21    
+
+> Time step
+> Machine 4
+> Machine 3
+> Machine 2
+> Machine 1 12
+> 1
+> 3
+> 2
+> 1
+> 4
+> 3
+> 2
+> 1
+> 4
+> 3
+> 1
+> 1
+> 2
+> 1
+> 4
+> 2
+> 1
+> 2
+> 3
+> 5
+> 2
+> 3
+> 2
+> 5
+> 3
+> 4
+> 6
+> 3
+> 5
+> 4
+> 3
+> 6
+> 4
+> 5
+> 7
+> 4
+> 6
+> 5
+> 4
+> 7
+> 5
+> 6
+> 8
+> 5
+> 7
+> 6
+> 5
+> 8
+> 6
+> 7
+> 6
+> 8
+> 7
+> 6
+> 7
+> 8
+> 7
+> 8
+> 7
+> 8
+> 8
+> 8
+> Startup Steady / transition
+> PipeDream-style 1F1B schedule
+> Forward
+> Backward
+> Idle
+
+Figure 7: PD -style 1F1B schedule for a 4-stage pipeline with 8 microbatches. Rows correspond to pipeline stages (machines), and columns correspond to discrete time steps. Each numbered cell indicates the microbatch being processed at that stage and time. The figure illustrates how PD 
+
+overlaps computation across stages to improve utilization after the initial fill phase. Since the backward pass finishes at stage 1, it is sufficient to check 
+
+τ B
+
+> 1, q (m)RH −1
+
+̸ = −1, τ B 
+
+> 1, q (m)RH −1
+
+< t. 
+
+This implements the global model-averaging barrier between LocalSGD rounds. Only after all replicas have completed their H local steps is the averaged model broadcast and the next round allowed to begin. Once the forward and backward readiness sets have been constructed, the same local 1F1B choice rule as in PD is applied at every stage. Thus LocalSGD differs from PD not in the local stage policy, but in the admissibility constraints for launching forward work. These constraints encode two optimization-level requirements: consecutive local steps of the same replica must respect the stage-local update order, and different synchronization rounds must be separated by a global averaging barrier. 
+
+E.3 Comparison of the two timelines 
+
+The two schedules share the same pipeline mechanics: forward computations move from stage 1
+
+to stage S, backward computations move from stage S to stage 1, and each stage follows a 1F1B preference once backward work becomes available. The difference is the source of idle time. In PD , idle time appears mainly during startup and drain. Once the pipeline is filled, the NOAM constraint allows many microbatches to remain active simultaneously, so the schedule has high utilization. The cost is optimization staleness: a backward computation may update a stage using weights and activations generated many pipeline slots earlier. In LocalSGD , the schedule has additional idle regions at synchronization boundaries. No microbatch from round q+1 is allowed to start until all microbatches from round q have completed their backward pass at the input stage. This creates synchronization bubbles. However, the method avoids the same long cross-stage weight-version staleness mechanism that appears in PD ; instead, its optimization error comes from local replica drift between averaging events. This is the scheduling-level origin of the main tradeoff studied in the paper: PD maximizes pipeline utilization by accepting stale pipeline updates, whereas LocalSGD reduces stale-version effects by periodically paying for synchronization barriers. 27 F Relationship between PD and RPD 
+
+To understand the connection between PD and our abstract RPD method (Algorithm 1), it is useful to distinguish between two notions of staleness that are easily conflated in implementation. In PD , the model is partitioned into S stages, and each stage updates its own block of parameters asynchronously according to the pipeline schedule. When a microbatch performs its forward pass through stage s, the current weights of that stage are stashed , so that the corresponding backward pass later uses exactly the same stage-local weights. Thus, each microbatch carries a stage-wise record of the parameter values that it encountered during the forward pass. The resulting stale model seen by a given backward event is therefore not arbitrary: it is the collection of stage-wise weights that were actually used when that same microbatch traversed the pipeline on the forward pass. By contrast, in RPD , the update rule is written in terms of a stale mixed model 
+
+zk =  w(1) 
+
+> j(1)
+> k
+
+, . . . , w (S)
+
+> j(S)
+> k
+
+,
+
+where j(s) 
+
+> k
+
+≤ k specifies which historical version of block s is read at iteration k. The crucial observation is that RPD does not require all blocks to be read from the same past iterate. Different blocks may be taken from different history indices, which makes it expressive enough to represent stage-wise stale reads similar to those induced by pipeline parallelism. 
+
+Deterministic PD as a structured stale-block instance. Consider the sequence of backward-update events in PD , flattened in their actual execution order: 
+
+ek = ( sk, m k), k = 0 , 1, 2, . . . , 
+
+where sk is the stage updated at the k-th backward event and mk is the corresponding microbatch. If, for each such event, one defines zk to be exactly the collection of stage-wise weights that microbatch 
+
+mk saw on the forward pass in PD , then the resulting RPD update coincides with the PD update. In this sense, PD can be viewed as a structured special case of the stale mixed-model update template, in which the arriving stages, selected batches, and stale block reads are all determined by the pipeline schedule and by the forward-pass stashing mechanism. This equivalence is at the level of the update template. It does not mean that deterministic PD satisfies the uniform random stage/mini-batch sampling assumption used in Theorem 4.1; that theorem applies to the randomized abstraction, and the deterministic scheduler enters the paper through the delay calculation. This viewpoint is important because it clarifies what must be matched in order for RPD to reproduce  
+
+> PD
+
+exactly. Matching only the order of stage updates is not sufficient. Matching only the batch order is not sufficient. Even matching a simple stage-dependent delay pattern is not sufficient. Exact equivalence requires that, for each backward event, the stale model zk contain the same stage-wise parameter values that the corresponding microbatch encountered on the forward pass in PD .
+
+Global history versus local staleness. Our implementation maintains a global history 
+
+w0, w 1, w 2, . . . , 
+
+where each new iterate is created after a single block update. Since only one block changes per update, the k-th history element stores the full parameter vector after the k-th global block update. This global history should be distinguished from the local version counters maintained by each stage in PD .This distinction leads to two different notions of delay. First, one may define the local stage staleness for microbatch m and stage s as 
+
+∆local (m, s ) = vcurrent  
+
+> s
+
+− vforward  
+
+> s
+
+(m),
+
+where vforward  
+
+> s
+
+(m) is the local version of stage s used by microbatch m during its forward pass, and 
+
+vcurrent  
+
+> s
+
+is the current local version of stage s at the time of the backward update. This is the natural stage-local notion of staleness in PD .28 Second, when representing PD inside RPD , one must work with a global history delay . For the backward event ek = ( sk, m k), let 
+
+j(s)
+
+> k
+
+denote the global history index at which microbatch mk saw stage s during its forward pass. Then the exact delay needed by RPD is 
+
+δ(s) 
+
+> k
+
+= k − j(s) 
+
+> k
+
+,
+
+so that 
+
+w(s)
+
+> j(s)
+> k
+
+= w(s)
+
+> k−δ(s)
+> k
+
+.
+
+In other words, the delay used by RPD is measured with respect to the global sequence of block updates, not with respect to the local update count of stage s.
+
+Why can the exact delays be large? A potentially confusing phenomenon is that the exact delay for a stage can be much larger than its local staleness, and can even be strictly positive for the final stage in steady state. This is not a contradiction. The reason is that the global history index advances after every block update, regardless of which stage was updated. Thus, even if a particular stage has not changed much locally, many global history entries may have been inserted by updates to other stages. For example, suppose a microbatch reaches the final stage on the forward pass, and before its corresponding backward event occurs, several other stages perform backward updates. Even if the final-stage weights themselves are nearly unchanged in a local sense, the required forward-time snapshot for that stage may now lie several entries back in the global history. Consequently, the exact global delay can be larger than zero, and in practice may be substantially larger than the number of local updates experienced by that stage. This explains an empirical phenomenon observed in our experiments: in the steady regime, the exact delay vectors extracted from PD may contain relatively large entries, even for stages that are intuitively “fresh.” Such values should not be interpreted as large local staleness of that stage; rather, they represent how far one must rewind the global history in order to recover the exact forward-time block value used by the corresponding microbatch. 
+
+Steady-state structure. Once the pipeline reaches steady state, the exact delay vectors induced by  
+
+> PD
+
+exhibit a periodic pattern. This is a direct consequence of the deterministic structure of the 1F1B 
+
+schedule. For a fixed number of stages, the sequence of backward-update events repeats cyclically, and therefore the associated exact stale-read vectors repeat as well. This steady-state periodicity is useful both conceptually and practically: conceptually, it shows that pipeline-induced staleness is highly structured rather than arbitrary; practically, it provides a way to construct RPD instances that reproduce PD exactly or approximately by feeding in the corresponding schedule-induced batch order, stage order, and exact delay vectors. 
+
+Practical consequence. These observations suggest three levels of approximation when relating  
+
+> RPD
+
+to PD . At the coarsest level, one may use simple synthetic delay rules, such as stage-dependent offsets, to obtain a rough pipeline-inspired stale model. At an intermediate level, one may match the stage-update order and batch-selection order to those of PD . At the finest level, one may additionally use the exact delay vectors extracted from a PD run, in which case RPD reproduces the same stale model seen by each backward event. This hierarchy provides a principled way to move from a mathematically convenient abstraction toward a faithful simulation of the original pipeline method. 29 G Experiments and setup 
+
+G.1 Compute Resources 
+
+We report the compute resources used to run the experiments in this paper. The synthetic experiments, including the quadratic objectives and logistic-regression objectives, were run on a MacBook Pro equipped with an Apple M1 Max chip and 64GB of RAM. These experiments were implemented in Python 3.12. For the larger LLM experiments, we used a single NVIDIA A100 GPU with 40GB of VRAM. These experiments were also implemented in Python 3.12. The synthetic experiments are lightweight and can be reproduced on a modern laptop or workstation with sufficient memory. The LLM experiments require GPU acceleration; in our setup, one NVIDIA A100 40GB GPU was sufficient. 
+
+G.2 Objectives Experimental objectives. We use synthetic finite-sum objectives of the form (1). In all cases, the parameter vector w ∈ Rd is partitioned into S contiguous blocks, corresponding to the S pipeline stages. The data are split into mini-batches, and each fm is the loss evaluated on the mth mini-batch. 
+
+Quadratic objective. Our first benchmark is a least-squares quadratic objective. We generate 
+
+X ∈ RN ×d, a ground-truth vector w⋆ ∈ Rd, and targets 
+
+y = Xw ⋆
+
+with optional additive label noise. The objective is 
+
+f (w) = 12N ∥Xw − y∥22.
+
+Equivalently, this is a quadratic with Hessian 
+
+A = 1
+
+N X⊤X. 
+
+We use two variants. In the random quadratic, X has i.i.d. standard Gaussian entries and w⋆ is also sampled from a standard Gaussian distribution. In the tridiagonal quadratic, we construct a Nesterov-style tridiagonal matrix 
+
+T =
+
+
+
+2 −1
+
+−1 2 −1
+
+. . . . . . . . .
+
+−1 2
+
+ ,
+
+add a diagonal shift A = T + μI , and then construct X so that 
+
+1
+
+N X⊤X = A
+
+holds exactly. When a target condition number is specified, μ is chosen so that the resulting matrix A
+
+has that condition number; otherwise we use the default shift from the implementation. The optimal value f⋆ for this objective is computed by solving the corresponding least-squares problem. The PD /RPD validation plot in Figure 2a uses the random quadratic variant. The quadratic panel in Figure 4 uses the Nesterov-style tridiagonal quadratic variant. 
+
+Logistic-regression objective. Our second benchmark is binary logistic regression. We sample 
+
+X ∈ RN ×d with i.i.d. standard Gaussian entries and generate a ground-truth vector w⋆ ∈ Rd. Labels are sampled according to 
+
+P(yi = 1 | xi) = σ(x⊤ 
+
+> i
+
+w⋆), σ(t) = 11 + exp( −t) .
+
+30 The optimized objective is the regularized binary cross-entropy 
+
+f (w) = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+max( x⊤ 
+
+> i
+
+w, 0) − yix⊤ 
+
+> i
+
+w + log  1 + exp( −| x⊤ 
+
+> i
+
+w|) + λ
+
+2 ∥w∥22,
+
+where λ ≥ 0 is the ℓ2-regularization parameter. The implementation uses the numerically stable form above for both full-objective evaluation and mini-batch losses. For plots reported in objective-gap form, the reference value f⋆ is computed numerically using L-BFGS-B with the exact gradient. Unless stated otherwise, we use d = 512 in the reported experiments. The number of stages S is varied in the scaling experiments and fixed to the value indicated in each figure caption for the direct method comparisons. Each method is tuned separately for the corresponding objective and stage count. 
+
+G.3 Weights stashing 
+
+Once the static timeline has been generated, we replay it to simulate training. Each stage maintains its current parameter vector and a local version counter. When a forward operation for microbatch 
+
+m is executed at stage i, the stage uses the most recent locally available weights w(t) 
+
+> i
+
+. Immediately after this forward computation, that exact weight value and its version index are stored as part of the microbatch state for stage i. Later, when the matching backward operation for the same microbatch and stage is executed, the gradient is computed using the stashed version rather than the current version. After the gradient has been formed, the stage performs an SGD block update 
+
+w(sk ) ← w(sk ) − γ∇w(sk ) ℓb,
+
+and increments its local version counter. This is exactly the PD weight-stashing rule: forward uses the latest available stage-local weights, and backward for a given microbatch reuses the same stage-local version that was used during forward. Importantly, this guarantees consistency only within a stage. It does not force all stages to use the same global parameter version for the same microbatch. PD calls the stronger cross-stage consistency mechanism vertical sync, but that is not part of its default semantics, and we did not include it in our initial simulator. 
+
+G.4 What was recorded 
+
+For reproducibility, we tracked four classes of quantities during replay. First, we stored the full operation timeline, i.e. for each time step and each stage, whether the executed action was forward, backward, or idle, and for which microbatch. This timeline fully specifies the schedule. Second, for every microbatch-stage pair, we stored the weight version used during forward and the weight version reused during backward. This allowed us to verify that the weight-stashing invariant held exactly: forward_version (m, i ) = backward_version (m, i ).
+
+Third, we measured stage-local staleness, defined as the difference between the current local version at backward time and the stashed version that had been used at forward time. This quantity captures how many local updates occurred at a stage between the forward and backward computations of the same microbatch. Fourth, we tracked the full-dataset objective value over simulated pipeline time, as well as after each microbatch completed its backward pass at stage 1. The first view measures optimization progress against a wall-clock proxy given by pipeline time steps; the second measures optimization progress against the number of completed training examples. 
+
+G.5 Scope of the current simulator 
+
+The simulator is intentionally minimal. We assume one worker per stage, ignore communication delay, and treat each forward and backward stage operation as occupying one discrete time slot. We 31 also omit vertical sync. These choices are deliberate: the goal of the experiments is not to build a full systems simulator, but to isolate the effect of PD ’s scheduling and weight-stashing semantics on optimization in a setting where the ground-truth objective is simple and fully observable. The simulator also does not charge memory as a separate axis in the plots. In particular, LocalSGD ’s 
+
+R logical replicas require additional model storage compared with the single PD trajectory, and this extra memory is intentionally reported as a modeling difference rather than folded into the simulated-time budget. 
+
+G.6 Reproducibility details for the synthetic experiments 
+
+All synthetic experiments use zero initialization and seed 0 for the reported runs, with the deterministic training batch order generated from seed 1. When a method has internal sampling randomness, the same reported seed is passed to that method. Unless stated otherwise, the learning rate is selected by a grid sweep and the plotted curve is the stable selected run for that method/configuration. The main-paper synthetic plots are single-seed runs and therefore do not display error bars; the sweep utilities in the repository also support multi-seed aggregation and standard-deviation summaries. For the PD /RPD validation in Figure 2a, we use the random quadratic objective with S = 8 , d = 512 ,batch size 10 , M = 60 data batches, and 5 epochs, so the PD timeline contains 300 microbatches. The learning-rate grid for both PD and RPD is 
+
+{2−8, 2−7, . . . , 20}.
+
+The delay sweep shown with RPD uses 
+
+δ ∈ { 8, 30 , 60 , 180 , 420 },
+
+where δ = 60 is the predicted steady-state PD value S2 − S/ 2 for S = 8 .For the fixed-simulator-time logistic-regression scaling experiment in Figure 2b, we use d = 512 ,batch size 10 , M = 60 , λ = 10 −4, gradient-noise standard deviation 0.5, and stage counts 
+
+S ∈ { 2, 4, 8, 16 , 32 , 64 , 128 }.
+
+The common simulator-time target is 3684 discrete pipeline ticks, obtained as six times the S = 8 ,
+
+300 -microbatch PD timeline length used by the validation experiment. For each S, the PD and  
+
+> LocalSGD
+
+timelines use the smallest number of microbatches whose schedule reaches this target.  
+
+> RPD
+
+is assigned the number of block updates equal to the number of backward operations completed by the matched PD timeline. The learning-rate grids are {2−12 , 2−11 , . . . , 2−3} for PD /RPD and 
+
+{2−8, 2−7, . . . , 22} for LocalSGD . For this scaling plot, LocalSGD uses R = S and H = 5 .For the S = 16 PD versus LocalSGD panels in Figure 4, we use the same simulator and learning-rate selection rule. The synthetic runs use d = 512 and zero initialization. LocalSGD uses R = S;the synchronization period H is swept in the corresponding notebook and then the displayed panel reports the selected tuned configuration for the plotted objective. 
+
+G.7 Experimental setup. 
+
+We compare PD and RPD on the same synthetic quadratic objective under a fixed block-update budget. For PD , we use the standard 1F1B schedule. For RPD , we run separate experiments for several values of the delay bound δ. In all cases, we start from the same initialization and evaluate progress using the full objective as a function of the number of block updates. To make the comparison fair, we tune the stepsize independently for each method configuration. Concretely, for PD we sweep over a fixed grid of learning rates and keep the run with the smallest final full objective. For RPD , we repeat the same stepsize sweep separately for each tested value of δ,and again keep the run with the smallest final full objective. The corresponding best-tuned learning rate is reported in the figures. Figure 2a, the left panel of Figure 2, compares the best-tuned PD trajectory against the best-tuned  
+
+> RPD
+
+trajectories for several delay bounds δ. The results show a strong dependence of optimization quality on the delay parameter. Small and moderate delay bounds yield substantially better objective decay, whereas larger values of δ lead to slower convergence and require smaller tuned learning rates in the same delay-sweep experiment. 32 Together with the fixed-time scaling panel in Figure 2b, this delay sweep highlights a tension between pipeline efficiency and optimization quality in the global-history RPD abstraction. On the one hand,  
+
+> PD
+
+1F1B induces exact delays whose natural scale grows quadratically with the number of stages. On the other hand, RPD experiments show that large delay bounds are harmful for optimization and force more conservative stepsizes. Thus, while PD is highly attractive from the systems perspective, its induced global-history staleness becomes progressively less favorable as the pipeline depth increases. 
+
+G.8 NanoChat language-modeling experiment 
+
+We also compare PD and LocalSGD on a small autoregressive character-level language-modeling task implemented by the NanoChat-style causal Transformer used in our LLM simulator. The model is partitioned into pipeline stages: the first stage contains token and positional embeddings, the last stage contains the final layer normalization and language-modeling head, and the remaining stages contain Transformer blocks. We train on Tiny Shakespeare and measure last-stage forward cross-entropy loss as a function of simulated wall-clock time. The model has 11 ,123 ,200 trainable parameters and is split into S = 16 pipeline stages. We use sequence length 128 , embedding dimension 256 , 8 attention heads, mini-batch size 32 , and 1024 
+
+data batches. PD is run with 1024 microbatches, producing a simulated-time budget of 2078 pipeline ticks and 16 ,384 backward block updates. LocalSGD uses R = 16 parallel local runs. The selected  
+
+> LocalSGD
+
+synchronization period is H = 5 , obtained by empirical tuning; the command below reproduces this selected configuration. Additional values of H can be reproduced by rerunning the same command with a different –local-steps value. Batches are shuffled during training. The comparison uses a matched simulated-time budget. We first generate the PD timeline and use its length as the target horizon. For the selected LocalSGD setting H = 5 , the smallest matching schedule uses 874 microbatches and has the same 2078 -tick length. Thus the x-axis in Figure 4c is simulated wall-clock time rather than parameter-update count. Under this protocol, the tuned PD run obtains the lowest loss. The experiment was run with: 
+
+python llm_pd_vs_sgd.py \ --dataset tiny_shakespeare \ --require-cuda \ --num-stages 16 \ --num-data-batches 1024 \ --batch-size 32 \ --seq-len 128 \ --embed-dim 256 \ --num-heads 8 \ --pd-num-microbatches 1024 \ --local-num-runs 16 \ --local-steps 5 \ --tune-stepsizes \ --tuning-seeds 0 \ --pd-lr-grid pow2:-4:2 \ --local-sgd-lr-grid pow2:-4:2 \ --shuffle-batches 
+
+The pow2:a:b grid denotes {2a, 2a+1 , . . . , 2b−1}, so both PD and LocalSGD are tuned over 
+
+{2−4, 2−3, . . . , 21} in this run. The script records the selected learning rates, final losses, schedules, curves, and learning-rate sweep summaries in the output directory. 
+
+G.9 Existing Assets and Licenses 
+
+We use several existing assets in the experimental part of the paper. For the larger LLM experiments, we use a small NanoChat/nanoGPT-style Transformer implementation based on the open-source educational codebases of Karpathy. NanoChat and nanoGPT are released under the MIT License. We cite these repositories and respect their license terms. 33 For the language-modeling data, we use Tiny Shakespeare, a standard small character-level language-modeling dataset consisting of approximately 40,000 lines of Shakespeare text. We credit the dataset source through Karpathy’s char-rnn /Tiny Shakespeare reference. The dataset is used only for small-scale optimization experiments and not as a newly introduced dataset. No proprietary datasets, scraped private data, user data, or restricted-access pretrained models are used in our experiments. 34 H A stronger convergence theorem under the Polyak–Łojasiewicz condition 
+
+This section is not used in the main theoretical or empirical comparison. We include it only as a possible direction for future algorithms that use stale-read extrapolation. We continue to work under the random pair-sampling model of the previous subsection. 
+
+Assumption H.1 (Polyak–Łojasiewicz condition) . There exists μ > 0 such that 
+
+12 ∥∇ f (w)∥2 ≥ μ f (w) − f⋆
+
+ ∀w ∈ Rd.
+
+Under this additional assumption, the RPD method enjoys a linear convergence guarantee up to a neighborhood whose size depends on the stepsize and the staleness level. 
+
+Theorem H.1 (Linear convergence to a neighborhood for RPD under PL). 
+
+Let Assumption B.1, Assumption B.3, Assumption B.4, Assumption B.2, Assumption B.5, As-sumption H.1 hold. Assume 
+
+0 < γ ≤ 1
+
+L .
+
+Then for every k ≥ 0,
+
+E[f (wk+1 ) − f⋆] ≤
+
+
+
+1 − μγ S
+
+
+
+E[f (wk) − f⋆] + Lγ 2
+
+2 G2 + L2γ3δ2
+
+2S G2. (14) The above theorem implies that for every K ≥ 1,
+
+E[f (wK ) − f⋆] ≤
+
+
+
+1 − μγ S
+
+K  f (w0) − f⋆
+
+ + 
+
+> Lγ 2
+> 2
+
+G2 + L2γ3δ2 
+
+> 2S
+
+G2
+
+μγ/S 
+
+=
+
+
+
+1 − μγ S
+
+K  f (w0) − f⋆
+
+ + SLγ 
+
+2μ G2 + L2γ2δ2
+
+2μ G2. (15) 
+
+Proof. From the proof of Theorem B.1, we already have 
+
+E[f (wk+1 ) | F k] ≤ f (wk) − γ
+
+2S ∥∇ f (wk)∥2 + γ
+
+2S ∥∇ f (wk) − ∇ f (zk)∥2 + Lγ 2
+
+2 G2. (16) By L-smoothness and Lemma B.2, 
+
+∥∇ f (wk) − ∇ f (zk)∥ ≤ L∥wk − zk∥ ≤ LγδG, 
+
+and therefore 
+
+∥∇ f (wk) − ∇ f (zk)∥2 ≤ L2γ2δ2G2.
+
+Substituting this into (16), we get 
+
+E[f (wk+1 ) | F k] ≤ f (wk) − γ
+
+2S ∥∇ f (wk)∥2 + L2γ3δ2
+
+2S G2 + Lγ 2
+
+2 G2.
+
+Now apply the PL inequality: 
+
+12 ∥∇ f (wk)∥2 ≥ μ f (wk) − f⋆
+
+,
+
+which implies γ
+
+2S ∥∇ f (wk)∥2 ≥ μγ S
+
+ f (wk) − f⋆
+
+.
+
+Hence 
+
+E[f (wk+1 ) | F k] ≤ f (wk) − μγ S
+
+ f (wk) − f⋆
+
+ + Lγ 2
+
+2 G2 + L2γ3δ2
+
+2S G2.
+
+35 Subtract f⋆ from both sides: 
+
+E[f (wk+1 ) − f⋆ | F k] ≤
+
+
+
+1 − μγ S
+
+  f (wk) − f⋆
+
+ + Lγ 2
+
+2 G2 + L2γ3δ2
+
+2S G2.
+
+Taking total expectation proves (14). Now define 
+
+∆k := E[f (wk) − f⋆], a := 1 − μγ S , b := Lγ 2
+
+2 G2 + L2γ3δ2
+
+2S G2.
+
+Then 
+
+∆k+1 ≤ a∆k + b. 
+
+Iterating this recursion gives 
+
+∆K ≤ aK ∆0 + b
+
+> K−1
+
+X
+
+> t=0
+
+at ≤ aK ∆0 + b
+
+1 − a .
+
+Since 1 − a = μγ/S , we obtain 
+
+∆K ≤
+
+
+
+1 − μγ S
+
+K
+
+(f (w0) − f⋆) +  
+
+> Lγ 2
+> 2
+
+G2 + L2γ3δ2 
+
+> 2S
+
+G2
+
+μγ/S ,
+
+which simplifies to (15). 36 I Exploratory Nesterov-inspired extrapolated variant of Randomized PipeDream (NAG-RPD) 
+
+We now describe a predictive variant of RPD in which the stale model is extrapolated before the gradient is evaluated. This appendix is exploratory and is not used in the main comparison. The worst-case bound below does not show that the extrapolation parameter improves the guarantee; it only records what follows from the same smoothness argument as the base RPD theorem. 
+
+Algorithm 3 Nesterov-inspired extrapolated variant of Randomized PipeDream ( NAG-RPD ) 
+
+> 1:
+
+Input: stepsize γ > 0, prediction parameter α ≥ 0, initial point w0 ∈ Rd 
+
+> 2:
+
+Initialize w−1 := w0 
+
+> 3:
+
+for k = 0 , 1, 2, . . . do  
+
+> 4:
+
+Select a delay vector jk from the past, with 0 ≤ k − j(s) 
+
+> k
+
+≤ δ for all s 
+
+> 5:
+
+Read the stale model 
+
+zk :=  w(1) 
+
+> j(1)
+> k
+
+, . . . , w (S)
+
+> j(S)
+> k
+
+ 
+
+> 6:
+
+Form the extrapolated stale model 
+
+bzk :=  bz(1)  
+
+> k
+
+, . . . , bz(S)
+
+> k
+
+, bz(s) 
+
+> k
+
+:= w(s)
+
+> j(s)
+> k
+
++ α w(s)
+
+> j(s)
+> k
+
+− w(s) 
+
+> j(s)
+> k−1
+
+,
+
+with the convention w−1 := w0 
+
+> 7:
+
+Sample (sk, m k) uniformly from {1, . . . , S } × { 1, . . . , M }, conditionally independently of 
+
+bzk 
+
+> 8:
+
+Update the active stage block: 
+
+w(sk ) 
+
+> k+1
+
+= w(sk ) 
+
+> k
+
+− γ ∇w(sk ) fmk (bzk) 
+
+> 9:
+
+Keep the remaining blocks unchanged: 
+
+w(r) 
+
+> k+1
+
+= w(r) 
+
+> k
+
+∀r̸ = sk 
+
+> 10:
+
+end for 
+
+The increment w(s)
+
+> j(s)
+> k
+
+− w(s)  
+
+> j(s)
+> k−1
+
+is the previous global-history increment in block s and may be zero if the previous global update changed another block. A version that extrapolates from the previous local update of block s would require different notation and a separate analysis. 
+
+Lemma I.1 (Unbiasedness of the NAG-RPD update). 
+
+Let Assumption B.1 hold, and define 
+
+bgk := Usk ∇w(sk ) fmk (bzk).
+
+Then 
+
+E [Sbgk | F k] = ∇f (bzk),
+
+where Fk includes the current delay vector and extrapolated stale point, but not the current sampled pair (sk, m k).
+
+37 Proof. Conditioned on Fk, the extrapolated point bzk is fixed. Hence 
+
+E [bgk | F k] = 1
+
+SM 
+
+> S
+
+X
+
+> s=1
+> M
+
+X
+
+> m=1
+
+Us∇w(s) fm(bzk)= 1
+
+S
+
+> S
+
+X
+
+> s=1
+
+Us
+
+1
+
+M
+
+> M
+
+X
+
+> m=1
+
+∇w(s) fm(bzk)
+
+!
+
+= 1
+
+S
+
+> S
+
+X
+
+> s=1
+
+Us∇w(s) f (bzk) = 1
+
+S ∇f (bzk).
+
+Lemma I.2 (Distance between current and extrapolated stale models). 
+
+Let Assumption B.2 hold, and assume that all block gradients evaluated by the NAG-RPD 
+
+trajectory are bounded by G. Then for every k ≥ 0,
+
+∥wk − bzk∥ ≤ γ(δ + α√S)G. 
+
+Proof. Fix k ≥ 0. By definition, 
+
+bz(s) 
+
+> k
+
+= w(s)
+
+> j(s)
+> k
+
++ α w(s)
+
+> j(s)
+> k
+
+− w(s) 
+
+> j(s)
+> k−1
+
+.
+
+Hence 
+
+wk − bzk = ( wk − zk) − α u k,
+
+where 
+
+uk :=  w(1) 
+
+> j(1)
+> k
+
+− w(1)  
+
+> j(1)
+> k−1
+
+, . . . , w (S)
+
+> j(S)
+> k
+
+− w(S) 
+
+> j(S)
+> k−1
+
+.
+
+By the triangle inequality, 
+
+∥wk − bzk∥ ≤ ∥ wk − zk∥ + α∥uk∥.
+
+The same argument as in Lemma B.2 gives 
+
+∥wk − zk∥ ≤ γδG, 
+
+because every update changes a single block by norm at most γG .It remains to bound ∥uk∥. At any iteration t, only one block is updated, and 
+
+∥wt+1 − wt∥ = γ∥∇ w(st) fmt (·)∥ ≤ γG. 
+
+For each stage s, the vector 
+
+w(s)
+
+> j(s)
+> k
+
+− w(s) 
+
+> j(s)
+> k−1
+
+is exactly the increment of block s at iteration j(s) 
+
+> k
+
+− 1, or zero if that block did not change there. Thus uk is obtained by collecting at most one block increment for each block. Each block increment has norm at most γG , so the concatenated vector satisfies 
+
+∥uk∥ ≤ γG √S. 
+
+Therefore 
+
+∥wk − bzk∥ ≤ γδG + αγG √S = γ(δ + α√S)G. 
+
+Theorem I.1 (Nonconvex convergence of NAG-RPD ). 
+
+Let Assumption B.1, Assumption B.3, Assumption B.4, Assumption B.2, and Assumption B.5 hold. Assume also that the trajectory-bounded gradient condition holds at the extrapolated stale 
+
+38 points bzk. Assume 
+
+0 < γ ≤ 1
+
+L , α ≥ 0.
+
+Then for every integer K ≥ 1,
+
+1
+
+K
+
+> K−1
+
+X
+
+> k=0
+
+E ∥∇ f (wk)∥2 ≤ 2S f (w0) − f⋆
+
+
+
+γK + γSLG 2 + γ2L2(δ + α√S)2G2. (17) 
+
+Proof. Define 
+
+bgk := Usk ∇w(sk ) fmk (bzk).
+
+Then the update is 
+
+wk+1 = wk − γbgk.
+
+By L-smoothness of f ,
+
+f (wk+1 ) ≤ f (wk) − γ ⟨∇ f (wk), bgk⟩ + γ2L
+
+2 ∥bgk∥2.
+
+Taking conditional expectation and using Lemma I.1, 
+
+E [f (wk+1 ) | F k] ≤ f (wk) − γS ⟨∇ f (wk), ∇f (bzk)⟩ + γ2L
+
+2 E ∥bgk∥2 | F k
+
+ . (18) By the trajectory-bounded gradient assumption at the extrapolated stale points, 
+
+∥bgk∥ = ∥∇ w(sk ) fmk (bzk)∥ ≤ G, 
+
+so 
+
+E ∥bgk∥2 | F k
+
+ ≤ G2.
+
+Substituting into (18), 
+
+E [f (wk+1 ) | F k] ≤ f (wk) − γS ⟨∇ f (wk), ∇f (bzk)⟩ + γ2LG 2
+
+2 .
+
+Now use 
+
+⟨a, b ⟩ ≥ 12 ∥a∥2 − 12 ∥a − b∥2
+
+with 
+
+a = ∇f (wk), b = ∇f (bzk).
+
+This gives 
+
+− γS ⟨∇ f (wk), ∇f (bzk)⟩ ≤ − γ
+
+2S ∥∇ f (wk)∥2 + γ
+
+2S ∥∇ f (wk) − ∇ f (bzk)∥2.
+
+Hence 
+
+E [f (wk+1 ) | F k] ≤ f (wk) − γ
+
+2S ∥∇ f (wk)∥2 + γ
+
+2S ∥∇ f (wk) − ∇ f (bzk)∥2 + γ2LG 2
+
+2 .
+
+By L-smoothness of f ,
+
+∥∇ f (wk) − ∇ f (bzk)∥ ≤ L∥wk − bzk∥.
+
+Using Lemma I.2, 
+
+∥wk − bzk∥ ≤ γ(δ + α√S)G, 
+
+and therefore 
+
+∥∇ f (wk) − ∇ f (bzk)∥2 ≤ γ2L2(δ + α√S)2G2.
+
+Substituting this gives 
+
+E [f (wk+1 ) | F k] ≤ f (wk) − γ
+
+2S ∥∇ f (wk)∥2 + γ3L2(δ + α√S)2G2
+
+2S + γ2LG 2
+
+2 .
+
+39 Taking expectation and summing from k = 0 to K − 1,
+
+E [f (wK )] ≤ f (w0) − γ
+
+2S
+
+> K−1
+
+X
+
+> k=0
+
+E ∥∇ f (wk)∥2 + K γ3L2(δ + α√S)2G2
+
+2S + K γ2LG 2
+
+2 .
+
+Using E [f (wK )] ≥ f⋆, we get 
+
+γ
+
+2S
+
+> K−1
+
+X
+
+> k=0
+
+E ∥∇ f (wk)∥2 ≤ f (w0) − f⋆ + K γ3L2(δ + α√S)2G2
+
+2S + K γ2LG 2
+
+2 .
+
+Multiply by 2S/ (γK ) to obtain 
+
+1
+
+K
+
+> K−1
+
+X
+
+> k=0
+
+E ∥∇ f (wk)∥2 ≤ 2S f (w0) − f⋆
+
+
+
+γK + γSLG 2 + γ2L2(δ + α√S)2G2,
+
+which proves (17). 40
