@@ -997,7 +997,10 @@
               </p>
               <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
                 <button id="secret-setup-preset-plato" type="button" class="secret-gate-btn secondary">
-                  BLT（推荐）
+                  BLT
+                </button>
+                <button id="secret-setup-preset-minimax" type="button" class="secret-gate-btn primary" style="background:#0EA5E9; color:#fff; border-color:#0EA5E9;">
+                  MiniMax（推荐）
                 </button>
                 <button id="secret-setup-preset-deepseek" type="button" class="secret-gate-btn secondary">
                   DeepSeek
