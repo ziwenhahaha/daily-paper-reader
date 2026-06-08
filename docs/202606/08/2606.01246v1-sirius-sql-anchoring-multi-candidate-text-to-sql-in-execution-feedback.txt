@@ -1,0 +1,1385 @@
+Title: SIRIUS-SQL: Anchoring Multi-Candidate Text-to-SQL in Execution Feedback
+
+URL Source: https://arxiv.org/pdf/2606.01246v1
+
+Published Time: Tue, 02 Jun 2026 01:56:28 GMT
+
+Number of Pages: 25
+
+Markdown Content:
+## SIRIUS-SQL: Anchoring Multi-Candidate Text-to-SQL in Execution Feedback 
+
+Leo Luo 1 , Haining Xie 1 , Siqi Shen 1,2 , Zhipeng Ma 1 , Rui Ling 1,2
+
+Hang Xu 1 , Hefeng Jiang 1 , Dingwei Chen 1 , Yang Li 1∗, Peng Chen 1 , Jie Jiang 11TEG, Tencent Inc., China 
+
+2Peking University, China 
+
+leoluo00@outlook.com {hainingxie,siqishen,allenzpma,ruiling,hhangxu}@tencent.com {hefengjiang,espadachen,thomasyngli,pengchen,zeus}@tencent.com 
+
+Abstract 
+
+Text-to-SQL on complex schemas is unreliable on a single pass, so recent systems generate multiple SQL candidates and let voting filter out errors. Yet voting alone is not enough, because the multi-candidate recipe has three coupled weaknesses: 1) sampling more from a single generator produces increasingly re-dundant candidates, 2) existing pipelines ap-ply one generic correction to every non-clean execution result, while runtime errors, time-outs, and empty results each indicate a dif-ferent distance from correctness, and 3) exist-ing selectors rely on a single angle such as result-majority voting or pairwise SQL com-parison, missing what other angles would have caught. We present SIRIUS-SQL, which ad-dresses all three weaknesses. A difficulty-smoothing RL recipe trains SIRIUS-32B to generate diverse executable SQL candidates, paired with a generalist LLM that fills in gaps left by the specialist. An execution-grounded lifecycle classifies each outcome and applies targeted repair before candidates re-enter the pool. A confidence-gated hybrid selector com-bines execution-result agreement with pair-wise SQL-form judgment, escalating only near-tied cases to a deterministic structural check. SIRIUS-SQL reaches 75.88% on BIRD dev and 91.20% on S PIDER test. Two of three gen-eralist pairings surpass Agentar-Scale-SQL, the strongest published multi-candidate system on BIRD dev. 
+
+1 Introduction 
+
+Real-world databases expose persistent limits of LLM-based text-to-SQL: on BIRD (Li et al., 2023), the strongest leaderboard system, GPT-5.5-xhigh, reaches only 72.55% execution accuracy on the test set. 1 Schema heterogeneity, implicit constraints, and ambiguous value references generate errors that no single model reliably avoids (Yu et al., 2018;  
+
+> ∗
+
+Corresponding author. 
+
+> 1
+
+Official BIRD leaderboard 900 950 1000 1050 1100 1150            
+
+> Number of correctly answerable questions (out of 1,534)
+> Qwen3-Coder
+> (k=16)
+> Qwen3-235B
+> (k=16)
+> (a)
+> 966 1017 1139
+> 1019 1050 1150
+> 122 missed
+> 100 missed
+> Single-pass correct + Majority voting + Oracle@16
+> O@8=1112
+> O@8=1122
+> 61
+> 66
+> 71
+> 76
+> BIRD Dev Exec Acc (%)
+> SIRIUS-32B Qwen3-Coder Qwen3-235B Gemini-3.1
+> (b)
+> 71.97
+> 62.97
+> +11.54
+> 74.51
+> 66.43
+> +8.87
+> 75.30
+> 68.06
+> +7.82
+> 75.88
+> Agentar-Scale-SQL (74.9)
+> SIRIUS-32B (specialist) Generalist LLM + SIRIUS-SQL pipeline
+
+Figure 1: (a) Coverage-to-accuracy gap on BIRD dev. (b) SIRIUS-SQL paired with three generalist LLMs, with the red dashed line marking Agentar-Scale-SQL. 
+
+Lei et al., 2025; Lin et al., 2020; Wang et al., 2025c). To mitigate this, recent work converges on a com-mon recipe: sample multiple SQL candidates per question and let voting over execution results filter individual errors (Wang et al., 2023; Pourreza et al., 2025a; Liu et al., 2026; Wang et al., 2025b). Figure 1(a) decomposes each single-generator candidate set into what majority voting recovers and what remains reachable, exposing three struc-tural limits. These three limits trace to a common root: execution signals are systematically under-used across training, repair, and selection. 
+
+L1: Diminishing-return sampling. A single generator’s candidate set hits diminishing returns as sampling grows (Lee et al., 2025a; Pourreza et al., 2025a; Liu et al., 2026): on BIRD dev, doubling the candidate budget from k=8 to k=16 adds only 27–28 reachable questions per generator 2. New samples largely repeat what the pool already con-tains, because each generator’s outputs concentrate on the narrow region it was trained to prefer. Ex-isting multi-candidate systems address this at in-ference time by adding more prompts, decoding routes, or parallel experts (Liu et al., 2026; Pour-
+
+> 2
+
+A question is reachable at k (i.e., counted by Oracle@ k,the bar length in Figure 1(a)) if at least one of its k sampled SQLs returns the correct execution result. 
+
+> arXiv:2606.01246v1 [cs.AI] 31 May 2026
+
+reza et al., 2025a; Wang et al., 2025b; Li et al., 2025a), leaving the training objectives that shape each individual source’s output distribution largely untouched. 
+
+L2: Wasted execution signal. The database it-self returns rich diagnostic information whenever a candidate fails to produce a clean result (Mao et al., 2024; Xu et al., 2025; Cen et al., 2025; Shinn et al., 2023), yet existing pipelines apply one generic cor-rection to every non-clean execution result. A run-time error exposes a syntactic or type mismatch, a timeout points to an inefficient join or subquery, and an empty result indicates a semantic predicate drift, each pointing to a different distance from correctness. Current pipelines either discard these candidates entirely or feed them to a single correc-tor with only a coarse label. 
+
+L3: Voting–oracle gap. Even when the cor-rect query is already in the candidate set, voting still misses it (Pourreza et al., 2025a; Li et al., 2025a): 122 and 100 questions across the two single-generator pools in Figure 1(a) have correct SQL in the pool yet are misclassified by majority voting. The root cause is that selection requires joint judgment in two spaces: in the result space ,different SQL statements may return identical out-puts despite different logic, and in the logic space ,the same correct intent admits many surface forms. Existing selectors operate in only one space (Pour-reza et al., 2025a; Liu et al., 2026; Li et al., 2025a), leaving the other as a blind spot. We address these three limits with SIRIUS-SQL, which redesigns candidate construction, re-pair, and selection together. For L1 , SIRIUS-SQL trains SIRIUS-32B with a difficulty-smoothed two-stage RL recipe that broadens its candidate distribu-tion while keeping each sample reward-validated, and pairs it with a generalist LLM for complemen-tary coverage. For L2 , an execution-grounded life-cycle classifies each outcome into a type (runtime error, timeout, or empty result) and applies targeted repair before re-admitting the candidate. For L3 ,a hybrid selector fuses tuple-level execution con-sensus with pairwise SQL quality assessment, and escalates only low-margin cases to a deterministic structural-support check. Our contributions are: • A difficulty-smoothed two-stage RL recipe that trains SIRIUS-32B to produce a broad yet reward-validated candidate distribution (§3.3). • An execution-grounded lifecycle with type-specific repair for runtime errors, timeouts, and empty results (§3.4). • A confidence-gated hybrid selector that sums tuple-level consensus and pairwise SQL prefer-ence, with a deterministic AST gate as a zero-cost tie-breaker (§3.5). SIRIUS-SQL reaches 75.88% on BIRD dev and 91.20% on S PIDER test. Across three gen-eralist partners (Figure 1(b)), every pairing im-proves over its generalist baseline, and two sur-pass Agentar-Scale-SQL, the strongest published multi-candidate system on BIRD dev. 
+
+2 Related Work 
+
+Prompting and training-oriented generators. 
+
+Early Text-to-SQL work studies schema-aware modeling, value grounding, intermediate repre-sentations, constrained decoding, and semantic evaluation (Bogin et al., 2019; Wang et al., 2020; Lin et al., 2020; Zhong et al., 2020; Gan et al., 2021; Qi et al., 2022). Recent LLM-based sys-tems improve a single generator through prompt de-sign, task decomposition, task alignment, and self-correction (Gao et al., 2024; Pourreza and Rafiei, 2023; Qu et al., 2024; Xie et al., 2024; Lee et al., 2025b). Another line adapts SQL-oriented models through synthetic data, open-source specialization, self-taught reasoning, execution-driven bootstrap-ping, reward modeling, self-play fine-tuning, and execution-grounded reinforcement learning (Yang et al., 2024; Li et al., 2024; He et al., 2025; Zhang et al., 2025a,b; Ma et al., 2025; Pourreza et al., 2025b; Yao et al., 2025). 
+
+Multi-candidate pipelines and selection. A sec-ond line of work moves beyond one-shot predic-tion by generating multiple candidates and orga-nizing inference as a broader workflow. MAC-SQL uses multi-agent collaboration (Wang et al., 2025a), CHESS combines retrieval, schema prun-ing, generation, and verification (Talaei et al., 2024), Alpha-SQL formulates zero-shot genera-tion as search (Li et al.), and Agentar-Scale-SQL emphasizes test-time orchestration (Wang et al., 2025b). Closer to selection, MCS-SQL aggre-gates candidates from multiple prompts (Lee et al., 2025a), PET-SQL applies two-round refinement with cross-consistency (Li et al., 2025c), CHASE-SQL and XiYan-SQL couple multi-path genera-tion with pairwise candidate comparison as a final ranker after execution clustering (Pourreza et al., 2025a; Liu et al., 2026), and DeepEye-SQL intro-duces confidence-aware, execution-guided adjudi-Candidate Pool        
+
+> Dynamic Pool Evolution
+> Schema
+> Error
+> Empty
+> Result
+> Runtime
+> Error
+> Clean
+> Repaired Timeout
+> A. Pre-execution Screening
+> SQL
+> Sanitization
+> Invalid
+> Candidate
+> Removal
+> Syntax
+> Schema
+> Validation
+> Removes non-SQL / malformed /
+> schema-invalid candidates
+> B. Execution-Grounded Diagnosis
+> SQL
+> Execution
+> Failure
+> Typing
+> Result
+> Profiling
+> Failure Taxonomy
+> Runtime Error
+> Timeout
+> Empty Result
+> Execution results and failure profiling
+> C. Failure-A ware Pool Update
+> Re-
+> execution
+> Type-Specific
+> Repair
+> Pool
+> Recovery
+> Re-execution
+> Confirmation
+> Pool
+> Consolidation
+> Empty
+> Result
+> Stage1: High-Precision Repair Operators
+> literal
+> rebind
+> literal
+> binding
+> where
+> predicate
+> date
+> anchor
+> join
+> aggregate
+> scope
+> Stage2
+> LLM Repair
+> translation
+> semantics
+> Con fi dence-Gated Pool-Level Selection
+> Stage1: Result-Level Scorer
+> Rule-Based Gate
+> K > 1
+> result-signature
+> groups
+> Low confidence
+> High confidence
+> Stage2: Structural-Support Reranker
+> Rule-based reranker for tied result-signature
+> classes using source-route structural support
+> Tied Top
+> Classes
+> AST
+> Signature κ
+> Cross-
+> Generator
+> Support
+> Override
+> Decision
+> Tuple-level
+> consensus
+> Pairwise
+> preference
+> Candidate Construction
+> Specialist
+> Generalist
+> Question
+> Evidence
+> Linked
+> Schema
+> Database
+> (of fline-built)
+> Final SQL
+> Sirius T raining
+> Two-Stage RL
+> Dif ficulty-A ware Data Curation
+> Exploration + Exploitation
+
+Execution-Grounded Lifecycle 
+
+> Raw
+> SQL
+> Pool
+> Update
+> Init
+> Consolidated pool C*
+> Override only with stronger
+> source-route support
+> x 32
+
+Figure 2: Overview of SIRIUS-SQL. A SQL specialist and a generalist LLM populate a shared candidate pool ( 1 2 ; L1). An execution-grounded lifecycle screens, executes, and applies type-specific repair through Blocks A–C ( 3 4 ; L2). A confidence-gated selector scores the consolidated pool and escalates only low-margin ties to a deterministic structural-support reranker ( 5 6 ; L3). 
+
+cation (Li et al., 2025a). Execution feedback has also been used for question rewriting, refinement, test-driven self-correction, and decomposed auto-matic repair (Mao et al., 2024), while AST-level ranking has been explored for retrieval-augmented SQL generation (Shen et al., 2024). 
+
+Positioning. Most multi-candidate Text-to-SQL systems expand the candidate set through prompt-ing, search, or multiple generators, then apply a final voter, comparator, or verifier. SIRIUS-SQL instead anchors every stage in execution feedback: an RLVR-trained specialist that produces broad yet executable candidates (L1), a typed-outcome lifecy-cle with re-execution before re-admission (L2), and a hybrid selector combining result-level, pairwise, and structural signals (L3). 
+
+3 Method 
+
+3.1 Problem Formulation 
+
+Given an input x=( q, e, d ) with question q, op-tional evidence e, and database d, SIRIUS-SQL predicts a SQL query y from a shared candidate pool C(x)= {c1, . . . , c n} populated by complemen-tary generators: a SQL specialist trained with veri-fiable execution rewards and an off-the-shelf gener-alist LLM, detailed in §3.3. Let E(c, d ) denote the execution outcome of candidate c on d. The pool is refined based on execution signals (§3.4), and the final query is selected via a confidence-gated cascade over the refined pool (§3.5). 
+
+3.2 System Overview 
+
+Figure 2 summarizes SIRIUS-SQL. Before gen-eration, the system loads an offline schema prompt for every question and injects cached value hints. The schema prompt extends standard 
+
+CREATE TABLE DDL with per-column comments and question-conditioned example values, so that ambiguous columns and unfamiliar value vocabu-laries are resolved before the generator sees them. Full construction details are in Appendix B.4. 
+
+3.3 Source-Complementary Candidate Construction 
+
+Pools drawn from a single generator are bounded by that generator’s training distribution: sampling more candidates from the same model does not reliably surface hypotheses outside what its distri-bution prefers (L1, §1) (Lee et al., 2025a; Pour-reza et al., 2025a). We therefore build the initial pool from two sources with complementary failure modes: a task-specialized generator Gsp and an external strong LLM Gge serving as a generalist. 
+
+Specialist. Gsp is the task-specialized source of SQL hypotheses, trained on a code-pretrained base with reinforcement learning from verifiable exe-cution rewards (RLVR), a natural choice for SQL where each candidate’s correctness is decidable by execution. Our training-side design choices are a 
+
+difficulty-smoothed data mixture and a two-stage DAPO schedule .
+
+Difficulty-smoothed data synthesis. Two design choices shape the training signal. On the reward side, we replace the binary executable-match re-ward with a three-valued scalar that additionally rewards executable-but-wrong rollouts, distinguish-ing partial progress from outright failure. On the data side, we form a difficulty-smoothed corpus by combining multiple SQL sources, filtering out noisy gold queries, and pruning prompts that the baseline already solves trivially, so that training compute concentrates on instances where the pol-icy still has room to improve. Reward values, filter stack, and pruning thresholds are in Appendix C. 
+
+Two-stage DAPO with threshold-gated entropy. We adopt DAPO (Yu et al., 2025), which builds on group-relative policy optimization for verifiable reasoning (Shao et al., 2024), as the policy-gradient backbone and augment it with a threshold-gated entropy regularizer that fires when policy entropy 
+
+H(πθ) falls below a target, counteracting entropy collapse without paying constant regularization: 
+
+Ltotal (θ) = LDAPO (θ) + went Lent (θ), (1) 
+
+went =
+
+(
+
+β, H(πθ) < H target ,
+
+0, otherwise . (2) Training proceeds in two stages, with the objective shared. An exploration stage keeps rollout space wide on hard prompts, and an exploitation stage resumes from its checkpoint and anneals rollout width while preserving the dynamic-sampling con-straint. Hyperparameters, execution sandbox, and the DAPO surrogate are in Appendix C. 
+
+Generalist and pool union. Gge is an off-the-shelf general-purpose LLM that provides semantic cover-age for long-tail phrasing and implicit constraints, prompted with 5-shot in-context demonstrations while Gsp uses its task-tuned prompt format. Gsp 
+
+contributes high-consensus clusters of execution-equivalent rewrites, while Gge contributes broader coverage of cases that Gsp may miss. At inference time, both generators are sampled under a fixed budget, using multiple prompt routes within each source, and the resulting hypotheses are merged into a single pool. The construction objective is re-duced error correlation rather than diversity alone: candidates from different sources should expose different failure modes, and downstream stages retain source and route metadata as provenance signals. 
+
+3.4 Execution-Grounded Candidate Lifecycle 
+
+Execution is used not only as a final verifier but also as the organizing signal for pool management. The lifecycle is organized into three blocks (Fig-ure 2): (A) Pre-execution Screening, (B) Execution-Grounded Diagnosis, and (C) Failure-Aware Pool Update. The key design choice is to front-load deterministic screening, spend repair budget on execution-near hypotheses, and recycle unresolved failures as negative feedback only when the pool collapses. Appendix D details the high-level proce-dure, repair path, the empty-result operator catalog, and the post-repair rules. 
+
+Pre-execution screening. We first apply rule-based cleanup to common LLM artifacts and then filter the pool with lightweight syntax checks and EXPLAIN -backed schema validation. Candi-dates that fail this stage are removed from the pool before execution. This front-loaded filter is deliberate: obviously malformed SQL (such as comment-prefixed output, missing FROM /SELECT 
+
+clauses, bracket or quote mismatches, or refer-ences to nonexistent tables and columns) should not consume downstream repair budget. Sanitiza-tion rules and validator details are fully specified in Appendix D.1. 
+
+Execution-grounded diagnosis. Surviving candi-dates are executed on the database and classified by a four-way taxonomy ( clean , runtime , timeout ,
+
+empty ), where empty denotes valid queries return-ing zero rows, runtime indicates an engine excep-tion, and timeout is caught by a per-query wall-clock budget. The taxonomy is load-bearing be-cause different classes require structurally different repairs. 
+
+Failure-aware repair and pool consolidation. Ev-ery accepted rewrite is immediately re-executed 
+
+before it can re-enter the pool, and each path is shaped by what the database outcome reveals. A runtime error pinpoints a concrete schema or syn-tax issue, and the engine’s exception text is fed verbatim to the corrector. A timeout indicates a semantically plausible candidate with an inef-ficient query plan, so the rewrite preserves intent and restructures join order or subquery shape. An empty result indicates that the SQL ran but missed the answer (often value-binding errors or over-restrictive predicates), and six high-precision struc-tural operators try local recovery before a diagnosis-conditioned LLM fallback. After repair, a de-terministic projection-normalization pass rewrites noisy SELECT lists into cleaner forms, for example, dropping unrequested numbered variants such as 
+
+Email2 /Email3 or canonicalizing known column bundles. Full operator definitions and post-repair rules are in Appendix D.3–D.4. 
+
+Pool recovery. If post-repair filtering exhausts the pool, a recovery generator receives condensed neg-ative feedback from unresolved candidates, rule-filtered SQLs, and matched failure tags, then regen-erates a replacement pool (Appendix D.4). 
+
+3.5 Confidence-Gated Hybrid Selection 
+
+Given the consolidated pool C(∗) (Figure 2, right), the selector operates in two stages that correspond to the two boxes in the selection panel. Stage 1 
+
+(Result-Level Scorer) computes a single coarse score Scoarse =Smaj +Srm per candidate and takes its argmax as the default winner c(1) . A rule-based confidence gate then decides whether c(1) is suffi-ciently reliable. If not, Stage 2 (Structural-Support Reranker) checks whether another tied class has strictly stronger cross-source structural support and overrides the default winner only in that case. 
+
+Stage 1: Result-level scorer. Let C+={c ∈ C (∗) |
+
+δ(c)= clean } be the successfully executed candi-dates. Stage 1 combines two complementary result-level signals over C+ and picks the argmax of their sum. 
+
+Tuple-level consensus Smaj . We decompose each candidate’s result set into cell-level triples 
+
+T (c)= {(i, col j , v ij )}, count the cross-pool fre-quency of each triple f (t)= |{ c′ ∈ C + | t ∈ T (c′)}| ,and average these frequencies with null -valued cells down-weighted: 
+
+Smaj (c) = 1
+
+|T (c)|
+
+X 
+
+> t∈T (c)
+
+f (t) 1[v(t)̸=null ]. (3) Empty-result candidates receive Smaj =0 and are thus excluded from the consensus (derivation in Appendix E.1). 
+
+Position-debiased pairwise preference Srm . We partition C+ into equivalence classes by result sig-nature σ(c)=frozenset( rows of c).3 We pick one representative per class and query an LLM judge on every pair of representatives in both orderings 
+
+to cancel position bias (Zheng et al., 2023; Wang et al., 2024). Each representative accumulates a wins-minus-losses score broadcast to class mem-bers (Appendix E.3). 
+
+> 3Result-signature grouping lets syntactically different SQL queries share evidence when they return the same tuple set.
+
+Stage 1 then returns 
+
+c(1) = arg max 
+
+> c∈C +
+
+Smaj (c) + Srm (c), (4) with single-signal variants ( freq , majority voting ,
+
+majority-refine , RM ) used in the RQ5 ablation defined in Appendix E.2. Besides the default merged score, the implementation also material-izes an auxiliary consensus-refine statistic used only by the confidence gate. Appendix E gives the implementation-level definition. 
+
+Rule-based confidence gate. The gate is a strict ambiguity detector over Stage-1. Let K=|[C+]σ|
+
+be the number of result-signature classes. The gate fires if and only if the top-2 gaps under 
+
+Scoarse (merge), an auxiliary consensus-refine score Sref (refine), and Srm (RM) are all zero, while 1<K ≤Kmax and the largest class has size 
+
+≤Tmax (values in Appendix E). The zero-margin conjunction ensures escalation only when every Stage-1 signal is simultaneously tied, and the car-dinality bounds exclude pools that are too frag-mented or already dominated, both of which are well-handled by c(1) . Empirically, this restricts Stage 2 to a small fraction of ambiguous questions. 
+
+Stage 2: Structural-support reranker. When the gate fires, a deterministic, LLM-free reranker is ap-plied to the result-signature classes tied at the max-imum Stage-1 coarse score. Let Gtop denote this tied set, and let ˆcg be the representative candidate of class g ∈ G top . Each candidate is parsed into an AST-level structural signature κ(c) capturing its logical skeleton: table set, projection patterns, pro-jected/predicate columns, aggregation/order mark-ers, and a coarse limit bucket (full feature list in Appendix E.5) (Shen et al., 2024). The reranker then measures cross-source support : how many distinct provenance groups srcgrp( c) (generator– route pairs, with model-level fallback) contribute a candidate sharing the same structural signature, so that convergence from multiple independent sources outweighs support concentrated within one generator. For each tied class, let 
+
+Sg = {c ∈ C (∗) | κ(c)= κ(ˆ cg)},
+
+supp( g) = {srcgrp( c) | c ∈ S g} ,g∗ = arg max  
+
+> g∈ G top
+
+supp( g), (5) where Sg is the support set of candidates sharing the same structural signature as representative ˆcg.
+
+Final decision. Let g(1) be the result-signature class containing c(1) . The structural branch over-rides the Stage-1 winner only when gate (x) holds and a competing tied class receives strictly stronger support, i.e. supp( g∗) > supp( g(1) ). Otherwise 
+
+y=c(1) . The only LLM calls used in selection are those already required to compute Srm in Stage 1. Algorithm 2 in Appendix E gives full procedure. 
+
+4 Experimental Setup 
+
+We evaluate on BIRD (Li et al., 2023) (1,534 dev questions, 95 databases) as the primary benchmark and S PIDER (Yu et al., 2018) (2,147 test questions) for generalization. All ablations run on BIRD dev. We report execution accuracy (EX) with a difficulty breakdown on BIRD. Evaluation-protocol details, including benchmark-specific execution matching rules, are in Appendix B.2. All main runs use the default enriched schema context. Schema-variant ablations are reported in Appendix B.4.3. The specialist is SIRIUS-32B (Appendix C). Generalist partners are Qwen3-235B-Instruct-2507 (Team, 2025), Gemini-3.1-Pro-Preview, and Qwen3-Coder-30B-A3B-Instruct. Each question receives up to 32 candidates across generators. Serving, timeout, decoding, and backbone-matched baseline details are in Appen-dices B.1 and B.3. 
+
+5 Results and Analysis 
+
+We organize our study around five RQs. RQ1 (§5.1) compares SIRIUS-SQL against published systems. RQ2–RQ5 are ablations isolating each design decision on BIRD dev: difficulty-smoothed data synthesis (§5.2), complementary candidate construction (§5.3), failure-aware repair (§5.4), and confidence-gated selection (§5.5). 
+
+5.1 RQ1: How Does SIRIUS-SQL Compare to Prior Systems? 
+
+SIRIUS-SQL outperforms all baselines on both benchmarks and generalizes across generalist part-ners (Table 1). On BIRD dev, SIRIUS-32B + Gemini-3.1 Pro reaches 75 .88 EX, +0 .98 above Agentar-Scale-SQL ( 74 .90 ). Over the best single-pass generalist (Gemini-3.1 Pro), SIRIUS-SQL improves Moderate by +9 .48 and Challenging by 
+
++12 .42 . All three pairings improve over both their specialist alone ( ≥ +2 .54 EX) and their corre-sponding generalist baseline ( ≥ +7 .82 EX), and their ordering tracks each generalist’s standalone strength, supporting partner-robust pipeline gains. On S PIDER test, the same configuration transfers without retuning to 91 .20 EX, above all baselines. 0 250 500 750 1000 1250 1500 1750          
+
+> Training step
+> 0.56
+> 0.60
+> 0.64
+> 0.68
+> 0.72
+> Reward
+> BIRD (val reward @1)
+> 0.703
+> 0.684
+> +1.8 pp
+> 230 steps earlier
+> 0250 500 750 1000 1250 1500 1750
+> Training step
+> 0.64
+> 0.68
+> 0.72
+> 0.76
+> 0.80 Spider (val reward @1)
+> 0.763
+> 0.757
+> +0.5 pp
+> 780 steps earlier
+> w/ smoothed synthesis (ours) w/o smoothed synthesis
+
+Figure 3: Training-source validation reward@1 during 7B specialist RL, with and without difficulty-smoothed data synthesis. 
+
+5.2 RQ2: Does Difficulty-Smoothed Data Synthesis Help Specialist RL Training? 
+
+We isolate the effect of difficulty-smoothed data synthesis (§3.3) at 7B scale: only the data synthesis procedure is toggled, with all other training settings held fixed (Appendix C). Figure 3 shows that difficulty-smoothed synthe-sis reaches a higher peak validation reward and 
+
+reaches it earlier on both benchmarks: peak 0.703 
+
+on BIRD ( +1 .8 pp, 230 steps earlier) and 0.763 
+
+on S PIDER (+0 .5 pp, 780 steps earlier). Smooth-ing concentrates the training corpus on prompts where the baseline is genuinely uncertain, so each RL batch carries a more informative reward sig-nal throughout training. We then apply the same recipe to train SIRIUS-32B (specialist for all main runs); the 32B curve and additional diagnostics are in Appendix C and C.5. 
+
+5.3 RQ3: Does Complementary Candidate Construction Help? 
+
+RQ3 asks whether candidate construction makes correct SQL both reachable (measured by Oracle@ k) and selectable (proxied by majority voting), rather than merely increasing the sample count. We compare variants on BIRD dev under a matched candidate budget: each hybrid variant produces Ns=16 specialist samples (task-specific prompt) and Ng=16 generalist samples (5-shot ICL prompt), and single-source variants sample one generator Ns+Ng times. All variants share the same lifecycle and selector. Scaling Qwen3-Coder alone (V6) reaches a higher Oracle than scaling SIRIUS-32B alone (V7) (80 .18 vs. 78 .42 ), but its majority vote is lower (71 .38 vs. 73 .14 ). The two strengths complement each other: the generalist often reaches a correct SQL without enough within-pool support, while SIRIUS-32B has lower reachability but stronger consensus among its sampled candidates. Holding the generalist fixed, replacing the second generalist Table 1: Main results. Execution accuracy on BIRD dev (1,534 questions, with difficulty breakdown) and S PIDER 
+
+1.0 test (2,147 questions, gold execution). †: source paper. §: public leaderboard. Unmarked: our runs. 
+
+BIRD SPIDER 
+
+Method Model Simple ↑ Moderate ↑ Challenging ↑ Exec. ↑ Exec. ↑
+
+GPT-4o † GPT-4o – – – 61.9 83.2 Qwen3-Coder Qwen3-Coder-30B 69.73 54.31 47.59 62.97 85.10 Qwen3-235B Qwen3-235B 72.54 58.41 53.10 66.43 86.21 Gemini-3.1 Pro Gemini-3.1 Pro 74.27 60.78 51.72 68.06 88.02 DIN-SQL § GPT-4 – – – 50.72 85.3 DAIL-SQL § GPT-4 – – – 54.76 86.6 MCS-SQL † GPT-4 8K – – – 63.4 89.6 OmniSQL † OmniSQL-32B – – – 67.0 89.8 OpenSearch-SQL † GPT-4o – – – 69.3 87.1 Arctic-Text2SQL-R1 † Arctic-Text2SQL-R1-32B – – – 70.5 88.7 DeepEye-SQL Qwen3-235B 76.22 64.87 59.31 71.12 87.61 Reasoning-SQL † Qwen2.5-Coder-14B – – – 72.29 81.43 CHASE-SQL † Gemini 1.5 – – – 73.01 87.6 XiYan-SQL † XiYanSQL-32B + GPT-4o – – – 73.34 89.65 DeepEye-SQL † Qwen3-Coder-30B – – – 73.53 89.8 LongData-SQL § – – – – 74.32 –Agentar-Scale-SQL § Agentar-32B + Gemini – – – 74.90 –SIRIUS SIRIUS-32B 76.22 67.67 58.62 71.97 89.99 SIRIUS-SQL SIRIUS-32B + Qwen3-Coder-30B 79.24 68.97 62.07 74.51 89.85 SIRIUS-SQL SIRIUS-32B + Qwen3-235B 80.00 69.40 64.14 75.30 90.41 SIRIUS-SQL SIRIUS-32B + Gemini-3.1 Pro 80.54 70.26 64.14 75.88 91.20 
+
+Table 2: Candidate construction ablation (RQ3). 5-shots :
+
+k=1 greedy decoding with 5 in-context demonstrations. 
+
+matched : k=Ns+Ng samples drawn from the single source under the same total budget as Hybrid.                                                                          
+
+> #Variant kOracle@ k↑Maj Voting ↑Final Exec. ↑
+> V1 Qwen3-coder (5-shots) 1--66.56 ↓7.95
+> V2 Qwen3-235B (5-shots) 1--69.30 ↓5.21
+> V3 XiYanSQL-32B 1--64.28 ↓10.23
+> V4 Agentar-32B 1--70.66 ↓3.85
+> V5 SIRIUS-32B 1--71.97 ↓2.54
+> V6 Qwen3-Coder only Ns+Ng80.18 71.38 72.08 ↓2.43
+> V7 SIRIUS-32B only Ns+Ng78.42 73.14 73.27 ↓1.24
+> V8 Qwen3-235B+Qwen3-Coder Ns+Ng80.52 72.26 72.41 ↓2.10
+> V9 XiYanSQL-32B+Qwen3-Coder Ns+Ng83.25 72.69 72.88 ↓1.63
+> V10 Agentar-32B+Qwen3-Coder Ns+Ng82.59 74.05 73.92 ↓0.59
+> V11 Our (SIRIUS-32B+Qwen3-Coder) Ns+Ng82.66 74.12 74.51
+
+(V8: Qwen3-235B+Coder, 72 .41 ) with our RL-trained specialist (V11) adds +2 .10 EX and lifts Oracle by +2 .14 pp, isolating the value of having an SQL-specialized, RL-trained source in the pool. V8–V10 replace SIRIUS-32B with concurrent specialists. Their Oracle ceilings are comparable (80 .52 –83 .25 vs. 82 .66 ), but SIRIUS-32B gives the best majority voting and final EX, and Figure 4 shows why. XiYanSQL-32B starts higher at t=1 
+
+(78 .62% vs. 76 .40% ) but collapses to 45 .24% at 
+
+t=16 , while SIRIUS-32B stays at 70 .93% at t≥10 
+
+and 64 .99% at t=16 . Thus, SIRIUS-32B supplies fewer isolated hits and more high-support correct clusters, which follows from the RLVR training in §3.3: rewards depend only on execution cor-rectness, so the trained specialist tends to sample multiple SQL rewrites that share the same correct execution result, anchoring majority voting once 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16                
+
+> Correct-candidate threshold t
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Questions with  t correct
+> out of 16 (%)
+> Sothis-32B
+> Agentar-32B
+> XiYanSQL-32B
+> Qwen3-235B
+> Qwen3-Coder-32B
+> 0123
+> 74
+> 76
+> 78
+> 80 Zoom: t3
+> 10 11 12 13 14 15 16
+> 50
+> 60
+> 70
+> Zoom: t10
+
+Figure 4: Correct-candidate concentration in single-source 16 -sample pools. Each curve plots the fraction of questions with at least t execution-correct candidates. The point t=1 is Oracle@16, while a larger t indicates stronger support for voting and selection. 
+
+merged with a broad generalist. 
+
+5.4 RQ4: Does Failure-Aware Repair Beat Unified Correction? 
+
+The full type-specific lifecycle outperforms every ablated variant by 0.13 –0.71 pp (Table 3). We fix the default Hybrid pool (SIRIUS-32B + Qwen3-Coder unless noted otherwise) with exact-result majority voting as the selector, isolating the lifecy-cle alone. The most informative row is coarse LLM re-pair (−0.32 ), which routes non-clean candidates through a generic corrector that sees only the failed SQL. It underperforms even dropping them out-right ( −0.26 ): without the typed signal, the correc-tor treats a timeout from a costly join the same as a silently empty predicate, and produces plausibly-Table 3: Lifecycle ablation (RQ4) with selector held at exact-result majority voting. 
+
+Variant Exec. ↑ Oracle@ k ↑
+
+w/o lifecycle 74.32 ↓0.71 81.49 w/o pre-execution screening 74.90 ↓0.13 82.40 w/o failure typing (drop failures) 74.77 ↓0.26 81.55 w/o failure typing (coarse LLM repair) 74.71 ↓0.32 81.81 w/o post-repair filtering 74.77 ↓0.26 82.14 
+
+SIRIUS-SQL (full lifecycle) 75.03 82.27 clean 47,836 (97.4%) empty 1,043 · timeout 47 · val. 162             
+
+> Sothis-32B + Gemini-3.1 Pro
+> Empty 480/1043 (46%)
+> HP 223/1043 (21%)
+> LLM 257/820 (31%)
+> Timeout 42/47 (89%)
+> Valid. 162/162 (100%)
+> Regen 14/14 (100%)
+> Regen counts are per-question, not per-candidate.
+> clean validation timeout empty zero-cand. fixed unfixed
+
+Figure 5: Per-mechanism repair rates on the SIRIUS-32B + Gemini-3.1 Pro pool ( 49 ,088 candidates on BIRD dev). Per-model breakdowns in Appendix Fig. 9. 
+
+clean but still-wrong rewrites that outvote the cor-rect ones. The typed dispatch in §3.4 routes each outcome to a structurally different repair path, which is what the coarse-LLM ablation removes. Fig. 5 attributes the +0 .71 pp gain to where each lifecycle component is actually doing work. The three components consume non-overlapping slices of the candidate population. Pre-execution screen-ing is responsible for the near-zero runtime-error bar: schema-mismatch candidates are filtered be-fore reaching execution-grounded diagnosis, so al-most no runtime errors survive to the typed-repair stage. The cross-check is the second row of Ta-ble 3: removing screening exposes 92 runtime-error candidates to the back-end repair path, re-sulting in a −0.13 pp drop in Final Exec. The cost-oriented prompt for timeouts (§3.4) resolves nearly all timeout candidates, since such candidates typi-cally differ from correct ones only in join efficiency. Two-stage empty-result repair is the hardest cate-gory: the high-precision (HP) structural operators (Stage 1) and the LLM fallback (Stage 2) together recover close to half of all empty-result candidates, with the remainder dominated by value-binding and projection mismatches. 
+
+5.5 RQ5: Does Confidence-Gated Selection Beat Single-Signal Selectors? 
+
+Two complementary signals already account for nearly all the gap between single-signal selectors and the full system, while a deterministic gate pro-
+
+Table 4: Selector ablation (RQ5). Variant definitions in Appendix E.2. merge = Smaj + Srm (§3.5).                                      
+
+> Selector Simple ↑Moderate ↑Challenging ↑Exec. ↑
+> freq 79.24 70.04 63.45 74.97 ↓0.91
+> majority voting 79.57 70.04 62.07 75.03 ↓0.85
+> majority-refine 79.35 69.61 63.45 74.90 ↓0.98
+> RM 79.24 69.40 58.62 74.32 ↓1.56
+> merge 80.32 70.04 64.14 75.68 ↓0.20
+> SIRIUS-SQL (merge + gate) 80.54 70.26 64.14 75.88
+
+vides a zero-cost robustness check on the resid-ual ties (Table 4). We fix the Hybrid pool with Gemini-3.1 Pro as a generalist (the configuration that achieves the headline 75 .88 EX) and the full failure-aware lifecycle, varying only the selector. Selector variants and RM training are detailed in Appendix E.2 and E.4. Most of the gain comes from merge , the simple sum Smaj +Srm . The three voting variants (freq, majority, majority-refine) cluster within 0.13 pp of each other at 74 .9–75 .0, indicating that result-level consensus on its own has saturated. RM alone is the weakest single signal at 74 .32 , because pair-wise preference ranks representatives within a clus-ter of execution-equivalent candidates rather than discriminating across clusters. Merge combines the two without learned weighting and lifts EX to 
+
+75 .68 (+0 .65 over majority voting). The gate fires only when the top-two gaps in all three scores (merge, consensus-refine, RM) van-ish simultaneously and multiple result-signature classes are present within size limits (§3.5). The gate then reverts to AST-level structural support without additional LLM calls. The resulting +0 .20 
+
+EX affects only a small minority of dev questions and is Pareto-improving: same compute, higher accuracy, no parameters tuned across pools. 
+
+6 Conclusion 
+
+We address three structural limitations of multi-candidate Text-to-SQL voting (L1–L3) by anchor-ing every stage of the pipeline in execution feed-back. SIRIUS-SQL pairs an RLVR-trained SQL specialist with a generalist LLM, refines the re-sulting pool through an execution-grounded lifecy-cle with type-specific repair, and selects the final SQL with a hybrid selector that resolves most ques-tions by pooled result-level evidence and escalates only low-margin cases to a deterministic structural check. SIRIUS-SQL reaches 75 .88% on BIRD dev and 91 .20% on S PIDER test. Two of three gen-eralist pairings surpass Agentar-Scale-SQL, and all three improve over their generalist baselines. 7 Limitations 
+
+SIRIUS-SQL requires both a domain-specialized RL-trained model and a strong generalist LLM. De-ployments that lack either will not benefit equally. The empirical residual headroom of the lifecycle focuses on empty-result candidates whose errors are dominated by value-binding and projection mis-matches (Fig. 5), where our type-specific operators recover roughly half of these candidates, but the remainder remains a hard frontier. Finally, compar-isons to published systems rely on their reported numbers and may differ in the retrieval pipeline, schema linking, or backbone. We therefore use the backbone-matched controls in RQ3 as the primary evidence for the design choices. 
+
+Ethics Statement 
+
+This work focuses on benchmark evaluation of Text-to-SQL systems and does not involve human subjects, private data, or dual-use concerns. All ex-periments use publicly available benchmarks and models. We use publicly available benchmarks and models according to their intended research use and applicable licenses or terms of use. Any released model checkpoints and derived artifacts will be distributed under licenses compatible with the applicable licenses and terms of the underlying resources. 
+
+References 
+
+Ben Bogin, Jonathan Berant, and Matt Gardner. 2019. Representing schema structure with graph neural net-works for text-to-sql parsing. In Proceedings of the 57th Annual Meeting of the Association for Compu-tational Linguistics , pages 4560–4565. Jipeng Cen, Jiaxin Liu, Zhixu Li, and Jingjing Wang. 2025. Sqlfixagent: Towards semantic-accurate text-to-sql parsing via consistency-enhanced multi-agent collaboration. In Thirty-Ninth AAAI Conference on Artificial Intelligence, Thirty-Seventh Conference on Innovative Applications of Artificial Intelligence, Fif-teenth Symposium on Educational Advances in Artifi-cial Intelligence, AAAI 2025, Philadelphia, PA, USA, February 25 - March 4, 2025 , pages 49–57. AAAI Press. Yujian Gan, Xinyun Chen, Jinxia Xie, Matthew Purver, John R. Woodward, John H. Drake, and Qiaofu Zhang. 2021. Natural SQL: making SQL easier to infer from natural language specifications. In Find-ings of the Association for Computational Linguistics: EMNLP 2021, Virtual Event / Punta Cana, Domini-can Republic, 16-20 November, 2021 , Findings of ACL, pages 2030–2042. Association for Computa-tional Linguistics. Dawei Gao, Haibin Wang, Yaliang Li, Xiuyu Sun, Yichen Qian, Bolin Ding, and Jingren Zhou. 2024. Text-to-sql empowered by large language models: A benchmark evaluation. Proceedings of the VLDB Endowment , 17(5):1132–1145. Mingqian He, Yongliang Shen, Wenqi Zhang, Qiuying Peng, Jun Wang, and Weiming Lu. 2025. Star-sql: Self-taught reasoner for text-to-sql. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), ACL 2025, Vienna, Austria, July 27 - August 1, 2025 ,pages 24365–24375. Association for Computational Linguistics. Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gon-zalez, Hao Zhang, and Ion Stoica. 2023. Efficient memory management for large language model serv-ing with pagedattention. In Proceedings of the 29th symposium on operating systems principles , pages 611–626. Dongjun Lee, Choongwon Park, Jaehyuk Kim, and Heesoo Park. 2025a. Mcs-sql: Leveraging multiple prompts and multiple-choice selection for text-to-sql generation. In Proceedings of the 31st International Conference on Computational Linguistics , pages 337– 353. Jimin Lee, Ingeol Baek, Byeongjeong Kim, Hyunkyung Bae, and Hwanhee Lee. 2025b. SAFE-SQL: self-augmented in-context learning with fine-grained ex-ample selection for text-to-sql. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing, EMNLP 2025, Suzhou, China, November 4-9, 2025 , pages 19023–19035. Associa-tion for Computational Linguistics. Fangyu Lei, Jixuan Chen, Yuxiao Ye, Ruisheng Cao, Dongchan Shin, Hongjin Su, Zhaoqing Suo, Hongcheng Gao, Wenjing Hu, Pengcheng Yin, Vic-tor Zhong, Caiming Xiong, Ruoxi Sun, Qian Liu, Sida Wang, and Tao Yu. 2025. Spider 2.0: Evaluat-ing language models on real-world enterprise text-to-sql workflows. In The Thirteenth International Conference on Learning Representations, ICLR 2025, Singapore, April 24-28, 2025 . OpenReview.net. Boyan Li, Chong Chen, Zhujun Xue, Yinan Mei, and Yuyu Luo. 2025a. Deepeye-sql: A software-engineering-inspired text-to-sql framework. arXiv preprint arXiv:2510.17586 .Boyan Li, Jiayi Zhang, Ju Fan, Yanwei Xu, Chong Chen, Nan Tang, and Yuyu Luo. Alpha-sql: Zero-shot text-to-sql using monte carlo tree search. In Forty-second International Conference on Machine Learning .Haoyang Li, Shang Wu, Xiaokang Zhang, Xinmei Huang, Jing Zhang, Fuxin Jiang, Shuai Wang, Tiey-ing Zhang, Jianjun Chen, Rui Shi, Hong Chen, and Cuiping Li. 2025b. Omnisql: Synthesizing high-quality text-to-sql data at scale. Proc. VLDB Endow. ,18(11):4695–4709. Haoyang Li, Jing Zhang, Hanbing Liu, Ju Fan, Xi-aokang Zhang, Jun Zhu, Renjie Wei, Hongyan Pan, Cuiping Li, and Hong Chen. 2024. Codes: Towards building open-source language models for text-to-sql. 
+
+Proceedings of the ACM on Management of Data ,2(3):1–28. Jinyang Li, Binyuan Hui, Ge Qu, Jiaxi Yang, Binhua Li, Bowen Li, Bailin Wang, Bowen Qin, Ruiying Geng, Nan Huo, Xuanhe Zhou, Chenhao Ma, Guoliang Li, Kevin Chen-Chuan Chang, Fei Huang, Reynold Cheng, and Yongbin Li. 2023. Can LLM already serve as A database interface? A big bench for large-scale database grounded text-to-sqls. In Advances in Neural Information Processing Systems 36: Annual Conference on Neural Information Processing Sys-tems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023 .Zhishuai Li, Xiang Wang, Jingjing Zhao, Sun Yang, Guoqing Du, Xiaoru Hu, Bin Zhang, Yuxiao Ye, Ziyue Li, Hangyu Mao, and Rui Zhao. 2025c. PET-SQL: A prompt-enhanced two-round refinement of text-to-sql with cross-consistency. In Database Sys-tems for Advanced Applications - 30th International Conference, DASFAA 2025, Singapore, Singapore, May 26-29, 2025, Proceedings, Part II , Lecture Notes in Computer Science, pages 193–208. Springer. Xi Victoria Lin, Richard Socher, and Caiming Xiong. 2020. Bridging textual and tabular data for cross-domain text-to-sql semantic parsing. In Findings of the Association for Computational Linguistics: EMNLP 2020 , pages 4870–4888. Yifu Liu, Yin Zhu, Yingqi Gao, Zhiling Luo, Xiaoxia Li, Xiaorong Shi, Yuntao Hong, Jinyang Gao, Yu Li, Bolin Ding, and Jingren Zhou. 2026. Xiyan-sql: A novel multi-generator framework for text-to-sql. 
+
+IEEE Trans. Knowl. Data Eng. , 38(4):2474–2487. Peixian Ma, Xialie Zhuang, Chengjin Xu, Xuhui Jiang, Ran Chen, and Jian Guo. 2025. SQL-R1: Training natural language to SQL reasoning model by reinforcement learning. arXiv preprint arXiv:2504.08600 . Accepted at NeurIPS 2025. Wenxin Mao, Ruiqi Wang, Jiyu Guo, Jichuan Zeng, Cuiyun Gao, Peiyi Han, and Chuanyi Liu. 2024. En-hancing text-to-sql parsing through question rewrit-ing and execution-guided refinement. In Findings of the Association for Computational Linguistics: ACL 2024 , pages 2009–2024. Mohammadreza Pourreza, Hailong Li, Ruoxi Sun, Yeounoh Chung, Shayan Talaei, Gaurav Tarlok Kakkar, Yu Gan, Amin Saberi, Fatma Ozcan, and Sercan Ö. Arik. 2025a. CHASE-SQL: multi-path reasoning and preference optimized candidate selec-tion in text-to-sql. In The Thirteenth International Conference on Learning Representations, ICLR 2025, Singapore, April 24-28, 2025 . OpenReview.net. Mohammadreza Pourreza and Davood Rafiei. 2023. Din-sql: Decomposed in-context learning of text-to-sql with self-correction. Advances in neural infor-mation processing systems , 36:36339–36348. Mohammadreza Pourreza, Shayan Talaei, Ruoxi Sun, Xingchen Wan, Hailong Li, Azalia Mirhoseini, Amin Saberi, and Sercan Ö. Arik. 2025b. Reasoning-sql: Reinforcement learning with SQL tailored partial rewards for reasoning-enhanced text-to-sql. CoRR ,abs/2503.23157. Jiexing Qi, Jingyao Tang, Ziwei He, Xiangpeng Wan, Yu Cheng, Chenghu Zhou, Xinbing Wang, Quanshi Zhang, and Zhouhan Lin. 2022. Rasat: Integrating relational structures into pretrained seq2seq model for text-to-sql. In Proceedings of the 2022 conference on empirical methods in natural language processing ,pages 3215–3229. Ge Qu, Jinyang Li, Bowen Li, Bowen Qin, Nan Huo, Chenhao Ma, and Reynold Cheng. 2024. Before generation, align it! a novel and effective strategy for mitigating hallucinations in text-to-sql generation. In Findings of the Association for Computational Linguistics: ACL 2024 , pages 5456–5471. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. 2024. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. CoRR , abs/2402.03300. Zhili Shen, Pavlos Vougiouklis, Chenxin Diao, Kaus-tubh Vyas, Yuanyi Ji, and Jeff Z Pan. 2024. Improv-ing retrieval-augmented text-to-sql with ast-based ranking and schema pruning. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing , pages 7865–7879. Noah Shinn, Federico Cassano, Ashwin Gopinath, Karthik Narasimhan, and Shunyu Yao. 2023. Re-flexion: language agents with verbal reinforcement learning. In Advances in Neural Information Pro-cessing Systems 36: Annual Conference on Neural Information Processing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023 .Shayan Talaei, Mohammadreza Pourreza, Yu-Chen Chang, Azalia Mirhoseini, and Amin Saberi. 2024. Chess: Contextual harnessing for efficient sql synthe-sis. arXiv preprint arXiv:2405.16755 .Qwen Team. 2025. Qwen3 technical report. CoRR ,abs/2505.09388. Bailin Wang, Richard Shin, Xiaodong Liu, Oleksandr Polozov, and Matthew Richardson. 2020. Rat-sql: Relation-aware schema encoding and linking for text-to-sql parsers. In Proceedings of the 58th annual meeting of the association for computational linguis-tics , pages 7567–7578. Bing Wang, Changyu Ren, Jian Yang, Xinnian Liang, Ji-aqi Bai, Linzheng Chai, Zhao Yan, Qian-Wen Zhang, Di Yin, Xing Sun, and Zhoujun Li. 2025a. MAC-SQL: A multi-agent collaborative framework for text-to-sql. In Proceedings of the 31st International Conference on Computational Linguistics, COLING 2025, Abu Dhabi, UAE, January 19-24, 2025 , pages 540–557. Association for Computational Linguistics. Peiyi Wang, Lei Li, Liang Chen, Zefan Cai, Dawei Zhu, Binghuai Lin, Yunbo Cao, Lingpeng Kong, Qi Liu, Tianyu Liu, and Zhifang Sui. 2024. Large language models are not fair evaluators. In Proceedings of the 62nd Annual Meeting of the Association for Compu-tational Linguistics (Volume 1: Long Papers), ACL 2024, Bangkok, Thailand, August 11-16, 2024 , pages 9440–9450. Association for Computational Linguis-tics. Pengfei Wang, Baolin Sun, Xuemei Dong, Yaxun Dai, Hongwei Yuan, Mengdie Chu, Yingqi Gao, Xiang Qi, Peng Zhang, and Ying Yan. 2025b. Agentar-scale-sql: Advancing text-to-sql through orchestrated test-time scaling. arXiv preprint arXiv:2509.24403 .Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc V. Le, Ed H. Chi, Sharan Narang, Aakanksha Chowd-hery, and Denny Zhou. 2023. Self-consistency improves chain of thought reasoning in language models. In The Eleventh International Conference on Learning Representations, ICLR 2023, Kigali, Rwanda, May 1-5, 2023 . OpenReview.net. Yihan Wang, Peiyu Liu, and Xin Yang. 2025c. Linkalign: Scalable schema linking for real-world large-scale multi-database text-to-sql. In Proceed-ings of the 2025 Conference on Empirical Methods in Natural Language Processing , pages 977–991. Yuanzhen Xie, Xinzhou Jin, Tao Xie, Mingxiong Lin, Liang Chen, Chenyun Yu, Cheng Lei, Chengxiang Zhuo, Bo Hu, and Zang Li. 2024. Decomposition for enhancing attention: Improving llm-based text-to-sql through workflow paradigm. In Findings of the Association for Computational Linguistics, ACL 2024, Bangkok, Thailand and virtual meeting, August 11-16, 2024 , Findings of ACL, pages 10796–10816. Association for Computational Linguistics. Wenbo Xu, Haifeng Zhu, Liang Yan, Chuanyi Liu, Peiyi Han, Shaoming Duan, and Jeff Z Pan. 2025. Ts-sql: Test-driven self-refinement for text-to-sql. In Find-ings of the Association for Computational Linguistics: EMNLP 2025 , pages 2864–2889. Jiaxi Yang, Binyuan Hui, Min Yang, Jian Yang, Junyang Lin, and Chang Zhou. 2024. Synthesizing text-to-sql data from weak and strong llms. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,pages 7864–7875. Zhewei Yao, Guoheng Sun, Lukasz Borchmann, Zheyu Shen, Minghang Deng, Bohan Zhai, Hao Zhang, Ang Li, and Yuxiong He. 2025. Arctic-text2sql-r1: Sim-ple rewards, strong reasoning in text-to-sql. CoRR ,abs/2505.20315. Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Tiantian Fan, Gaohong Liu, Lingjun Liu, Xin Liu, Haibin Lin, Zhiqi Lin, Bole Ma, Guangming Sheng, Yuxuan Tong, Chi Zhang, Mofan Zhang, Wang Zhang, Hang Zhu, Jinhua Zhu, Jiaze Chen, Jiangjie Chen, Chengyi Wang, Hongli Yu, Weinan Dai, Yuxuan Song, Xiangpeng Wei, Hao Zhou, Jingjing Liu, Wei-Ying Ma, Ya-Qin Zhang, Lin Yan, Mu Qiao, Yonghui Wu, and Mingxuan Wang. 2025. DAPO: an open-source LLM reinforcement learning system at scale. CoRR , abs/2503.14476. Tao Yu, Rui Zhang, Kai Yang, Michihiro Yasunaga, Dongxu Wang, Zifan Li, James Ma, Irene Li, Qingning Yao, Shanelle Roman, Zilin Zhang, and Dragomir R. Radev. 2018. Spider: A large-scale human-labeled dataset for complex and cross-domain semantic parsing and text-to-sql task. In Proceed-ings of the 2018 Conference on Empirical Methods in Natural Language Processing, Brussels, Belgium, October 31 - November 4, 2018 , pages 3911–3921. Association for Computational Linguistics. Jipeng Zhang, Haolin Yang, Kehao Miao, Ruiyuan Zhang, Renjie Pi, Jiahui Gao, and Xiaofang Zhou. 2025a. Exesql: Self-taught text-to-sql models with execution-driven bootstrapping for sql dialects. In 
+
+Findings of the Association for Computational Lin-guistics: EMNLP 2025 , pages 24305–24326. Yuhao Zhang, Shaoming Duan, Jinhang Su, Chuanyi Liu, and Peiyi Han. 2025b. Spft-sql: Enhancing large language model for text-to-sql parsing by self-play fine-tuning. arXiv preprint arXiv:2509.03937 .Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric P. Xing, Hao Zhang, Joseph E. Gonzalez, and Ion Stoica. 2023. Judging llm-as-a-judge with mt-bench and chatbot arena. In 
+
+Advances in Neural Information Processing Systems 36: Annual Conference on Neural Information Pro-cessing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023 .Ruiqi Zhong, Tao Yu, and Dan Klein. 2020. Semantic evaluation for text-to-sql with distilled test suites. In 
+
+Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP) ,pages 396–411. A Appendix Overview 
+
+This appendix is organized to mirror the evidence chain in the main paper. Appendix B first fixes the experimental protocol, baseline settings, and input schema context used across all runs. Appendix C then expands L1, covering specialist training, dif-ficulty smoothing, the DAPO objective, the execu-tion sandbox, and training diagnostics. Appendix D expands L2, giving the execution-grounded candi-date lifecycle, its diagnostic taxonomy, repair oper-ators, and additional failure-breakdown evidence. Appendix E expands L3, including tuple-level con-sensus, score-family ablations, position-debiased pairwise preference, the pairwise reward model, and structural-signature features. Algorithms 1 and 2 are placed inside their corresponding L2 and L3 sections. Appendix F collects extended discus-sion. The appendix figures are marked at the point where they support the main experimental claims: Fig. 6 and Fig. 7 support L1 training, Fig. 8 adds the critic-reward diagnostic for RQ2, and Fig. 9 expands the L2 failure analysis. 
+
+B Experimental Protocol and Input Context 
+
+This section collects the implementation, evalua-tion, baseline, and input-context details that are summarized in compact form in §4 of the main paper. 
+
+B.1 Serving, Timeouts, and Decoding Profiles 
+
+Open-weight models (Sothis-32B, Qwen3-235B-Instruct-2507, Qwen3-Coder-30B-A3B-Instruct) are served through OpenAI-compatible endpoints with vLLM 0.11 (Kwon et al., 2023). Gemini-3.1-Pro-Preview is accessed through its hosted API. Query execution uses two timeout budgets: 120 sec-onds during the candidate lifecycle, and 30 seconds during selection-time re-execution. The tighter selection-time budget rejects candidates whose ear-lier acceptance depended on a transient long run, while the lifecycle budget is loose enough to avoid penalizing expensive but correct queries during re-pair. Each question receives 16 candidates from the specialist and 16 from the generalist, for a total of 32 candidates per question. Within each source, samples are drawn with a fixed temperature profile and multiple prompt routes; route and decoding metadata are attached to every candidate as prove-nance signals consumed by the selector. 
+
+B.2 Evaluation Protocol Details 
+
+All results are reported under each benchmark’s official evaluation protocol. 4 BIRD adopts the stricter criterion: beyond matching the set of re-turned rows, the element order within each row (i.e., column order) must also match the gold result. SPIDER ignores column order and only requires value equivalence on each row. The BIRD diffi-culty breakdown (simple / moderate / challenging) follows the official BIRD release. 
+
+B.3 Backbone-Matched Baseline Configurations 
+
+The “backbone-matched” baselines in Table 1 all share the same scaffold as SIRIUS-SQL (schema linking, prompt routes, candidate budget) and differ only in the candidate sources or the selector: • Qwen3 self-consistency. Samples 16 SQL can-didates from Qwen3-235B-Instruct-2507 (Team, 2025) and resolves them by majority voting only, with no lifecycle and no hybrid selector. • Sothis-only pipeline. Uses only the specialist generator Sothis-32B for all 32 candidates, then runs the full execution-grounded lifecycle and hybrid selector. • Qwen3-only pipeline. Uses only the generalist Qwen3-235B-Instruct-2507 (Team, 2025) for all 
+
+32 candidates, then runs the full lifecycle and hybrid selector. • SIRIUS-SQL (full). Pairs Sothis-32B with the generalist partner ( 16+16 candidates) and runs the full lifecycle and hybrid selector. The prompted single-model rows at the top of Table 1 (Qwen3-Coder, Qwen3-235B, Gemini-3.1 Pro, Sothis-32B) use the same linked-schema prompt under 5-shot prompting but remove the life-cycle and selector entirely, reporting the single-pass EX of each backbone. 
+
+B.4 Schema Context Construction 
+
+We formalize the question-specific schema context introduced in §3.3. Given a question q and a target database d, the runtime always loads an offline schema prompt 
+
+s = Φ( q, d ), (6) where s is a prompt-ready schema description (ta-ble DDLs, column names, foreign-key edges, inline 
+
+> 4We use the public scripts distributed by the benchmark organizers without modifying correctness criteria.
+
+per-column comments, and short per-column ex-amples). Optionally, the runtime may also inject a question-level value-hint block 
+
+h = Ψ( q, d ), (7) when such hints are provided by an external cache. The main runs reported in this paper always use the offline schema prompt s; value hints h are supported by the implementation but are optional rather than assumed. When available, they are for-warded together with the question and evidence as structured grounding context (q, e, s, h ).5 This design keeps the online pipeline lightweight and makes candidate generation reproducible across runs. 
+
+B.4.1 Schema Representation Format 
+
+We adopt an enriched DDL representation that aug-ments the standard CREATE TABLE skeleton with two additional information channels: (i) column comments that disambiguate cryptic or abbrevi-ated column names, and (ii) question-conditioned example values that ground the model’s under-standing of the data distribution. Unless otherwise specified, this subsection describes the default en-riched schema context (DES) used by our main pipeline. Listing 1 shows a representative fragment of our enriched schema format; Listing 2 shows the same tables under a plain DDL baseline (Wang et al., 2025b) that retains only structural metadata. 
+
+Listing 1: Enriched schema format used by SIRIUS-SQL (excerpt from the financial database). 
+
+> CREATE TABLE account ( account_id integer, -- example: [1, 2] district_id integer, -- location of branch, example: [18, 1] frequency text, -- example: [’POPLATEK PO OBRATU’, ’POPLATEK MESICNE’] ‘date‘ date, -- example: [’1995-03-24’, ’1993-02-26’] PRIMARY KEY (account_id), CONSTRAINT fk_account_district_id FOREIGN KEY (district_id) REFERENCES district (district_id) ); CREATE TABLE district ( district_id integer, -- location of branch, example: [1, 2] A2 text, -- district_name, example: [’Hl.m. Praha’, ’Benesov’] A3 text, -- region, example: [’east Bohemia’, ’Prague’]
+> 5The offline schema cache is keyed by question identifier. Optional value hints are keyed by question and database iden-tifier so that all generators see the same side information when hints are enabled.
+> A4 text, -- number of inhabitants, example: [’1204953’, ’88884’] A5 text, -- no. of municipalities with inhabitants < 499, example: [’0’, ’80’] PRIMARY KEY (district_id) );
+
+Listing 2: Plain DDL schema baseline (same tables, no comments or examples). 
+
+> CREATE TABLE account ( account_id integer, district_id integer, frequency text, ‘date‘ date, PRIMARY KEY (account_id), CONSTRAINT fk_account_district_id FOREIGN KEY (district_id) REFERENCES district (district_id) ); CREATE TABLE district ( district_id integer, A2 text, A3 text, A4 text, A5 text, PRIMARY KEY (district_id) );
+
+Design rationale. The enriched format addresses three failure modes commonly observed when LLMs operate on plain DDL alone: 1. Ambiguous column semantics. Columns such as A2 –A5 in the district table carry no self-explanatory meaning. The comment annotation (e.g., – district_name ) resolves this ambigu-ity without requiring the model to infer seman-tics from data alone. A comment is emitted only when the human-authored column description differs from the column name itself; otherwise the comment is suppressed to avoid redundancy. 2. Value-space grounding. Example values ex-pose the actual vocabulary stored in the database. This helps the model produce correct literal predicates in WHERE clauses without hallucinat-ing non-existent values. Up to six values per column are shown, drawn from two comple-mentary sources: (a) a distinct non-null sample of values from the database, and (b) question-relevant values retrieved via BM25 from a pre-built database-content index. 3. Structural completeness. Both formats pre-serve primary-key and foreign-key constraints verbatim, ensuring that join-path reasoning is available regardless of the enrichment level. Col-umn identifiers containing reserved words or special characters are wrapped in backticks. Construction pipeline. The schema s=Φ( q, d ) is assembled offline by the following steps: 1. Load the database metadata (table names, col-umn names, column comments, column types, primary keys, foreign keys) from the schema catalogue. 2. For each column, sample up to k distinct non-null values from the SQLite database (truncated to 40 characters for long strings). 3. Tokenize the question q (augmented with any external knowledge e) into n-grams ( n≤8) and retrieve matching database cell values via a Lucene-based BM25 index built over all col-umn contents. 4. Merge sampled and retrieved values per column (deduplicated, capped at six), and emit the en-riched DDL with inline comments and example annotations. When optional value hints are enabled, the hint set 
+
+h=Ψ( q, d ) is the subset of retrieved values whose substring-match score against the question exceeds 
+
+0.85 , surfaced separately in the prompt as explicit value-link hints. 
+
+B.4.2 Schema Variant Ablations 
+
+In addition to DES, we construct eight controlled schema variants to isolate the effects of schema scope and metadata richness. All eight variants are serialized in the same enriched-DDL template so that the ablation changes the schema content rather than the prompt format. 
+
+Scope. We consider two schema scopes: 1. Full. The full variant keeps all tables and columns in the target database together with their primary-key and foreign-key constraints. 2. Pruned. The pruned variant first performs question-conditioned schema linking and then retains only the linked tables and columns. This is an instance-specific schema selection step rather than generic prompt truncation. 
+
+Metadata levels. Under each scope, we instantiate four metadata configurations: 1. Plain. This is the minimal variant in the ab-lation family. It keeps only the basic schema serialization under our template and does not add question-conditioned retrieved values, value descriptions, or value-range annotations. 2. Retrieved examples. This variant augments columns with question-conditioned example val-ues from the embedding-based value-retrieval pipeline. Concretely, an LLM first extracts a compact set of salient keywords from the ques-tion and evidence. These keywords are embed-ded and used to retrieve semantically related cell values from a per-database value index on a column-wise basis. The retrieved values are then inserted into the example field of the corre-sponding columns under a fixed budget. 3. Retrieved examples + value meaning. This variant additionally exposes human-authored de-scription fields when they are available. In our implementation, this bundle may include ex-panded column names, short column descrip-tions, and value descriptions, so the model sees both retrieved example values and natural-language explanations of what a column or its values mean. 4. Retrieved examples + value meaning + value range. This is the richest variant. In addition to retrieved examples and description fields, it adds coarse value-space constraints. For numeric columns, we provide minimum/maximum-style range information. For low-cardinality categori-cal columns, we expose small valid-value sets. 
+
+Relation to the default schema. These eight variants should not be conflated with the default enriched schema context. DES uses question-conditioned lexical retrieval over database con-tents via n-gram expansion and BM25 matching, then merges the retrieved values with sampled column values. By contrast, the ablation vari-ants with retrieved examples use an LLM-guided keyword-extraction stage followed by embedding-based value retrieval, which changes both the re-trieval mechanism and the resulting example set. Similarly, the plain variant in this ablation family is not the same as the pure DDL baseline in Listing 2; it is simply the least enriched member within our unified ablation template. 
+
+B.4.3 Schema Variant Results and Prompt Size 
+
+Table 5 reports all schema-variant results on the BIRD dev set, computed over all 1,534 questions. For Qwen3-Coder, the strongest controlled vari-ant is F+E , which leads that family on all three metrics: 71 .45 Final EX, 71 .25 majority-voting EX, and 78 .16 Oracle@ k. For Qwen3-235B, DES remains the strongest overall setting at 71 .77 
+
+Final EX, 71 .45 majority-voting EX, and 77 .38 Oracle@ k, while the strongest controlled variants are more fragmented: F+E leads Final EX ( 71 .58 )and Oracle@ k (77 .31 ), whereas F+E+M reaches the best majority-voting score within that fam-ily ( 71 .19 ). Across both backbones, adding re-trieved examples consistently helps the correspond-ing plain schemas, whereas further adding value meaning and value range does not produce stable gains and often slightly degrades the final metric. From the joint perspective of stability across back-bones and absolute effectiveness, DES remains the most reliable default choice: it is best on Qwen3-235B and stays close to the best controlled vari-ant on Qwen3-Coder without requiring the richer retrieval-based variant stack. Table 6 complements the accuracy comparison with prompt-side schema length. The full variants are expensive, ranging from 2.9k to 4.5k tokens on average, while the pruned variants fall between roughly 326 and 481 tokens. In other words, prun-ing reduces the average schema length by nearly an order of magnitude. However, this compression does not translate into a consistent EX improve-ment in Table 5. The default enriched schema con-text occupies a middle point at roughly 1.95 k to-kens on average while remaining competitive with, and in one case stronger than, the richer full vari-ants with embedding-retrieved examples. Taken together, the results indicate that better question-conditioned value grounding matters more than simply adding more schema-side metadata or ag-gressively minimizing prompt length, and they fur-ther support retaining DES as the primary setting in the main system. 
+
+C L1: Specialist Training and Complementary Candidate Construction 
+
+This section expands L1 in §3.3 with the training data composition, the combined training objective (DAPO + threshold-gated entropy), the training-time execution sandbox, and the two-stage DAPO configuration used for the SIRIUS-SQL specialist generator. We train the specialist under reinforce-ment learning with verifiable rewards (RLVR): the environment supplies reliable supervision by exe-cuting sampled SQL programs, but the reward is observed only after a complete response is pro-duced. This terminal-only signal makes policy collapse a practical failure mode. As the model overfits easy prompts, its response distribution can become too sharp, triggering entropy collapse and reducing the sampling diversity needed to cross dis-continuous execution-reward boundaries on harder tasks. In group-relative training, this appears as all-correct or all-incorrect rollout groups, where the in-group advantage is zero and the prompt contributes no useful gradient. Our recipe therefore balances exploration and exploitation from two sides: we reshape the training data to reduce zero-variance prompts, and we use a dynamic-sampling DAPO schedule with entropy control to keep policy up-dates well conditioned. 
+
+C.1 Training Data 
+
+The specialist is trained on a union of three Text-to-SQL sources converted into a single prompt for-mat: the BIRD training split, the S PIDER train-ing split, and a sample from SynSQL (Li et al., 2025b). Each example is serialized with the de-fault enriched schema context (DES) described in §B.4.1, so the training prompt exposes table struc-ture, column descriptions, and representative val-ues in the same format used at inference time. 
+
+Data construction and cleaning. We apply a two-stage cleaning pipeline before RL. First, the execu-tion environment drops examples whose gold SQL fails to execute, times out, or returns an empty re-sult on the paired database. This avoids introducing zero-reward targets that would inflate the number of zero-variance prompts during RL. Second, we use a multi-model voting filter with DeepSeek-v3, GPT-5, and Qwen3-235B to check semantic con-sistency from multiple angles, including schema selection, join structure, and predicate constraints. Examples that fail this cross-model consistency check are removed from the training pool, reduc-ing noisy supervision before policy optimization. The resulting examples, together with the SynSQL sample, are consolidated into a single DAPO train-ing set. Before DAPO training, we reserve 500 examples from the training sources as a validation split for monitoring training dynamics; these ex-amples are excluded from policy updates. Table 7 summarizes the final composition. 
+
+Difficulty smoothing. The difficulty distribution of the raw training pool directly affects the qual-ity of policy gradients. Very easy prompts mostly reinforce behavior that the model can already ex-ploit, providing limited training signal. Moder-ately hard prompts are the most useful for RL be-cause they still admit occasional successes while Table 5: Schema-variant results on BIRD dev (%). DES: default enriched schema. F: full, P: pruned, E: retrieved examples, M: value meaning, R: value range.                                                                    
+
+> Qwen3-Coder Qwen3-235B Variant Final EX ↑Maj ↑Oracle@ k↑Final EX ↑Maj ↑Oracle@ k↑
+> DES 70.99 70.53 77.71 71.77 71.45 77.38
+> F69.82 69.49 76.79 70.93 70.73 76.66
+> F+E 71.45 71.25 78.16 71.58 71.06 77.31
+> F+E+M 71.06 71.12 77.05 71.25 71.19 77.25
+> F+E+M+R 70.99 70.73 77.64 70.66 70.80 76.92
+> P70.14 69.17 75.68 71.12 71.06 75.75
+> P+E 71.06 70.80 76.92 71.25 71.12 76.01
+> P+E+M 70.34 70.14 76.47 70.80 70.53 75.81
+> P+E+M+R 70.86 70.60 76.47 71.06 70.60 76.14
+
+Table 6: Prompt-side schema size of the same variants, measured in Qwen3-Coder tokens.                                                                                    
+
+> Variant Avg. Min. Max. p50 p90 p95 p99 DES 1951 383 4654 2051 2970 4641 4654
+> F2858 519 6172 3174 5188 6172 6172
+> F+E 3148 649 6449 3216 5855 6417 6433
+> F+E+M 3821 672 7765 3419 7128 7733 7749
+> F+E+M+R 4521 837 10348 3982 7859 10316 10332
+> P326 30 2444 287 521 684 1401
+> P+E 361 30 2610 318 603 744 1487
+> P+E+M 411 49 2730 336 689 842 1569
+> P+E+M+R 481 52 3561 432 789 941 1954
+> Source Rows Share
+> SynSQL sample 20,484 75.4% BIRD train 4,726 17.4% SPIDER train 1,972 7.3% Total (train) 27,182 100% Validation (train sources) 500 –
+
+Table 7: Specialist training data composition after exe-cution filtering and multi-model semantic-consistency filtering. SynSQL is subsampled from the public release. The validation split is reserved from the training sources before DAPO optimization. 
+
+forcing the policy to explore beyond its current high-probability outputs. We estimate prompt dif-ficulty by sampling a baseline model for 10 in-dependent rollouts and grouping examples by the number of correct rollouts: 0/10 denotes prompts the baseline never solves, while 10 /10 denotes prompts solved in every rollout. The raw pool is strongly imbalanced, with heavy mass at the easy end and a long tail of hard prompts (Fig. 6). We re-shape the data distribution by smoothing overrepre-sented pass-rate buckets and removing the trivially solved 10 /10 bucket, so RL batches concentrate on prompts with informative rollout variation. The 
+
+10 /10 bin is retained in the figure to show that these prompts are intentionally emptied by the smoothing procedure rather than omitted from the axis. 
+
+C.2 DAPO Objective, Dynamic Sampling, and Threshold-Gated Entropy 
+
+The total training objective combines the DAPO policy loss with a threshold-gated entropy regular-izer: 
+
+Ltotal (θ) = LDAPO (θ) + went Lent (θ). (8) 
+
+Reward. Each sampled SQL receives a scalar ex-ecution reward from the training-time sandbox of §C.3, taking one of three values: R=1 when the SQL is executable and its row set matches the gold, R=0 .1 when it is executable but the rows do not match, and R=0 when it is unparsable or triggers a runtime or timeout error. The small partial-credit value of 0.1 for executable-but-wrong rollouts is important in the zero-variance-prompt regime: when all n rollouts fail to match the gold, the partial-credit term nonetheless separates “plau-sibly executable” rollouts from broken ones, keep-ing the group advantage non-degenerate and pro-ducing a usable gradient that a pure {0, 1} reward would have lost. An additional soft penalty on over-long generations is applied using a length buffer of 
+
+1024 tokens and penalty factor 1.0.
+
+GRPO advantage and dynamic sampling. For prompt x with n sampled responses {yi}ni=1 from 
+
+πθ, GRPO normalizes the scalar reward within the group: 
+
+Ai = R(x, y i) − μσ + ϵ , (9) where μ and σ are the in-group mean and standard deviation of R(x, y k), and 
+
+Ai is broadcast to every token in yi. Let 
+
+ρi,t (θ)= πθ(yi,t |x, y i,<t )/π θold (yi,t |x, y i,<t ) denote the token-level importance ratio. Policy opti-mization uses the per-token asymmetric-clipped 0 1 2 3 4 5 6 7 8 9 10                               
+
+> Difficulty Level
+> 0
+> 5000
+> 10000
+> 15000
+> 20000
+> 25000
+> 30000
+> Sample Count
+> 2674
+> 537 421 386 381 371 427 652 1105
+> 2586
+> 6851
+> 27963
+> 2026 1751 1555 1641 1694 1932 2226 2814
+> 4298
+> 11980
+> (A) Raw Distribution: Bimodal
+> 012345678910
+> Difficulty Level
+> 0.0%
+> 5.0%
+> 10.0%
+> 15.0%
+> 20.0%
+> 25.0%
+> Share of Samples
+> 9.1% 8.7%
+> 7.4% 6.6% 6.9% 7.0% 8.0%
+> 9.8%
+> 13.3%
+> 23.4%
+> set to zero
+> (B) Smoothed Distribution
+> Original set (BIRD+Spider) Supplemental set
+
+Figure 6: Difficulty distribution before and after smoothing. The x-axis is the number of correct baseline rollouts out of 10. Smoothing redistributes training mass over informative buckets and sets the trivially solved 10 /10 bucket to zero. 
+
+surrogate (Yu et al., 2025): 
+
+LDAPO (θ) = ⊮[Var iR(x, y i)>0] 
+
+n
+
+nX
+
+i=1 
+
+ℓi(θ),
+
+(10) 
+
+ℓi(θ) = min 
+
+
+
+ρi,t Ai,
+
+clip( ρi,t , 1−ϵl, 1+ ϵh) Ai
+
+
+
+. (11) The leading indicator implements dynamic sam-pling . Prompts whose rollouts produce all-correct or all-incorrect groups are discarded from the gra-dient update, and up to emax extra rollout batches are drawn until a training batch of non-degenerate prompts is accumulated. This rejection-sampling loop is especially important under sparse execution feedback: it adaptively spends additional inference on prompts whose initial rollouts do not provide relative advantage, so the optimizer sees batches with a higher signal-to-noise ratio. We use ϵl=0 .2
+
+and ϵh=0 .28 , and disable KL entirely. 
+
+Threshold-gated entropy regularizer. Beyond the standard DAPO components above, we add a simple but effective gate against entropy collapse. Let H(πθ) = −P
+
+a πθ(a | st) log πθ(a | st) be the average policy entropy over the current rollout, and let Lent (θ) denote its empirical estimate: 
+
+Lent (θ) = − 1
+
+T
+
+TX
+
+t=1 
+
+X
+
+a∈V 
+
+πθ(a | st) log πθ(a | st).
+
+(12) The gating coefficient is a step function of H(πθ):
+
+went = β · 1H(πθ) < H target 
+
+, (13) This means the entropy bonus pays zero regular-ization tax whenever the policy already maintains sufficient diversity, and only injects a fixed gradient 
+
+β once the rollouts start collapsing. Unlike a con-stant entropy coefficient, this “activate-on-collapse” schedule preserves the execution-reward signal dur-ing normal optimization and intervenes only at the boundary of entropy failure. The target entropy is stage-specific (Table 8), and we set β=5 ×10 −3.In practice β is warmed up with step ∆=10 −4 to avoid abrupt gradient spikes when the gate first opens. 
+
+C.3 Training-Time Execution Sandbox 
+
+Because the reward requires running every rollout against a real database at every optimization step, we wrap SQL execution in a reproducible training-time sandbox. Each rollout and its gold SQL are executed on the target SQLite database through a read-only connection, their result sets are compared as unordered sets, and the three-level reward rule above is applied. A 60 -second wall-clock budget is enforced per query: timeouts and runtime errors are both mapped to reward 0, while executable-but-wrong queries receive the partial credit 0.1.
+
+C.4 Specialist DAPO Configuration 
+
+Table 8 summarizes the specialist DAPO config-uration. Our training recipe follows a two-stage schedule sharing the same objective: an exploration stage with a wide rollout ( n=32 , temperature 1.2,
+
+Htarget =0 .30 ) that helps collect sparse successful trajectories on hard prompts, and an exploitation stage that resumes from the exploration checkpoint and anneals the sampling width ( n=16 , tempera-ture 0.9, Htarget =0 .15 ). The first stage uses broad sampling and a higher entropy target to prevent early homogenization as previously challenging prompts become easy. The second stage applies a 0 100 200 300 400               
+
+> Training step
+> 0.68
+> 0.70
+> 0.72
+> 0.74
+> Reward
+> final 0.74
+> BIRD dev reward @1
+> max 0.747
+> 0100 200 300 400
+> Training step
+> 0.3
+> 0.6
+> 0.9
+> 1.2
+> Entropy loss
+> final 0.146
+> Actor entropy loss
+> min 0.0866
+> 0100 200 300 400
+> Training step
+> 500
+> 600
+> 700
+> 800
+> 900
+> Mean tokens
+> final 852
+> Response length max 870
+> 0100 200 300 400
+> Training step
+> 1
+> 2
+> 3
+> 4
+> 5
+> # batches
+> final 4
+> Generated batches max 5
+> Sothis-32B Training Dynamics
+
+Figure 7: Sothis-32B training dynamics under the two-stage DAPO recipe. Validation reward improves and stabilizes; entropy loss decays without immediate col-lapse; response length first contracts and later recovers as SQL completions become more detailed; generated batches increase when dynamic sampling needs extra rollouts to construct non-degenerate updates. 
+
+simulated-annealing style constraint: it lowers the sampling temperature, reduces the rollout width, and removes the entropy target so that optimization shifts from broad state-space exploration toward reinforcing verified high-confidence solutions with less rollout variance. Figure 7 summarizes these dynamics. The re-ward curve stabilizes near its final value rather than peaking and immediately collapsing. The entropy-loss curve decreases as the policy becomes more confident, while the generated-batch curve rises later in training, indicating that dynamic sampling increasingly has to search for rollout groups with non-zero relative advantage as the model solves more prompts consistently. 
+
+C.5 Critic Reward under Difficulty-Smoothed Data 
+
+Figure 8 reports the critic reward during specialist RL under the same two configurations compared in Fig. 3. With difficulty-smoothed data synthesis the critic reward reaches a higher steady-state mean (0.641 vs. 0.604 , +3 .8 pp) and maintains a visibly larger variance band throughout training, consis-tent with a non-collapsing policy that continues to explore novel trajectories after the baseline has plateaued. We stop training at step 1,210 for the smoothed run because the critic curve has entered a stable regime. 
+
+Exploration Exploitation 
+
+Base model OmniSQL-32B Adv. estimator GRPO Rollout n 32 16 Rollout temperature 1.2 0.9 Clip ratio low/high 0.2 / 0.28 KL regularization disabled Entropy target Htarget 0.30 0.15 
+
+Entropy coef. β 5×10 −3
+
+Entropy warm-up ∆ 10 −4
+
+Max prompt / response 6000 / 5120 Overlong buffer 1024 tokens, factor 1.0 Dyn. sampling retries up to 10 batches Train / gen / mini bsz 128 / 384 / 128 Learning rate 1×10 −5
+
+LR warmup steps 10 Weight decay 0.1 Gradient clip 1.0 Epochs 20 10 Hardware 4 × 8 GPUs 
+
+Table 8: Two-stage specialist training configuration. Exploitation resumes from the exploration checkpoint and anneals the sampling temperature and rollout width while preserving dynamic sampling. 0 500 1000 1500 
+
+Training step 
+
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> Critic reward
+> 0.641
+> 0.604
+> ours stopped
+> at step 1210
+> w/o smoothed synthesis
+> w/ smoothed synthesis (ours)
+> steady-state mean:
+> +3.8 pp
+
+Figure 8: Critic reward during specialist RL. 
+
+D L2: Execution-Grounded Candidate Lifecycle 
+
+Algorithm 1 gives the full lifecycle pseudocode before the block-level details. This section expands §3.4 of the main paper and follows the three blocks of the Execution-Grounded Lifecycle panel in Figure 2: (A) Pre-execution Screening , (B) Execution-Grounded Diagnosis , and (C) Failure-Aware Pool Update .Block A applies deterministic sanitization and lightweight syntax/schema validation, removing malformed candidates from the pool before exe-cution. Block B executes every surviving candi-date and tags each with one of four diagnostic la-bels { clean ,runtime ,timeout ,empty }. Block C dispatches each non-clean candidate to a ded-icated type-specific repair path, re-executes ac-Algorithm 1 Execution-Grounded Candidate Life-cycle 
+
+Require: input x = (q, e, d ), linked context 
+
+(s, h ), generators Gsp , G ge 
+
+Ensure: pool C(∗) 
+
+> 1:
+
+C(0) ← Gsp (q, e, s, h ) ∪ Gge (q, e, s, h ) ▷
+
+candidate construction  
+
+> 2:
+
+(C(1) , Rphase2 ) ← Validate (C(0) ) ▷
+
+pre-execution screening  
+
+> 3:
+
+for all c ∈ C (1) do  
+
+> 4:
+
+δ(c) ← Exec (c) ▷δ ∈ { clean , runtime , timeout , empty } 
+
+> 5:
+
+end for  
+
+> 6:
+
+for all c with δ(c)̸ = clean do  
+
+> 7:
+
+if δ(c) = empty then  
+
+> 8:
+
+c′ ← Rop (c; operators ) ▷
+
+high-precision empty-result operators first  
+
+> 9:
+
+if c′ still returns empty then  
+
+> 10:
+
+c′ ← Rempty _llm (c; q, e, s, h ) ▷
+
+diagnosis-conditioned Stage-2 fallback  
+
+> 11:
+
+end if  
+
+> 12:
+
+else  
+
+> 13:
+
+c′ ← Rδ(c)(c; q, e, s, h ) ▷
+
+runtime/timeout/validation repair  
+
+> 14:
+
+end if  
+
+> 15:
+
+if c′̸ = ∅ then  
+
+> 16:
+
+δ(c′) ← Exec (c′) ▷ immediate re-execution  
+
+> 17:
+
+replace c with c′ if δ(c′) = clean , else mark c unresolved  
+
+> 18:
+
+end if  
+
+> 19:
+
+end for  
+
+> 20:
+
+C(∗) ← NormalizeProjection (Consolidate (C(1) ))  
+
+> 21:
+
+if C(∗) = ∅ then  
+
+> 22:
+
+build condensed negative feedback (B, ρ )
+
+from unresolved and rule-filtered SQLs  
+
+> 23:
+
+C(∗) ← Grec (q, e, s ; B, ρ ) ▷
+
+zero-candidate recovery  
+
+> 24:
+
+end if  
+
+> 25:
+
+return C(∗)
+
+cepted rewrites immediately, normalizes projec-tions deterministically, and regenerates only when the pool is fully exhausted. 
+
+D.1 Block A: Pre-execution Screening 
+
+Before any execution or LLM correction, candi-dates are sanitized by a short set of deterministic preprocessors targeted at common LLM-generation artifacts: stripping –/# comment prefixes that pre-cede the actual SQL, inserting a missing space after the SELECT keyword when the LLM emits 
+
+SELECT* , and rejecting outputs whose first token is not a valid SQL leading keyword ( SELECT , WITH ,
+
+INSERT , UPDATE , DELETE , CREATE , DROP ). The san-itized SQL is then passed through dual valida-tion. The syntax validator is a lightweight rule-based checker rather than a full SQL parser: it verifies a legal leading keyword, required FROM 
+
+presence for SELECT , balanced parentheses outside string literals, balanced quotes, and a few com-mon comma-related artifacts. The schema validator then combines simple table-name extraction with an EXPLAIN -based check that catches missing ta-bles, missing columns, ambiguous columns, and other SQLite-side schema mismatches. Candidates failing either check are removed from the pool in Phase 2, with the specific failure subtype attached for diagnostics and later summary statistics. 
+
+D.2 Block B: Execution-Grounded Diagnosis 
+
+Block B executes every candidate that survives pre-execution screening and attaches a diagnostic label used by the downstream repair dispatcher. A can-didate is marked clean when execution succeeds and returns a non-empty result, empty when ex-ecution succeeds but returns zero rows, runtime 
+
+when SQLite raises an engine-level exception, and 
+
+timeout when execution exceeds the wall-clock budget. The label is retained together with the orig-inal SQL, execution feedback, and source-route metadata, so Block C can choose a type-specific repair path rather than treating all failed candidates as interchangeable correction requests. 
+
+D.3 Block C: Failure-Aware Repair 
+
+Each non-clean candidate in the active post-Phase2 pool is routed to one of four repair paths. All four paths share a common prompt skeleton over question, evidence, schema, cur-rent SQL, failure type, and failure feedback. They differ only in the concrete feedback and in 
+
+type_specific_instructions . Every repaired SQL is re-executed immediately. The repaired can-didate replaces the original only if re-execution is 
+
+clean (or clean with a non-empty result for empty 
+
+repairs); otherwise the original is moved out of the pool and consolidation proceeds. 
+
+Validation repair. The implementation contains a validation-repair path for candidates whose cur-rent state is still marked invalid at repair time. In the normal runtime used in our main experiments, however, Phase 2 removes validation failures from the pool before Phase 4 begins, so repair budget is spent almost entirely on execution-surviving fail-ures. When validation repair is invoked, the feed-back slot lists the specific syntax or schema vio-lations surfaced by Block A (e.g., unknown col-umn, missing table, mismatched alias), and the type-specific instructions emphasize repairing the structural error while preserving the original query intent. 
+
+Runtime repair. The feedback slot carries the SQLite engine’s error string together with any residual validation context. The instructions di-rect the LLM to address the exact engine-reported root cause (type mismatch, invalid function call, ambiguous column), not to restructure the whole query. 
+
+Timeout repair. The feedback slot records the ex-ecution elapsed time against the wall budget. The instructions prioritize eliminating missing JOIN 
+
+conditions, Cartesian products, redundant nested subqueries, and other expensive structural patterns while keeping the semantic intent intact. 
+
+Empty-result repair: two-stage cascade. Empty-result is the most load-bearing failure class because, unlike runtime or timeout failures, the query is for-mally well-formed. The failure is semantic rather than structural. We therefore apply the two-stage cascade shown inside Block C of Figure 2: front-load cheap, high-precision structural edits and only escalate to an LLM when structural edits do not apply. 
+
+Stage 1: high-precision operator catalogue. Be-fore any LLM call, the candidate is passed through a catalogue of six deterministic operators, each tar-geting a specific empty-result mechanism observed repeatedly in the training split: • literal_binding : matches empty results caused by case, prefix, or substring mismatch between a literal in the WHERE clause and the ac-tual stored value, and rewrites the predicate with a probed alternative literal. • literal_rebind : similar to literal_binding 
+
+but probes the database for candidate replace-ment values and picks the closest match under a database-backed similarity check. • where_predicate : rewrites over-restrictive 
+
+WHERE shapes such as a chain of equality predi-cates that should have been a single LIKE , or a nested subquery that should have been a direct 
+
+JOIN .• translation_semantics : handles natural-language words with multiple SQL semantics (e.g., “average” → AVG vs. SUM/COUNT ), re-placing the wrong aggregate with the intent-consistent one. • date_anchor_join : catches empty results from date-range predicates on the wrong table in a multi-table schema, and rewrites the predicate onto the joined table along the identified foreign key. • aggregate_scope : corrects GROUP BY or 
+
+HAVING scope mismatches, for example moving a predicate from WHERE to HAVING when the col-umn is an aggregate. Each operator independently emits zero or more candidate repairs, and the first repair whose re-execution returns a non-empty result is accepted. If no operator produces a non-empty result, the candidate escalates to Stage 2. 
+
+Stage 2: error-bank LLM fallback. Stage 2 dele-gates to an iterative error-bank repair loop. The first round probes the database to produce a structured diagnosis (which literal value is missing, which join path is cold, which aggregate scope is wrong) and feeds the diagnosis to a probe-guided repair prompt. If the repaired SQL still returns empty, the loop issues a baseline rewrite prompt that instructs the LLM to draft a completely new SQL for the question while treating the previous attempt as a negative example. We cap the loop at two rounds 6
+
+so that Stage 2 remains bounded in LLM cost. 
+
+D.4 Block C: Post-Repair Rule Filtering and Pool Recovery 
+
+After re-execution confirmation and consolidation, Block C applies a small set of deterministic projec-tion rules that rewrite noisy SELECT lists into more canonical forms. Two representative rules are:  
+
+> 6The cap is a wall-clock and cost guard rather than a mod-eling assumption. In pilot runs, additional rounds mostly repeated the same value-binding mistakes.
+
+• Numbered-column deduplication. If a projection contains columns with numeric suffixes along-side the base column, and the question does not request all variants, the suffixed columns are dropped. • Canonical-bundle reordering. If a projection contains a standard column bundle in a non-canonical order, the columns are reordered to the form typically written by a human SQL author. These rules encode regularities that humans typ-ically would not write into hand-authored SQL. LLMs, in contrast, sometimes produce verbatim-complete column lists or unordered bundles when they over-pattern-match the schema. Applying these adjustments before selection reduces noise in the pool-level consensus signals of §3.5 without discarding otherwise valid queries. If post-repair consolidation leaves the pool empty for a question, the system invokes pool re-covery (Figure 2, Block C, rightmost box). The re-generation prompt does not consume the full histor-ical removed set. Instead, it receives a condensed negative-feedback block built from (i) unresolved or still-invalid candidates at the end of Phase 4, (ii) candidates filtered by the Phase 5 rules, and (iii) the matched failure tags ρ attached to those removals. This keeps the feedback specific to the failure modes that actually exhausted the pool. 
+
+D.5 Additional Lifecycle Diagnostics Per-model failure breakdown. Figure 9 gives the per-mechanism candidate-level repair rates broken down by generalist pairing: Sothis-32B + Qwen3-Coder, Sothis-32B + Qwen3-235B, and Sothis-32B + Gemini-3.1 Pro. Across all three pools the qualitative shape of Fig. 4 in the main text is pre-served: validation failures and zero-candidate re-generation each resolve 100% of their cases, time-outs are resolved at 86 –94% by the dual-pool con-sistency check, and empty-result repair is the hard-est category with total resolution rates in 46 –52% .The L HP row isolates the contribution of the high-precision structural operators (Stage 1 on empty-result) and the L LLM row shows the additional residue recovered by the LLM fallback (Stage 2). Empty-result repair depends mildly on the part-ner generalist because stronger generalists produce fewer empty-result failures in the first place (empty counts 1,178 → 1,021 → 1,043 ), but the relative share recovered by the Stage 1/Stage 2 cascade remains comparable across pools. 
+
+E L3: Confidence-Gated Selection 
+
+Algorithm 2 gives the full selection procedure be-fore the score definitions and derivations. 
+
+Algorithm 2 Confidence-Gated Hybrid Selection 
+
+Require: pool C(∗), input x = ( q, e, d ), schema s
+
+Ensure: final SQL y 
+
+> 1:
+
+C+ ← { c ∈ C (∗) | δ(c) = clean } 
+
+> 2:
+
+for all c ∈ C + do  
+
+> 3:
+
+compute tuple-level consensus Smaj (c) 
+
+> 4:
+
+end for  
+
+> 5:
+
+Partition [C+]σ by result signature  
+
+> 6:
+
+compute Sdedup rm over class representatives  
+
+> 7:
+
+broadcast Sdedup rm to class members  
+
+> 8:
+
+Scoarse (c) ← Smaj (c) + Srm (c) 
+
+> 9:
+
+compute auxiliary consensus-refine statistic 
+
+Sref (c) 
+
+> 10:
+
+c(1) ← arg max c Scoarse (c) 
+
+> 11:
+
+g(1) ← result-signature class containing c(1)  
+
+> 12:
+
+y ← c(1) ▷ default  
+
+> 13:
+
+if gate (x) holds (§3.5) then  
+
+> 14:
+
+extract κ(c) for c in the tied top classes  
+
+> 15:
+
+g∗ ← tied-top class with highest cross-source support under κ 
+
+> 16:
+
+if supp( g∗) > supp( g(1) ) then  
+
+> 17:
+
+y ← ˆcg∗ ▷ structural-support override  
+
+> 18:
+
+end if  
+
+> 19:
+
+end if  
+
+> 20:
+
+return y
+
+This section expands L3 in §3.5 with the full derivations that are only summarized in the main text. 
+
+Confidence-gate thresholds. The cardinality bounds in the confidence gate (§3.5) are set to 
+
+Kmax =6 and Tmax =8 in all reported runs. The three score-gap thresholds are all zero, so the se-lector escalates only when the merged score, the auxiliary consensus-refine score, and the RM score all leave the top candidate unresolved. These values are chosen so that the gate excludes both 
+
+over-fragmented pools (many tiny result-signature classes with no dominant candidate, where the structural-support prior becomes unreliable) and 
+
+over-concentrated pools (one class already tak-ing the majority of the pool, where c(1) is already the correct default). In practice the gate fires on roughly 5–10% of BIRD dev questions. 7                                    
+
+> 7This rate varies slightly with the generalist partner be-cause candidate pools differ in the number and size of result-signature classes. clean 47,066 (95.9%)
+> empty 1,178 ·timeout 44 ·val. 800
+> (a) Sothis-32B + Qwen3-Coder
+> Empty 613/1178 (52%)
+> HP 173/1178 (15%)
+> LLM 440/1005 (44%)
+> Timeout 38/44 (86%)
+> Valid. 800/800 (100%)
+> Regen 17/17 (100%)
+> clean 47,589 (96.9%)
+> empty 1,021 ·timeout 32 ·val. 446
+> (b) Sothis-32B + Qwen3-235B
+> Empty 522/1021 (51%)
+> HP 194/1021 (19%)
+> LLM 328/827 (40%)
+> Timeout 30/32 (94%)
+> Valid. 446/446 (100%)
+> Regen 17/17 (100%)
+> clean 47,836 (97.4%)
+> empty 1,043 ·timeout 47 ·val. 162
+> (c) Sothis-32B + Gemini-3.1 Pro
+> Empty 480/1043 (46%)
+> HP 223/1043 (21%)
+> LLM 257/820 (31%)
+> Timeout 42/47 (89%)
+> Valid. 162/162 (100%)
+> Regen 14/14 (100%)
+> Regen counts are per-question, not per-candidate.
+> clean validation timeout empty zero-cand. fixed unfixed
+
+Figure 9: Per-model failure breakdown on BIRD dev. 
+
+E.1 Tuple-Level Consensus Derivation 
+
+Standard self-consistency for Text-to-SQL treats each candidate’s execution result as an atomic sig-nature and selects the one produced by the most candidates (Wang et al., 2025a). This whole-result voting fails when (i) no two candidates produce identical row sets, (ii) superficial differences such as column ordering or alias choice create spurious signature mismatches, or (iii) candidates that are partially correct should receive credit for the cells they do get right. We address these limitations with a tuple-level 
+
+consensus score. Given the set of successfully ex-ecuted candidates C+, we first canonicalize each candidate’s result into an order-independent repre-sentation frozenset( rows ), then decompose it into cell-level triples: 
+
+T (c) = (i, col j , v ij ) row i, column j
+
+of E(c, d ) , (14) where E(c, d ) denotes the execution result of can-didate c on database d. The cross-pool frequency of a triple t measures how many candidates agree on that specific cell value: 
+
+f (t) = {c′ ∈ C + | t ∈ T (c′)} . (15) A candidate’s consensus score then averages these frequencies over its own non-null triples: 
+
+Smaj (c) = 1
+
+|T (c)|
+
+X
+
+t∈T (c)
+
+f (t) 1[v(t)̸ = null ].
+
+(16) 
+
+Relationship to whole-result frequency count-ing. When every candidate’s result set is either identical or completely disjoint, Smaj reduces to counting the number of candidates that share the same signature (scaled by the result size), recover-ing exact whole-result support counting as a special case. The advantage appears precisely when result sets overlap partially: a candidate that shares most cell values with the consensus receives a high score even if its overall row set differs due to, e.g., a single extra row or a different column alias. 
+
+Empty-result exclusion and null down-weighting. Candidates returning zero rows have 
+
+T (c)= ∅, so Smaj (c)=0 by convention. This effectively excludes empty-result candidates from the consensus, which is the primary filtering mechanism: such candidates carry no execution evidence and should not compete with candidates that produce substantive output. For non-empty candidates, the indicator 
+
+1[v(t)̸=null ] zeros out the frequency contribution of null -valued triples in the numerator, while the denominator |T (c)| still counts all triples includ-ing those with null values. The effect is that null 
+
+cells dilute rather than inflate a candidate’s score: a result set dominated by nulls receives a lower 
+
+Smaj than one with the same number of non-null agreements. This is deliberate rather than dismis-sive of nulls: null values can reflect meaningful query logic (e.g., LEFT JOIN producing null for unmatched rows), but because null cells are per-vasive across structurally different queries, count-ing their agreement at full weight would inflate consensus scores without improving the selector’s discriminative power. E.2 Ablation Score Family: Freq, Majority Voting, Majority-Refine, and Merge 
+
+Table 4 in the main paper uses shorthand names for several selectors derived from the same clean pool 
+
+C+. To avoid terminology ambiguity, we reserve 
+
+freq for exact-result support counting, while major-ity voting denotes the tuple-level consensus score of Eq. 3, rather than exact-signature voting. 
+
+Exact-result support / freq . Let σ(c) be the canon-ical result signature of candidate c. We define the exact-result support count as 
+
+Nσ(c) = {c′ ∈ C + | σ(c′) = σ(c)} . (17) Its normalized frequency form is 
+
+Sfreq (c) = Nσ(c)
+
+|C +| . (18) Because the denominator is shared across candi-dates, ranking by Sfreq is identical to ranking by 
+
+Nσ. The freq selector is therefore 
+
+yfreq = arg max  
+
+> c∈C +
+
+Sfreq (c). (19) 
+
+Tuple-level majority voting. Our majority vot-ing ablation keeps only the tuple-level consensus signal: 
+
+yvote = arg max  
+
+> c∈C +
+
+Smaj (c). (20) This selector rewards candidates whose returned cells are repeatedly supported across the pool, even when no other candidate matches their full result signature exactly. 
+
+Majority-refine. The majority-refine statistic used in our implementation adds exact-result support on top of tuple-level consensus: 
+
+Sref (c) = Nσ(c) + Smaj (c),yref = arg max  
+
+> c∈C +
+
+Sref (c). (21) Using the unnormalized count Nσ(c) keeps this term on the same raw count scale as Smaj (c).In the released selector code, the gate uses a closely related implementation-level quantity 
+
+maj_score_refine produced by weighted major-ity voting; conceptually it serves the same role as a consensus-refine ambiguity check, even though its exact tie-break behavior is defined by the imple-mentation rather than by the clean ablation formula above. 
+
+RM-only and merge . The pairwise preference ablation keeps only the position-debiased reward-model score: 
+
+yrm = arg max  
+
+> c∈C +
+
+Srm (c). (22) Our coarse backbone, denoted merge in Table 4, fuses tuple-level consensus with pairwise Elo pref-erence: 
+
+Smerge (c) = Smaj (c) + Srm (c),ymerge = arg max  
+
+> c∈C +
+
+Smerge (c). (23) The full system then applies the structural-support override (§3.5) only when the confidence gate fires. 
+
+E.3 Position-Debiased Elo Derivation 
+
+We first partition the successful pool C+ = {c |
+
+δ(c) = clean } into result-signature equivalence classes: 
+
+[C+]σ = {c ∈ C + | σ(c) = s}
+
+s ∈ Im( σ) , (24) and pick one representative ˆcg per class. For every representative pair (ˆ ci, ˆcj ) we build a comparison prompt containing the question, evidence, a schema summary restricted to tables referenced by either candidate, and the first k execution rows of each. Let Jp(a, b ) ∈ { 1, 0, ⊥} denote the judge’s verdict for candidate a when it appears in position p ∈{1, 2} of a comparison against b (⊥ flags a parse failure). The position-debiased pairwise outcome for the ordered pair (i, j ) is 
+
+∆i≻j = J1(ˆ ci, ˆcj )−J2(ˆ cj , ˆci)
+
+> +
+
++ J1(ˆ cj , ˆci)−J2(ˆ ci, ˆcj )
+
+> −
+
+, (25) where [·]+ and [·]− denote the positive and nega-tive parts. In practice we accumulate wins minus losses across all valid comparisons, obtaining the cumulative score 
+
+Sdedup rm (ˆ cg) = X 
+
+> (ˆ cg,ˆch)∈P
+
+ 1[J(ˆ cg)=C] 
+
+−1[J(ˆ ch)=C] , (26) where C denotes the Correct verdict and P ranges over all  |[C+]σ |
+
+> 2
+
+ valid representative pairs. The representative score is then broadcast back to class members: 
+
+Srm (c) = Sdedup rm 
+
+ ˆcg(c)
+
+. (27) Pair label Train Val                        
+
+> Count %Count %
+> correct, correct 7,298 9.2 788 75.6
+> correct, incorrect 28,166 35.3 127 12.2
+> incorrect, correct 28,166 35.3 127 12.2
+> incorrect, incorrect 16,170 20.3 ––Total 79,800 –1,042 –
+
+Table 9: Pairwise RM training data, all sourced from BIRD. Validation contains no incorrect, incorrect 
+
+pairs by construction, as both candidates failing the execution gate indicate a degenerate pair that carries no preference signal. 
+
+This deduplication-then-broadcast scheme keeps the number of LLM judge calls quadratic only in the number of distinct result signatures rather than in the raw pool size. 
+
+E.4 Pairwise Reward Model 
+
+The pairwise reward model used to compute Srm 
+
+in Eq. 4 is a fine-tuned Qwen2.5-Coder-32B model that, given two candidate SQLs together with their execution results, emits two independent correctness labels wrapped in <sql1_judge> and 
+
+<sql2_judge> tags. Training has two stages: a su-pervised warm-start checkpoint trained on the same pairwise judgment format, followed by DAPO with a pairwise exact-match reward. 
+
+Data. We synthesize pairwise examples from question-level candidate pools. For each BIRD question we collect multiple candidate SQLs under several prompting strategies, execute each candi-date on the target database to obtain an individ-ual correctness tag, and then materialize ordered pairs (sql1 , sql2 ) with label tuple (y1, y 2) ∈{correct , incorrect }2. Table 9 summarizes the final train/validation split and its realized label dis-tribution. The four-class distribution is deliber-ate: an effective pairwise judge must remain ac-curate when both candidates are wrong (20.3% of training pairs), not only when one is clearly bet-ter. The equal counts of correct,incorrect and 
+
+incorrect,correct in the training split further indicate that both orderings are retained rather than collapsed to a single example per unordered pair. 
+
+Supervised warm-start. We first fine-tune Qwen2.5-Coder-32B on the pairwise judgment for-mat of Listing with cross-entropy on the ground-truth <sql1_judge> and <sql2_judge> tags as tar-gets. We use per-device batch size 1, gradient ac-cumulation 2, learning rate 1×10 −5 with cosine                              
+
+> Setting Value
+> Rollout n16
+> Rollout temperature 1.0
+> Clip ratio low / high 0.2/0.28
+> KL regularization disabled Entropy target Htarget 0.15
+> Entropy coef. β5×10 −3
+> Max prompt / response 16 ,384 /1,024 tokens Overlong buffer 128 tokens, factor 1.0
+> Train / gen / mini bsz 128 /384 /128
+> Learning rate 1×10 −5
+> LR warmup steps 10
+> Weight decay 0.1
+> Gradient clip 1.0
+> Total training steps 1,000
+
+Table 10: Reward-model DAPO hyper-parameters. Longer prompts and shorter responses (relative to the specialist) reflect the pairwise judgment format: two SQLs with their execution results in, a pair of correct-ness tags out. 
+
+decay, and train for 3 epochs. This stage teaches the RM to emit a well-formed, parseable judgment before RL introduces reward sparsity. 
+
+Reinforcement learning with DAPO. We train the RM with DAPO (Yu et al., 2025) under a binary pairwise exact-match reward. Let j1(y) and j2(y)
+
+denote the predicted correctness tags parsed from 
+
+<sql1_judge> and <sql2_judge> , and j⋆ 
+
+> 1
+
+, j ⋆ 
+
+> 2
+
+the corresponding gold tags. The reward is 
+
+Rrm (y) = 1[j1(y)= j⋆ 
+
+> 1
+
+] · 1[j2(y)= j⋆ 
+
+> 2
+
+]. (28) The indicator product means partial credit is not awarded: only trajectories that correctly label both 
+
+SQLs receive reward 1, which forces the RM to rea-son about each SQL on its own merits rather than anchoring on the obviously wrong one. Table 10 lists the RM-specific hyper-parameters. The DAPO objective, dynamic sampling, and threshold-gated entropy follow §C.2. 
+
+E.5 Structural Signature Features 
+
+The AST-level structural signature κ(c) used by the structural-support reranker concatenates the follow-ing features extracted from the parsed SQL: • tables (c): sorted tuple of base table names in FROM/JOIN. • proj _kinds (c): tuple of projection kinds (e.g., 
+
+COUNT , SUM , AVG , plain column). • proj _count (c): number of projected columns. • has _distinct (c) and has _count _distinct (c):whether the query uses DISTINCT or 
+
+COUNT(DISTINCT ·).• has _group _by (c) and group _by _count (c):whether the query uses GROUP BY and how many grouping expressions it uses. • has _order _by (c) and order _dirs (c): whether the query uses ORDER BY and, if so, the direc-tion tuple. • limit _bucket (c): a coarse LIMIT bucket with three values: no limit, limit equals 1, and limit greater than 1. • proj _cols (c): projected source-column tuple from SELECT. • pred _cols (c): set of columns appearing in WHERE predicates. The structural-support reranker of §3.5 uses κ(c)
+
+to measure cross-source consensus : for each can-didate class tied in the coarse score, we count how many distinct source groups (generator–route iden-tities, with model-level fallback) contributed a can-didate with the same κ, and the class with the high-est such count wins the override if its support is strictly stronger than the baseline tied winner. Un-like a structural clustering, we do not build per-cluster evidence summaries or invoke any LLM judge. The entire reranker is deterministic. 
+
+F Extended Discussion 
+
+This appendix expands the brief discussion stub at the end of §5. 
+
+F.1 The Coverage–Consensus Trade-off 
+
+Our experiments surface a recurring pattern be-tween specialist and generalist candidate sources. Pools drawn from a single training distribution ei-ther reach a wider set of correct queries but can-not vote them out (high oracle, low majority), or they vote consistently but cannot reach the correct query in the first place (high majority, low oracle). SIRIUS-SQL is effective on BIRD not because it produces a strictly larger pool, but because pair-ing distributions sitting on opposite ends of this trade-off lifts both the ceiling and the voteability si-multaneously (RQ3). We expect this pattern to gen-eralize to any setting where a domain-specialized RL-trained model can be paired with a broader LLM, beyond Text-to-SQL. 
+
+F.2 Coarse Repair Can Pollute the Pool 
+
+A second observation from RQ4 is more cautionary: handing failed candidates to a single LLM-based corrector without a structured per-type signal can be worse than dropping those candidates entirely (coarse LLM repair vs drop failures ). This suggests that the value of execution feedback in pool-level pipelines lies in the structured diagnosis it carries, not in the LLM call it triggers: uniform LLM re-pair injects plausibly-clean noise that subsequent voting cannot filter out. Practitioners adding self-correction to multi-candidate pipelines should pre-serve the failure type rather than collapse it. 
+
+F.3 Efficiency–Specificity Trade-off in the Hybrid Selector 
+
+The hybrid selector’s design embodies a deliberate efficiency–specificity trade-off: most questions are resolved by lightweight result-level signals, and the deterministic structural-support reranker fires only on questions where these signals are tied.
