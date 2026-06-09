@@ -1,0 +1,669 @@
+Title: GreenGNN: Energy-Aware Windowed Communication Optimization for Distributed GNN Training
+
+URL Source: https://arxiv.org/pdf/2606.02916v1
+
+Published Time: Wed, 03 Jun 2026 00:17:11 GMT
+
+Number of Pages: 11
+
+Markdown Content:
+# GreenGNN: Energy-Aware Windowed Communication Optimization for Distributed GNN Training 
+
+Arefin Niam 
+
+Tennessee Technological University Cookeville, Tennessee, USA aniam42@tntech.edu 
+
+Tevfik Kosar 
+
+University at Buffalo Buffalo, New York, USA tkosar@buffalo.edu 
+
+M. S. Q. Zulkar Nine 
+
+Tennessee Technological University Cookeville, Tennessee, USA mnine@tntech.edu 
+
+Abstract —Large-scale graph neural network (GNN) training often requires distributed clusters because graph structure and feature tensors no longer fit in a single node’s memory. In sampling-based training, each mini-batch expands into a recep-tive field that spans partitions and triggers thousands of remote feature fetches per epoch. This wastes energy for two main reasons: each small RPC pays a fixed initiation and protocol cost, and GPUs continue drawing substantial baseline power while waiting for remote features. We present GreenGNN, an energy-aware distributed GNN training system that reduces communica-tion energy by exploiting the bursty, short-lived temporal locality of neighbor sampling. GreenGNN groups training into windows of W consecutive mini-batches, stages each window’s hot features in a local cache, and merges remote requests from each partition owner into a small number of bulk transfers. This amortizes RPC overhead across many features while preserving an on-demand path for cache misses. Because window size controls the trade-off between communication amortization and hot-set staleness, GreenGNN selects W offline using a discrete-event simulator that replays a deterministic one-epoch access trace with a hybrid energy model. We implement GreenGNN on DGL and evaluate it on a 4-node GPU cluster with benchmark datasets. Across datasets and batch sizes, GreenGNN reduces total system energy by 27–43% relative to baseline while improving end-to-end throughput by up to 3.9 ×. GPU energy drops by 36–71%, driven by fewer RPC initiations and lower GPU stall time. 
+
+Index Terms —Distributed training, graph neural network, energy efficiency, communication optimization, sustainable com-puting 
+
+I. I NTRODUCTION 
+
+Deep learning has achieved remarkable success on Eu-clidean data, but many important real-world workloads are fundamentally graph-structured. Modern recommendation sys-tems [1], [2], financial fraud detection pipelines [3], and biomedical interaction networks [4] all operate over relational data. Graph Neural Networks (GNNs) have therefore emerged as the standard framework for learning on graphs [5], [6]. In production, these graphs already contain hundreds of mil-lions to billions of nodes and edges [1], [7], and industrial deployments have reported graphs with more than one trillion edges [8]. At this scale, graph structure and feature tensors no longer fit in the memory of a single accelerator, making distributed training across multiple machines necessary [9]– [11]. Distributed GNN training is challenging because its com-munication pattern is fundamentally irregular. Unlike dense DNNs that operate on contiguous tensors, GNNs repeatedly aggregate features from sampled neighbors along the graph topology [6]. In sampling-based distributed training, each mini-batch expands into a receptive field that often spans multiple partitions, triggering many remote feature lookups. This cross-partition traffic is a major bottleneck in distributed GNN training [10]–[13]. Prior systems such as DistDGL [10], P3 [11], BGL [14], and Legion [15] have improved perfor-mance through pipelining, partition optimization, and feature caching. However, these systems are designed primarily to improve throughput. They pay far less attention to the energy cost of the communication pattern itself. This gap matters because communication dominates energy consumption in distributed GNN training. In our profiling of distributed GraphSAGE [6], we find that data movement ac-counts for 76–85% of total system energy across batch sizes, while forward and backward computation together account for only 4–17% (Figure 1). The inefficiency comes from two sources. First, each small RPC incurs a fixed initiation cost in CPU cycles, interrupt handling, and protocol processing, re-gardless of how little data it transfers. Second, GPUs continue to draw substantial baseline power while waiting for remote features to arrive. In other words, the system wastes energy both in issuing many fine-grained requests and in keeping accelerators idle during the resulting stalls. Existing approaches reduce remote accesses, but they do not directly address this energy inefficiency. Partitioning methods such as min-cut [16] and replication strategies such as halo construction [10] reduce communication volume, but they do not change the fine granularity of many remote requests. Static feature caches [17], [18] place selected hot features in GPU memory with low runtime overhead, but their contents are fixed and become less effective as the hot set evolves during training on power-law graphs [19]. Dynamic caches [14] adapt to changing access patterns through replacement policies such as LRU, LFU, and FIFO, but they must track a large number of 
+
+> arXiv:2606.02916v1 [cs.DC] 1 Jun 2026
+
+accesses and often synchronize metadata across workers [20]. That overhead increases CPU activity and, in turn, energy consumption. Two-level cache designs [20] increase effective cache capacity, but still rely on per-access tracking and opti-mize a sum-of-costs objective that does not reflect the slowest-partition bottleneck in distributed execution. Overall, prior work treats communication mainly as a latency and throughput problem. It does not treat energy as a first-class optimization objective, nor does it exploit the temporal structure of remote accesses in a way that is most beneficial for energy efficiency. 
+
+Fig. 1: Energy breakdown of distributed GraphSAGE training on the OGBN-Products dataset. GreenGNN is built on a simple observation about distributed GNN training. Neighbor sampling repeatedly revisits dense graph regions and high-degree hubs, which means that a relatively small set of remote features is reused heavily over a short sequence of consecutive mini-batches before quickly falling out of the working set. We quantify this effect in Section VI. On Reddit dataset, caching the top 10% most frequently accessed remote nodes within a window of W =16 
+
+mini-batches captures more than 85% of all remote feature requests. This bursty and short-lived locality suggests a mid-dle ground between static caching and fine-grained dynamic caching. Instead of updating the cache on every access, the system can refresh it periodically at window boundaries. Based on this insight, GreenGNN adopts window-based caching . It divides each epoch into windows of W consecutive mini-batches. At the beginning of each window, it identifies the hot remote features for that window from a precomputed access trace, stages them into a local cache through a small number of bulk transfers from each partition owner, and serves most requests within the window directly from the cache. A lightweight on-demand path handles the remaining misses. This design transforms communication from thousands of small per-batch RPCs into a few large per-window transfers. As a result, it amortizes RPC initiation overhead across many features and reduces both CPU-side packet processing energy and GPU idle energy. The key design question is how to choose the window size W . If W is too small, bulk transfers do not provide enough amortization benefit. If W is too large, the hot set becomes stale, cache misses increase, and GPU memory pres-sure rises. Searching for W online is too expensive because each candidate requires a full training run. GreenGNN instead exploits the determinism of the access pattern under fixed seeds and partitioning. It collects a one-epoch access trace from a lightweight calibration run and replays that trace in a discrete-event simulator that estimates the energy cost of each candidate window size. The simulator uses a hybrid model that combines analytical energy estimation with a learned rank-correction component trained using pairwise ranking loss. We implement GreenGNN on top of PyTorch and DistDGL and evaluate it on Reddit, OGBN-Products, and OGBN-Papers100M. Across datasets and batch sizes, GreenGNN reduces total system energy by 27–43% relative to on-demand DistDGL, with GPU energy reductions of 36–71%. We also find that the energy-window relationship is consistently con-vex, which confirms the expected trade-off between transfer amortization and hot-set staleness. The simulator-guided au-totuner achieves Kendall’s τ of 0.62–1.00 across all tested settings. This paper makes the following contributions:  
+
+> •
+
+Energy characterization of distributed GNN training. 
+
+We present a systematic energy breakdown of sampling-based distributed mini-batch GNN training and show that per-RPC initiation overhead and GPU stall power together account for more than 80% of total system energy in our setting (Section II).  
+
+> •
+
+Window-based caching with bulk transfer consolida-tion. We introduce a caching design that exploits bursty temporal locality by grouping training into windows of 
+
+W mini-batches and replacing thousands of fine-grained RPCs with a small number of bulk transfers per parti-tion owner, without per-access tracking or cross-worker metadata synchronization (Section IV).  
+
+> •
+
+A simulator-guided energy autotuner. We develop an offline autotuner that combines a physics-based energy model with learning-to-rank calibration to select energy-efficient window sizes from a single-epoch access trace, achieving 6/9 top-1 accuracy and Kendall’s τ up to 1.00 across datasets and batch sizes (Section VI).  
+
+> •
+
+Comprehensive evaluation. We provide detailed CPU, GPU, and per-partition energy analysis on three datasets and show that GreenGNN reduces total system energy by up to 43% and GPU energy by up to 71% over baseline DistDGL while preserving model accuracy and matching or improving end-to-end throughput (Section VI). II. M OTIVATION 
+
+Figure 1 shows that data movement dominates the energy budget of distributed GNN training. In this section, we explain why this happens and connect the observed energy cost to two underlying physical mechanisms that appear consistently in our profiling results. Fig. 2: Initiation vs. payload energy as a function of transfer size. The dashed line marks the crossover (≈965 nodes) between the initiation-dominated and payload-dominated regimes. 
+
+A. Per-Request Initiation Overhead 
+
+The energy cost of a remote feature fetch consists of two parts: a fixed initiation cost Einit , which includes CPU interrupt handling, kernel crossings, and protocol processing, and a variable payload cost Epayload , which grows with the number of features transferred. For the small transfers produced by GNN neighbor sampling, the fixed component is often the dominant one. To quantify this effect, we profile RPC energy on our cluster across a range of payload sizes. At GNN-typical request sizes, which usually involve tens to low hundreds of remote nodes per RPC, initiation accounts for 49–99% of total per-RPC energy. The crossover point at which payload cost begins to exceed initiation cost occurs at about 965 nodes, as shown in Figure 2. This threshold is much larger than the size of a typical per-batch remote request. As a result, existing systems operate mostly in the initiation-dominated regime and repeatedly pay a high fixed energy cost for moving relatively little data. The consequence is straightforward. If many small requests are consolidated into a few larger transfers, the fixed cost can be amortized across thousands of features and the operating point moves into the payload-dominated regime, where energy scales more efficiently with transfer volume. This argument extends beyond TCP. RDMA-capable in-terconnects reduce software overhead but still require per-operation work-request posting and completion through the NIC queue-pair interface; most distributed GNN frameworks, including DistDGL, rely on TCP-based RPC by default [10]. The core problem lies in the granularity of the access pattern, not only in the choice of transport. 
+
+B. GPU Stall Energy 
+
+Modern datacenter GPUs draw substantial baseline power even when they are not actively computing [21]. In distributed GNN training, GPUs often wait for remote features before computation can proceed, and the baseline draw during these waiting periods accumulates into a significant energy cost. This highlights an important distinction between throughput and energy optimization. Pipelining can overlap communi-cation with computation and improve throughput, but does not reduce the total data fetched or the waiting cost of the communication pattern. Reducing stall energy requires reducing the number and duration of remote accesses, not simply masking them behind computation. These two mechanisms, per-RPC initiation overhead and GPU stall power, together account for the dominant share of system energy in our measurements and motivate the design of GreenGNN. Reducing the number of network round-trips is the highest-leverage path to improving energy efficiency. III. R ELATED WORK 
+
+We organize prior work by how distributed GNN systems manage remote feature access, then highlight why these de-signs remain insufficient for energy-aware optimization. 
+
+A. Partition and Communication Optimization 
+
+A common approach to reducing cross-partition traffic is better graph partitioning. DistDGL [10] uses METIS-based edge-cut minimization [16] with 1-hop halo nodes, DGCL [22] improves the collective communication layer, and GraNNDis [23] introduces expansion-aware sampling with one-hop graph masking. These systems reduce the volume of remote traffic but do not change its fine granularity: each mini-batch still generates many small RPCs, each paying a fixed initiation cost. A separate line of work improves throughput by overlapping communication with computation. P3 [11] restructures feature and gradient movement through a push-pull execution model, and PipeGCN [24] uses stale features from a previous iteration to decouple forward and backward passes. These techniques reduce training time but do not reduce the number of RPC initiations or the total data movement, so better overlap does not necessarily translate into proportional energy savings (Section II-B). 
+
+B. Feature Caching 
+
+Caching reduces redundant remote fetches by exploiting temporal locality. Static designs such as PaGraph [17] and GNNLab [18] use offline heuristics (node degree or pre-sampling frequency) to place hot features in GPU memory before training begins. These methods impose little runtime overhead but lose effectiveness on power-law graphs as the hot set shifts across seed batches. Dynamic designs trade higher runtime cost for adaptabil-ity. BGL [14] evaluates LRU, LFU, and FIFO replacement, Legion [15] adds NVLink-aware hierarchical caching, and XGNN [25] unifies GPU and host memory through a global store abstraction. Zhang et al. [20] expand capacity with a two-level GPU–CPU cache but optimize a sum-of-costs objective that ignores the slowest-partition bottleneck. All dynamic ap-proaches incur per-access tracking and, in distributed settings, cross-worker metadata synchronization—overhead paid by the CPU that contributes directly to energy consumption, though none of these works quantify it from an energy perspective. 
+
+C. The Gap 
+
+TABLE I: Comparison of distributed GNN systems along key design axes. 
+
+System Cache Tracking Bulk Energy Type Granularity Transfers Aware 
+
+DistDGL [10] None — No No P3 [11] Limited — No No PaGraph [17] Static None No No GNNLab [18] Static None No No BGL [14] Dynamic Per-access No No Legion [15] Dynamic Per-access No No XGNN [25] Dynamic Per-access No No Zhang et al. [20] 2-Level Per-access No No RapidGNN [26] Epoch Per-epoch Yes No 
+
+GreenGNN Window Per-window Yes Yes 
+
+Table I summarizes the design space. Two limitations are clear. First, no existing distributed GNN system treats energy as a first-class optimization objective, despite the very different communication pattern GNN training exhibits compared to dense DNN collectives [13]. Second, prior systems do not exploit the temporal granularity at which remote access lo-cality appears: the hot set is bursty and short-lived, calling for periodic cache refreshes at window boundaries rather than whole-run static placement or per-access tracking [26]. GreenGNN addresses both gaps. It builds on RapidGNN [26], which introduced deterministic sampling and trace-based prefetching for throughput. GreenGNN reorients the system around energy efficiency by adding a physics-based energy model with learned rank correction for offline window-size selection and consolidating per-batch RPCs into per-window bulk transfers. IV. S YSTEM DESIGN 
+
+GreenGNN operates in two phases. An offline phase col-lects a deterministic access trace, profiles the cluster’s en-ergy characteristics, and selects an energy-optimal window size W ∗ through simulation. A runtime phase uses W ∗ to drive pipelined window-based caching, in which a dedicated prefetcher builds the next window’s cache in the background while the current window’s mini-batches train on the GPU. Figure 3 shows the full pipeline. 
+
+Notation. O is the set of remote partition owners; each remote node u belongs to exactly one owner m ∈ O . Mini-batches are indexed b = 1 , . . . , B , and Nb is the set of nodes whose features batch b requires. 
+
+A. Offline Phase 
+
+The offline phase has three jobs: collect the access trace, profile the hardware, and pick the best window size. 
+
+Trace collection (steps 1⃝– 5 ⃝). GreenGNN lowers the GPU clock (step 1⃝), runs one epoch of deterministic neighbor sampling (step 2 ⃝), and streams the resulting per-batch node-ID lists to a Presampled DB on local SSD (step 3 ⃝). Because GNN Dataset                                     
+
+> Partition 0
+> Distributed
+> Feature KV
+> Store
+> Presampled DB Stream to SSD
+> Batch 0 Metadata
+> Batch 1 Metadata
+> Batch N Metadata
+> Window
+> Simulator
+> Energy
+> Profiler
+> METIS Partitioning
+> Set GPU Freq Low
+> Reset GPU Freq
+> Cached Computation Block Streamed Computation Block
+> 18 29 355 23 27 91 53 60 28 32 14 Node ID
+> 12 34 32 23 15 37 10 918 31 56 49 43 25 31 Freq
+> 67 76 32 ..............
+> ..............
+> Epoch 1 Epoch 2
+> 27 29
+> 355
+> 76 k3
+> 67 k4
+> Cache Blocks
+> for Simulation Stream Blocks for Training
+> Cache for W1 Cache for W2
+> 1. W = 8
+> 2. W = 16
+> 3. W = 32
+> ...............
+> 1
+> Sample 2
+> 3
+> 5
+> 46
+> 7
+> 8
+> 9
+> 10
+> Fetch Features for
+> Cache
+> Profile Energy
+> Coefficients
+> Simulate
+> Energy Cost
+> and rank
+> Windows
+> W = 8
+> Hot set Caching
+> Partition 1 Partition N
+
+Fig. 3: GreenGNN architecture overview. Circled numbers indicate execution order. Steps 1⃝– 8 ⃝ constitute the offline phase (trace collection, energy profiling, and window selec-tion); steps 9⃝–10 ⃝ execute at runtime (hot-set caching and feature fetching). seeds are fixed, this single-epoch trace T = {(b, u ) | u ∈ Nb}
+
+fully determines the access pattern for all future epochs. The Presampled DB then feeds both the simulation path (step 4 ⃝)and, later, the runtime training path (step 6 ⃝). The GPU clock is restored before training begins (step 5 ⃝). 
+
+Hardware profiling (step 7⃝). The Energy Profiler runs microbenchmarks against each remote owner m to measure an initiation energy ϵinit (m) (the fixed cost of one RPC), a payload energy function ϵpayload (m, x ) (marginal cost of trans-ferring x features), corresponding latency surrogates λinit (m)
+
+and λpayload (m, x ), and the aggregate bandwidth ceiling BW .Section V-A details the profiling pipeline. 
+
+Simulation and window selection (step 8⃝). A discrete-event simulator replays the trace for each candidate window size W ∈ W (e.g., {1, 2, 4, 8, 16 , 32 , 64 }). For each W , it partitions the epoch into ⌈B/W ⌉ windows, selects the nhot 
+
+most frequently accessed remote nodes per window as the hot set Hk, and tallies two types of communication events:  
+
+> •
+
+Cache rebuilds : at each window boundary, one bulk RPC per partition owner carrying the hot-set entries not already cached. For owner m, the rebuild delta at window k is 
+
+∆k,m = ( Hk ∩ Nm) \ (Ck−1 ∩ Nm), where Ck−1 is the previous cache state.  
+
+> •
+
+Residual misses : within a window, on-demand RPCs for nodes outside the hot set. For batch b and owner m, the miss set is Mb,m = ( Nb ∩ Nm) \ (Hk ∩ Nm).These event counts feed a hybrid energy cost model de-scribed below. Figure 4 illustrates the simulator workflow. Learned  
+
+> Ranker
+> L
+> Hardware
+> Energy Profiler
+> Idle Power
+> RPC Cost
+> Bandwidth
+> Graph Access
+> Pattern
+> Node Frequency
+> Remote Ratio
+> Physics Based
+> Simulator
+> Ephy
+> Optimal
+> Thrashing Staleness
+> Estimated Energy
+> Window Length
+> W
+
++
+
+> Energy
+> Coefficients
+> Remote nodes
+> access data
+> Estimate
+> Window
+> Energy
+
+Fig. 4: GreenGNN simulator workflow. For each candidate W ,the simulator computes a physics-based estimate Ephy (W ) and applies a learned rank correction L(W ) to produce Enet (W ).The energy curve is convex: small windows incur frequent rebuilds, large windows suffer hot-set staleness, and W ∗ lies in the valley. 
+
+B. Hybrid Energy Cost Model 
+
+GreenGNN scores each candidate W using a model that pairs an analytical energy estimate with a learned rank correc-tion. 
+
+Analytical component. Energy decomposes into three terms. Cache rebuild energy captures the bulk transfers at window boundaries: 
+
+Erebuild (W ) = 
+
+> K
+
+X
+
+> k=1
+
+X
+
+> m∈O
+
+
+
+ϵinit (m) I[∆ k,m ̸ = ∅]+ ϵpayload (m, |∆k,m |)
+
+
+
+.
+
+(1) Residual miss energy captures on-demand fetches within each window: 
+
+Emiss (W ) = 
+
+> B
+
+X
+
+> b=1
+
+X
+
+> m∈O
+
+
+
+ϵinit (m) I[Mb,m ̸ = ∅]+ ϵpayload (m, |Mb,m |)
+
+
+
+.
+
+(2) GPU stall energy is the product of the accelerator’s idle power draw Pidle and total stall time Tstall (W ), where stall time sums across all rebuild and miss events, with each event’s duration modeled as the maximum of the slowest single-owner transfer and the aggregate bandwidth ceiling: 
+
+Estall (W ) = Pidle · Tstall (W ). (3) The full analytical estimate is 
+
+Ephy (W ) = Erebuild (W ) + Emiss (W ) + Estall (W ).
+
+This model exposes the central trade-off: larger windows amortize rebuild initiations but risk stale hot sets with rising residual misses; smaller windows do the opposite. 
+
+Learned rank correction. Real systems exhibit effects the analytical model cannot capture precisely: partial overlap be-tween communication and computation, contention on shared resources, and non-linear bandwidth saturation. GreenGNN accounts for these with a lightweight learned correction L(W ).
+
+Algorithm 1 GreenGNN Pipelined Runtime Execution 
+
+Require: Presampled trace T , window size W ∗, hot-set bud-get nhot  
+
+> 1:
+
+C ← ∅ ▷ Current cache  
+
+> 2:
+
+Build hot set H1 from T for window 1  
+
+> 3:
+
+PREFETCHER .W ARM CACHE (H1) ▷ Begin staging  
+
+> 4:
+
+for k = 1 to ⌈B/W ∗⌉ do  
+
+> 5:
+
+C ← PREFETCHER .A WAIT CACHE () ▷ Block until 
+
+Hk is ready  
+
+> 6:
+
+if k < ⌈B/W ∗⌉ then ▷ Look-ahead: warm next window  
+
+> 7:
+
+Build hot set Hk+1 from T 
+
+> 8:
+
+PREFETCHER .W ARM CACHE (Hk+1 \ C) ▷
+
+Parallel with training  
+
+> 9:
+
+end if  
+
+> 10:
+
+for each batch b in window k do  
+
+> 11:
+
+Look up cached features for Nb ∩ Hk 
+
+> 12:
+
+Mb ← Nb \ Hk ▷ Residual misses  
+
+> 13:
+
+PREFETCHER .F ETCH MISSES (Mb) ▷ Async on-demand  
+
+> 14:
+
+Await miss results; assemble full feature tensor  
+
+> 15:
+
+Forward pass, backward pass, parameter update  
+
+> 16:
+
+end for  
+
+> 17:
+
+end for 
+
+For a small set of calibration window sizes Wcal ⊆ W , we run training and measure ground-truth energy EGT (W ). A linear model predicts the residual: L(W ) = β⊤z(W ) + γW , where 
+
+z(W ) is a feature vector produced by the simulator (rebuild count, miss count, stall time, hit ratio), β is a global weight vector, and γW is a per-window bias. The model is trained with a pairwise ranking loss that preserves the correct ordering of window sizes rather than minimizing absolute prediction error (Section V-C). The final score used by the optimizer is: 
+
+Enet (W ) = Ephy (W ) + L(W ). (4) The optimizer selects W ∗ = arg min W ∈W Enet (W ). Because 
+
+|W| is small and the simulator operates on a single-epoch trace, the entire offline phase completes in under five seconds. 
+
+C. Runtime Execution 
+
+At runtime, GreenGNN pipelines cache construction with GNN training so that the GPU is never blocked waiting for a full cache rebuild. Algorithm 1 gives the complete procedure. There are three aspects of this design. First, the prefetcher is a dedicated background thread that builds the cache for window k+1 while the GPU trains on window k’s batches (lines 7–9). It issues one bulk RPC per partition owner, and because each window takes tens of seconds to train, the transfers complete well before the current window finishes. The training loop blocks only briefly at each window boundary to confirm the cache is ready (line 5). Second, nodes outside the hot set are fetched on de-mand by the same prefetcher (lines 12–14), using the same asynchronous mechanism that baseline DistDGL uses for all remote accesses. GreenGNN simply reduces the volume reaching this path by an order of magnitude. Third, the core energy benefit comes from consolidation. For W =16 batches across three remote owners, GreenGNN replaces up to 16 ×3 = 48 individual RPCs with 3 bulk transfers, each carrying hundreds or thousands of features. The initiation cost ϵinit is paid 3 times instead of 48, placing the system in the payload-dominated regime identified in Section II-A. V. I MPLEMENTATION 
+
+We implement GreenGNN on top of PyTorch and DistDGL. This section describes the three components that support the offline phase: the energy profiling infrastructure (Section V-A), the trace simulator (Section V-B), and the rank calibration module (Section V-C). 
+
+A. Energy Profiling Infrastructure 
+
+The profiling subsystem operates as a lightweight daemon that interfaces with hardware counters to capture energy con-sumption at millisecond granularity. Figure 5 illustrates the six-step profiling pipeline. CPU energy is read through the Intel RAPL interface and GPU power is queried via NVML, integrated over time to obtain joules. At initialization, the profiler measures a quiescent baseline Pidle to separate static power from active operation costs. Each remote partition owner m is then probed with two types of synthetic workloads: initiation probes ,which issue loops of single-node fetches to isolate the fixed RPC overhead ϵinit (m), and payload probes , which sweep across transfer sizes to characterize ϵpayload (m, x ). The known initiation cost is subtracted from payload measurements so that the residual isolates per-feature transfer energy. Latency surrogates λinit (m) and λpayload (m, x ) are derived analogously. A linear fit of ϵpayload (m, x ) as a function of transfer size balances model simplicity with evaluation speed during the window sweep. 
+
+B. Trace Simulator 
+
+The simulator enables offline exploration of window sizes without running actual training. It consumes the deterministic access trace from the Presampled DB and the partition book generated by DistDGL. For a candidate W , the simulator makes a single pass over the trace and maintains the cache state across windows. Two types of events are accumulated: 
+
+Rebuild events occur at window boundaries. The simulator computes the set difference between the new hot set and the previous cache, groups the delta by owner, and accumulates initiation and payload energy using the profiled coefficients (Equation 1). Local Partition     
+
+> Partition Metadata
+> Profiler Controller
+> Interconnect
+> Fabric
+> Remote
+> Partition A
+> Remote
+> Partition B
+> Remote
+> Partition N
+> Controlled Data Fetch
+> Mechanism
+> Energy Monitor
+> Statistical Analyzer
+> Initiate Remote
+> RPC Fetched
+> Dispatch Fetch
+> Operations
+> Start/Stop
+> Energy
+> Profiling
+> Metadata-
+> Size/Duration
+> Raw Jules
+> Measurement
+> Query Partition
+> Topology Distributed
+> Metadata/Feature
+> Path
+> 1Read
+> Metadata 2
+> 3
+> 4
+> 5
+> 6Energy
+> Coefficients
+> Raw Joules
+
+Fig. 5: GreenGNN energy profiling pipeline. The Profiler Controller reads partition metadata 1⃝, dispatches controlled fetches 2⃝– 3 ⃝, collects transfer metadata 4⃝, and triggers en-ergy measurement 5 ⃝– 6 ⃝. The Statistical Analyzer derives per-owner energy and latency coefficients from the raw readings. 
+
+Miss events occur within each window. For every batch, the simulator identifies required nodes absent from the hot set and accumulates per-owner on-demand fetch costs (Equation 2). In parallel, the simulator tracks stall time using the latency surrogates and multiplies the total by Pidle to obtain GPU stall energy (Equation 3). The pass produces both the analytical estimate Ephy (W ) and the feature vector z(W ) consumed by the rank calibration module. 
+
+C. Rank Calibration 
+
+The analytical model captures the dominant cost structure but cannot account for all physical effects. The calibration module corrects for these gaps using a learning-to-rank ap-proach: the goal is to preserve the correct ordering of window sizes, not to predict absolute energy. 
+
+Feature extraction. For each W , the simulator outputs the feature vector z(W ) alongside Ephy (W ). A small set of calibration window sizes Wcal ⊆ W are run on the actual cluster to obtain ground-truth energy EGT (W ).
+
+Ranking objective. A linear model predicts a corrected score 
+
+S(W ) = β⊤z(W ) + γW , where β is a global weight vector and γW is a per-window bias. For any pair (Wi, W j ), let 
+
+σij = sign( EGT (Wj ) − EGT (Wi)) encode the true ordering. We minimize a pairwise ranking loss: 
+
+L = X
+
+> i<j
+
+log  1 + exp  −σij (S(Wj ) − S(Wi))  + λ∥β∥22, (5) which penalizes every pair whose predicted order disagrees with the measured order. The regularization term prevents overfitting to the small calibration set. Optimization is lightweight (a linear model over a handful of features and seven candidates) and converges in milliseconds. The resulting weights are reused across training runs on the same hardware. VI. E VALUATION 
+
+We evaluate GreenGNN against four distributed GNN train-ing systems across three datasets and three batch sizes, mea-W=1 W=2 W=4 W=8 W=16 W=32 W=64   
+
+> Window Size
+> 0
+> 20k
+> 40k
+> 60k
+> 80k
+> 100k
+> 120k
+> Energy (Joules×10³)
+> 115kJ
+> (+11%)
+> 83kJ
+> (+35%)
+> 66kJ
+> (+49%) 57kJ
+> (+55%)
+> 57kJ
+> (+55%) 54kJ
+> (+58%)
+> 56kJ
+> (+56%)
+> Reddit – Batch Size 2000
+> GPU vs CPU Energy Breakdown
+> DGL-METIS Total (128.4 kJ)
+> GPU Energy
+> CPU Energy
+
+Fig. 6: GPU vs. CPU energy breakdown for Reddit at B=2000 
+
+across window sizes. The dashed line marks the DGL-METIS baseline (128.4 kJ). Both components decrease as W increases, with CPU energy accounting for most of the reduction. suring total energy, CPU/GPU energy breakdown, throughput, and simulator fidelity. 
+
+A. Experimental Setup 
+
+Platform and model. Experiments run on a 4-node Chameleon Cloud cluster. Each node has an Intel Xeon CPU, two NVIDIA P100 GPUs, and 25 Gbps Ethernet. Each graph is partitioned into 4 METIS partitions, one per node. All systems train a 2-layer GraphSAGE model with 16 hidden units, fan-out {10 , 25 }, learning rate 0.003, dropout 0.5, and 30 epochs. Unless otherwise noted, we use batch size B=2000 and also evaluate B=1000 and B=3000 .
+
+Measurement and baselines. CPU energy is measured with Intel RAPL and GPU energy with NVIDIA NVML, both sampled every 50 ms. For Default DGL, which does not support in-process NVML logging, we use an external daemon on each node. We report the sum across all 4 nodes over the full 30-epoch run. We compare against Default DGL ,
+
+BGL [14], RapidGNN [26], and GraphStorm [27]. Relative to RapidGNN, GreenGNN adds window-based bulk transfer consolidation, GPU frequency reduction during CPU-bound sampling, and a simulator-guided autotuner. 
+
+Datasets. We use Reddit (233K nodes, 114M edges), OGBN-Products (2.4M nodes, 61.9M edges), and OGBN-Papers100M (111M nodes, 1.6B edges). 
+
+B. Window Size Analysis 
+
+We first validate the central design assumption: window-based caching produces a convex energy curve over W and reduces both CPU and GPU energy. Figure 6 shows the CPU/GPU energy breakdown for Reddit at B=2000 . The DGL-METIS baseline (128.4 kJ, dashed line) uses standard on-demand feature fetching. CPU energy ac-counts for 78–85% of total energy and drops from about 90 kJ at W =1 to 46 kJ at W =32 as bulk transfers replace thousands DGL 
+
+> BGL
+> RapidGNN
+> GreenGNN
+> GraphStorm
+> 0
+> 100
+> 200
+> 300
+> 400
+> Total Energy (kJ)
+> −42%
+> Reddit
+> DGL
+> BGL
+> RapidGNN
+> GreenGNN
+> GraphStorm
+> −28%
+> OGBN-Products
+> DGL
+> BGL
+> RapidGNN
+> GreenGNN
+> GraphStorm
+> 1452 kJ
+> −32%
+> OGBN-Papers100M
+
+Fig. 7: Total energy consumption (GPU + CPU, all nodes) across three datasets at B=2000 . GreenGNN achieves the lowest energy in all cases. Annotations show percentage re-duction relative to Default DGL. GraphStorm on Papers100M is truncated (actual: 1,452 kJ). of small RPCs. GPU energy follows the same trend, falling from about 25 kJ to 8 kJ as larger windows reduce blocking communication and GPU stall time. Frequency scaling during sampling further lowers idle GPU power. Total energy decreases steadily from W =1 to W =32 ,then flattens at W =64 as hot-set staleness begins to offset further amortization. The minimum is W =32 at 54 kJ, a 58% reduction from baseline. Windows in {8, 16 , 32 , 64 } remain within 3 percentage points of this optimum, confirming that the energy valley is broad enough to make near-optimal tuning practical. 
+
+C. End-to-End Energy Consumption 
+
+Figure 7 compares total system energy (GPU + CPU, all nodes) at B=2000 . GreenGNN achieves the lowest total energy on every dataset: 189.4 kJ on Reddit (42.0% below Default DGL’s 326.8 kJ), 203.9 kJ on OGBN-Products (28.3% below 284.3 kJ), and 307.2 kJ on OGBN-Papers100M (32.1% below 452.2 kJ). In absolute terms, these correspond to savings of 137.4 kJ, 80.4 kJ, and 145.0 kJ per training run. At cloud scale, where training jobs run continuously across hundreds of GPUs, per-run savings of this magnitude compound into meaningful reductions in operational cost and carbon footprint. The savings stem from two mechanisms formalized in Section IV-B. Window-based caching converts thousands of fine-grained per-batch RPCs into a small number of bulk transfers per window, reducing accumulated initiation energy 
+
+Erebuild (Equation 1). Bulk transfers also shorten the intervals during which GPUs stall on remote data, reducing Pidle · Tstall 
+
+(Equation 3). The 6.2–17.8% improvement over RapidGNN reflects the added contribution of GPU frequency reduction during sampling, bulk transfer consolidation, and the energy-aware window selection by the autotuner. GraphStorm presents a notable contrast. On smaller datasets it remains competitive (245.3 kJ on Reddit, 305.0 kJ on Prod-ucts), but on OGBN-Papers100M it consumes 1,452 kJ, 4.7×Reddit OGBN-Products OGBN-Papers100M  
+
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> GPU Energy (kJ)
+> −71% −37%
+> −54%
+> 340 kJ
+> DGL
+> BGL
+> RapidGNN
+> GreenGNN
+> GraphStorm
+
+Fig. 8: GPU energy at B=2000 . GreenGNN achieves 37– 71% GPU energy reduction over Default DGL. GraphStorm on Papers100M is truncated (actual: 340 kJ). the energy of GreenGNN. This increase is driven by post-training overhead (model serialization, distributed inference setup) whose cost grows super-linearly with graph size. The truncated bar in Figure 7 annotates GraphStorm’s actual value. 
+
+D. GPU Energy Analysis 
+
+CPU-side costs (data loading, sampling, RPC handling) account for 77–95% of total energy across all frameworks. Iso-lating the GPU component reveals the effect of GreenGNN’s two GPU-targeted mechanisms: reduced stall time from bulk transfer consolidation and reduced idle power from frequency scaling during sampling. Figure 8 shows GPU-only energy at B=2000 . GreenGNN reduces GPU energy by 70.9% on Reddit (8.8 kJ vs. 30.2 kJ for DGL), 37.5% on OGBN-Products (12.0 kJ vs. 19.2 kJ), and 54.0% on OGBN-Papers100M (38.0 kJ vs. 82.6 kJ). These GPU reductions are disproportionately larger than the total-energy reductions (37–71% vs. 28–42%) because consoli-dating remote accesses into bulk window transfers directly reduces Tstall , and GPU power draw remains high even when idle. The frequency reduction during CPU-bound sampling phases compounds this effect by lowering Pidle itself when the GPU is not needed. Even compared to RapidGNN, which shares the same presampling infrastructure and achieves similar reductions in remote fetch volume, GreenGNN delivers an additional 16.1– 52.7% GPU energy reduction. This gap isolates the contribu-tion of the energy-aware components unique to GreenGNN: GPU frequency management during sampling and simulator-guided window selection that picks W ∗ to minimize en-ergy rather than maximize throughput. GraphStorm consumes 340.4 kJ of GPU energy on Papers100M ( 4.1× that of Default DGL), reflecting sustained high GPU power draw during its post-training phases. 
+
+E. Energy and Throughput 
+
+A natural question is whether energy savings come at the expense of training speed. Figure 9 plots each framework in energy vs. epoch-time space on OGBN-Papers100M at 8 10 12 14 16 18 20 
+
+> Avg. Epoch Time (s)
+> 300
+> 400
+> 500
+> 700
+> 1000
+> 1500
+> Total Energy (kJ)
+> Pareto-dominated
+> region
+> DGL
+> BGL
+> RapidGNN
+> GreenGNN
+> GraphStorm
+
+Fig. 9: Energy vs. epoch time on OGBN-Papers100M at 
+
+B=2000 (log-scale y-axis). GreenGNN is Pareto-optimal. The shaded region denotes the Pareto-dominated area. 
+
+B=2000 . GreenGNN occupies the Pareto-optimal position, si-multaneously achieving the lowest total energy (307.2 kJ) and the fastest average epoch time (8.95 s). All other frameworks are Pareto-dominated: RapidGNN is 13.7% more energy-intensive and 5.1% slower, BGL 11.6% more energy-intensive and 23.8% slower, Default DGL 47.2% more energy-intensive and 41.5% slower, and GraphStorm 4.7× the energy and 2.0×
+
+slower. This result may seem counterintuitive, since one might expect GPU frequency reduction to degrade throughput. GreenGNN avoids this tradeoff because frequency is reduced only during the CPU-bound sampling phase, when the GPU is idle regardless. During forward and backward passes the GPU runs at full frequency. The window-based caching mechanism further improves throughput by reducing blocking RPC round-trips per batch. The net effect is that bulk transfer consolidation improves both energy and training time simultaneously, be-cause the same mechanism that reduces initiation energy also reduces the communication bottleneck that limits throughput. 
+
+F. Epoch-Time Speedup 
+
+Figure 10 quantifies per-epoch speedup relative to Default DGL at B=2000 . GreenGNN achieves 3.9× on Reddit (1.77 s vs. 6.84 s), 1.4× on Products (2.77 s vs. 3.80 s), and 1.4× on Papers100M (8.95 s vs. 12.66 s). RapidGNN achieves similar speedups ( 3.8×, 1.3×, 1.3×), confirming that GreenGNN’s energy-aware components introduce no throughput overhead on top of the shared presampling mechanism. The larger gain on Reddit reflects its smaller graph and higher locality, which allow the window cache to absorb a larger fraction of remote requests. BGL offers negligible speedup ( 0.9–1.1×), consistent with its focus on I/O optimization rather than communication reduction. GraphStorm achieves 2.9× on Reddit, where its distributed sampling amortizes well over the small graph, but falls below the DGL baseline on Products ( 0.7×) and Pa-pers100M ( 0.7×). On larger graphs, its coordination overhead Reddit OGBN-Products OGBN-Papers100M  
+
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> Epoch Time Speedup (vs. DGL)
+> 3.9x
+> 1.4x 1.4x
+> DGL baseline
+> BGL
+> RapidGNN
+> GreenGNN
+> GraphStorm
+
+Fig. 10: Epoch-time speedup relative to Default DGL at 
+
+B=2000 . The dashed line marks the DGL baseline ( 1.0×). for distributed sampling, model synchronization, and post-training serialization exceeds the parallelism benefit. 
+
+G. Robustness Across Batch Sizes 
+
+Figure 11 presents GreenGNN’s percentage reduction over Default DGL across three metrics (total energy, GPU energy, epoch time) and three batch sizes ( B ∈ { 1000 , 2000 , 3000 })for each dataset. Every cell is positive: GreenGNN improves on all metrics in all 27 configurations. GPU energy reductions are the largest and most consistent, ranging from 36.4% (Products, B=3000 ) to 70.9% (Reddit, 
+
+B=2000 ), reflecting the effectiveness of bulk transfer consol-idation at reducing GPU stall time. Total energy reductions range from 26.7% to 42.9%, with even the smallest (Products at B=1000 ) representing a 78.4 kJ saving. On Papers100M, total energy reduction increases with batch size (29.2% →
+
+32.1% → 41.2% for B=1000/2000/3000), consistent with the cost model: larger batches produce more remote feature requests per window, so bulk transfer consolidation amortizes 
+
+Einit over a larger payload, pushing the system further into the payload-dominated regime (Section II-A). 
+
+H. Comprehensive Results 
+
+Table II consolidates GPU energy, CPU energy, total energy, and average epoch time for all five frameworks across every dataset and batch size. Four observations emerge. First, GreenGNN achieves the lowest total energy in 8 of 9 configurations. The exception is Papers100M at B=1000 , where BGL is 5.1% lower due to aggressive host-memory caching on that partition layout. Even there, GreenGNN’s GPU energy is 19.1% lower than BGL’s, indicating that the window-based mechanism is more effective at reducing accelerator stall waste while BGL’s advantage comes from CPU-side caching. Second, GreenGNN achieves the lowest or tied-lowest epoch time in 7 of 9 configurations, confirming that energy savings do not degrade throughput. The two exceptions (Reddit at B=1000 and Products at B=3000 ) show epoch times within 4% of the fastest framework. 1K 2K 3K                       
+
+> Batch Size
+> Total Energy
+> GPU Energy
+> Epoch Time
+> 42.9% 42.0% 39.9%
+> 68.6% 70.9% 70.6%
+> 70.9% 74.1% 71.4%
+> Reddit
+> 1K 2K 3K
+> Batch Size
+> 26.7% 28.3% 28.0%
+> 36.9% 37.4% 36.5%
+> 30.3% 27.1% 26.6%
+> Products
+> 1K 2K 3K
+> Batch Size
+> 29.3% 32.1% 41.2%
+> 51.7% 54.0% 51.7%
+> 35.1% 29.3% 27.1%
+> Papers100M
+> 0
+> 20
+> 40
+> 60
+> 80
+> Reduction (%)
+
+Fig. 11: GreenGNN’s reduction over Default DGL (%) across three metrics and three batch sizes per dataset. All cells are positive. GPU energy reductions (36–71%) are uniformly the largest. Third, GraphStorm is consistently the most energy-intensive framework on Papers100M, consuming 1,452–1,905 kJ de-pending on batch size ( 4.7–5.5× the energy of GreenGNN). This illustrates the cost of frameworks that optimize for feature richness without considering the energy implications of their communication design. Fourth, the 6.2–20.2% gap between GreenGNN and RapidGNN in total energy isolates the contribution of GPU frequency reduction and simulator-guided window selection. This translates to 13.5–59.4 kJ per run, savings that accumulate in production settings where models are retrained daily across multiple hyperparameter configurations. 
+
+I. Simulator Validation 
+
+The autotuner’s value depends on whether its predicted window rankings match the true energy rankings on the cluster. Table III reports the simulator-predicted rank (S) and measured rank (A) for each window size across all nine configurations on Reddit, OGBN-Products, and OGBN-Papers100M. The simulator achieves 6/9 top-1 accuracy, correctly iden-tifying W =16 as optimal for Reddit B=1000 , for OGBN-Products at all three batch sizes, and for OGBN-Papers100M at B=2000 and B=3000 . In the three configurations where the top pick differs from the true optimum (Reddit B=2000 
+
+and B=3000 ; Papers100M B=1000 ), the true optimum still falls within the simulator’s top-3 candidates, and the energy penalty of selecting the simulator’s pick is at most 5.3% (3 kJ on Reddit) and 4.8% (8 kJ on Papers100M). Kendall’s τ ranges from 0.62 to 1.00 across the nine configurations (mean 0.85), with perfect ordering ( τ =1 .00 ) on OGBN-Products B=2000 and OGBN-Papers100M B=3000 .The lowest τ (0.62, Reddit B=2000 ) results from swapping 
+
+W =16 and W =32 , whose measured energies differ by only 5.3%. On Papers100M, the larger graph produces more remote accesses per window, which strengthens the simulator’s ability to distinguish between window sizes: the mean τ across Papers100M configurations is 0.90, the highest of the three datasets. The large differences are driven by RPC initiation counts, while the smaller differences within the plateau depend TABLE II: Comprehensive energy and epoch time across all frameworks, datasets, and batch sizes. Bold = best (lowest) per column. ∆ = reduction vs. Default DGL. All energy values in kJ. 
+
+(a) Reddit                                                                                        
+
+> B=1000 B=2000 B=3000
+> Framework GPU CPU Total ET(s) GPU CPU Total ET(s) GPU CPU Total ET(s) DGL 41.2 331.2 372.4 9.20 30.2 296.6 326.8 6.84 25.8 281.9 307.7 5.67 BGL 38.2 288.4 326.6 9.68 29.4 248.6 278.0 7.47 22.8 228.3 251.1 5.77 RapidGNN 27.1 239.4 266.5 2.65 18.6 211.8 230.4 1.82 14.2 198.3 212.5 1.66 GreenGNN 12.9 199.7 212.6 2.68 8.8 180.6 189.4 1.77 7.6 177.5 185.1 1.62
+> GraphStorm 29.4 260.3 289.6 3.71 22.6 222.7 245.3 2.36 21.9 220.1 242.0 2.21
+> ∆GreenGNN -69% -40% -43% -71% -71% -39% -42% -74% -71% -37% -40% -71%
+
+(b) OGBN-Products                                                                                        
+
+> B=1000 B=2000 B=3000
+> Framework GPU CPU Total ET(s) GPU CPU Total ET(s) GPU CPU Total ET(s) DGL 20.7 273.2 293.8 4.26 19.2 265.1 284.3 3.80 16.2 256.4 272.6 3.20 BGL 16.3 219.5 235.8 3.98 14.5 204.2 218.8 3.58 13.2 200.2 213.4 3.25 RapidGNN 16.8 217.6 234.4 3.13 14.3 203.1 217.4 2.86 12.1 198.4 210.5 2.26
+> GreenGNN 13.1 202.3 215.4 2.97 12.0 191.8 203.9 2.77 10.3 186.1 196.3 2.35 GraphStorm 46.0 250.3 296.3 6.32 36.7 268.4 305.0 5.19 33.8 257.8 291.6 4.33
+> ∆GreenGNN -37% -26% -27% -30% -37% -28% -28% -27% -37% -27% -28% -27%
+
+(c) OGBN-Papers100M                                                                                        
+
+> B=1000 B=2000 B=3000
+> Framework GPU CPU Total ET(s) GPU CPU Total ET(s) GPU CPU Total ET(s) DGL 89.5 395.5 484.9 15.78 82.6 369.6 452.2 12.66 71.2 422.7 494.0 11.09 BGL 53.4 273.0 326.3 13.35 44.6 298.1 342.7 11.08 44.6 295.9 340.6 11.09 RapidGNN 67.3 335.2 402.5 11.33 55.4 293.8 349.2 9.41 48.2 278.4 326.6 8.43 GreenGNN 43.2 299.9 343.1 10.24 38.0 269.2 307.2 8.95 34.4 255.9 290.3 8.09
+> GraphStorm 440.6 1463.5 1904.1 26.15 340.4 1111.5 1451.9 18.08 361.2 1163.5 1524.7 16.46
+> ∆GreenGNN -52% -24% -29% -35% -54% -27% -32% -29% -52% -39% -41% -27%
+
+TABLE III: Simulator ranking fidelity. For each window size, the simulator’s predicted rank (S) and measured rank (A) are shown. ✓ marks correct top-1 predictions. τ is Kendall’s rank correlation. 
+
+W =1 W =2 W =4 W =8 W =16 W =32 W =64 
+
+B S A S A S A S A S A S A S A τ
+
+Red. 1k 7 7 6 6 5 5 2 4 1 1✓ 3 2 4 3 0.81 2k 7 7 6 6 5 5 2 4 1 3 3 1 4 2 0.62 3k 7 7 6 6 5 5 2 1 1 4 3 2 4 3 0.71 Prod. 1k 7 7 6 6 5 5 2 3 1 1✓ 3 2 4 4 0.90 2k 7 7 6 6 5 5 2 2 1 1✓ 3 3 4 4 1.00 3k 7 7 6 6 5 5 2 3 1 1✓ 3 2 4 4 0.90 Pap. 1k 7 7 6 6 5 5 2 3 1 2 3 1 4 4 0.81 2k 7 7 6 6 5 5 2 3 1 1✓ 3 2 4 4 0.90 3k 7 7 6 6 5 5 2 2 1 1✓ 3 3 4 4 1.00 
+
+on system-level effects that the learned ranker only partially corrects. Because GreenGNN does not modify the model architec-ture, sampling logic, or gradient computation, model accuracy is identical to baseline DistDGL, we refer readers to [26] for detailed accuracy validation. VII. C ONCLUSION AND FUTURE WORK 
+
+This paper presented GreenGNN, an energy-aware dis-tributed GNN training system that consolidates thousands of fine-grained per-batch RPCs into a small number of per-window bulk transfers. The key insight is that GNN neighbor sampling exhibits bursty temporal locality, where a compact hot set dominates remote accesses over a short window of con-secutive mini-batches and then quickly falls out of relevance. GreenGNN refreshes the cache at window boundaries rather than tracking every access, and an offline autotuner selects the best window size by replaying a deterministic access trace through a discrete-event simulator. Across benchmark datasets on a 4-node GPU cluster, GreenGNN reduces total system energy by 27–43% and GPU energy by 36–71% over on-demand DistDGL while achieving 1.4–3.9 × epoch-time speedup. The energy-window curve is consistently convex, and the autotuner achieves Kendall’s τ up to 1.00. Several directions remain open. The current energy model assumes homogeneous hardware, and extending it to clusters with mixed GPU generations would broaden applicability. The window size is selected once before training, so an adaptive scheme that adjusts W across epochs as access patterns shift could capture additional savings. Integrating RDMA-aware bulk transfer paths could further reduce initi-ation costs on high-performance interconnects. Finally, eval-uating GreenGNN on full-graph training methods and GNN architectures beyond GraphSAGE would test the generality of window-based caching more broadly. REFERENCES [1] R. Ying, R. He, K. Chen, P. Eksombatchai, W. L. Hamilton, and J. Leskovec, “Graph convolutional neural networks for web-scale rec-ommender systems,” in Proceedings of the 24th ACM SIGKDD inter-national conference on knowledge discovery & data mining , 2018, pp. 974–983. [2] W. Fan, Y. Ma, Q. Li, Y. He, E. Zhao, J. Tang, and D. Yin, “Graph neural networks for social recommendation,” in The world wide web conference , 2019, pp. 417–426. [3] Y. Dou, Z. Liu, L. Sun, Y. Deng, H. Peng, and P. S. Yu, “Enhanc-ing graph neural network-based fraud detectors against camouflaged fraudsters,” in Proceedings of the 29th ACM international conference on information & knowledge management , 2020, pp. 315–324. [4] X.-M. Zhang, L. Liang, L. Liu, and M.-J. Tang, “Graph neural networks and their current applications in bioinformatics,” Frontiers in genetics ,vol. 12, p. 690049, 2021. [5] Z. Wu, S. Pan, F. Chen, G. Long, C. Zhang, and P. S. Yu, “A comprehensive survey on graph neural networks,” IEEE transactions on neural networks and learning systems , vol. 32, no. 1, pp. 4–24, 2020. [6] W. Hamilton, Z. Ying, and J. Leskovec, “Inductive representation learning on large graphs,” Advances in neural information processing systems , vol. 30, 2017. [7] J. Leskovec and R. Sosiˇ c, “Snap: A general-purpose network analysis and graph-mining library,” ACM Transactions on Intelligent Systems and Technology (TIST) , vol. 8, no. 1, pp. 1–20, 2016. [8] A. Ching, S. Edunov, M. Kabiljo, D. Logothetis, and S. Muthukrishnan, “One trillion edges: Graph processing at facebook-scale,” Proceedings of the VLDB Endowment , vol. 8, no. 12, pp. 1804–1815, 2015. [9] M. Besta and T. Hoefler, “Parallel and distributed graph neural networks: An in-depth concurrency analysis,” IEEE Transactions on Pattern Anal-ysis and Machine Intelligence , vol. 46, no. 5, pp. 2584–2606, 2024. [10] D. Zheng, C. Ma, M. Wang, J. Zhou, Q. Su, X. Song, Q. Gan, Z. Zhang, and G. Karypis, “Distdgl: Distributed graph neural network training for billion-scale graphs,” in 2020 IEEE/ACM 10th Workshop on Irregular Applications: Architectures and Algorithms (IA3) . IEEE, 2020, pp. 36–44. [11] S. Gandhi and A. P. Iyer, “P3: Distributed deep graph learning at scale,” in 15th {USENIX } Symposium on Operating Systems Design and Implementation ( {OSDI } 21) , 2021, pp. 551–568. [12] X. Wan, K. Chen, and Y. Zhang, “Dgs: Communication-efficient graph sampling for distributed gnn training,” in 2022 IEEE 30th International Conference on Network Protocols (ICNP) . IEEE, 2022, pp. 1–11. [13] Y. Shao, H. Li, X. Gu, H. Yin, Y. Li, X. Miao, W. Zhang, B. Cui, and L. Chen, “Distributed graph neural network training: A survey,” ACM Computing Surveys , vol. 56, no. 8, pp. 1–39, 2024. [14] T. Liu, Y. Chen, D. Li, C. Wu, Y. Zhu, J. He, Y. Peng, H. Chen, H. Chen, and C. Guo, “ {BGL }:{GPU-Efficient }{ GNN } training by optimizing graph data {I/O } and preprocessing,” in 20th USENIX Symposium on Networked Systems Design and Implementation (NSDI 23) , 2023, pp. 103–118. [15] J. Sun, L. Su, Z. Shi, W. Shen, Z. Wang, L. Wang, J. Zhang, Y. Li, W. Yu, J. Zhou et al. , “Legion: Automatically pushing the envelope of {Multi-GPU } system for {Billion-Scale }{ GNN } training,” in 2023 USENIX Annual Technical Conference (USENIX ATC 23) , 2023, pp. 165–179. [16] G. Karypis and V. Kumar, “A fast and high quality multilevel scheme for partitioning irregular graphs,” SIAM Journal on scientific Computing ,vol. 20, no. 1, pp. 359–392, 1998. [17] Z. Lin, C. Li, Y. Miao, Y. Liu, and Y. Xu, “Pagraph: Scaling gnn training on large graphs via computation-aware caching,” in Proceedings of the 11th ACM Symposium on Cloud Computing , 2020, pp. 401–415. [18] J. Yang, D. Tang, X. Song, L. Wang, Q. Yin, R. Chen, W. Yu, and J. Zhou, “Gnnlab: a factored system for sample-based gnn training over gpus,” in Proceedings of the Seventeenth European Conference on Computer Systems , 2022, pp. 417–434. [19] L. Backstrom, P. Boldi, M. Rosa, J. Ugander, and S. Vigna, “Four degrees of separation,” in Proceedings of the 4th annual ACM Web science conference , 2012, pp. 33–42. [20] Z. Zhang, Z. Luo, and C. Wu, “Two-level graph caching for expediting distributed gnn training,” in IEEE INFOCOM 2023-IEEE Conference on Computer Communications . IEEE, 2023, pp. 1–10. [21] N. NVIDIA, “H100 tensor core gpu architecture overview,” 2022. [22] Z. Cai, X. Yan, Y. Wu, K. Ma, J. Cheng, and F. Yu, “Dgcl: An efficient communication library for distributed gnn training,” in Proceedings of the Sixteenth European Conference on Computer Systems , 2021, pp. 130–144. [23] J. Song, H. Jang, H. Lim, J. Jung, Y. Kim, and J. Lee, “Granndis: Fast distributed graph neural network training framework for multi-server clusters,” in Proceedings of the 2024 International Conference on Parallel Architectures and Compilation Techniques , 2024, pp. 91– 107. [24] C. Wan, Y. Li, C. R. Wolfe, A. Kyrillidis, N. S. Kim, and Y. Lin, “Pipegcn: Efficient full-graph training of graph convolu-tional networks with pipelined feature communication,” arXiv preprint arXiv:2203.10428 , 2022. [25] D. Tang, J. Wang, R. Chen, L. Wang, W. Yu, J. Zhou, and K. Li, “Xgnn: Boosting multi-gpu gnn training via global gnn memory store,” 
+
+Proceedings of the VLDB Endowment , vol. 17, no. 5, pp. 1105–1118, 2024. [26] A. Niam and M. Nine, “Rapidgnn: Communication efficient large-scale distributed training of graph neural networks,” arXiv preprint arXiv:2505.10806 , 2025. [27] D. Zheng, X. Song, Q. Zhu, J. Zhang, T. Vasiloudis, R. Ma, H. Zhang, Z. Wang, S. Adeshina, I. Nisa et al. , “Graphstorm: all-in-one graph machine learning framework for industry applications,” in Proceedings of the 30th ACM SIGKDD Conference on Knowledge Discovery and Data Mining , 2024, pp. 6356–6367.
