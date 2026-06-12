@@ -1,0 +1,591 @@
+Title: MuJoCo-Drones-Gym: A GPU-Accelerated Multi-Drone Simulator for Control and Reinforcement Learning
+
+URL Source: https://arxiv.org/pdf/2606.08039v1
+
+Published Time: Tue, 09 Jun 2026 00:32:48 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# MuJoCo-Drones-Gym 
+
+# A GPU-Accelerated Multi-Drone Simulator for Control and Reinforcement Learning 
+
+Manan Tayal 
+
+TAU-Intelligence • robotics.tayalmanan@gmail.com 
+
+Code Web 
+
+Abstract. Robotic simulators are a cornerstone of modern research in aerial robotics, serving both as a vehicle for the development of new control algorithms and as the data source for training reinforcement learning (RL) policies. Yet, existing quadcopter learning environments often face a trade-off between physical fidelity, multi-agent support, and the throughput required by modern deep RL pipelines. In this paper, we present MuJoCo-Drones-Gym , an open-source Gymnasium -compatible multi-drone environment built on top of the MuJoCo physics engine. MuJoCo-Drones-Gym supports an arbitrary number of Bitcraze Crazyflie 2.x nano-quadcopters and exposes a modular API for selecting (i) the physics model (rigid-body MuJoCo, explicit Python dynamics, or any subset of ground effect, blade drag, and inter-drone downwash), (ii) the action interface (per-motor RPMs, collective normalized thrust, velocity setpoints, or PID waypoint commands), and (iii) the observation space (kinematic state vectors, RGB / depth / segmentation cameras, or neighbourhood adjacency information). A PettingZoo ParallelEnv wrapper enables drop-in multi-agent reinforcement learning, while a suite of seven task environments—hover, velocity tracking, multi-drone hover, waypoint navigation, formation flight, gate racing, and a generic multi-agent template—demonstrates the breadth of the interface. We describe the environment design, the underlying physics and quadcopter dynamics, and illustrate its use through control and learning examples that mirror those of the closely related gym-pybullet-drones 
+
+project, while taking advantage of MuJoCo’s improved contact handling, rendering, and parallelizability. 
+
+# 1 Introduction 
+
+Open-source quadrotor simulators have become a de facto benchmark for reinforcement-learning (RL) and control research in aerial robotics. Among them, gym-pybullet-drones [1] is the most widely adopted: a Bullet-based Gym environment exposing the Bitcraze Crazyflie 2.x and offer-ing single- and multi-agent training scripts. It demonstrated that a Python-first, pip-installable quadrotor Gym—when coupled with well-tuned PID controllers and explicit aerodynamic models— can serve as both a control-theory test-bed and an RL benchmark, and the package has since been adopted as the comparison baseline for a large body of follow-up work. 1           
+
+> arXiv:2606.08039v1 [cs.RO] 6 Jun 2026 MuJoCo-Drones-Gym τTau Intelligence
+> Figure 1. PID-controlled Bitcraze Crazyflie 2.x hovering at z=1 m in MJ-drones-gym, rendered with the built-in track camera mode ( BaseAviary.render(camera mode="track") ). Reproduced from
+> examples/pid.py::pid hover .
+
+The underlying PyBullet engine, however, is now both slower and less accurate than MuJoCo [2] on the same hardware, lacks first-class GPU vectorization, and is only partially aligned with the modern Gymnasium [3] and PettingZoo [4] APIs that have replaced OpenAI Gym as the community standard. Meanwhile, MuJoCo has become free and open-source, ships with a built-in offscreen renderer ( mujoco.Renderer ), and now exposes an XLA-compiled GPU back end— MJX [5]—that enables batched simulation of thousands of environments on a single accelerator via JAX [6]. This paper introduces MuJoCo-drones-gym [7], an open-source multi-quadcopter learning environment that ports the gym-pybullet-drones design philosophy to MuJoCo and extends it. Figure 1 shows a representative hover snapshot. The key contributions of the package are: 1. A MuJoCo back end with six selectable physics modes (pure MuJoCo, ground effect, drag, downwash, all-combined, plus an explicit-integration fallback) and xfrc applied -based rotor forcing (Section 3.1). 2. Seven task environments out of the box ( HoverAviary , VelocityAviary , MultiHoverAviary ,
+
+FlyThroughAviary , FormationAviary , RaceAviary , and MultiAgentAviary ), summarized in Section 4. 3. A PettingZoo ParallelEnv wrapper for native multi-agent RL on top of the same physics engine. 4. A cascaded PID stack (PIDControl / DSLPIDControl ) tuned for the MuJoCo Crazyflie   
+
+> 2MuJoCo-Drones-Gym τTau Intelligence
+
+dynamics, used both as a baseline controller and as the inner loop of the PID , VEL , and 
+
+ATTITUDE action types. 5. Composable wrappers : a Dryden-turbulence-plus-gust wind field, procedural obstacles (FOREST / URBAN / INDOOR / RANDOM / GATES / CUSTOM ), and an automatic curriculum that scales difficulty from per-episode metrics. 6. Three drone models —Bitcraze CF2X and CF2P (X- and +-configuration Crazyflie 2.x) and a 250 g RACE class—with system-identified parameters from [8]. 7. GPU vectorization via multi drone mujoco.vectorized : an MJX-based MJXVectorAviary 
+
+that runs thousands of parallel environments in a single jax.vmap / jit call, plus an 
+
+MJXVecEnvGymWrapper that exposes a Gymnasium VectorEnv for Stable-Baselines3 and other numpy-based RL libraries (Section 3.6). 8. Vendored Crazyflie 2.x meshes under multi drone mujoco/assets/cf2/ , so installation does not require cloning the full MuJoCo Menagerie [9]; the mesh directory is overridable via the MJ DRONES CF2 ASSETS environment variable. The rest of the paper is organized as follows. Section 2 positions MuJoCo-drones-gym in the quadrotor-simulator landscape. Section 3 details the package internals—dynamics, aerodynamics, physics modes, software architecture, observation and action spaces, optional wrappers, and the MJX GPU back end. Section 4 walks through the task suite, the PID and geometric controllers, and representative RL and disturbance-rejection use cases. Section 5 provides a head-to-head comparison with gym-pybullet-drones and concludes. 
+
+# 2 Background and Related Work 
+
+The space of quadrotor simulators spans high-fidelity tools (Gazebo, AirSim, Flightmare) and lightweight RL environments ( gym-pybullet-drones , the original gym MuJoCo suite). MuJoCo-drones-gym sits in the latter category but specifically targets the gap left by gym-pybullet-drones [1], on a more modern physics back end with native support for GPU vectorization. 
+
+gym-pybullet-drones [1] The first multi-quadrotor Gym environment with realistic aerody-namics: the Shi et al. [10] ground-effect model, the Forster [8] blade drag, and Zhou’s downwash model from the Dynamic Systems Lab (DSL). Its API, aerodynamic models, and PID architecture are the direct ancestors of those used here, so that controllers and policies port across the two environments with minimal effort. 
+
+safe-control-gym [11] and CrazySwarm2 The former targets classical and safe learning-based control with a small Crazyflie environment built on PyBullet; the latter focuses on ROS 2 firmware-in-the-loop and real-hardware integration. Both have comparatively simpler physics than MuJoCo-drones-gym and do not provide a first-class multi-agent or GPU-vectorized interface. 
+
+Flightmare [12] Couples Unity-based rendering with a fast custom dynamics engine and exposes a Gym-style RL interface for single-agent control. It is heavier to install than a pip-only package and lacks a native multi-agent API.   
+
+> 3MuJoCo-Drones-Gym τTau Intelligence
+
+OmniDrones [13] A recent Isaac Sim / Isaac Lab based environment that targets large-scale GPU RL on multi-quadrotor tasks. It delivers excellent throughput but is tightly coupled to the NVIDIA Isaac stack and to proprietary GPU drivers, which restricts deployment to a narrower set of platforms than a pure JAX/MJX pipeline. MuJoCo-drones-gym aims to occupy the same niche as gym-pybullet-drones —lightweight in-stallation, pure Python, Gymnasium-standard—while adopting a more modern physics back end (MuJoCo / MJX), the PettingZoo ParallelEnv contract for MARL, and a richer set of task templates, controllers, and disturbance wrappers. The detailed feature comparison is deferred to Table 7 in Section 5. 
+
+# 3 Methodology 
+
+This section describes the inner workings of MuJoCo-drones-gym. Section 3.1 introduces the quadrotor dynamics and aerodynamic models; Section 3.2 catalogs the six physics modes; Sec-tion 3.3 the three drone models; Section 3.4 the software architecture, public API, and observa-tion/action spaces; Section 3.5 the optional wrappers (wind, obstacles, curriculum, domain ran-domization); and finally Section 3.6 the GPU-vectorized MJX back end. 
+
+3.1 Quadrotor Dynamics 
+
+3.1.1 Notation 
+
+Each drone has state x = [ p, q, v, ω]⊤ ∈ R13 , where p ∈ R3 is the world-frame position, q ∈ R4
+
+the body-to-world quaternion (in MuJoCo’s [ w, x, y, z ] convention), v the linear velocity and ω the angular velocity. The control input is the vector of motor speeds n = [ n0, n 1, n 2, n 3]⊤ in RPM (radians per second after the appropriate conversion). 
+
+3.1.2 Motor model 
+
+Per-motor thrust and reaction torque are quadratic in motor speed, 
+
+Fi = kf n2 
+
+> i
+
+, τz,i = ( −1) mi km n2 
+
+> i
+
+, (1) with the sign mi ∈ { 0, 1} alternating to produce yaw control. For the X-configuration ( DroneModel.CF2X 
+
+and DroneModel.RACE ) the body-frame roll and pitch torques are 
+
+τx = L√2 (F0 + F1 − F2 − F3), (2) 
+
+τy = L√2 (−F0 + F1 + F2 − F3), (3) and the collective thrust is T = P 
+
+> i
+
+Fi. The +-configuration ( DroneModel.CF2P ) replaces the L/ √2factor with L on a different pair of motors. 
+
+3.1.3 Aerodynamic effects 
+
+Three optional effects can be toggled independently via the Physics enum of Section 3.2.   
+
+> 4MuJoCo-Drones-Gym τTau Intelligence
+
+Ground effect [10] At low altitude each rotor sees an additional vertical thrust ∆F gnd  
+
+> z
+
+= Cgnd 
+
+X
+
+> i
+
+(kf n2 
+
+> i
+
+)
+
+ rp
+
+4 h
+
+2
+
+, (4) where h = max( pz , h clip ) and hclip is derived from the propeller radius and the model’s maximum thrust to avoid the singularity as h → 0. The effect is gated on |ϕ|, |θ| < π/ 2 so an inverted drone does not gain spurious thrust ( groundEffect ). 
+
+Blade drag [8] A body-frame, velocity-proportional drag is scaled by the sum of motor speeds, 
+
+Fdrag = − diag( cxy , c xy , c z ) X
+
+> i
+> 2πn i
+> 60
+
+!
+
+vbody , (5) and rotated back to the world frame via the body’s 3 × 3 rotation matrix ( drag ). 
+
+Downwash For every ordered pair ( i, j ) with drone i above j and lateral separation ∆ xy < 10 m, the lower drone receives a downward force ∆F dw  
+
+> z
+
+= −α exp  − 12 (∆ xy /β )2 , (6) with α = C1(rp/(4 ∆ z)) 2, β = C2 ∆z + C3, and the Crazyflie 2.x coefficients ( C1, C 2, C 3) = (2267 .18 , 0.16 , −0.11) ( downwash ). Figure 2 shows the resulting transient on two vertically stacked drones. 
+
+3.2 Physics Modes 
+
+The six selectable modes are listed in Table 1. The MJC* family applies rotor forces and torques through MuJoCo’s external-force interface ( data.xfrc applied [body , : 3] = Fworld ,
+
+data.xfrc applied [body , 3 :] = τworld ) and lets mj step integrate the rigid-body dynamics. The 
+
+DYN mode instead integrates the body explicitly in Python (Euler), writes the resulting pose into 
+
+qpos / qvel before calling mj forward , and mirrors the explicit integrator of gym-pybullet-drones ;it is useful for validating the MuJoCo integrator against an analytical reference. Quaternions are propagated in integrateQ via the closed-form exponential map 
+
+q(t+∆ t) =  cos   ∥ω∥∆t
+
+> 2
+
+ I
+
++ 2 
+
+> ∥ω∥
+
+sin   ∥ω∥∆t
+
+> 2
+
+ Λ( ω) q(t), (7) where Λ( ω) is the standard 4 × 4 matrix of the quaternion product with ω.
+
+3.3 Drone Models 
+
+Three rigid-body models are bundled, all using the parameters of [8] for the Crazyflies and a published racing-class set for RACE (Table 2). The derived quantities HOVER RPM = pmg/ (4 kf )(hover rotor speed) and MAX RPM (motor saturation) are computed in BaseAviary. init from (m, g, k f , T /W ).     
+
+> 5MuJoCo-Drones-Gym τTau Intelligence
+> Figure 2. Two stacked Crazyflies under Physics.MJC GND DRAG DW : the bottom drone increases its thrust to compensate for the wake of the top drone ( examples/downwash.py ).
+
+3.4 Software Architecture and APIs 
+
+3.4.1 Package layout 
+
+The top-level Python package multi drone mujoco/ groups: 
+
+• envs/ : the seven task-specific Gymnasium environments ( base aviary.py , hover aviary.py ,
+
+velocity aviary.py , multi hover aviary.py , fly through aviary.py , formation aviary.py ,
+
+race aviary.py , and the PettingZoo wrapper multi agent aviary.py ). 
+
+• control/ : PIDControl (paper-grade gains) and DSLPIDControl (DSL-style PID with rate limiting and anti-windup). 
+
+• wrappers/ : wind.py / wind wrapper.py , curriculum.py , and obstacles.py .
+
+• utils/ : enums and a per-drone CSV+matplotlib logger. 
+
+• vectorized/ : the MJX-based GPU back end (Section 3.6). 
+
+• assets/cf2/ : vendored Bitcraze CF2.x meshes (39 OBJ files + license), so the package installs without cloning the full MuJoCo Menagerie [9]. The package is pip -installable with dependency groups declared in pyproject.toml : [rl] 
+
+adds Stable-Baselines3, [marl] adds PettingZoo, [viz] adds matplotlib and Pillow, [gpu] adds 
+
+jax[cuda12] and mujoco-mjx , and [all] adds all of the above.     
+
+> 6MuJoCo-Drones-Gym τTau Intelligence
+> Table 1. Physics modes supported by BaseAviary .
+
+Mode Integrator Ground Drag Downwash 
+
+MJC MuJoCo RK4 – – –
+
+MJC GND MuJoCo RK4 ✓ – –
+
+MJC DRAG MuJoCo RK4 – ✓ –
+
+MJC DW MuJoCo RK4 – – ✓
+
+MJC GND DRAG DW MuJoCo RK4 ✓ ✓ ✓
+
+DYN Explicit Euler – – – 
+
+> Table 2. Drone model parameters ( multi drone mujoco.utils.enums.DroneModel ).
+
+Parameter CF2X / CF2P RACE 
+
+mass m 27 g 250 g arm length L 39.7 mm 125 mm thrust / weight 2.25 4.0 
+
+Jxx , J yy (kg m 2) 1.4·10 −5 4.86 ·10 −4
+
+Jzz (kg m 2) 2.17 ·10 −5 8.80 ·10 −4
+
+kf (N / (rad/s) 2) 3.16 ·10 −10 1.28 ·10 −8
+
+km (Nm / (rad/s) 2) 7.94 ·10 −12 5.96 ·10 −10 
+
+propeller radius rp 23.25 mm 63.5 mm top speed (km/h) 30 100 
+
+3.4.2 Environment API 
+
+All environments derive from BaseAviary(gym.Env) and follow the standard Gymnasium 5-tuple step: 
+
+obs, reward, terminated, truncated, info = env.step(action) 
+
+The orthogonal constructor options are drone model , num drones , physics , sim freq , ctrl freq ,
+
+initial xyzs / initial rpys , obs type , act type , obstacles , vision attributes , gui , render mode ,and output folder . sim freq must be a positive integer multiple of ctrl freq ; the environment runs sim freq /ctrl freq MuJoCo sub-steps per env.step call. 
+
+3.4.3 Action types 
+
+Selected via the ActionType enum and converted to rotor RPMs in preprocessAction (Table 3). 
+
+3.4.4 Observation types 
+
+KIN returns a 20-dimensional per-drone state vector [ p, q, η, v, ω, at−1]. RGB returns ( N, 48 , 64 , 4) uint8 frames from each drone’s onboard 60 ◦-FOV camera, positioned at [0 .02 , 0, 0] in the body frame. KIN RGB returns a gym.spaces.Dict combining the two. Per-task observation vectors are constructed from these primitives by each subclass’s computeObs (e.g., HoverAviary exposes only the 12-dim [ p, η, v, ω] slice). 
+
+> 7
+
+MuJoCo-Drones-Gym τ Tau Intelligence 
+
+Table 3. Action types exposed by BaseAviary .                        
+
+> Type Shape Description
+> RPM (4 ,)raw motor speeds in [0 ,MAX RPM ]
+> ONE D RPM (1 ,)normalized thrust ∈[−1,1] to all 4 motors
+> VEL (4 ,)body-frame [ vx, v y, v z, ω z], PID inner loop
+> PID (4 ,)absolute waypoint [ x, y, z, ψ ], PID inner loop
+> ATTITUDE (4 ,)thrust + roll + pitch + yaw-rate, mixer to RPM
+
+Figure 3. Hover at z = 1 m under WindModel.COMBINED (steady 0.9 m/s along + Y plus Dryden turbulence). The cyan arrow shows the wind direction; the dotted white trail is the drone’s Y Z position. The PID controller of Section 4.2 cannot fully reject the steady component without trimming and the drone drifts downwind at roughly 0 .1 m/s—exactly the kind of distribution that the curriculum (Section 3.5.3) and domain randomization (Section 3.5.4) wrappers expose to the policy during training. 
+
+3.5 Composable Wrappers 
+
+3.5.1 Wind and turbulence 
+
+The WindField object exposes get force(dt, position, velocity) , returning a 3-D force in newtons suitable for accumulation in data.xfrc applied . The wind type is selected by WindConfig.model :
+
+• CONSTANT : steady wind with quadratic drag F = 12 ρC dA∥vrel ∥2 ˆvrel .
+
+• GUST : random impulses with a smooth sin( πs ) envelope and per-step trigger probability. 
+
+• DRYDEN : first-order colored noise driven by MIL-F-8785C length scales [14], e.g. Lu =
+
+h/ (0 .177 + 8 .23 ·10 −4 h)1.2 at altitude h. The discrete-time recursion is xt+∆ t = αx t +
+
+σ√1 − α2 ξ with α = e−∆t V /L .
+
+• SINUSOIDAL : F(t) = A [sin ωt, cos ωt, 0.3 sin 2 ωt ]. 
+
+• COMBINED : sum of CONSTANT + GUST + DRYDEN + SINUSOIDAL .
+
+WindWrapper(env, WindConfig(...)) composes with any BaseAviary env, and applies the wind force on top of the rotor wrench at every env.step . BaseAviary also exposes 
+
+env.set wind(WindConfig(...)) for in-place attachment without wrapping. Figure 3 illustrates a hover under COMBINED wind. 
+
+3.5.2 Procedural obstacles 
+
+ObstacleConfig(obstacle type=ObstacleType.FOREST, num obstacles=20, arena size=(3,3,2)) 
+
+parametrizes one of the procedural generators FOREST , URBAN , INDOOR , RANDOM , GATES , or CUSTOM .
+
+8MuJoCo-Drones-Gym τ Tau Intelligence           
+
+> Figure 4. ObstacleType.FOREST (left) and ObstacleType.RANDOM (right). The generated XML is con-catenated into the world body of the aviary at instantiation time.
+> Figure 5. Five independent resets of the DomainRandomizationWrapper .Each panel is a different draw from the parameter distributions of Table 4 (different effective mass, drag, motor lag, sensor bias, . . . ); within a single panel the parameters are constant, only the episode index changes across panels.
+
+The output is a list of Obstacle(geom type, position, size, rgba, euler) records that the wrapper splices into the MuJoCo XML before the model is loaded; a safe zone radius keeps a sphere around each drone collision-free at spawn time. Figure 4 shows two of the procedural scenes. 
+
+3.5.3 Curriculum learning 
+
+CurriculumWrapper(env, difficulty fn) maintains a discrete level ∈ [0 , num levels) and adjusts it after each episode based on a moving average of success rate , reward , or episode length 
+
+(CurriculumConfig.metric ). The user-supplied difficulty fn(env, level) is called on every 
+
+reset and may mutate the wrapped env, e.g. raise the target altitude or attach a wind field as the level grows. 
+
+3.5.4 Domain randomization 
+
+A DomainRandomizationWrapper (exercised by tests/test features.py ) resamples a vector of physical and sensor parameters at every reset() , so that the policy sees a wide distribution of dynamics during training while the parameters stay fixed for the duration of each episode. This is the standard sim-to-real recipe of [15, 16] and the one we recommend for transferring a MuJoCo-drones-gym policy to a real Crazyflie. Table 4 summarizes the ranges we have found to work well in practice for the CF2X model; Figure 5 shows five independent draws. In practice we recommend (i) randomizing coefficients (m, kf , km, drag) rather than forces , so the policy learns the inverse mapping rather than memorising disturbances; (ii) always including 
+
+> 9
+
+MuJoCo-Drones-Gym τ Tau Intelligence 
+
+Table 4. Recommended domain-randomization ranges for CF2X . Multiplicative factors are sampled per episode from U(1 −α, 1+ α); additive noise is per step unless marked “per ep.”.                                                           
+
+> Group Parameter Range
+> body mass m, inertia J×[0 .8,1.2] arm length L×[0 .98 ,1.02] aero thrust kf, torque km×[0 .85 ,1.15] drag cxy , c z, ground Cgnd , downwash C1×[0 .7,1.3] actuat. per-motor bias ×[0 .95 ,1.05] (4 draws) motor lag τmot U[5 ,50] ms (per ep.) action latency U[0 ,50] ms (per ep.)
+> MAX RPM ×[0 .95 ,1.05] sensors position / vel / RPY noise N(0 ,1 cm /5 cm/s /1◦)gyro noise N(0 ,0.05 rad/s) sensor latency U[0 ,20] ms (per ep.) env. gravity g×[0 .98 ,1.02] wind ( COMBINED )magnitude ∼ U (0 ,1) m/s init p0, RPY 0,v0±0.2 m / ±0.1 rad / ±0.5 m/s
+
+motor lag and action latency, which are usually the single biggest unmodelled effects on small quadrotors; (iii) coupling DR with a sticky per-episode bias on the observation, so the policy is forced to filter rather than memorise; and (iv) treating wind as part of DR at training time via 
+
+WindModel.COMBINED , rather than as a separate wrapper. 
+
+3.6 GPU-Vectorized Back End (MJX) 
+
+Alongside the CPU BaseAviary , MuJoCo-drones-gym ships a fully GPU-vectorized back end, 
+
+MJXVectorAviary , that runs thousands of independent drone simulations in parallel on a single GPU. It is implemented on top of MuJoCo MJX [5]—the XLA-compiled re-implementation of MuJoCo—and the JAX [6] array library, so that the aviary can be batched with jax.vmap for population-based search and for JAX-native pipelines such as PureJaxRL. At instantiation time a minimal MJCF (no visual meshes, to keep XLA compilation tractable) is built and converted into a batched mjx.Model via mjx.put model . Per-environment simula-tion state lives in a JAX NamedTuple (MJXState ) carrying the batched mjx.Data , a step counter, a PRNG key, and a boolean done . A single-env single step method—written in pure JAX— maps the normalized action to RPMs, builds the per-rotor thrust and torques via (1), applies them through xfrc applied , and advances the physics by fsim /f ctrl MJX sub-steps via jax.lax.scan(mjx.step, ...) . It is then lifted to the batch dimension with 
+
+self._step_fn = jit(vmap(self._single_step)) self._reset_fn = jit(vmap(self._single_reset)) 
+
+so that a single XLA kernel fans out across all num envs environments. The default configuration is num envs = 4096, but the only practical limit is GPU memory. The public interface mirrors the Gymnasium contract while remaining JAX-native: 
+
+> from multi_drone_mujoco.vectorized \ import MJXVectorAviary
+
+10 MuJoCo-Drones-Gym τ Tau Intelligence  
+
+> Table 5. Default scenario parameters of the seven task environments.
+
+Env N Episode (s) Action Obs 
+
+HoverAviary 1 10 4 (norm. RPM) 12 
+
+VelocityAviary 1 10 4 (norm. RPM) 16 
+
+MultiHoverAviary 2 10 4N 13 N
+
+FlyThroughAviary 1 20 4N 18 N
+
+FormationAviary 3 30 4N 18 N
+
+RaceAviary 1 30 4N 21 N
+
+MultiAgentAviary 3 10 4 per agent 13 per agent    
+
+> env = MJXVectorAviary(num_envs=4096, task="hover") rng = jax.random.PRNGKey(0) state = env.reset(rng) state, obs, reward, done, info = \ env.step(state, action) # action: (N,4)
+
+For compatibility with numpy-based RL libraries an MJXVecEnvGymWrapper bridges the JAX-native interface to a Gymnasium VectorEnv , transparently performing the GPU → CPU transfers on each 
+
+step() call. When the policy itself is written in JAX, the wrapper can be bypassed and the entire environment–policy–optimizer loop kept on device, eliminating host / device traffic and unlocking the bulk of the GPU’s compute. The MJX back end currently supports the hover , stabilize ,and track tasks with the 12-dim per-drone observation and the normalized 4-D RPM action; aerodynamic effects are intentionally omitted in this back end to preserve XLA compilability and constant-shape requirements, and the CPU BaseAviary remains the reference implementation when those effects are required. 
+
+# 4 Tasks, Control, and Examples 
+
+This section walks through (i) the seven task environments shipped with the package (Section 4.1), (ii) the available control stack—cascaded PID, DSL-style PID, and an SE(3) geometric controller for aggressive trajectories (Section 4.2), and (iii) representative reinforcement learning use-cases (Section 4.3). 
+
+4.1 Task Suite 
+
+All tasks default to Physics.MJC and ActionType.RPM normalized to [ −1, 1] and mapped via 
+
+BaseAviary. normalizedActionToRPM . Table 5 summarizes the per-task observation and action dimensions, episode lengths, and default scenarios. 
+
+4.1.1 HoverAviary — single-drone hover 
+
+The drone must hover at z = TARGET HEIGHT (default 1 .0 m), with ( x, y ) = (0 , 0) and a level body. The reward is 
+
+r = − | z − z∗| − 0.1 ∥(x, y )∥ − 0.05 ∥v∥ − 0.05 ( |ϕ| + |θ|)+ 0 .5 ⊮at-target − 100 ⊮crash , (8)   
+
+> 11 MuJoCo-Drones-Gym τTau Intelligence
+
+with termination when z < 0, max( |ϕ|, |θ|) > π/ 2, or z > 3 m, and truncation at EPISODE LEN SEC =10. Figure 1 shows a representative roll-out. 
+
+4.1.2 VelocityAviary — velocity tracking 
+
+A 16-dim observation [ p, η, v, ω, v ∗
+
+> x
+
+, v ∗ 
+
+> y
+
+, v ∗ 
+
+> z
+
+, ω ∗ 
+
+> z
+
+], a 4-dim normalized-RPM action, and reward r =
+
+−∥ v − v∗∥ − 0.1 |ωz − ω∗ 
+
+> z
+
+| − 0.05 ( |ϕ| + |θ|) + 0 .5 ⊮tracked . The target is resampled per episode from 
+
+U(−0.5, 0.5) 3 × U (−0.25 , 0.25) m/s. 
+
+4.1.3 MultiHoverAviary — multi-drone hover 
+
+N drones initialized on a horizontal line at z = 0 .1 m must each reach a distinct target altitude (default numpy.linspace(0.7, 1.2, N) ). Observation is 13 N (kinematic state plus target altitude per drone), action is 4 N normalized RPMs, and the reward is the summed per-drone hover reward of HoverAviary , with the lateral-error term measured against each drone’s spawn position. 
+
+4.1.4 FlyThroughAviary — waypoint chasing 
+
+A drone must visit a list of 3-D waypoints (default [(0 , 0, 1) , (1 , 0, 1) , (1 , 1, 1.5) , (0 , 1, 1) , (0 , 0, 0.5)]). The observation extends KIN with the next waypoint and its position relative to the body. Reward: +10 on waypoint capture, −0.1 ∥dwp ∥ shaping, −0.01 ∥ω∥ smoothness. Truncates at 20 s. 
+
+4.1.5 FormationAviary — formation flight 
+
+N drones must maintain a fixed formation (default: equispaced points on a circle of radius 0.3 m) while the formation centre tracks a closed polygonal path. The reward sums the per-drone position tracking with an inter-agent penalty −0.5 P 
+
+> i<j
+
+|dactual  
+
+> ij
+
+− ddesired  
+
+> ij
+
+|. Figure 6 shows a typical scene. 
+
+4.1.6 RaceAviary — multi-gate racing 
+
+Six gates form a closed track that the drone must complete twice as fast as possible. Reward: +20 per gate, +2 ∥v∥ speed bonus, −0.05 dgate shaping. Episode caps at 30 s. 
+
+4.1.7 MultiAgentAviary — PettingZoo ParallelEnv 
+
+A thin wrapper that turns MultiHoverAviary into a PettingZoo parallel environment. Agents are addressed as drone0, drone1, ... ; the per-agent observation is 13-D, the per-agent action is 4-D RPMs, and the per-agent reward is the per-drone hover reward of MultiHoverAviary . This is the entry point for MARL training with libraries such as MARLlib , RLlib [17], or BenchMARL .
+
+> from multi_drone_mujoco.envs.multi_agent_aviary \ import MultiAgentAviary env = MultiAgentAviary(num_drones=3) obs, infos = env.reset() actions = {agent: env.action_space(agent).sample() for agent in env.agents} obs, rewards, terms, truncs, infos = env.step(actions)
+
+Figure 7 shows a 12-drone antipodal-navigation benchmark built on top of MultiAgentAviary :each drone must reach the antipodal point on a circle while avoiding the others. Such collision-avoidance behaviour can either be shaped through reward terms or enforced explicitly by wrapping      
+
+> 12 MuJoCo-Drones-Gym τTau Intelligence
+> Figure 6. MultiHoverAviary /FormationAviary -style multi-drone scene.
+
+the policy with a safety filter such as a collision-cone control-barrier-function constraint [18]; both routes plug into the same ParallelEnv contract. 
+
+4.2 Control 
+
+4.2.1 Cascaded PID — PIDControl PIDControl implements the standard cascaded position / attitude / motor-mixer architecture of [19]. Its constructor reads the inertial constants from a BaseAviary instance (or falls back to the pub-lished CF2X values). The position loop yields the desired acceleration 
+
+a∗ = Kp(p∗ − p) + Ki
+
+Z
+
+(p∗ − p) dt + Kd(v∗ − v) + g ˆz, (9) with the default gains of Table 6. The desired thrust T = m ∥a∗∥ and a small-angle attitude target are then converted to roll / pitch / yaw torques by the attitude PID, and the allocation matrix 
+
+
+
+Tτx
+
+τy
+
+τz
+
+ = M
+
+
+
+kf n20
+
+kf n21
+
+kf n22
+
+kf n23
+
+
+
+is inverted (with torque clamping to keep numpy.linalg.solve away from motor saturation) to re-cover the per-motor RPMs. The computeControl method returns (rpm, pos error, yaw error) .                  
+
+> 13 MuJoCo-Drones-Gym τTau Intelligence
+> Figure 7. MultiAgentAviary -style benchmark: 12 CF2X drones with antipodal goals navigating in MuJoCo. Top-down snapshots at t= 0 ,1,2,3,4,5 s; the colored rings are the safety radius and the small dots mark each drone’s goal. The drones swirl through the central region while avoiding each other and converge on their antipodal goals.
+> Table 6. Default PIDControl gains for CF2X (tuned for the MuJoCo dynamics in pid control.py ).
+
+Loop Kp Ki Kd Integral clamp 
+
+position [0 .4, 0.4, 1.0] [0 .01 , 0.01 , 0.01] [0 .9, 0.9, 2.0] [−2, 2] m attitude [2 ·10 −3, 2·10 −3, 1·10 −3] [0 , 0, 1·10 −4] [5 ·10 −4, 5·10 −4, 2·10 −4] [−0.5, 0.5] 
+
+4.2.2 DSLPIDControl DSLPIDControl retunes the position and attitude gains, halves the integral clamps for anti-windup, and adds rate limits on the position setpoint (2 .0 m/s) and yaw setpoint ( π rad/s). It also extends the signature with a feed-forward acceleration term target acc , which the cascaded PID adds to the position-loop output before computing the thrust direction. Empirically DSLPIDControl 
+
+is preferred for aggressive trajectory tracking (e.g., the waypoint square in pid velocity ), while 
+
+PIDControl is preferred for hover-grade tasks. When act type=ActionType.PID (or VEL , or ATTITUDE ) the environment runs the chosen con-troller internally each env.step , so the agent can supply waypoints, velocities, or attitude setpoints directly; this is identical in spirit to the “ctrl wrapper” of gym-pybullet-drones but is implemented inline in BaseAviary. preprocessAction .
+
+4.2.3 SE(3) geometric controller for aggressive trajectories 
+
+For high-bandwidth trajectory tracking we additionally provide a classical SE(3) geometric con-troller [20] as a drop-in replacement for the position PID. Figure 8 shows a vertical circle of radius 0.3 m and period 8 s in the Y Z plane executed by this controller on the real MuJoCo dynamics; the measured tracking error is 0 .7 cm on average ( ≈ 2% of R), and peaks at 3 .5 cm ( ≈ 12% of R)at the apex. The default PIDControl cannot match this on the same loop because a pure position PID cannot supply the v2/R centripetal acceleration without acceleration feed-forward. 
+
+4.3 Examples 
+
+All examples below default to fsim = 240 Hz and fctrl = 48 Hz unless noted. 
+
+4.3.1 PID demos 
+
+examples/pid.py contains three self-contained demos: pid hover (single-drone hover with Logger 
+
+output to CSV, used to generate Fig. 1), pid velocity (square-waypoint chasing with DSLPIDControl ), 
+
+> 14
+
+MuJoCo-Drones-Gym τ Tau Intelligence 
+
+Figure 8. Vertical circle ( R = 0 .3 m, T = 8 s) in the Y Z plane executed by an SE(3) geometric controller [20] driving the real MuJoCo dynamics, rendered with the dedicated front camera. The dotted white ring is the planned trajectory, the cyan curve is the realised path; measured tracking error: mean 0 .7 cm, peak 3 .5 cm. The same camera mode is used by RaceAviary to visualise gate-racing trials. 
+
+and multi drone pid (three drones at staggered altitudes under Physics.MJC GND DRAG DW ). The matching downwash demo of Fig. 2 is reproduced by examples/downwash.py .
+
+4.3.2 Single-agent PPO 
+
+examples/learn.py trains a Stable-Baselines3 [21] PPO agent on HoverAviary with a 4-way 
+
+SubprocVecEnv and an EvalCallback ; examples/train rl.py is its minimal scalar version. 
+
+examples/play.py loads a trained policy and renders --episodes rollouts to PNGs or an animated GIF:    
+
+> python examples/learn.py # single agent python examples/learn.py --multiagent true # N=2 python examples/play.py \ --model_path results/rl_hover/best_model.zip \ --env_type hover --episodes 3
+
+examples/train all envs.py iterates over HoverAviary , VelocityAviary , FlyThroughAviary ,
+
+RaceAviary , MultiHoverAviary , and FormationAviary and is useful as a smoke test of every env on a new machine. 
+
+4.3.3 Logging and tests 
+
+The Logger(num drones, logging freq, output folder) utility in multi drone mujoco.utils.logger 
+
+accumulates per-drone ( t, p, q, η, v, ω, a) tuples and writes one CSV per drone via save to csv ; a companion plot method produces the customary four-panel matplotlib time series. The tests/ 
+
+directory ships pytest suites covering all seven envs ( test envs.py ), the PID and DSL-PID con-trollers ( test control.py ), the PettingZoo contract ( test multi agent.py , auto-skipped if Pet-tingZoo is unavailable), and the wind / domain-randomization / obstacle / curriculum wrappers (test features.py ). The suite runs on any machine that can import mujoco ; no GPU is re-quired. 
+
+# 5 Conclusions and Future Work 
+
+We presented MuJoCo-drones-gym , an open-source, Gymnasium- and PettingZoo-compatible multi-quadrotor environment built on top of the MuJoCo physics engine. MuJoCo-drones-gym preserves the API and the research-oriented spirit of gym-pybullet-drones [1], while taking advantage 
+
+15 MuJoCo-Drones-Gym τ Tau Intelligence                                                                    
+
+> Table 7. Feature comparison between gym-pybullet-drones and MuJoCo-Drones-Gym .
+> Feature gym-pybullet-drones MuJoCo-Drones-Gym
+> Engine PyBullet MuJoCo ≥3.0Renderer PyBullet GUI / TinyRenderer mujoco.viewer +mujoco.Renderer
+> Drone models CF2X ,CF2P +RACE (250 g) Task envs Hover ,MultiHover +Velocity ,FlyThrough ,Formation ,Race ,
+> MultiAgent
+> Action types RPM, normalized +VEL ,PID ,ATTITUDE
+> Aerodynamics drag, ground, downwash identical formulae, toggleable Wind –CONSTANT /GUST /DRYDEN /SINUSOIDAL /COMBINED
+> Obstacles –procedural FOREST /URBAN /INDOOR /RANDOM /GATES /CUSTOM
+> Curriculum –metric-driven CurriculumWrapper
+> MARL API custom subclass PettingZoo ParallelEnv
+> GPU vector. –MuJoCo MJX via JAX Assets submodule vendored under assets/cf2/ , env-overridable
+
+of MuJoCo’s contact handling, integrator quality, and modern Python tooling. It ships with seven task templates, five interchangeable action interfaces, three observation types, six physics modes (with toggleable ground effect, drag, and downwash), three drone models, composable wrappers for wind, obstacles, curriculum, and domain randomization, and a GPU-vectorized MJX back end for batched JAX-native training. Table 7 summarizes the head-to-head with gym-pybullet-drones; by design, the aerodynamic models, drone parameters, and PID architecture mirror its predecessor so that controllers and policies port across the two with minimal effort. We see several promising avenues for future work. First, the existing GPU-vectorized 
+
+MJXVectorAviary back end currently supports rigid-body MuJoCo physics only; extending it with XLA-compilable versions of the ground-effect, drag, and downwash models, as well as with multi-drone and vision-based observations, would close the feature gap with the CPU BaseAviary and enable end-to-end PureJaxRL- and Brax-style training pipelines on the full task suite. Second, the existing Dryden wind, domain-randomization, and curriculum-learning wrappers form a natural starting point for sim-to-real transfer experiments on real Crazyflie 2.x hardware, ideally accom-panied by a flight-log dataset to identify residual model error. Third, the racing and formation environments can be extended with richer perception (stereo depth, event cameras) and richer re-ward shaping, turning the package into a benchmark for vision-based quadrotor RL. Finally, we plan to release a set of reference policies and pretrained checkpoints, together with reproducible Colab notebooks, to lower the barrier of entry for researchers and students entering the field. MuJoCo-drones-gym is released under the same license as the upstream repository at https: //github.com/tau-intelligence/MuJoCo-drones-gym ; contributions, issues and pull requests are welcome. 
+
+# Acknowledgements 
+
+This work builds on the design and API conventions established by gym-pybullet-drones [1]. We gratefully acknowledge the developers of MuJoCo [2] and the MuJoCo Menagerie [9] for the Bitcraze Crazyflie 2.x MJCF model, as well as Bitcraze for the open hardware and firmware that have made   
+
+> 16 MuJoCo-Drones-Gym τTau Intelligence
+
+the Crazyflie a community standard for quadcopter research. 
+
+# References 
+
+[1] J. Panerati, H. Zheng, S. Zhou, J. Xu, A. Prorok, and A. P. Schoellig, “Learning to fly—a gym environment with pybullet physics for reinforcement learning of multi-agent quadcopter con-trol,” in 2021 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) ,2021. [2] E. Todorov, T. Erez, and Y. Tassa, “MuJoCo: A physics engine for model-based control,” in 
+
+IEEE/RSJ Int. Conf. on Intelligent Robots and Systems (IROS) , 2012, pp. 5026–5033. [3] M. Towers et al. , “Gymnasium: A standard interface for reinforcement learning environments,” 
+
+arXiv preprint arXiv:2407.17032 , 2024. [4] J. Terry, B. Black, N. Grammel, M. Jayakumar, A. Hari, R. Sullivan, L. S. Santos, C. Di-effendahl, C. Horsch, R. Perez-Vicente, N. Williams, Y. Lokesh, and P. Ravi, “PettingZoo: Gym for multi-agent reinforcement learning,” in Advances in Neural Information Processing Systems (NeurIPS) , 2021. [5] Google DeepMind, “MJX: MuJoCo XLA – GPU/TPU-accelerated MuJoCo,” https://mujoco. readthedocs.io/en/stable/mjx.html, 2023. [6] J. Bradbury, R. Frostig, P. Hawkins, M. J. Johnson, C. Leary, D. Maclaurin, G. Necula, A. Paszke, J. VanderPlas, S. Wanderman-Milne, and Q. Zhang, “JAX: Composable transfor-mations of Python+NumPy programs,” http://github.com/google/jax, 2018. [7] M. Tayal, “MuJoCo-drones-gym: MuJoCo Multi-Drone Gymnasium Environments for Re-inforcement Learning,” https://github.com/tau-intelligence/MuJoCo-drones-gym, 2026, ac-cessed: 2026-06-06. [8] J. F¨ orster, “System identification of the Crazyflie 2.0 nano quadrocopter,” Master’s thesis, ETH Z¨ urich, 2015. [9] K. Zakka, Y. Tassa, and MuJoCo Menagerie Contributors, “MuJoCo Menagerie: A collec-tion of high-quality simulation models for MuJoCo,” https://github.com/google-deepmind/ mujoco menagerie, 2022. [10] G. Shi, X. Shi, M. O’Connell, R. Yu, K. Azizzadenesheli, A. Anandkumar, Y. Yue, and S.-J. Chung, “Neural lander: Stable drone landing control using learned dynamics,” in Proc. IEEE Int. Conf. on Robotics and Automation (ICRA) , 2019, pp. 9784–9790. [11] Z. Yuan, A. W. Hall, S. Zhou, L. Brunke, M. Greeff, J. Panerati, and A. P. Schoellig, “safe-control-gym: A unified benchmark suite for safe learning-based control and reinforcement learning in robotics,” IEEE Robotics and Automation Letters , vol. 7, no. 4, pp. 11 142–11 149, 2022. [12] Y. Song, S. Naji, E. Kaufmann, A. Loquercio, and D. Scaramuzza, “Flightmare: A flexible quadrotor simulator,” in Proc. Conf. on Robot Learning (CoRL) , 2020. [13] B. Xu, F. Xia, and J. Liu, “OmniDrones: An efficient and flexible platform for reinforcement learning in drone control,” IEEE Robotics and Automation Letters , 2024.   
+
+> 17 MuJoCo-Drones-Gym τTau Intelligence
+
+[14] United States Department of Defense, “Military specification: Flying qualities of piloted air-planes,” U.S. Department of Defense, Tech. Rep. MIL-F-8785C, 1980. [15] J. Tobin, R. Fong, A. Ray, J. Schneider, W. Zaremba, and P. Abbeel, “Domain randomiza-tion for transferring deep neural networks from simulation to the real world,” in IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) , 2017, pp. 23–30. [16] OpenAI, I. Akkaya, M. Andrychowicz, M. Chociej, M. Litwin, B. McGrew, A. Petron, A. Paino, M. Plappert, G. Powell, R. Ribas, J. Schneider, N. Tezak, J. Tworek, P. Welinder, L. Weng, Q. Yuan, W. Zaremba, and L. Zhang, “Solving Rubik’s cube with a robot hand,” arXiv preprint arXiv:1910.07113 , 2019. [17] E. Liang, R. Liaw, R. Nishihara, P. Moritz, R. Fox, K. Goldberg, J. Gonzalez, M. Jordan, and I. Stoica, “RLlib: Abstractions for distributed reinforcement learning,” in Proc. Int. Conf. on Machine Learning (ICML) , vol. 80, 2018, pp. 3053–3062. [18] M. Tayal, R. Singh, J. Keshavan, and S. Kolathaya, “Control barrier functions in dynamic uavs for kinematic obstacle avoidance: A collision cone approach,” in 2024 American Control Conference (ACC) . IEEE, 2024, pp. 3722–3727. [19] C. Luis and J. Le Ny, “Design of a trajectory tracking controller for a nanoquadcopter,” Polytechnique Montreal, Tech. Rep., 2016, arXiv:1608.05786. [20] T. Lee, M. Leok, and N. H. McClamroch, “Geometric tracking control of a quadrotor UAV on SE(3),” in 49th IEEE Conference on Decision and Control (CDC) , 2010, pp. 5420–5425. [21] A. Raffin, A. Hill, A. Gleave, A. Kanervisto, M. Ernestus, and N. Dormann, “Stable-Baselines3: Reliable reinforcement learning implementations,” Journal of Machine Learning Research ,vol. 22, no. 268, pp. 1–8, 2021.
