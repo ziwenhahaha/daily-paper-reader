@@ -1,0 +1,495 @@
+Title: INFRAMIND: Infrastructure-Aware Multi-Agent Orchestration
+
+URL Source: https://arxiv.org/pdf/2606.11440v1
+
+Published Time: Thu, 11 Jun 2026 00:19:03 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# INFRA MIND : Infrastructure-Aware Multi-Agent Orchestration 
+
+Ahasan Kabir Jiaqi Xue Mengxin Zheng Qian Lou 
+
+University of Central Florida 
+
+{ahasan.kabir, jiaqi.xue, mengxin.zheng, qian.lou}@ucf.edu 
+
+Abstract 
+
+Existing multi-agent LLM orchestration methods, ranging from brute-force en-sembles to learned routers, select models and topologies based on task and model features. However, these methods do not consider the runtime state of the serving infrastructure. On shared GPU clusters under concurrent load, this infrastructure blindness causes systematic resource underutilization: preferred models accumu-late deep request queues while equally capable alternatives sit idle. In multi-agent pipelines, where each query triggers multiple sequential model calls, these delays then compound across every downstream step. Closing this gap is challenging because the relevant infrastructure signals (queue depths, KV-cache pressure, laten-cies) are dynamic and noisy, and they must drive three different decisions: planning, per-step routing, and scheduling. We introduce I NFRA MIND , a framework that makes the entire multi-agent stack infrastructure-aware. An infra-aware planner conditions topology and role selection on real-time system load and remaining budget, biasing toward simpler graphs under congestion and richer ones at low load. An infra-aware executor then observes per-model queue depths, cache utilization, and response latencies at each agent step to decide which model to call and how deeply to reason; a budget-aware scheduler further reorders each model’s queue so that urgent requests are served first. Cast as a hierarchical constrained MDP and solved end-to-end via reinforcement learning, the system learns to balance quality against latency automatically. Across five benchmarks, I NFRA MIND delivers up to 
+
++7 .6 pp accuracy over the prior baseline at low load with up to 7 × lower latency, and sustains up to 99 .9% SLO compliance under high load where every baseline drops below 50% .
+
+1 Introduction 
+
+Multi-agent LLM systems, where multiple models collaborate through debate, review, or sequential chains [Wu et al., 2024, Hong et al., 2023, Li et al., 2023], are the dominant paradigm for complex tasks, and recent work has focused on learning the orchestration itself: which models to call, in what topology, and with what roles [Wang et al., 2024a, Zhuge et al., 2024, Yue et al., 2025]. Yet every existing method selects models from static task features alone, ignoring the runtime state of the serving infrastructure. As multi-agent workloads move onto shared GPU clusters serving pools of open-weight models [Grattafiori et al., 2024, Guo et al., 2025] via vLLM [Kwon et al., 2023] and SGLang [Zheng et al., 2024], this becomes a critical blind spot. A model that is “fast” in isolation may have hundreds of requests queued while an idle alternative could respond instantly, and in multi-agent pipelines a bottleneck at any step delays every downstream agent. We call this failure mode infrastructure blindness .Figure 1 exposes the symptoms of infrastructure blindness. We profile MasRouter [Yue et al., 2025], the state-of-the-art task-adaptive router, on a shared pool of five models under Poisson load, and observe three failure patterns that recur across regimes. First, static routing produces extreme load    
+
+> Preprint.
+> arXiv:2606.11440v1 [cs.AI] 9 Jun 2026 10 50 100 200
+> Request Arrival Rate (req/min)
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> 120
+> 140
+> 160
+> Average Queue Depth
+> Congested
+> Idle
+
+(a)    
+
+> Small Models (3-8B)
+> Large Models (14-32B)
+> 10 50 100 200
+> Request Arrival Rate (req/min)
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> Average Latency (seconds)
+
+(b)        
+
+> Wasted
+> Capacity
+> Avoidable Latency
+> Small Models (3-8B)
+> Large Models (14-32B)
+> 020 40 60 80 100
+> Capacity Utilization (%)
+> 71% 29% Small (3-8B)
+> 33% 67% Large (14-32B)
+> Available for extended
+> reasoning to improve quality
+> Low Load (10 req/min)
+
+(c) 
+
+> Processing
+> Idle (0 requests)
+> Resource Underutilization in Static Multi-Agent LLM Routing
+> Small (3-8B): Llama-3.2-3B, Llama-3.1-8B
+> Large (14-32B): Qwen2.5-14B, Mistral-24B, DeepSeek-32B
+> MAS Router baseline on MATH dataset (1000 samples, Poisson arrivals)
+
+Figure 1: Load-agnostic routing in practice (MasRouter on MATH, Poisson arrivals). (a) Per-model queue depth. (b) Per-model end-to-end latency. (c) Large-model GPU utilization at low load. imbalance: preferred small models accumulate queues exceeding 130 requests while equally capable large models sit nearly idle (Figure 1a). Second, this imbalance translates directly into avoidable latency: congested models incur >30 s end-to-end delays on queries that an idle alternative could answer in under 10 s (Figure 1b). Third, the failure inverts at low load: 67% of large-model GPU capacity goes unused, leaving quality on the table that deeper reasoning could otherwise harvest (Figure 1c). In both regimes, the orchestrator commits to routing decisions in a training-time information regime that is fundamentally disconnected from runtime conditions. Solving these problems is hard for three reasons. First, planning the reasoning structure (topology, agent count, and roles) from the current runtime state is challenging because the infrastructure state is dynamic and changes during execution. Prior work sidesteps this and decides the structure from task features alone. Second, picking which model to call and how deeply it should reason at each step is a fine-grained decision over noisy, fast-changing runtime signals (queue depths, KV pressure, latencies). Prior routers ignore these signals: they choose the model from the query alone, overloading preferred ones (Figure 1a,b), and never adapt reasoning depth to resource availability, leaving idle capacity untapped (Figure 1c). Third, prioritizing among the many multi-agent steps that arrive together is hard because each step carries its own remaining budget and urgency. Prior work defaults to FCFS and ignores both, so tight-budget requests wait behind relaxed ones and miss their SLOs. The three decisions are also coupled: a choice at any layer reshapes the runtime state the others must respond to. Heuristics tuned one layer at a time therefore leave the cross-layer interactions on the table. Routing in Traditional MAS    
+
+> Query
+> Routing in InfraMind
+> Infra Aware Router Reasoning Strategy Flash DeepThink Idle Model B KV-Cache empty Low Queue Depth Busy Model A KV-Cache full High Queue Depth Query Budget Static Router Selection Criteria Model A
+
+>Quality Model B Selected Model A Selected Model B Selection Criteria Model A Model B DeepThink +<Quality  
+
+> Higher Quality at Lower Latency
+> Selected DeepThink Busy Model A KV-Cache full High Queue Depth Idle Model B KV-Cache empty Low Queue Depth Realtime System Metrics Realtime System Metrics Limitations Latency Explosion No Reasoning Adaptation Resource Underutilization
+
+Figure 2: I NFRA MIND reads live system metrics and routes around congestion while adapting rea-soning depth (Flash/Concise/DeepThink) to cur-rent capacity. We propose I NFRA MIND , which places an infrastructure-aware component at each of these decision points. At query arrival , an infrastructure-aware planner conditions topol-ogy, agent-count, and role choices on a sum-mary of current load and remaining budget, bi-asing toward simpler graphs when the system is congested and richer ones when capacity is available. At each agent step , an infrastructure-aware executor reads per-model queue depths, KV cache utilization, and end-to-end latencies, then jointly selects the target model and reason-ing depth (Flash / Concise / DeepThink). Fig-ure 2 contrasts this with a load-agnostic router: the baseline (left) picks by quality alone and stacks requests onto the same preferred large model, while our executor (right) sees that the large model’s queue is saturated, redirects the call to an idle smaller model, and invests in DeepThink, using the time saved by skipping the queue to compensate for the smaller model’s lower headline quality, so the answer arrives at comparable accuracy and a fraction of the latency. At each model’s queue , a budget-aware Earliest-Deadline-First scheduler reorders pending requests so tight-budget queries are not blocked behind relaxed ones. The 2Table 1: How each orchestration system behaves at decision time and under stress.                      
+
+> System Model Selection Reasoning Depth When Load Increases Queue Scheduling
+> MoA All models, every query Fixed Slowest model bottlenecks all FCFS GPTSwarm Learned DAG, frozen at test Fixed Cannot reroute around congestion FCFS MasRouter Task-adaptive (VAE) Fixed Blind to queues; latency explodes FCFS INFRA MIND (ours) Task + infra-adaptive, per step Budget-adaptive Redirects to idle models Budget-first (EDF)
+
+three components are cast as a hierarchical constrained MDP and trained end-to-end via reinforcement learning, automatically discovering the quality–latency trade-off across load levels. 
+
+Contributions. (1) We identify infrastructure blindness as a systematic failure of multi-agent LLM systems and quantify it empirically (§1). (2) We propose I NFRA MIND , the first end-to-end infrastructure-aware multi-agent orchestrator, comprising an infra-aware planner, executor, and EDF scheduler trained jointly as a single hierarchical RL policy under a shared budget constraint (§3, §4). (3) Across five benchmarks, I NFRA MIND delivers up to +7 .6 pp accuracy over the strongest baseline at low load with up to 7 × lower latency, and sustains up to 99 .9% SLO compliance under high load where every baseline drops below 50% (§5). 
+
+2 Related Work 
+
+Multi-agent LLM orchestration. Multi-agent systems improve task performance by orchestrating multiple LLM instances in structured collaboration topologies. Research in this area has progres-sively introduced more intelligence into the orchestration layer, but a critical dimension, runtime infrastructure state, remains entirely unaddressed. Three representative systems illustrate increasing task-level sophistication. Mixture-of-Agents (MoA) [Wang et al., 2024a] runs every model in the pool in parallel and synthesises via a fixed aggregator, providing zero routing intelligence: the slowest model bottlenecks every response and queue congestion on any single model degrades the entire system. GPTSwarm [Zhuge et al., 2024] models multi-agent collaboration as a directed graph with REINFORCE-learned edge weights, but the graph is frozen at test time: edge weights are fixed after training, so the system cannot reroute when a preferred model becomes congested during deployment. MasRouter [Yue et al., 2025] introduces the most sophisticated task-adaptive orchestration to date: a VAE-based cascaded controller that jointly determines topology, agent count, role assignments, and per-role model from the query embedding, enabling task-specific routing. Yet its decisions are based entirely on static task features, with no mechanism to distinguish an idle model from a saturated one and a fixed prompting strategy regardless of whether the budget is tight or generous. 
+
+LLM routing and cost-aware serving. Outside the multi-agent setting, a growing body of work addresses the cost and quality of single-model routing. RouteLLM [Ong et al., 2024] learns a quality-based router that directs queries to either a strong or weak model based on predicted difficulty, achieving cost savings without significant quality loss. TREACLE [Zhang et al., 2024] extends this to budget-constrained LLM cascades with joint model and prompt selection. R2-Router [Xue et al., 2026] further refines query-conditioned routing by incorporating reasoning-aware difficulty signals to choose between models. However, these systems operate over single-turn, single-model calls; they do not handle the multi-step, multi-agent workflows where routing decisions at each step affect the quality and latency of downstream agents. On the serving infrastructure side, vLLM [Kwon et al., 2023] introduced PagedAttention for efficient KV cache management and supports continuous batching, priority-based scheduling, and detailed telemetry via Prometheus endpoints. Sarathi-Serve [Agrawal et al., 2024] further optimizes prefill– decode scheduling with chunked prefills. These systems expose precisely the signals (queue depth, cache utilization, per-request latency) that an infrastructure-aware orchestrator needs, but they optimize inference within a single model and make no cross-model routing decisions. I NFRA MIND 
+
+sits at the intersection: it consumes the telemetry that serving systems expose to make the cross-model routing decisions that those systems do not. 33 Problem Formulation 
+
+Multi-agent orchestration involves decisions at two timescales: what reasoning structure to use 
+
+(topology, roles, agent count), chosen once per query primarily from query semantics, and how to execute each step (which model, how much reasoning), chosen repeatedly under fast-changing per-model queues, latencies, and remaining budget. We formalize this as a hierarchical Constrained Markov Decision Process (CMDP) [Altman, 2021] in which both levels see infrastructure state, but at appropriate granularities. 
+
+State. Consider N LLM services M = {m1, . . . , m N } on shared GPUs and prompting strategies 
+
+S = {Flash , Concise , DeepThink }. A query q arrives with a time budget β. At each agent step k, the executor observes: 
+
+sk =  eq , erk
+
+| {z }
+
+> what to solve
+
+, bk
+
+|{z} 
+
+> time left
+
+, dqueue , de2e , dkv 
+
+| {z }
+
+> system load
+
+ (1) where eq , erk ∈ R384 are Sentence-BERT [Reimers and Gurevych, 2019] query and role embeddings, 
+
+bk is the normalized remaining budget, and dqueue , de2e , dkv ∈ RN are per-model queue depth, end-to-end latency, and KV cache utilization polled from vLLM’s /metrics endpoint. 
+
+Action. The executor selects a joint action ak ∈ { 0, . . . , N |S| − 1}, decoded as model mk =
+
+⌊ak/|S|⌋ and strategy σk = ak mod |S| .
+
+Objective. We maximize quality subject to a latency budget. With quality reward Rk ∈ { 0, 1} and cost Ck = ℓk/β (step latency as a fraction of the budget): 
+
+π∗ = arg max  
+
+> π
+
+Eπ
+
+h P 
+
+> k
+
+Rk
+
+i
+
+s.t. Eπ
+
+h P 
+
+> k
+
+Ck
+
+i
+
+≤ 1 (2) A single Lagrange multiplier λ converts this constraint into a learnable quality–latency trade-off: 
+
+L(π, λ ) = Eπ
+
+h P 
+
+> k
+
+Rk − λ · Ck
+
+i
+
++ λ (3) The dual update (Eq. 7, §4.4) drives λ up when the policy overspends and down when it has slack, automatically discovering the trade-off across budget tiers and load levels. 
+
+Hierarchical decomposition. We split the policy into a planner πplan (τ, K, r | eq , z0) that selects topology τ , agent count K, and roles r at t=0 from query semantics plus a low-dimensional summary 
+
+z0 = [ b0, dqueue , de2e , dkv ], and an executor πexec (ak | sk) that selects the (model, strategy) pair at each step from the full state. The planner commits once to a feasible reasoning structure; the executor adapts execution as queues build and drain. 
+
+4 Method 
+
+INFRA MIND threads infrastructure awareness through every layer of orchestration (Figure 3): an 
+
+infra-aware planner chooses a topology, agent count, and roles conditioned on a coarse summary of system load and budget (§4.1); an infra-aware executor then makes per-step model and strategy decisions from the full real-time state (§4.2); and a budget-aware scheduler manages request priority within each model’s queue (§4.3). All three components are trained jointly as a single hierarchical RL policy under a shared budget constraint (§4.4). A System Monitor continuously polls per-model queue depth, KV cache utilization, and end-to-end latency, exposing the state vector consumed by the planner (once at t=0 ) and the executor (every step). 
+
+4.1 Infrastructure-Aware Planner 
+
+When planning the multi-agent topology and role allocation for an incoming query, the planner con-siders the current state of the system (load and budget) so the topology it chooses is one downstream stages can actually carry out smoothly. We adopt a cascaded controller (task classifier → collaboration 
+
+→ agent count → roles) following MasRouter [Yue et al., 2025], and inject infrastructure awareness 4Chain CoT Debate FullConnected    
+
+> Topology Selection
+> ProgrammingExpert AlgorithmDesigner BugFixer
+> TestAnalyst Project Manager
+> Agent Role Selection
+> Topology, Roles Budget Query User Query, Budget
+> 2. InfraAware Runtime Executor
+> Step 1 AlgorithmDesigner Step 2 ProgrammingExpert Step 3 TestAnalyst
+> Selected Agent Roles
+> Budget Available Budget Used High Budget Available for Deeper Reasoning Strategy Selection Flash Concise
+> DeepThink Model A - Busy
+> Model B - Idle Model Selection Role Prompt Context Query Budget Aware Priority Scheduling Tight Budget Loose Budget Request Queue Realtime System Metrics Update
+> Execution of Each Agentic Steps System Monitor KV Cache Utilization
+> Model A Model B
+> Queue Depth
+> Model A Model B
+> End-to-End Latency
+> Model B Model A Executor RL Policy System Metrics System Metrics
+> 1. InfraAware MAS Planner
+
+Figure 3: I NFRA MIND architecture. (1) Planner: given the query, budget, and a System Monitor snapshot (queue depth, KV cache, E2E latency), it selects topology and roles, with FiLM modulation biasing toward simpler graphs under congestion and richer ones under slack. (2) Executor: at each step, a dual-pathway RL policy reads the role, query, remaining budget, and live metrics to jointly select a target model and reasoning strategy (Flash/Concise/DeepThink). (3) EDF scheduler: 
+
+reorders each model’s queue by deadline, preventing tight-budget requests from being blocked behind loose ones. by conditioning every head on a system summary z0 (budget plus per-model queue, E2E latency, and KV cache vectors; cf. Eq. 1) via Feature-wise Linear Modulation: 
+
+˜eq = γ(z0) ⊙ eq + β(z0) (4) A small MLP maps z0 to the scale and shift (γ, β), which modulate the query embedding before it flows through the cascade, so all four heads inherit a single, coherent view of system state and learn to bias toward simpler chains under tight budgets or congestion and richer debate topologies under slack. 
+
+4.2 Infrastructure-Aware Executor 
+
+At every agentic step, the executor selects a model and reasoning strategy for the next call, adapting both to current conditions for better resource utilization. It reads two complementary signals: a 
+
+semantic signal (query plus current role; what the task needs) and a resource signal (remaining budget plus live system metrics; what the system can currently deliver). Each is routed through its own pathway before merging, so the joint action head conditions on both. 
+
+Semantic pathway. hsem = LN (ReLU (Wsem [eq ∥erk ])) ∈ R128 .
+
+Resource pathway. A budget head hbud = ReLU (Wbud bk) and a system head hsys =
+
+ReLU (Wsys [dqueue ∥de2e ∥dkv ]) (∈ R16 each) combine into hres = LN (ReLU (Wres [hbud ∥hsys ])) ∈
+
+R64 .
+
+Decision. Pathways merge into h = ReLU (Wmerge [hsem ∥hres ]) ∈ R128 , yielding policy 
+
+π(ak|sk) = softmax (Wact h) and value V (sk) = w⊤
+
+val h over N × |S| joint actions (5 models 
+
+× 3 strategies). Strategies modulate reasoning depth on top of CoT prompting [Wei et al., 2022]: 
+
+Flash (direct answer), Concise (2–3 steps), and DeepThink (thorough reasoning with verification). The executor learns when each is worth the latency cost. 
+
+4.3 Budget-Aware Priority Scheduling 
+
+Even with optimal cross-model routing, a tight-budget request can stall behind a relaxed one inside a single model’s queue, so urgency must propagate from the user’s contract into the serving layer itself. We attach a deadline tarrive + β to each query, every LLM call its agents generate inherits 5that deadline, and each model’s queue serves them Earliest-Deadline-First (EDF) [Liu and Layland, 1973]. Routing then handles cross-model load balancing while EDF handles within-model deadline ordering; the two layers cover orthogonal axes of waiting. 
+
+4.4 Joint Hierarchical RL Training 
+
+The planner and executor make decisions at different timescales (one per query vs. one per step) and so receive different learning signals, but they share an outcome. We train them jointly with a hierarchical policy gradient: the executor uses the PPO clipped surrogate [Schulman et al., 2017] on its per-step trajectories, the planner uses baseline-normalized REINFORCE [Williams, 1992] on the episode return, and a single Lagrange multiplier λ enforces the budget constraint across both: 
+
+Lexec = −E
+
+h
+
+min 
+
+
+
+ρk ˆAk, clip (ρk, 1−ϵ, 1+ ϵ) ˆAk
+
+i 
+
++ 0 .5 Lvalue − αH H[π], (5) 
+
+Lplan = − log πplan · Ui − ¯UσU
+
++ Ltask + αVAE LVAE , (6) where the executor reward rk = ⊮[solved ] − λℓ k/β and planner utility Ui = ⊮[solved ] − λL total /β 
+
+share the same penalty term. The planner additionally inherits a task-classification loss Ltask and a VAE regularizer LVAE from its cascaded controller, providing a stable initialization signal that the policy gradient then refines under the budget constraint. After each batch, λ adapts to the average constraint violation ¯C (where ¯C = P 
+
+> k
+
+ℓk/β over the batch): 
+
+λ ← clip  λ + ηλ( ¯C − 1) , 0, λ max 
+
+ . (7) The dual update closes the loop: persistent overspend pushes both policies toward faster choices, slack lets them invest in quality. Episodes sweep across budget tiers and Poisson arrival rates with inter-sweep queue draining, so the executor sees the full distribution of congestion regimes it must adapt to at deployment. Hyperparameters are in Appendix A. 
+
+5 Experiments 
+
+5.1 Setup Benchmarks. To probe routing behavior across distinct reasoning regimes, we evaluate on five established benchmarks spanning code generation, mathematical reasoning, and knowledge-intensive QA: MBPP [Austin et al., 2021], HumanEval [Chen et al., 2021], GSM-Hard [Gao et al., 2023], 
+
+MATH [Hendrycks et al., 2021], and MMLU-Pro [Wang et al., 2024b]. Dataset sizes and splits are in Appendix B. 
+
+Model pool. We assemble a deliberately heterogeneous pool (a reasoning specialist, a code special-ist, a general-purpose mid-size model, and two small generalists) spanning a 10 × parameter range so the executor faces a non-trivial capability/cost trade-off: DeepSeek-R1-Distill-Qwen-32B [Guo et al., 2025], Mistral-Small-24B [Jiang et al., 2023], Qwen2.5-Coder-14B [Hui et al., 2024], Llama-3.1-8B and Llama-3.2-3B [Grattafiori et al., 2024], all served via vLLM on two NVIDIA B200 GPUs. 
+
+Baselines. We compare against representative multi-agent orchestrators that span the design spec-trum from no routing to learned task-adaptive routing: MoA [Wang et al., 2024a] (brute-force ensemble, no routing), GPTSwarm [Zhuge et al., 2024] (learned topology, fixed at test time), and 
+
+MasRouter [Yue et al., 2025] (task-adaptive routing, no infrastructure awareness). 
+
+Evaluation protocol. To stress-test behavior across load regimes rather than a single operating point, all methods are evaluated under Poisson arrivals at low, moderate, and high rates ( {10 , 50 , 100 }
+
+req/min) on the same shared model pool. We report accuracy (solve rate), mean latency (seconds), and SLO compliance (% of queries completing within 300 s). 
+
+5.2 Main Results 
+
+Table 2 and Figure 4 present the central comparison. The figure visualizes the quality–latency trade-off: each subplot shows one dataset at one arrival rate, with background shading indicating SLO compliance zones. 6Table 2: Accuracy (%), mean latency (s), and SLO compliance (%, budget ≤300 s) across three load levels. Bold = best per column.                                                                                                                                                                                                                 
+
+> MATH MBPP GSM-Hard HumanEval MMLU-Pro Method Acc Lat SLO Acc Lat SLO Acc Lat SLO Acc Lat SLO Acc Lat SLO
+> Low Load ( μ= 10 req/min)
+> INFRA MIND (Ours) 82.0 44 100.0 83.6 40 99.7 62.0 37 100.0 100.0 5100.0 61.0 44 99.8 MASRouter 67.4 50 100.0 82.4 253 60.2 54.6 38 100.0 93.1 70 99.2 58.5 83 98.8 GPTSwarm 69.6 84 100.0 76.4 73 100.0 54.0 52 100.0 100.0 42 100.0 57.8 36 100.0
+> MoA 74.4 122 100.0 77.2 68 100.0 49.3 38 100.0 99.2 49 100.0 41.6 124 84.2
+> Mid Load ( μ= 50 req/min)
+> INFRA MIND (Ours) 75.6 255 87.3 80.3 95 99.0 60.0 76 98.8 100.0 8100.0 60.0 319 59.8
+> MASRouter 72.8 321 53.0 81.7 926 24.6 55.0 521 27.4 93.1 195 77.1 58.9 821 14.7 GPTSwarm 71.0 1209 7.4 76.6 1307 5.6 57.0 707 14.8 100.0 134 100.0 55.4 563 18.4 MoA 73.8 1145 3.2 75.2 969 4.8 49.1 474 16.8 100.0 155 100.0 46.2 1240 2.0
+> High Load ( μ= 100 req/min)
+> INFRA MIND (Ours) 75.2 290 61.8 80.4 167 91.0 57.2 81 98.4 100.0 33 99.9 59.8 372 56.0
+> MASRouter 70.6 399 48.2 80.8 985 25.5 56.4 652 20.6 89.3 205 71.0 57.0 908 13.4 GPTSwarm 68.4 1325 2.2 78.6 1369 2.6 54.0 806 9.0 100.0 153 100.0 57.4 753 11.0 MoA 74.8 1160 0.4 75.8 993 1.6 50.0 525 11.2 100.0 177 95.4 47.8 1171 0.8
+
+Table 3: Ablation of I NFRA MIND ’s three mechanisms. Each row disables one mechanism in isolation; we report the change vs. I NFRA MIND on the indicated workload. 
+
+Mechanism Disabled variant Effect vs. I NFRA MIND 
+
+Infra-aware routing Quality-only routing +2 .3–3.6× step latency; mean queue 25 .1 → 40 .6
+
+Deadline-aware scheduling FCFS +2 .0× mean lat ( 68 →134 s); +1 .8× P90 ( 207 →366 s) Adaptive reasoning depth Flash only ( ∀ steps) MMLU-Pro acc. −9.5 pp ( 59 .5% → 50 .0% )
+
+Latency under load: the central result. Figure 4 reveals the core pattern. As arrival rate in-creases (top to bottom rows), baseline points migrate rightward into the “over budget” and “severely congested” zones (MoA and GPTSwarm exceed 1 000 s on several benchmarks at 100 req/min), while I NFRA MIND stays under 300 s and remains in or near the SLO-compliant zone across all five benchmarks. This is the queue imbalance from §1 manifesting at scale: baselines keep routing to the same models regardless of congestion, and the queuing delay compounds with load. The practical impact is stark: at 100 req/min with a 300 s SLO budget, I NFRA MIND achieves up to 99.9% SLO compliance (HumanEval), while baselines collapse: MoA and GPTSwarm fall below 12% on most benchmarks. MASRouter fares slightly better but still drops below 50% SLO on four of five benchmarks. 
+
+Quality holds at every load. At low load, I NFRA MIND achieves the highest accuracy on all five benchmarks, with margins of +7 .6 pp on MATH ( 82 .0 vs. 74 .4 for MoA) and +7 .4 pp on GSM-Hard (62 .0 vs. 54 .6 for MASRouter), while running up to 14 × faster than MASRouter on HumanEval (5 s vs. 70 s) and 6.3× faster on MBPP ( 40 s vs. 253 s). This turns available slack into both quality (DeepThink on capable models) and headroom. As load rises, accuracy degrades gracefully rather than collapsing alongside latency: at 100 req/min, I NFRA MIND remains the most accurate method on MATH, GSM-Hard, HumanEval, and MMLU-Pro, narrowly trailing MASRouter by 0.4 pp on MBPP; that 0.4 pp comes at 985 s mean latency and 26 % SLO compliance, a trade no production system would accept. 
+
+5.3 Analysis and Ablations 
+
+Figure 5 shows the executor is budget-aware: under low load on MATH, accuracy rises monotonically with the time budget as the executor progressively shifts to larger models and DeepThink reasoning. This emerges from end-to-end constrained RL; no budget-specific rules are hand-coded. Table 3 disables each of I NFRA MIND ’s three mechanisms in turn while holding the rest fixed, and each contributes a distinct, non-overlapping gain. Without infra-aware routing, traffic concentrates on preferred models: queues build on the favorites while alternatives sit idle, inflating step latency in a way no quality-only router can avoid on shared infrastructure. Replacing EDF with FCFS lets tight-budget requests stall behind relaxed ones under mixed-budget workloads, sharply increasing 770                     
+
+> 75
+> 80
+> 85
+> MATH
+> 50
+> 55
+> 60
+> 65
+> GSM-Hard
+> 75
+> 80
+> 85
+> MBPP
+> 85
+> 90
+> 95
+> 100
+> HumanEval
+> 45
+> 50
+> 55
+> 60
+> = 10
+> req/min
+> MMLU-Pro
+> 70
+> 75
+> 80
+> 85
+> 50
+> 55
+> 60
+> 65
+> 75
+> 80
+> 85
+> 85
+> 90
+> 95
+> 100
+> 45
+> 50
+> 55
+> 60
+> = 50
+> req/min
+> 10 110 210 3
+> 70
+> 75
+> 80
+> 85
+> 10 110 210 3
+> 50
+> 55
+> 60
+> 65
+> 10 110 210 3
+> 75
+> 80
+> 85
+> 10 110 210 3
+> 85
+> 90
+> 95
+> 100
+> 10 110 210 3
+> 45
+> 50
+> 55
+> 60
+> = 100
+> req/min
+> Accuracy (%)
+> Latency (s)
+> MoA GPTSwarm MASRouter INFRAMIND (Ours)
+> SLO Compliant ( <100s) Over Budget (100--500s) Severely Congested ( >500s)
+
+Figure 4: Quality–latency trade-off across datasets ( columns ) and arrival rates ( rows ). Each point is one method; the x-axis is mean latency (log scale). Background shading indicates latency zones: blue = SLO compliant ( <100 s), peach = over budget (100–500 s), salmon = severely congested ( >500 s). INFRA MIND (vermillion diamonds) consistently occupies the SLO-compliant zone with competitive accuracy, while baselines migrate into the congested zone as load increases. 10 30 50 100 200 300 
+
+Time Budget (s) 
+
+> 60
+> 65
+> 70
+> 75
+> 80
+> 85
+> Accuracy (%)
+> 62.6%
+> 82.0%
+> +19.4pp
+
+Figure 5: Accuracy vs. time budget on MATH ( μ=10 r/m). Accuracy rises from 62 .6% to 82 .0% 
+
+(+19 .4 pp) as the executor shifts to larger models and DeepThink, emergent from end-to-end RL with no hand-coded rules. tail latency where routing alone cannot help. Forcing a single reasoning depth (Flash on every step) collapses accuracy on knowledge tasks like MMLU-Pro, confirming that adaptive depth is a genuine quality lever rather than just a latency knob. Removing any one mechanism degrades the corresponding axis (mean latency, tail latency, or accuracy) while leaving the others intact, evidence that the three components fix different failure modes rather than redundantly fixing the same one. 
+
+5.4 Extension to Blackbox and Hybrid Pools 
+
+The same infrastructure-awareness principle extends to API-only and mixed deployments where serving internals are not observable. We construct two client-side proxies that require no server-side access: an exponential moving average of observed end-to-end latency, and an artificial congestion signal dqueue 
+
+i = recent_requests i/RPM_limit i derived from each provider’s rate limit. A model at 8Table 4: Hybrid (3 whitebox + 2 OpenRouter API, budget 100 s) and pure-API (5 OpenRouter, budget 
+
+500 s) pools on GSM-Hard. Acc (%), Lat (s), SLO (%). Bold = best per metric per load per pool. 
+
+μ = 10 r/m μ = 50 r/m μ = 100 r/m 
+
+Pool Method Acc Lat SLO Acc Lat SLO Acc Lat SLO Hybrid INFRA MIND 62.4 14 100.0 61.6 43 94.4 61.4 107 54.4 
+
+MASRouter 62.8 28 99.8 61.4 352 17.4 60.4 441 11.6 GPTSwarm 59.4 42 100.0 59.8 209 19.6 58.8 412 9.4 Pure-API INFRA MIND 63.0 3 100.0 63.7 370 68.1 64.6 492 50.4 
+
+MASRouter 62.8 114 96.2 63.6 714 40.6 61.2 813 30.6 GPTSwarm 63.6 70 99.8 64.6 686 23.6 64.0 902 11.6 
+
+90% of its RPM behaves as “congested” as a whitebox model with a deep queue. The executor architecture is unchanged. Table 4 reports both settings on GSM-Hard. In a hybrid pool (three whitebox + two API models), INFRA MIND prefers the whitebox models at low load and overflows to APIs only as whitebox queues build up; in a pure-API pool with heterogeneous RPM limits, it redistributes across providers to keep latency near budget. In both settings, baselines collapse under load while I NFRA MIND sustains accuracy and SLO, confirming that the gains from infrastructure awareness do not require privileged server access; they require only a signal that correlates with current responsiveness. 
+
+6 Conclusion 
+
+Existing multi-agent orchestration makes routing decisions without observing the queues, cache pressure, or latencies of the models it routes to, a blindness that no amount of task-level intelligence can close on shared GPU infrastructure. INFRA MIND addresses this by making infrastructure awareness first-class at every layer: an infra-aware planner adapts topology and roles to current load, an infra-aware executor redistributes traffic and reasoning depth per step, and a deadline-aware scheduler resolves head-of-line blocking within each model’s queue, all jointly trained as a single hierarchical RL policy under a shared budget constraint. Across five benchmarks, I NFRA MIND 
+
+delivers up to +7 .6 pp accuracy over the strongest baseline at low load with up to 7 × lower latency, and sustains up to 99 .9% SLO compliance under high load where every baseline drops below 50% .The same principle extends to blackbox API pools via client-side proxies. 
+
+Limitations and future work. INFRA MIND commits to a topology at planning time and assumes a fixed model pool. Two natural extensions follow from the same formulation: runtime topology revision , where the planner re-decides collaboration structure mid-workflow as load or partial outputs evolve, and dynamic hardware configurations , where the system adapts to elastic pools (autoscaling, hot model swaps) rather than a static set of replicas. Both relax assumptions of the present work without changing the underlying state and action spaces. 
+
+Broader impacts. Multi-agent LLM systems are reaching production scale across enterprise. JPMorgan Chase’s internal LLM Suite serves ∼200 K employees Wilkinson [2024], Bloomberg’s AskB routes queries across internal and open-weight models within Bloomberg’s own infrastructure Kahn [2026], and web-scale companies such as Uber standardize on open-source serving stacks like vLLM in production Ling et al. [2026]. Gartner projects this trajectory will reach 40% of enterprise applications by 2026, up from under 5% in 2025 Gartner [2025]. These deployments increasingly run on operator-managed GPU pools, where queue contention and cache pressure surface as tail latency that existing multi-agent routers ignore. I NFRA MIND drops into any such deployment to make routing infra-aware, and because the blackbox/hybrid extension also covers API-only and mixed pools, the approach is orthogonal to the choice of serving backend, an immediate path to lower tail latency and higher SLO compliance for production multi-agent workflows. 9References 
+
+Amey Agrawal, Nitin Kedia, Ashish Panwar, Jayashree Mohan, Nipun Kwatra, Bhargav Gulavani, Alexey Tumanov, and Ramachandran Ramjee. Taming {Throughput-Latency } tradeoff in {LLM }
+
+inference with {Sarathi-Serve }. In 18th USENIX symposium on operating systems design and implementation (OSDI 24) , pages 117–134, 2024. Eitan Altman. Constrained Markov decision processes . Routledge, 2021. Jacob Austin, Augustus Odena, Maxwell Nye, Maarten Bosma, Henryk Michalewski, David Dohan, Ellen Jiang, Carrie Cai, Michael Terry, Quoc Le, et al. Program synthesis with large language models. arXiv preprint arXiv:2108.07732 , 2021. Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde De Oliveira Pinto, Jared Kaplan, Harri Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, et al. Evaluating large language models trained on code. arXiv preprint arXiv:2107.03374 , 2021. Luyu Gao, Aman Madaan, Shuyan Zhou, Uri Alon, Pengfei Liu, Yiming Yang, Jamie Callan, and Graham Neubig. Pal: Program-aided language models. In International conference on machine learning , pages 10764–10799. PMLR, 2023. Gartner. Gartner Predicts 40% of Enterprise Apps Will Feature Task-Specific AI Agents by 2026, Up from Less Than 5% in 2025. Gartner Press Release. https://www.gartner.com/en/newsr oom/press-releases/2025-08-26-gartner-predicts-40-percent-of-enterprise-apps-will-feature-task-specific-ai-agents-by-2026-up-from-less-than-5-percent-in-2025 , 2025. Accessed: 2026-04-29. Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the math dataset. arXiv preprint arXiv:2103.03874 , 2021. Sirui Hong, Mingchen Zhuge, Jonathan Chen, Xiawu Zheng, Yuheng Cheng, Jinlin Wang, Ceyao Zhang, Zili Wang, Steven Ka Shing Yau, Zijuan Lin, et al. Metagpt: Meta programming for a multi-agent collaborative framework. In The twelfth international conference on learning representations ,2023. Binyuan Hui, Jian Yang, Zeyu Cui, Jiaxi Yang, Dayiheng Liu, Lei Zhang, Tianyu Liu, Jiajun Zhang, Bowen Yu, Keming Lu, et al. Qwen2. 5-coder technical report. arXiv preprint arXiv:2409.12186 ,2024. Albert Qiaochu Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, Devendra Singh Chaplot, Diego de Las Casas, Florian Bressand, Gianna Lengyel, Guillaume Lample, Lucile Saulnier, Lélio Renard Lavaud, Marie-Anne Lachaux, Pierre Stock, Teven Le Scao, Thibaut Lavril, Thomas Wang, Timothée Lacroix, and William El Sayed. Mistral 7b. ArXiv , abs/2310.06825, 2023. URL https://api.semanticscholar.org/CorpusID:263830494 .Jeremy Kahn. Bloomberg, the OG of financial data firms, has a potent new AI agent. How it built it holds lessons for other companies. Fortune. https://fortune.com/2026/04/28/bloomberg-askb-ai-agents-lessons-from-bloomberg-cto-shawn-edwards-eye-on-ai/ , 2026. Accessed: 2026-04-29. Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with pagedattention. In Proceedings of the 29th symposium on operating systems principles ,pages 611–626, 2023. 10 Guohao Li, Hasan Hammoud, Hani Itani, Dmitrii Khizbullin, and Bernard Ghanem. Camel: Com-municative agents for" mind" exploration of large language model society. Advances in neural information processing systems , 36:51991–52008, 2023. Bo Ling, Jiapei Huang, Baojun Liu, et al. Open Source and In-House: How Uber Optimizes LLM Training. Uber Engineering Blog. https://www.uber.com/us/en/blog/open-source-and-in-house-how-uber-optimizes-llm-training/ , 2026. Accessed: 2026-04-29. Chung Laung Liu and James W Layland. Scheduling algorithms for multiprogramming in a hard-real-time environment. Journal of the ACM (JACM) , 20(1):46–61, 1973. Isaac Ong, Amjad Almahairi, Vincent Wu, Wei-Lin Chiang, Tianhao Wu, Joseph E Gonzalez, M Waleed Kadous, and Ion Stoica. Routellm: Learning to route llms with preference data. arXiv preprint arXiv:2406.18665 , 2024. Nils Reimers and Iryna Gurevych. Sentence-bert: Sentence embeddings using siamese bert-networks. In Proceedings of the 2019 conference on empirical methods in natural language processing and the 9th international joint conference on natural language processing (EMNLP-IJCNLP) , pages 3982–3992, 2019. John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. Junlin Wang, Jue Wang, Ben Athiwaratkun, Ce Zhang, and James Zou. Mixture-of-agents enhances large language model capabilities. arXiv preprint arXiv:2406.04692 , 2024a. Yubo Wang, Xueguang Ma, Ge Zhang, Yuansheng Ni, Abhranil Chandra, Shiguang Guo, Weiming Ren, Aaran Arulraj, Xuan He, Ziyan Jiang, et al. Mmlu-pro: A more robust and challenging multi-task language understanding benchmark. Advances in Neural Information Processing Systems , 37: 95266–95290, 2024b. Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, et al. Chain-of-thought prompting elicits reasoning in large language models. Advances in neural information processing systems , 35:24824–24837, 2022. Lindsey Wilkinson. JPMorgan Chase to equip 140K workers with generative AI tool. CIO Dive. 
+
+https://www.ciodive.com/news/JPMorgan-Chase-LLM-Suite-generative-ai-employee-tool/726772/ , 2024. Accessed: 2026-04-29. Ronald J Williams. Simple statistical gradient-following algorithms for connectionist reinforcement learning. Machine learning , 8(3):229–256, 1992. Qingyun Wu, Gagan Bansal, Jieyu Zhang, Yiran Wu, Beibin Li, Erkang Zhu, Li Jiang, Xiaoyun Zhang, Shaokun Zhang, Jiale Liu, et al. Autogen: Enabling next-gen llm applications via multi-agent conversations. In First conference on language modeling , 2024. Jiaqi Xue, Qian Lou, Jiarong Xing, and Heng Huang. R2-router: A new paradigm for llm routing with reasoning. arXiv preprint arXiv:2602.02823 , 2026. Yanwei Yue, Guibin Zhang, Boyang Liu, Guancheng Wan, Kun Wang, Dawei Cheng, and Yiyan Qi. Masrouter: Learning to route llms for multi-agent systems. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 15549–15572, 2025. Xuechen Zhang, Zijian Huang, Ege Onur Taga, Carlee Joe-Wong, Samet Oymak, and Jiasi Chen. Efficient contextual llm cascades through budget-constrained policy learning. In A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang, editors, Advances in Neural Information Processing Systems , volume 37, pages 91691–91722. Curran Associates, Inc., 2024. doi: 10.52202/079017-2910. URL https://proceedings.neurips.cc/paper_files/pap er/2024/file/a6deba3b2408af45b3f9994c2152b862-Paper-Conference.pdf .Lianmin Zheng, Liangsheng Yin, Zhiqiang Xie, Chuyue Sun, Jeff Huang, Cody H Yu, Shiyi Cao, Christos Kozyrakis, Ion Stoica, Joseph E Gonzalez, et al. Sglang: Efficient execution of structured language model programs. Advances in neural information processing systems , 37:62557–62583, 2024. 11 Mingchen Zhuge, Wenyi Wang, Louis Kirsch, Francesco Faccio, Dmitrii Khizbullin, and Jürgen Schmidhuber. Gptswarm: Language agents as optimizable graphs. In Forty-first International Conference on Machine Learning , 2024. 
+
+A Training Hyperparameters 
+
+Table 5: Training hyperparameters for I NFRA MIND .
+
+Parameter Value 
+
+Optimizer Adam, lr 3 × 10 −4
+
+Batch size 64 Max epochs 40 (early stopping, patience 12) LR scheduler ReduceLROnPlateau (patience 3, factor 0.5) PPO clip ϵ 0.2 PPO mini-epochs K 3Entropy coefficient αH 0.10 Initial λ0 0.2 
+
+λ learning rate ηλ 0.001 
+
+λmax 1.0 Budget tiers (s) {10, 30, 50, 100, 200, 300} Arrival rates (req/min) {10, 30, 50, 100, 200} vLLM max_num_seqs 16 (all models) Total parameters ∼471K 
+
+B Dataset Details 
+
+Table 6: Dataset splits used in experiments. 
+
+Dataset Train Val Test 
+
+MATH [Hendrycks et al., 2021] 519 131 500 MBPP [Austin et al., 2021] 374 94 500 GSM-Hard [Gao et al., 2023] 500 125 500 HumanEval [Chen et al., 2021] 33 10 131 MMLU-Pro [Wang et al., 2024b] 500 70 500 
+
+C Blackbox Extension Details 
+
+The blackbox extension is described in §5.4. Here we provide additional implementation details. 
+
+Sliding-window RPM tracking. We use a 60-second sliding window per model. Each outgoing request is timestamped; the congestion signal is the count of timestamps within the window divided by the model’s RPM limit. When this ratio exceeds 1.0, excess requests are held in a local queue and dispatched as capacity frees up, creating backpressure visible to the executor. 
+
+Dual Lagrange multipliers. For hybrid pools, we maintain λtime and λmoney with independent dual updates: 
+
+λtime ← clip (λtime + ηλ · ( ¯Ctime − 1) , 0, λ max ) (8) 
+
+λmoney ← clip (λmoney + ηλ · ( ¯Cmoney − 1) , 0, λ max ) (9) where ¯Ctime = P ℓk/β time and ¯Cmoney = P ck/β money . With βmoney = ∞ (no monetary budget) and no blackbox models, λmoney stays at zero and the formulation reduces exactly to the whitebox-only system in the main text. 12
