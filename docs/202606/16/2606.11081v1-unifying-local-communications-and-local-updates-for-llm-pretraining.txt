@@ -1,0 +1,3545 @@
+Title: Unifying Local Communications and Local Updates for LLM Pretraining
+
+URL Source: https://arxiv.org/pdf/2606.11081v1
+
+Published Time: Wed, 10 Jun 2026 01:18:46 GMT
+
+Number of Pages: 38
+
+Markdown Content:
+# Unifying Local Communications and Local Updates for LLM Pretraining 
+
+Pietro Cagnasso 1,2 Eugene Belilovsky ∗ 1,2 Edouard Oyallon ∗ 31Concordia University 2Mila 3CNRS, Sorbonne University 
+
+## Abstract 
+
+Communication-efficient pre-training of LLMs is increasingly important as training draws on compute distributed across clusters, data centers, and lower-bandwidth links. Many practical methods reduce communication frequency but still rely on synchronous All-Reduce operations that maintain identical model states and tie progress to global collectives. This can become a bottleneck when bandwidth or worker speed is heterogeneous. We introduce GASLoC , a novel decentralized pre-training algorithm that generalizes the notion of communication acceleration to the recently popular “outer optimizer” to allow a practical gossip-based training framework that is compatible with adaptive optimizers, allows for local optimizer steps, and can utilize sparse randomized peer communication. Empirically, on a number of standard LLM training tasks, we demonstrate that GASLoC outperforms state-of-the-art decentralized algorithms in single step per communication setting for a number of topologies and, unlike existing decentralized methods in the LLM setting, iit achieves performance competitive with DiLoCo when utilizing multiple local steps. In the heterogeneous bandwidth setting, we demonstrate the advantage of GASLoC showing that it can significantly outperform DiLoCo. 
+
+## 1 Introduction 
+
+Communication is a major bottleneck in distributed optimization and can significantly limit the scalability of distributed training, in particular when a large number of compute nodes are available and for training very large models like LLMs. In typical large-scale training setups, communication is implemented through bandwidth-efficient All-Reduce, which typically allows all nodes to exchange information and average in parallel through two phases: a reduce-scatter phase followed by an all-gather (broadcast) phase. Although this strategy is highly effective on tightly coupled clusters, its communication cost still scales linearly with the number of participating nodes and is highly synchronous. In practice, this can saturate the bandwidth and lead to a lack of robustness to slower workers. Recent practical work on communication-efficient training [ 7 ] has shown a number of meth-ods that utilize less frequent communication [ 4], gradient compression [ 35 , 28 ], and communication overlap [8]. However, all these methods rely on All-Reduce operations. Decentralized learning based on gossip algorithms is a direction of research widely studied in classical optimization that replaces global synchronization with communication over network topologies. This makes it attractive for large-scale or bandwidth-constrained settings, since each worker communicates only with a small subset of neighbors. In principle, because each step involves fewer communication links than All-Reduce, a single gossip step can substantially reduce communication bottlenecks rela-tive to standard All-Reduce, whose speed is limited by the slowest worker. Furthermore, maintaining optimization performance often requires more communication rounds between model updates. This creates a trade-off similar to that of Local SGD [ 29 ] and DiLoCo-style [ 7] methods: communication becomes cheaper per round, but may need to occur more frequently.  
+
+> *Equal contributions. Preprint.
+> arXiv:2606.11081v1 [cs.LG] 9 Jun 2026
+
+A central quantity in gossip-based optimization is the consensus error, which measures disagree-ment between local model replicas as workers alternate between local updates and communication. Classical communication-acceleration methods reduce this disagreement by applying momentum to the consensus dynamics [ 20 , 2 ]. The combination of gossip and local updates has been studied before: Koloskova et al. [17] provide a unified theory covering decentralized SGD with local updates, time-varying topologies, and heterogeneous local objectives. However, this line of work primarily treats local computation through a shared update schedule and studies heterogeneity as statistical het-erogeneity across workers. In the specific setting of decentralized LLM training with modern adaptive optimizers, the closest prior work we are aware of is Wang et al. [36] . Their method communicates after each local optimizer step and does not use an outer momentum mechanism for communication acceleration or a Local SGD-style block of multiple local updates between communication rounds. In contrast, our setting is homogeneous-data LLM pre-training with system heterogeneity, where workers may have different bandwidth or compute speeds and the number of local steps Hi can be adapted across each worker i. We therefore study whether a decentralized Local SGD-style method with sparse randomized peer communication [ 36 , 37 ] and an outer momentum mechanism can remain stable in modern LLM training while reducing dependence on global synchronization. In this work, we propose a novel, principled algorithm that combines both local gradient steps and local communication rounds alongside communication acceleration. In contrast to standard decentralized methods, our algorithm communicates locally updated parameters, and decouples communication from model updates through a momentum mechanism. GASLoC improves over evaluated decentralized baselines in the H = 1 regime, and remains close to DiLoCo in the H = 30 
+
+regime while avoiding global collectives, and yields substantial wall-clock gains under a bandwidth-straggler model. It can be seen as a principled generalization of FedOpt frameworks [ 27 ]. Moreover, the outer optimizer takes the role of the classical and well-understood communication acceleration, particularly when the graph is not complete. It reduces to a standard outer/server optimizer when, instead, the graph is complete, elegantly linking this important and well-understood structure from gossip methods to the emerging practical results in Reddi et al. [27] and Douillard et al. [7]. 
+
+Contributions. Our contributions in this work are as follows. First, (a) we propose a novel decentralized algorithm that practically incorporates communication acceleration and (b) we show that it is a strict generalization of DiLoCo to gossip-based algorithms. (c) We argue that, instead of averaging all available neighbors, using a subset of k ≤ 2 neighbors is more communication-and algorithmically-efficient than standard All-Reduce. (d) We prove standard convergence rates in the homogeneous setting. (e) We show for the first time in the literature that in gossip settings the outer momentum mechanism reduces the communication complexity, improving from χ to √χ,where χ denotes the spectral gap. We empirically demonstrate (f) that we outperform state-of-the-art decentralized methods for LLMs, while (g) also extending to the multi-step setting. In this setting, GASLoC yields competitive results compared to DiLoCo, while offering communication advantages, robustness to heterogeneous bandwidth, and better fault tolerance. 
+
+## 2 Related Work 
+
+Local SGD and extensions to LLM training. Local SGD [ 29 ] is a standard approach in distributed training to reduce communication frequency. It has been shown to work well for LLM training when combined with adaptive optimizers and an outer momentum mechanism, as in DiLoCo [ 7]. In both settings, the main idea is to maintain an outer loop that aggregates parameters through communication, while an inner loop performs local gradient updates. Although these ideas originally arose in the context of federated learning [ 18 ], several extensions have been proposed since then, including methods that incorporate a slower momentum mechanism [ 34 ]. Another line of work seeks to further reduce communication through sparse variants, which compress transmitted updates to lower communication costs [ 8 , 14 ]. A related recent work [ 16 ] considers extensions of DiLoCo that allow for randomization of the pipeline path and for averaging pipeline stages in subgroups, which is similar in spirit to decentralized methods. 
+
+Decentralized (gossip) learning. Decentralized learning [ 17 ] aims to remove the need for a central coordinator by allowing communication only between neighboring nodes. Much of this literature is motivated by settings with data heterogeneity, where different workers or clients optimize different local objectives due to non-IID data partitions, as in federated learning [ 22 ] and decentralized 2Round  t Round  t+1  Round  t+2 Figure 1: Time-varying 1-Peer gossip communication. At each round, only a sparse subset of peer-to-peer exchanges is active, shown in black, while the possible communication graph is shown in light gray. Changing the active peers across rounds lets information propagate through the network without global synchronization. Here, each worker communicates with one peer per round. When GASLoC communicates on this kind of graph we name it GASLoC-1-Peer. training on heterogeneous datasets [ 33 ]. Existing theory also distinguishes this regime from the homogeneous-data case [ 17 ]. Our work instead targets LLM pre-training, where workers sample from a shared large-scale corpus and data are typically treated as homogeneous across workers. Thus, the main heterogeneity we study is not statistical heterogeneity across local objectives, but system heterogeneity: uneven bandwidth, variable compute speed, and stragglers. This paradigm has been extensively studied in the theoretical setting. However, it has seen limited practical adoption, in particular with LLM training. In particular, we show that a straightforward decentralized adaptation of DiLoCo can be highly sensitive to the number of local steps. Chen et al. [5] also consider gossip-based communication, but their method does not incorporate a momentum step at communication time, whereas our approach does, which empirically leads to more stable training. Similarly, Assran et al. [1] communicate parameters at every gradient step rather than relying on an outer-loop structure. Motivated by these observations, we introduce an alternative algorithm that is significantly more stable in this regime. We also note that Wang et al. [36] and Nabli et al. [25] are among the first works to demonstrate the promise of decentralized adaptive methods in a cluster setting, but they are not able to incorporate local gradient steps. Randomized and asynchronous decentralized algorithms can further reduce or reshape communication by sampling edges, using stochastic clocks, or optimizing averaging weights [ 3 , 10 , 23 , 24 ]. Although our 2-Peer rule also samples communication partners, we use this randomization as a simple sparse mixing rule within a Local SGD-style outer loop, leaving optimized sampling distributions [ 3, 24 ], activation rates, and asynchronous protocols outside the scope of this work. 
+
+Alternatives to All-Reduce. Several approaches aim to reduce the communication overhead of All-Reduce-based training. One line of work explores sparse or structured communication topologies, including expander-like strategies, to improve communication efficiency [ 33 ]. Another direction is elastic synchronization: Elastic Averaging SGD (EASGD) introduces a central reference variable together with an elastic coupling between local models, which can improve robustness and reduce synchronization pressure [ 38 ]. More recent work also revisits elastic communication mechanisms for stable large-scale training [ 15 ], as well as TorchFT at the implementation level. Our approach can be viewed as a form of randomized gossip [ 3]. However, instead of sampling edges independently, we sample a random permutation to define the communication pattern, which requires agreement between workers. Related low-degree communication schemes have been studied before, including 1-Peer exponential graphs [ 37 ] and Alternating Exponential Rings [ 36 ]. These methods are deterministic and are typically designed to match a prescribed or predictable network topology (e.g., computing clusters). As a result, they may suffer from less favorable mixing guarantees. In contrast, our method relies on randomization, which improves the effective spectral gap of the communication operator. 
+
+## 3 Method 
+
+3.1 Generalized Accelerated Sparse Communication Local Computation (GASLoC) Notation. We consider n workers with local models xi ∈ Rd. We write x = ( x1, . . . , x n) for the collection of local models and denote by ¯x their average. Let π ≜ I − 1 
+
+> n
+
+11 ⊤ be the projector onto 3Algorithm 1 GASLoC                                                                         
+
+> 1: Input: inner steps {Hi}ni=1 , inner optimizer Optimizer in , outer optimizer Optimizer out
+> 2: for t= 0 ,1, . . . , T −1do
+> 3: for each worker i∈ { 1, . . . , n }in parallel do
+> 4: x(t, 0)
+> i←x(t)
+> i
+> 5: for h= 0 ,1, . . . , H i−1do
+> 6: x(t,h +1)
+> i←Optimizer in 
+> x(t,h )
+> i,∇f(x(t,h )
+> i)
+> 
+> 7: end for
+> 8: y(t)
+> i←x(t,H i)
+> i
+> 9: end for
+> 10: for each worker i∈ { 1, . . . , n }in parallel do
+> 11: Sample neighbors N(t)
+> i, always including node i, and receive {y(t)
+> j:j∈ N (t)
+> i}
+> 12: x(t+1)
+> i←Optimizer out
+> 
+> x(t)
+> i,1
+> |N (t)
+> i|
+> P
+> j∈N (t)
+> i
+> 
+> x(t)
+> i−y(t)
+> j
+> 
+> 13: end for
+> 14: end for
+> 15: Output: ¯x(T)= 1
+> n
+> nX
+> i=1
+> x(T)
+> i
+
+the disagreement subspace. We encode communication by a weighted graph Laplacian 
+
+Λ ≜ 12
+
+X
+
+> (i,j )∈E
+
+λij (ei − ej )( ei − ej )⊤, with X
+
+> i, (ij )∈E
+
+λij = 1 and λij > 0 ,
+
+so that Λ1 = 0 and also let Ni = {j, (ij ) ∈ E} ∪ { i}. In this case, the graph connectivity is determined by χ ≥ 1, denoting the inverse of the smallest nonzero eigenvalue, the spectral gap [ 23 ]. 
+
+GASLoC. We describe GASLoC in the inner-loop setting for SGD, while Algorithm 1 gives a more general formulation for arbitrary inner/outer optimizers. In parallel, each node performs local gradient steps, and an outer loop periodically aggregates the resulting updates. The number of local steps Hi may be adapted across nodes to compensate for a straggler worker. More precisely, for each node i, the SGD version of the method is written as follows, where η, α, β > 0 are learning rates: 
+
+Inner loop Outer loop 
+
+( xit, 0 = xit,xit,h +1 = xit,h − β∇f (xit,h ), h = 0 , . . . , H i − 1,
+
+(
+
+git ≜ xit,H i − xit, 0,xt+1 = xt + ηg t − αΛ( xt + ηg t) .
+
+(1) When Λ = π, this algorithm recovers DiLoCo exactly, and therefore can be viewed as a generalization of it. Compared with DAdam [ 36 ], our method also allows the use of outer momentum, potentially enabling communication acceleration , together with local SGD steps as discussed below. Our method can also be combined with momentum, so that the outer update then becomes 
+
+xt+1 = xt + ηg t − αΛ( xt + ηg t) + γ
+
+h
+
+(xt + ηg t) − (xt−1 + ηg t−1)
+
+i
+
+, t ≥ 1, (2) where γ > 0 is the momentum parameter. Here, momentum is applied to the post-local-update iterates xt + ηg t, which can accelerate communication while preserving the same decentralized mixing structure. However, despite being faster, this approach still has at least two drawbacks, for instance in the case of the complete graph: it is not robust to faulty communication, and it requires significantly more communication. This motivates the notion of randomized peer-to-peer communication. 
+
+3.2 Randomized peer-to-peer communication 
+
+Classical 1-Peer communication schemes typically rely on carefully constructed graph sequences tailored to the underlying network topology [ 37 , 36 ]. While these schemes are attractive due to their low per-round communication cost, their mixing properties can be poor: exponential graphs yield a spectral gap scaling as log n, whereas cycles lead to a spectral gap scaling as n2, thereby slowing 4w1
+
+> w2
+> w3
+> w4
+> t
+
+DiLoCo 
+
+> w1
+> w2
+> w3
+> w4
+> t
+
+GASLoC     
+
+> Compute Communication Idle Global sync. Local comm.
+
+Figure 2: Bandwidth-straggler scheduling. Left: in DiLoCo implemented with an All-Reduce, all workers perform the same number of local steps and the faster workers remain idle while waiting for the bandwidth-limited worker w3 at the global synchronization barrier. Right: GASLoC uses sparse peer exchanges and allows the bandwidth-limited worker to use fewer local steps H3 < 30 , reducing its cycle time without forcing all workers to wait at a global barrier. convergence. Such sparse communication patterns remain highly desirable in heterogeneous settings, where limiting communication and synchronization is essential. Our approach preserves this low communication cost while leveraging randomization [25] to improve the average mixing behavior. 
+
+Randomized 1-Peer and 2-Peer communication schemes. We propose randomized peer commu-nication to reduce synchronization costs while preserving good mixing properties. For simplicity, assume that n = 2 m. At each communication round, we sample a permutation σ : {1, . . . , n } → {1, . . . , n } uniformly at random. The Laplacian of the corresponding 1-Peer communication graph is 
+
+Λ(1)  
+
+> σ
+
+= 12
+
+> m
+
+X
+
+> i=1
+
+ eσ(2 i−1) − eσ(2 i)
+
+  eσ(2 i−1) − eσ(2 i)
+
+⊤.
+
+Figure 1 illustrates an example of the randomized 1-Peer case, where each round activates a different sparse matching. We also consider a 2-Peer communication graph , obtained by connecting the nodes in the cyclic order induced by σ. Namely, using the convention σ(n + 1) = σ(1) , define 
+
+Λ(2)  
+
+> σ
+
+= 12
+
+> n
+
+X
+
+> i=1
+
+12
+
+ eσ(i) − eσ(i+1) 
+
+  eσ(i) − eσ(i+1) 
+
+⊤.
+
+Proposition 1. Let σ be sampled uniformly at random from the permutations of {1, . . . , n }. Then 
+
+Eσ
+
+Λ(1) 
+
+> σ
+
+ = Eσ
+
+Λ(2) 
+
+> σ
+
+ = n
+
+2( n − 1) π, Eσ
+
+  Λ(1) 
+
+> σ
+
+2 = n
+
+2( n − 1) π, Eσ
+
+  Λ(2) 
+
+> σ
+
+2 = 3n
+
+8( n − 1) π
+
+Consequently, in expectation, the spectral gap of both the 1-Peer and 2-Peer communication schemes scales as 1. This contrasts with a fixed cycle graph, for which χ scales as n2 and becomes inefficient for large n. Moreover, the lower variance of the 2-Peer scheme explains its gains over 1-Peer. 
+
+Robustness to heterogeneous bandwidth in randomized peer-to-peer communication settings. 
+
+Another distinctive feature of our algorithm is that each worker can perform a flexible number of local steps with equal batch size, denoted by Hi. This makes the method naturally robust to bandwidth heterogeneity, including slower compute nodes and workers with weaker or more variable network connections. Assume that worker i has communication time T comm  
+
+> i
+
+, defined as an upper bound on the time required to exchange the intermediate variable with another worker, and per-batch computation time T comp  
+
+> i
+
+. This timing model treats each activated peer exchange as bidirectional communication with a symmetric per-worker upper bound. It therefore does not model directed asymmetric protocols, such as stochastic-push variants. This matches our algorithm, whose communication graph is undirected at each round, and is sufficient for isolating the effect of sparse peer exchanges and worker-specific local step counts. In an All-Reduce-based method, one synchronization round can be bounded as 
+
+T AllReduce  
+
+> step
+
+= max  
+
+> i
+
+{2T comm  
+
+> i
+
+} + max  
+
+> i
+
+{HiT comp  
+
+> i
+
+} .
+
+5The first term corresponds to the reduction and broadcast phases, while the second term reflects the need to wait for the slowest local computation. By contrast, in our decentralized method, each worker communicates only with 1 or 2 randomly selected neighbors at each synchronization round. The corresponding round duration is bounded by 
+
+T GASLoC ,k  
+
+> step
+
+= max  
+
+> i
+
+{kT comm  
+
+> i
+
++ HiT comp  
+
+> i
+
+} .
+
+Therefore, since k ≤ 2, we get 
+
+T GASLoC ,k  
+
+> step
+
+≤ T AllReduce  
+
+> step
+
+.
+
+Indeed, All-Reduce may be bottlenecked by different workers for communication and computation, whereas our method depends only on the largest combined per-worker cost. This comparison still allows collective implementations: if the sparse schedule groups workers into disjoint islands, each island can use a small local All-Reduce instead of participating in a global collective. This advantage is particularly useful under heterogeneous hardware. For a prescribed maximum number of local steps H = max i Hi, hardware utilization is improved by choosing the local step counts Hi so that workers complete a synchronization round in approximately the same time: 
+
+T comm 1 + H1T comp 1 = · · · = T comm  
+
+> n
+
++ HnT comp  
+
+> n
+
+.
+
+Thus, faster or better-connected workers can perform more local updates, while slower or poorly connected workers perform fewer. This reduces idle time at synchronization points and improves robustness to heterogeneous compute and communication resources. Figure 2 illustrates this mech-anism: with All-Reduce, fast workers wait at each global barrier, whereas GASLoC lowers the bandwidth-limited worker’s Hi and uses sparse peer exchanges. 
+
+Fault tolerance. Sparse communication can improve robustness to stragglers and transient failures: each synchronization round depends only on the activated peer exchanges, so a slowdown affects only nearby workers, assuming failed exchanges can be skipped or rescheduled. This is complementary to Decoupled DiLoCo [ 9], which uses independent learners and a central synchronizer with quorum-based updates. Here, there is no global synchronizer; resilience comes from replacing all-worker collectives with sparse peer-to-peer dependencies. In contrast, All-Reduce requires every worker to join each collective step, making it more sensitive to stragglers and temporary failures. 
+
+3.3 Convergence of GASLoC 
+
+Appendix A proves the following convergence result for different communication schemes. 
+
+Proposition 2. Let x⋆ ∈ arg min f , and suppose that x⋆ is an unconstrained minimizer, so that 
+
+∇f (x⋆) = 0 . Suppose that, for every ξ, F (·; ξ) is L-smooth. Assume moreover that 
+
+Eξ [∇F (x; ξ)] = ∇f (x), Eξ
+
+∥∇ F (x; ξ) − ∇ f (x)∥2 ≤ σ2.
+
+Assume 
+
+0 < α < 1, 0 < β ≤ 18L , 0 < η ≤ α
+
+3√3βρL .
+
+The parameter (ρ, γ ) is set to (χ, 0) for standard gossip, to (√χ, (1 − pα/χ )2) for accelerated gossip, to   nn−1 , 0 for 1-Peer, and to α     
+
+> 1−
+> q
+> 1−nn−1α+3n
+> 8( n−1) α2
+
+, 0
+
+!
+
+for 2-Peer. If the initialization satisfies x10 = · · · = xn 
+
+> 0
+
+= x0, then, for every T ≥ 1,
+
+1
+
+T 
+
+> T−1
+
+X
+
+> t=0
+
+E∥∇ f (¯ xt)∥2 ≤ 4( f (x0) − f (x⋆)) 
+
+T ηβ + 2Lηβσ 2
+
+n2
+
+> n
+
+X
+
+> i=1
+
+Hi + 60 β2L2σ2.
+
+This proposition shows that, by appropriately tuning the step sizes β, η , the residual terms in the convergence bound can be made arbitrarily small, which is the expected behavior for this type of method. The proof relies on a Lyapunov function which combines an optimization term, f (¯ x)−f (x⋆),that measures progress of the network average, and a consensus term that controls the disagreement between nodes. The precise form of the consensus term depends on the gossip mechanism used. The resulting bound is standard in spirit and is comparable to existing results such as [ 17 ]. However, the analysis highlights the benefit of the outer momentum mechanism: it reduces the number of communication rounds required to achieve a given level of consensus. 6Table 1: Decentralized training on the 134M model. Validation loss for one and multiple ( H = 30 )local steps decentralized training across different topologies and replica counts. All runs use a fixed training budget of 2.68B tokens. 
+
+(a) One-step            
+
+> AdamW DDP ( ref. )3.18
+> Topology GASLoC DAdam
+> ring 3.36 3.33
+> complete 3.29 3.25
+> 1-Peer 3.24 3.29 2-Peer 3.22 3.28
+
+(b) Multi-step                                     
+
+> 8 replicas 16 replicas 32 replicas
+> DiLoCo (ref.) 3.30 3.40 3.53
+> Topology GASLoC Loc.-DAdam GASLoC Loc.-DAdam GASLoC Loc.-DAdam
+> ring 3.32 3.51 3.45 3.69 3.81 4.00 complete 3.30 3.47 3.40 3.65 3.53 3.86 1-Peer 3.34 3.51 3.49 3.66 3.66 3.88 2-Peer 3.32 3.48 3.45 3.66 3.62 3.86
+
+## 4 Numerical Experiments 
+
+We evaluate GASLoC in a distributed LLM pre-training setting. We compare against DDP [ 19 ]and DiLoCo [ 7 ] as standard distributed baselines. As decentralized baseline, we compare with DAdam [ 36 ], a recent approach that was able to scale to LLMs and incorporate adaptive optimizers effectively. It uses an Adam-based gossip method, and AdamW is a standard [ 12 , 11 ] local optimizer for transformer pre-training. Moreover, DAdam supports overlapping communication with computa-tion, has convergence guarantees and was shown to achieve strong generalization performance in practical multi-node settings, including transformer training. We pretrain Llama-3-style decoder-only Transformer models [ 11 ] on FineWeb [ 26 ]. Following Hoffmann et al. [13] , we train a 134M-parameter model on 2.7B tokens and a 551M-parameter model on 11B tokens. We use the LLaMA-2 tokenizer [ 32 ], 2048-token sequences, a global batch size of 2M tokens, and n ∈ { 8, 16 , 32 } workers unless stated otherwise. All methods use AdamW [ 21 ]locally, with weight decay 0.1, (β1, β 2) = (0 .9, 0.95) , a tuned peak learning rate, 10% warmup from 1% of the peak, and cosine decay. For H > 1, DiLoCo and GASLoC perform H local updates before an outer step: DiLoCo computes the outer pseudo-gradient by All-Reduce, whereas GASLoC communicates over the selected topology. Both use independently tuned Nesterov momentum [ 30 ]for the outer optimizer. Our sparse variants use randomized peer-to-peer communication: GASLoC-1-Peer forms disjoint random symmetric pairings, and GASLoC-2-Peer connects adjacent workers in a randomly induced ring. See Appendix B for more details. 
+
+Local-DAdam. DAdam is directly comparable to our protocol only when H = 1 , since the original algorithm mixes neighboring parameters after every local optimizer step. For H > 1, delaying this mixing changes the algorithm rather than only reducing communication frequency. We therefore introduce a variant of DAdam which we denote Local-DAdam as a controlled adaptation for infrequent communication: it keeps the same H-step inner loop and communication schedule as GASLoC, but replaces the outer pseudo-gradient with a DAdam-style disagreement term computed before the local block. Appendix C gives the precise update and explains how we adapted DAdam for comparison. 
+
+4.1 Results with Homogeneous Workers 
+
+Table 2: One-step Decentralized Methods. Vali-dation loss on 16 replicas for the 551M-parameter LLM after training on 11.02B tokens. 
+
+Method Topology Val Loss 
+
+AdamW DDP ( ref. ) – 2.64 DAdam ring 2.73 GASLoC ring 2.70 
+
+DAdam complete 2.70 GASLoC-1-Peer complete 2.71 GASLoC-2-Peer complete 2.69 
+
+Single-step Evaluation. We first evaluate the methods in the single-step regime, where each communication round follows one local opti-mizer update. This setting allows us to di-rectly compare to Wang et al. [36] . Our results are shown in Table 1a and Table 2. Among decentralized methods, the strongest variant is GASLoC-2-Peer, which improves over complete-graph DAdam, despite using substan-tially sparser communication. This compari-son is conservative in communication terms: complete-graph DAdam communicates with all workers at every iteration, whereas GASLoC-2-Peer communicates with only two randomly selected peers per worker per round. A more communication-matched comparison is given by 7Table 3: Multi-step Decentralized Methods. Validation loss for the 551M model, communicating every 30 steps using 8 and 16 replicas. All runs use a fixed training budget of 11.02B tokens. 
+
+Method Topology Val Loss 8 replicas 16 replicas 
+
+DiLoCo ( ref. ) – 2.64 2.67 Local-DAdam ring 2.92 3.07 GASLoC ring 2.68 2.79 
+
+Local-DAdam complete 2.84 2.97 GASLoC-1-Peer complete 2.67 2.81 GASLoC-2-Peer complete 2.64 2.72 
+
+DAdam-2-Peer, where both methods use the same randomized pattern. In this setting, GASLoC-2-Peer increases the gap, improving validation loss by 0.06. These results suggest that randomized sparse communication in GASLoC can mitigate the degradation observed for complete-graph updates, while also avoiding global synchronization. GASLoC also shows competitive results on the challeng-ing ring graph. At a larger scale, we observe even better trend in terms of GASLoC performance, with GASLoC-2-Peer significantly outperforming DAdam as shown in Table 2 in ring and complete topologies. 
+
+Multi-step regime. The H = 30 regime evaluates the setting in which the communication savings of local methods are most relevant. Each worker performs many optimizer updates before the outer synchronization step, so the communication step must correct both consensus error and the drift accumulated by local training. In this regime, DiLoCo is a strong reference point: it uses the same local computation pattern as GASLoC, but its outer step still relies on a complete All-Reduce. The central question is therefore not whether sparse communication improves over complete averaging in isolation, but whether it can preserve comparable validation loss while removing the global synchronization requirement. Table 1b shows that GASLoC with the complete graph matches DiLoCo across worker counts, as it recovers the same communication structure. We observe, on the other hand, that Local-DAdam does not scale well for multiple steps, obtaining significantly worse results than DiLoCo. Furthermore, unlike GASLoC, it does not gain benefits from randomized peer communication. On the other hand we observe that GASLoC achieves performance close to DiLoCo even in the 1-Peer case where communication is both reduced and more fault tolerant. Note that on the ring graph, performance nearly matches that of the complete graph. In the larger scale setting in Table 3, GASLoC-2-Peer can match DiLoCo and confirm the degradation of DAdam with local steps as well as the superior performance of GASLoC in this setting. 
+
+4.2 Heterogeneous Communication Setting 
+
+We next evaluate the effect of communication heterogeneity for the 134M-parameter model under the same fixed training budget set by Chinchilla scaling laws [ 13 ]. As discussed, unlike DiLoCo, GASLoC is able to vary the number of local steps while still allowing synchronization to occur at the same time. In this experiment, all methods process the same total number of tokens, but one worker’s communication bandwidth is reduced to either 10% or 20% of the bandwidth available to the other workers. We simulate a relatively common over-the-internet bandwidth of 1 Gbps across nodes and 100 or 200 Mbps for the inbound and outbound links on the straggler node. We use 8 nodes, each with an A100 GPU. Following common DiLoCo implementations [ 31 ], we model its outer synchronization as an All-Reduce over the outer delta. This implementation is efficient on homogeneous interconnects, but every outer step still requires a global collective and therefore is delayed by the low-bandwidth worker. In contrast, GASLoC–1-Peer and GASLoC–2-Peer replace this global synchronization with sparse randomized peer exchanges and allow the number of local steps to vary across workers, so that the straggler’s longer communication time is compensated by reduced local computation before synchronization. Figure 3 reports the validation loss as training progresses over normalized wall-clock time, using DiLoCo as reference. We observe that under this practical scenario a significant wall-clock time advantage can be obtained over DiLoCo. 80.0 0.2 0.4 0.6 0.8 1.0
+
+> Relative Time
+> 3.5
+> 4.0
+> 4.5
+> 5.0
+> 5.5
+> 6.0
+> Val Loss
+> DiLoCo
+> GASLoC -1-Peer
+> GASLoC -2-Peer
+
+(a) Straggler with 10% of the bandwidth 0.2 0.4 0.6 0.8 1.0 
+
+> Relative Time
+> 3.5
+> 4.0
+> 4.5
+> 5.0
+> 5.5
+> 6.0
+> Val Loss
+> DiLoCo
+> GASLoC -1-Peer
+> GASLoC -2-Peer
+
+(b) Straggler with 20% of the bandwidth 
+
+Figure 3: Robustness to bandwidth stragglers. Validation loss versus relative wall-clock time when one worker has reduced communication bandwidth. GASLoC adapts to the straggler by reducing its local computation while keeping the non-straggling workers at H = 30 . At 10% bandwidth (a), the straggler performs Hi = 15 steps for GASLoC-1-Peer and Hi = 1 for GASLoC-2-Peer. At 20% bandwidth (b), the lower communication cost allows the straggler to perform the full Hi = 30 
+
+steps for GASLoC-1-Peer and Hi = 15 for GASLoC-2-Peer. Sparse peer-to-peer communication 
+
+substantially improves time-to-loss relative to DiLoCo, especially under severe straggling. 
+
+4.3 Sensitivity to Communication Frequency 1 5 10 15 30 
+
+> H
+> 3.200
+> 3.225
+> 3.250
+> 3.275
+> 3.300
+> 3.325
+> Val Loss
+> DiLoCo
+> GASLoC -1-Peer
+> GASLoC -2-Peer
+
+Figure 4: Final validation loss for a local-step sweep on the 134M model with 8 workers. We compare DiLoCo and sparse GASLoC variants with one or two randomized peer exchanges per outer step. Sparse variants follow the same qual-itative trend as DiLoCo as H increases. We also analyze the sensitivity of GASLoC to the number of local steps, in particular in the 1-Peer and 2-Peer settings. Figure 4 evaluates whether sparse randomized communication preserves the same dependence on communication frequency as DiLoCo. We first observe that GASLoC-1-Peer and GASLoC-2-Peer variants outperform DiLoCo at low H. This is consistent with the results in Defazio et al. [6] , showing that at very low H DiLoCo performance can degrade. For H > 5, the trend is consistent in that GASLoC-2-Peer and 1-Peer slightly underperform DiLoCo (while having communication benefits) but have similar scaling properties with respect to inner steps. 
+
+## 5 Conclusion 
+
+We introduced GASLoC, a decentralized pre-training method that combines local optimizer steps, sparse randomized peer communication, and an outer optimizer. The method unifies DiLoCo and gossip-based training: complete communication recovers the DiLoCo update, while sparse peer communication replaces global collectives with local exchanges and connects the outer momentum mechanism to communication acceleration. We showed, both theoretically and empirically, that this formulation preserves the main behavior of DiLoCo in the homogeneous setting while removing the dependence on global synchronization. In a simulated bandwidth-straggler setting, GASLoC reaches a comparable validation loss in a shorter wall-clock time by combining sparse communication and worker-specific local step counts. These results provide, to our knowledge, the first evidence that Local SGD-style LLM pre-training can be effectively combined with decentralized peer-to-peer communication when global synchronization is costly. 
+
+## Acknowledgements 
+
+This work was supported by PEPR IA on grant SHARP ANR-23-PEIA-0008 and PEPR NUMPEX on grant DAIMOS ANR-25-EXNU-0002. Part of this work was granted access to the JeanZay HPC/AI resources of IDRIS under the allocation AD011015884R1, AD011017481, AD011016641, 9AD011017661 and AD011017766. E.B. and P.C. acknowledge funding from NSERC Discovery and FRQNT New Scholar. 
+
+## References 
+
+[1] Mahmoud Assran, Nicolas Loizou, Nicolas Ballas, and Mike Rabbat. Stochastic gradient push for distributed deep learning. In International Conference on Machine Learning , pages 344–353. PMLR, 2019. [2] Raphaël Berthier, Francis Bach, and Pierre Gaillard. Accelerated gossip in networks of given dimension using jacobi polynomial iterations. SIAM Journal on Mathematics of Data Science ,2(1):24–47, 2020. [3] Stephen Boyd, Arpita Ghosh, Balaji Prabhakar, and Devavrat Shah. Randomized gossip algorithms. IEEE transactions on information theory , 52(6):2508–2530, 2006. [4] Zachary Charles, Gabriel Teston, Lucio M. Dery, J Keith Rush, Nova Fallen, Zachary Garrett, Arthur Szlam, and Arthur Douillard. Communication-efficient language model training scales reliably and robustly: Scaling laws for diloco. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. URL https://openreview.net/forum?id= X4SCxcgb3O .[5] Yiming Chen, Kun Yuan, Yingya Zhang, Pan Pan, Yinghui Xu, and Wotao Yin. Accelerating gossip sgd with periodic global averaging. In International Conference on Machine Learning ,pages 1791–1802. PMLR, 2021. [6] Aaron Defazio, Konstantin Mishchenko, Parameswaran Raman, Hao-Jun Michael Shi, and Lin Xiao. Smoothing DiLoCo with primal averaging for faster training of LLMs. arXiv preprint arXiv:2512.17131 , 2025. [7] Arthur Douillard, Qixuan Feng, Andrei A Rusu, Rachita Chhaparia, Yani Donchev, Adhiguna Kuncoro, Marc’Aurelio Ranzato, Arthur Szlam, and Jiajun Shen. Diloco: Distributed low-communication training of language models. arXiv preprint arXiv:2311.08105 , 2023. [8] Arthur Douillard, Yanislav Donchev, Keith Rush, Satyen Kale, Zachary Charles, Zachary Garrett, Gabriel Teston, Dave Lacey, Ross McIlroy, Jiajun Shen, et al. Streaming diloco with overlapping communication: Towards a distributed free lunch. arXiv preprint arXiv:2501.18512 ,2025. [9] Arthur Douillard, Keith Rush, Yani Donchev, Zachary Charles, Nova Fallen, Ayush Dubey, Ionel Gog, Josef Dean, Blake Woodworth, Zachary Garrett, Nate Keating, Jenny Bishop, Henry Prior, Edouard Yvinec, Arthur Szlam, Marc’Aurelio Ranzato, and Jeff Dean. Decoupled diloco for resilient distributed pre-training, 2026. URL https://arxiv.org/abs/2604.21428 .[10] Mathieu Even, Raphaël Berthier, Francis Bach, Nicolas Flammarion, Hadrien Hendrikx, Pierre Gaillard, Laurent Massoulié, and Adrien Taylor. Continuized accelerations of deterministic and stochastic gradient descents, and of gossip algorithms. Advances in Neural Information Processing Systems , 34:28054–28066, 2021. [11] Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, and Akhil Mathur et. al. The llama 3 herd of models, 2024. URL https://arxiv.org/abs/2407.21783 .[12] Dirk Groeneveld, Iz Beltagy, Evan Walsh, Akshita Bhagia, Rodney Kinney, Oyvind Tafjord, Ananya Jha, Hamish Ivison, Ian Magnusson, Yizhong Wang, Shane Arora, David Atkinson, Russell Authur, Khyathi Chandu, Arman Cohan, Jennifer Dumas, Yanai Elazar, Yuling Gu, Jack Hessel, Tushar Khot, William Merrill, Jacob Morrison, Niklas Muennighoff, Aakanksha Naik, Crystal Nam, Matthew Peters, Valentina Pyatkin, Abhilasha Ravichander, Dustin Schwenk, Saurabh Shah, William Smith, Emma Strubell, Nishant Subramani, Mitchell Wortsman, Pradeep Dasigi, Nathan Lambert, Kyle Richardson, Luke Zettlemoyer, Jesse Dodge, Kyle Lo, Luca Soldaini, Noah Smith, and Hannaneh Hajishirzi. OLMo: Accelerating the science of language models. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar, editors, Proceedings of the 
+
+10 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 15789–15809, Bangkok, Thailand, August 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.acl-long.841. URL https://aclanthology.org/2024. acl-long.841/ .[13] Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, et al. Training compute-optimal large language models. arXiv preprint arXiv:2203.15556 , 2022. [14] Satyen Kale, Arthur Douillard, and Yanislav Donchev. Eager updates for overlapped communi-cation and computation in diloco. arXiv preprint arXiv:2502.12996 , 2025. [15] Xueze Kang, Guangyu Xiang, Yuxin Wang, Hao Zhang, Yuchu Fang, Yuhang Zhou, Zhenheng Tang, Youhui Lv, Eliran Maman, Mark Wasserman, et al. Elaswave: An elastic-native system for scalable hybrid-parallel training. arXiv preprint arXiv:2510.00606 , 2025. [16] Jari Kolehmainen, Nikolay Blagoev, John Donaghy, O˘ guzhan Ersoy, and Christopher Nies. Noloco: No-all-reduce low communication training method for large models. arXiv preprint arXiv:2506.10911 , 2025. [17] Anastasia Koloskova, Nicolas Loizou, Sadra Boreiri, Martin Jaggi, and Sebastian Stich. A unified theory of decentralized sgd with changing topology and local updates. In International conference on machine learning , pages 5381–5393. PMLR, 2020. [18] Jakub Koneˇ cn `y, H Brendan McMahan, Felix X Yu, Peter Richtárik, Ananda Theertha Suresh, and Dave Bacon. Federated learning: Strategies for improving communication efficiency. arXiv preprint arXiv:1610.05492 , 2016. [19] Shen Li, Yanli Zhao, Rohan Varma, Omkar Salpekar, Pieter Noordhuis, Teng Li, Adam Paszke, Jeff Smith, Brian Vaughan, Pritam Damania, and Soumith Chintala. Pytorch distributed: experiences on accelerating data parallel training. Proc. VLDB Endow. , 13(12):3005–3018, 2020. ISSN 2150-8097. doi: 10.14778/3415478.3415530. URL https://doi.org/10. 14778/3415478.3415530 .[20] Nicolas Loizou, Michael Rabbat, and Peter Richtárik. Provably accelerated randomized gossip algorithms. In ICASSP 2019 - 2019 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP) , pages 7505–7509, 2019. doi: 10.1109/ICASSP.2019.8683847. [21] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In International Conference on Learning Representations , 2019. URL https://openreview.net/forum? id=Bkg6RiCqY7 .[22] Brendan McMahan, Eider Moore, Daniel Ramage, Seth Hampson, and Blaise Aguera y Ar-cas. Communication-Efficient Learning of Deep Networks from Decentralized Data. In Aarti Singh and Jerry Zhu, editors, Proceedings of the 20th International Conference on Artifi-cial Intelligence and Statistics , volume 54 of Proceedings of Machine Learning Research ,pages 1273–1282. PMLR, 20–22 Apr 2017. URL https://proceedings.mlr.press/v54/ mcmahan17a.html .[23] Adel Nabli and Edouard Oyallon. Dadao: Decoupled accelerated decentralized asynchronous optimization. In International Conference on Machine Learning , pages 25604–25626. PMLR, 2023. [24] Adel Nabli and Edouard Oyallon. Decentralized asynchronous optimization with dadao allows decoupling and acceleration. Journal of Machine Learning Research , 26(207):1–48, 2025. [25] Adel Nabli, Eugene Belilovsky, and Edouard Oyallon. A2CiD 2: Accelerating asynchronous communication in decentralized deep learning. Advances in Neural Information Processing Systems , 36:47451–47474, 2023. [26] Guilherme Penedo, Hynek Kydlíˇ cek, Loubna Ben allal, Anton Lozhkov, Margaret Mitchell, Colin Raffel, Leandro Von Werra, and Thomas Wolf. The fineweb datasets: Decanting the web for the finest text data at scale. In The Thirty-eight Conference on Neural Information Processing Systems Datasets and Benchmarks Track , 2024. URL https://openreview.net/ forum?id=n6SCkn2QaG .11 [27] Sashank J. Reddi, Zachary Charles, Manzil Zaheer, Zachary Garrett, Keith Rush, Jakub Koneˇ cný, Sanjiv Kumar, and Hugh Brendan McMahan. Adaptive federated optimization. In International Conference on Learning Representations , 2021. URL https://openreview.net/forum? id=LkFG3lB13U5 .[28] Amir Sarfi, Benjamin Thérien, Joel Lidin, and Eugene Belilovsky. Communication efficient llm pre-training with sparseloco, 2025. URL https://arxiv.org/abs/2508.15706 .[29] Sebastian U Stich. Local sgd converges fast and communicates little. arXiv preprint arXiv:1805.09767 , 2018. [30] Ilya Sutskever, James Martens, George E. Dahl, and Geoffrey E. Hinton. On the importance of initialization and momentum in deep learning. In International Conference on Machine Learning , 2013. URL https://api.semanticscholar.org/CorpusID:10940950 .[31] Benjamin Therien, Xiaolong Huang, Aaron Defazio, Irina Rish, and Eugene Belilovsky. Muloco: Muon is a practical inner optimizer for diloco. arXiv preprint arXiv:2505.23725 , 2025. URL 
+
+https://arxiv.org/abs/2505.23725 .[32] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen, Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia Gao, Vedanuj Goswami, Naman Goyal, Anthony Hartshorn, Saghar Hosseini, Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yuning Mao, Xavier Martinet, Todor Mihaylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton, Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva, Eric Michael Smith, Ranjan Subramanian, Xiao-qing Ellen Tan, Binh Tang, Ross Taylor, Adina Williams, Jian Xiang Kuan, Puxin Xu, Zheng Yan, Iliyan Zarov, Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Aurelien Rodriguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288 , 2023. [33] Thijs Vogels, Lie He, Anastasiia Koloskova, Sai Praneeth Karimireddy, Tao Lin, Sebastian U Stich, and Martin Jaggi. Relaysum for decentralized deep learning on heterogeneous data. 
+
+Advances in Neural Information Processing Systems , 34:28004–28015, 2021. [34] Jianyu Wang, Vinayak Tantia, Nicolas Ballas, and Michael Rabbat. Slowmo: Im-proving communication-efficient distributed sgd with slow momentum. arXiv preprint arXiv:1910.00643 , 2019. [35] Jue Wang, Yucheng Lu, Binhang Yuan, Beidi Chen, Percy Liang, Christopher De Sa, Christopher Re, and Ce Zhang. CocktailSGD: Fine-tuning foundation models over 500Mbps networks. In Andreas Krause, Emma Brunskill, Kyunghyun Cho, Barbara Engelhardt, Sivan Sabato, and Jonathan Scarlett, editors, Proceedings of the 40th International Conference on Machine Learning , volume 202 of Proceedings of Machine Learning Research , pages 36058–36076. PMLR, 23–29 Jul 2023. URL https://proceedings.mlr.press/v202/wang23t.html .[36] Zesen Wang, Jiaojiao Zhang, Xuyang Wu, and Mikael Johansson. From promise to practice: realizing high-performance decentralized training. arXiv preprint arXiv:2410.11998 , 2024. [37] Bicheng Ying, Kun Yuan, Yiming Chen, Hanbin Hu, PAN PAN, and Wotao Yin. Ex-ponential graph is provably efficient for decentralized deep training. In M. Ranzato, A. Beygelzimer, Y. Dauphin, P.S. Liang, and J. Wortman Vaughan, editors, Advances in Neural Information Processing Systems , volume 34, pages 13975–13987. Curran Associates, Inc., 2021. URL https://proceedings.neurips.cc/paper_files/paper/2021/file/ 74e1ed8b55ea44fd7dbb685c412568a4-Paper.pdf .[38] Sixin Zhang, Anna E Choromanska, and Yann LeCun. Deep learning with elastic averaging sgd. Advances in neural information processing systems , 28, 2015. 12 A Proof of Proposition 2 
+
+Proposition 3. Let x⋆ ∈ arg min f , and suppose that x⋆ is an unconstrained minimizer, so that 
+
+∇f (x⋆) = 0 . Suppose that, for every ξ, F (·; ξ) is L-smooth. Assume moreover that the stochastic gradients are unbiased and have variance bounded by σ2, namely 
+
+Eξ [∇F (x; ξ)] = ∇f (x), Eξ
+
+∥∇ F (x; ξ) − ∇ f (x)∥2 ≤ σ2.
+
+Assume that 0 < α < 1, 0 < β ≤ 18L , and that the outer step size satisfies 0 < η ≤ α 
+
+> 3√3βρL
+
+. The constant ρ depends on the communication scheme as follows: 1. Standard gossip with spectral gap χ: we take 
+
+ρ = χ, γ = 0 .
+
+2. Accelerated gossip with spectral gap χ via outer momentum: we take 
+
+ρ = √χ, γ =
+
+
+
+1 −
+
+r αχ
+
+2
+
+.
+
+3. k-Peer gossip: we take 
+
+ρ =
+
+
+
+nn − 1 , for randomized 1-Peer communication ,α
+
+1 −
+
+q
+
+1 − nn−1 α + 3n 
+
+> 8( n−1)
+
+α2
+
+, for randomized 2-Peer communication , γ = 0 .
+
+If the initialization satisfies x10 = · · · = xn 
+
+> 0
+
+= x0, then, for every T ≥ 1,
+
+1
+
+T 
+
+> T−1
+
+X
+
+> t=0
+
+E∥∇ f (¯ xt)∥2 ≤ 4( f (x0) − f (x⋆)) 
+
+T ηβ + 2Lηβσ 2
+
+n2
+
+> n
+
+X
+
+> i=1
+
+Hi + 60 β2L2σ2.
+
+¯x ≜ 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+xi
+
+denote the network average. We introduce the Bregman divergence associated with f :
+
+df (x, y ) ≜ f (x) − f (y) − ⟨∇ f (y), x − y⟩. (3) The following standard identities will be used repeatedly: 
+
+dF (x, z ) = dF (x, y ) + dF (y, z ) + ⟨x − y, ∇F (y) − ∇ f (z)⟩, (4) 
+
+dF (x, y ) ≤ L
+
+2 ∥x − y∥2, (5) 
+
+dF (x, x ⋆) ≥ 0. (6) Note that the above also holds for f = E[F ].For the inner loop, recall that for each node i,
+
+xit,k +1 = xit,k − β∇F (xit,k ; ξit,k ), k = 0 , . . . , H i − 1, (7) with xit, 0 = xit. We define the accumulated local update 
+
+git ≜ β
+
+> Hi−1
+
+X
+
+> k=0
+
+∇F (xit,k ; ξit,k ), (8) so that 
+
+xit,H i = xit − git. (9) 13 Stacking the local vectors, we write gt = ( g1 
+
+> t
+
+, . . . , g nt ), and the outer update becomes 
+
+xt+1 = xt + ηg t − αΛ( xt + ηg t). (10) Let 
+
+¯xt ≜ 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+xit, ¯gt ≜ 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+git.
+
+Since Λ1 = 0 , averaging the outer update yields 
+
+¯xt+1 = ¯ xt + η¯gt. (11) Applying the three-point identity for df with 
+
+x = ¯ xt+1 , y = ¯ xt, z = x⋆,
+
+we obtain 
+
+df (¯ xt+1 , x ⋆) − df (¯ xt, x ⋆) = df (¯ xt+1 , ¯xt) + ⟨¯xt+1 − ¯xt, ∇f (¯ xt) − ∇ f (x⋆)⟩ (12) 
+
+= df (¯ xt + η¯gt, ¯xt) + η ⟨¯gt, ∇f (¯ xt) − ∇ f (x⋆)⟩ . (13) If x⋆ is an unconstrained minimizer, then ∇f (x⋆) = 0 , and therefore 
+
+df (¯ xt+1 , x ⋆) − df (¯ xt, x ⋆) = df (¯ xt + η¯gt, ¯xt) + η⟨¯gt, ∇f (¯ xt)⟩. (14) Using L-smoothness, 
+
+df (¯ xt + η¯gt, ¯xt) ≤ Lη 2
+
+2 ∥¯gt∥2. (15) Then, by the bias–variance decomposition, 
+
+E∥¯gt∥2 = ∥Et[¯ gt]∥2 + E ∥¯gt − E[¯ gt]∥2 (16) 
+
+= 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+E[git]
+
+> 2
+
++ 1
+
+n2
+
+> n
+
+X
+
+> i=1
+
+E git − E[git] 2 (17) 
+
+≤ β2 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+1
+
+HiHi−1X
+
+> k=0
+
+∇f (xit,k )
+
+> 2
+
++ β2σ2
+
+n2
+
+> n
+
+X
+
+> i=1
+
+Hi. (18) Now, we will use that, taking the expectations: 
+
+E⟨¯gt, ∇f (¯ xt)⟩ = 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+E⟨git, ∇f (¯ xt)⟩ (19) Here, using Lemma 2, we have: 
+
+E git, ∇f (¯ xt)  ≤ − β
+
+ 12 − 32 β2L2e2
+
+
+
+E∥∇ f (¯ xt)∥2 − β
+
+2 E∥ 1
+
+HiHi−1X
+
+> k=0
+
+∇f (xit,k )∥2
+
++ 32 βL 2e2E∥xit − ¯xt∥2 + 32 β3L2e2σ2.
+
+(20) Introduce Git = 1
+
+> Hi
+
+PHi−1 
+
+> k=0
+
+∇f (xit,k ). Combining the last two inequalities yields 
+
+E[df (¯ xt+1 , x ⋆) − df (¯ xt, x ⋆)] 
+
+≤ − ηβ 
+
+ 12 − 32 β2L2e2
+
+
+
+E∥∇ f (¯ xt)∥2
+
+− βη 
+
+2n
+
+> n
+
+X
+
+> i=1
+
+E Git 
+
+> 2
+
++ η2Lβ 2
+
+2 E 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+Git
+
+> 2
+
++ 3ηβL 2e2
+
+2n
+
+> n
+
+X
+
+> i=1
+
+E∥xit − ¯xt∥2
+
++ Lη 2β2σ2
+
+2n2
+
+> n
+
+X
+
+> i=1
+
+Hi + 32 ηβ 3L2e2σ2. (21) 14 Next, we use the communication contraction bound given by Lemma 1. 
+
+∆Vπ ≤ − αρ ∥πx t∥2 + ρη 2β2
+
+α ∥πG t∥2.
+
+Introduce the Lyapunov function 
+
+ϕ ≜ df (¯ x, x ⋆) + Ω Vπ (x).
+
+Combining the previous inequalities gives 
+
+E[ϕt+1 − ϕt] ≤ − ηβ 
+
+ 12 − 32 β2L2e2
+
+
+
+E∥∇ f (¯ xt)∥2
+
+− βη 
+
+2n
+
+> n
+
+X
+
+> i=1
+
+E Git 
+
+> 2
+
++ η2Lβ 2
+
+2 E 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+Git
+
+> 2
+
++ 3ηβL 2e2
+
+2n
+
+> n
+
+X
+
+> i=1
+
+E∥xit − ¯xt∥2
+
++ Lη 2β2σ2
+
+2n2
+
+> n
+
+X
+
+> i=1
+
+Hi + 32 ηβ 3L2e2σ2
+
++ Ω 
+
+
+
+− αρ E∥πx t∥2 + ρη 2β2
+
+α E∥πG t∥2
+
+
+
+. (22) Using nX
+
+> i=1
+
+E∥Git∥2 = E∥πG t∥2 + nE∥ ¯Gt∥2, ¯Gt ≜ 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+Git,
+
+we recombine the inequalities and obtain 
+
+E[ϕt+1 − ϕt] ≤ − ηβ 
+
+ 12 − 32 β2L2e2
+
+
+
+E∥∇ f (¯ xt)∥2
+
+−
+
+ βη 
+
+2 − Lβ 2η2
+
+2
+
+
+
+E∥ ¯Gt∥2
+
+−
+
+ βη 
+
+2n − Ω ρη 2β2
+
+α
+
+
+
+E∥πG t∥2
+
+−
+
+
+
+Ω αρ − 3ηβL 2e2
+
+2n
+
+
+
+E∥πx t∥2
+
++ Lη 2β2σ2
+
+2n2
+
+> n
+
+X
+
+> i=1
+
+Hi + 32 ηβ 3L2e2σ2. (23) Here, we gonna pick Ω = 3ρηβL 2e2
+
+> 2αn
+
+so that: 
+
+− βη 
+
+2n + Ω β2ρη 2
+
+α
+
+
+
+= − βη 
+
+2n + 3β2ρ2η3βL 2e2
+
+2α2n (24) 
+
+= βη 
+
+2n
+
+
+
+−1 + 3ρ2β2η2L2e2
+
+α2
+
+
+
+. (25) Thus it is necessary so that 3ρ2β2η2L2e2 
+
+> α2
+
+≤ 1, 32 β2L2e2 ≤ 14 and Lβη ≤ 1
+
+Then, we obtain 
+
+E[ϕt+1 − ϕt] ≤ − ηβ 
+
+4 E∥∇ f (¯ xt)∥2 + Lη 2β2σ2
+
+2n2
+
+> n
+
+X
+
+> i=1
+
+Hi + 32 ηβ 3L2e2σ2.
+
+15 Summing the above inequality from t = 0 to T − 1, we get  
+
+> T−1
+
+X
+
+> t=0
+
+E[ϕt+1 − ϕt] ≤ − ηβ 
+
+4 
+
+> T−1
+
+X
+
+> t=0
+
+E∥∇ f (¯ xt)∥2 + 
+
+> T−1
+
+X
+
+> t=0
+
+Lη 2β2σ2
+
+2n2
+
+> n
+
+X
+
+> i=1
+
+Hi + 32 ηβ 3L2e2σ2
+
+!
+
+(26) 
+
+= − ηβ 
+
+4 
+
+> T−1
+
+X
+
+> t=0
+
+E∥∇ f (¯ xt)∥2 + T Lη 2β2σ2
+
+2n2
+
+> n
+
+X
+
+> i=1
+
+Hi + 32 ηβ 3L2e2σ2
+
+!
+
+. (27) Since the left-hand side telescopes, we have  
+
+> T−1
+
+X
+
+> t=0
+
+E[ϕt+1 − ϕt] = E[ϕT ] − ϕ0.
+
+Therefore, 
+
+E[ϕT ] − ϕ0 ≤ − ηβ 
+
+4 
+
+> T−1
+
+X
+
+> t=0
+
+E∥∇ f (¯ xt)∥2 + T Lη 2β2σ2
+
+2n2
+
+> n
+
+X
+
+> i=1
+
+Hi + 32 ηβ 3L2e2σ2
+
+!
+
+. (28) Since ϕT ≥ 0, it follows that 
+
+−ϕ0 ≤ E[ϕT ] − ϕ0.
+
+Combining this with the previous inequality gives 
+
+−ϕ0 ≤ − ηβ 
+
+4 
+
+> T−1
+
+X
+
+> t=0
+
+E∥∇ f (¯ xt)∥2 + T Lη 2β2σ2
+
+2n2
+
+> n
+
+X
+
+> i=1
+
+Hi + 32 ηβ 3L2e2σ2
+
+!
+
+. (29) Rearranging, we obtain 
+
+ηβ 
+
+4 
+
+> T−1
+
+X
+
+> t=0
+
+E∥∇ f (¯ xt)∥2 ≤ ϕ0 + T Lη 2β2σ2
+
+2n2
+
+> n
+
+X
+
+> i=1
+
+Hi + 32 ηβ 3L2e2σ2
+
+!
+
+. (30) Dividing both sides by T ηβ/ 4, we get 
+
+1
+
+T 
+
+> T−1
+
+X
+
+> t=0
+
+E∥∇ f (¯ xt)∥2 ≤ 4ϕ0
+
+T ηβ + 4
+
+ηβ 
+
+Lη 2β2σ2
+
+2n2
+
+> n
+
+X
+
+> i=1
+
+Hi + 32 ηβ 3L2e2σ2
+
+!
+
+(31) 
+
+= 4( f (x0) − f (x∗)) 
+
+T ηβ + 2Lηβσ 2
+
+n2
+
+> n
+
+X
+
+> i=1
+
+Hi + 6 β2L2e2σ2. (32) 
+
+Lemma 1 (Gossip lemma) . (i) Standard gossip. Assume γ = 0 . Then 
+
+∥πx t+1 ∥2 − ∥ πx t∥2 ≤ − αχ ∥πx t∥2 + χα ∥πy t∥2.
+
+(ii) Random k-Peer gossip. Assume γ = 0 . For the randomized 1-Peer scheme, the bound holds with 
+
+χ1 = nn − 1 ,
+
+namely 
+
+Et
+
+∥πx t+1 ∥2 − ∥ πx t∥2 ≤ − αχ1
+
+∥πx t∥2 + χ1
+
+α ∥πy t∥2.
+
+For the randomized 2-Peer scheme, the bound holds with 
+
+χ2 = α
+
+1 −
+
+q
+
+1 − nn−1 α + 3n 
+
+> 8( n−1)
+
+α2
+
+as 
+
+Et
+
+∥πx t+1 ∥2 − ∥ πx t∥2 ≤ − αχ2
+
+∥πx t∥2 + χ2
+
+α ∥πy t∥2.
+
+16 (iii) Accelerated gossip. Assume 
+
+γ =
+
+
+
+1 −
+
+r αχ
+
+2
+
+, 0 < α ≤ 1,
+
+and define 
+
+Xt := 
+
+ πx t
+
+πx t−1
+
+
+
+.
+
+Then, 
+
+∥Xt+1 ∥2 − ∥ Xt∥2 ≤ − α
+
+√χ ∥Xt∥2 +
+
+√χα ∥πy t∥2 ≤ − α
+
+√χ ∥πx t∥2 +
+
+√χα ∥πy t∥2.
+
+Proof. We prove the three claims separately. 
+
+Proof of (i). Since Λ1 = 0 , we have 
+
+πΛ = Λ π = Λ .
+
+Thus, when γ = 0 ,
+
+πx t+1 = ( I − αΛ)( πx t + πy t).
+
+On the disagreement subspace, the eigenvalues of I − αΛ are 
+
+1 − αλ r (Λ) , r = 2 , . . . , n. 
+
+Since 0 < α ≤ 1 and 
+
+λr (Λ) ∈
+
+ 1
+
+χ , 1
+
+
+
+,
+
+we get 
+
+∥(I − αΛ) u∥ ≤ 
+
+
+
+1 − αχ
+
+
+
+∥u∥
+
+for all u ⊥ 1. Hence 
+
+∥πx t+1 ∥2 ≤
+
+
+
+1 − αχ
+
+2
+
+∥πx t + πy t∥2.
+
+Using Young’s inequality, 
+
+∥a + b∥2 ≤ (1 + ν)∥a∥2 +
+
+
+
+1 + 1
+
+ν
+
+
+
+∥b∥2,
+
+with 
+
+ν = 11 − α/χ − 1,
+
+we obtain 
+
+∥πx t+1 ∥2 − ∥ πx t∥2 ≤ − αχ ∥πx t∥2 + χα
+
+
+
+1 − αχ
+
+2
+
+∥πy t∥2.
+
+Since 
+
+
+
+1 − αχ
+
+2
+
+≤ 1, this gives 
+
+∥πx t+1 ∥2 − ∥ πx t∥2 ≤ − αχ ∥πx t∥2 + χα ∥πy t∥2.
+
+Proof of (ii). We have 
+
+Et
+
+∥πx t+1 ∥2 = Et
+
+∥(I − αΛt)π(xt + yt)∥2 (33) 
+
+= ( xt + yt)⊤Et
+
+π − 2αΛt + α2Λ2
+
+> t
+
+ (xt + yt). (34) 17 For the 1-Peer scheme, since 
+
+E[Λ t] = E[Λ 2 
+
+> t
+
+] = n
+
+2( n − 1) π, 
+
+we obtain 
+
+Et
+
+∥πx t+1 ∥2 ≤
+
+
+
+1 − 2 nn − 1 α + nn − 1 α2
+
+
+
+∥πx t + πy t∥2.
+
+Moreover, 
+
+1 − 2 nn − 1 α + nn − 1 α2 ≤
+
+
+
+1 − nn − 1 α
+
+2
+
+.
+
+Hence 
+
+Et
+
+∥πx t+1 ∥2 ≤
+
+
+
+1 − nn − 1 α
+
+2
+
+∥πx t + πy t∥2.
+
+Using Young’s inequality, this gives 
+
+Et
+
+∥πx t+1 ∥2 − ∥ πx t∥2 ≤ − nn − 1 α∥πx t∥2 + n − 1
+
+nα ∥πy t∥2.
+
+Equivalently, this is of the form 
+
+Et
+
+∥πx t+1 ∥2 − ∥ πx t∥2 ≤ − αχ1
+
+∥πx t∥2 + χ1
+
+α ∥πy t∥2, χ1 = n − 1
+
+n .
+
+For the 2-Peer scheme, using 
+
+E[Λ t] = n
+
+2( n − 1) π, E[Λ 2 
+
+> t
+
+] = 3n
+
+8( n − 1) π, 
+
+we obtain 
+
+Et
+
+∥πx t+1 ∥2 ≤
+
+
+
+1 − 2 nn − 1 α + 3n
+
+4( n − 1) α2
+
+
+
+∥πx t + πy t∥2.
+
+Let 
+
+q2 = 1 − 2 nn − 1 α + 3n
+
+4( n − 1) α2.
+
+Then, by Young’s inequality, 
+
+q2∥πx t + πy t∥2 ≤ √q2∥πx t∥2 + q2
+
+1 − √q2
+
+∥πy t∥2.
+
+Therefore, 
+
+Et
+
+∥πx t+1 ∥2 − ∥ πx t∥2 ≤ − (1 − √q2)∥πx t∥2 + q2
+
+1 − √q2
+
+∥πy t∥2.
+
+Equivalently, 
+
+Et
+
+∥πx t+1 ∥2 − ∥ πx t∥2 ≤ − αχ2
+
+∥πx t∥2 + χ2
+
+α ∥πy t∥2,
+
+with 
+
+χ2 = α
+
+1 −
+
+q
+
+1 − 2 nn−1 α + 3n 
+
+> 4( n−1)
+
+α2
+
+.
+
+(iii) Accelerated gossip. Since πΛ = Λ π = Λ , applying π to the accelerated update gives 
+
+πx t+1 =  (1 + γ)I − αΛπx t − γπx t−1 + ( I − αΛ) πy t.
+
+Therefore, 
+
+Xt+1 = AX t +
+
+(I − αΛ) πy t
+
+0
+
+
+
+.
+
+with 
+
+A =
+
+(1 + γ)I − αΛ −γI I 0
+
+
+
+.
+
+18 Let (u, v ) be an eigenvector of A with eigenvalue r. Since u = rv , and since Λv = λv with 
+
+λ ∈
+
+ 1
+
+χ , 1
+
+
+
+,
+
+we get 
+
+r2 − (1 − αλ + γ)r + γ = 0 .
+
+Set 
+
+q := 1 −
+
+r αχ , γ = q2.
+
+Then 
+
+0 ≤ 1 − αλ + γ ≤ 2q, 
+
+so the roots have modulus at most q. Thus, in an equivalent norm on the lifted disagreement space, 
+
+∥AX t∥ ≤ (1 −
+
+r αχ )∥Xt∥.
+
+Consequently, 
+
+∥Xt+1 ∥ ≤ q∥Xt∥ +
+
+(I − αΛ) πy t
+
+0
+
+
+
+.
+
+Since 0 < α ≤ 1 and λr (Λ) ∈ [1 /χ, 1] , we have 
+
+∥(I − αΛ) πy t∥ ≤ ∥ πy t∥.
+
+Therefore, 
+
+∥Xt+1 ∥ ≤ 
+
+
+
+1 −
+
+r αχ
+
+
+
+∥Xt∥ + ∥πy t∥.
+
+Using Young inequality, 
+
+∥Xt+1 ∥2 ≤
+
+
+
+1 −
+
+r αχ
+
+2
+
+(1 + ν)∥Xt∥2 + (1 + 1
+
+ν )∥πy t∥2.
+
+Choose 
+
+ν = 11 − pα/χ − 1.
+
+Then 
+
+1 −
+
+r αχ
+
+2
+
+(1 + ν) = 1 −
+
+r αχ ,
+
+and 
+
+1 + 1
+
+ν = 1
+
+pα/χ =
+
+r χα .
+
+Therefore, 
+
+∥Xt+1 ∥2 ≤
+
+
+
+1 −
+
+r αχ
+
+
+
+∥Xt∥2 +
+
+r χα ∥πy t∥2.
+
+Subtracting ∥Xt∥2, we obtain 
+
+∥Xt+1 ∥2 − ∥ Xt∥2 ≤ − 
+
+r αχ ∥Xt∥2 +
+
+r χα ∥πy t∥2.
+
+Since 0 < α ≤ 1, this also implies the looser bound 
+
+∥Xt+1 ∥2 − ∥ Xt∥2 ≤ − α
+
+√χ ∥Xt∥2 +
+
+√χα ∥πy t∥2.
+
+19 Proposition 4. Let σ be sampled uniformly at random from the set of permutations of {1, . . . , n }.Then 
+
+Eσ
+
+Λ(1) 
+
+> σ
+
+ = Eσ
+
+Λ(2) 
+
+> σ
+
+ = n
+
+2( n − 1) π, Eσ
+
+  Λ(1) 
+
+> σ
+
+2 = n
+
+2( n − 1) π Eσ
+
+  Λ(2) 
+
+> σ
+
+2 = 3n
+
+8( n − 1) π
+
+Proof. We first consider the 1-Peer scheme. For any unordered pair {a, b } with a̸ = b, the probability that a and b are matched together in a uniformly random perfect matching is 
+
+P {a, b } is an edge  = 1
+
+n − 1 .
+
+Therefore, 
+
+Eσ
+
+Λ(1) 
+
+> σ
+
+ = 12
+
+X
+
+> 1≤a<b ≤n
+
+P {a, b } is an edge (ea − eb)( ea − eb)⊤.
+
+Using the above probability gives 
+
+Eσ
+
+Λ(1) 
+
+> σ
+
+ = 12( n − 1) 
+
+X
+
+> 1≤a<b ≤n
+
+(ea − eb)( ea − eb)⊤.
+
+The standard identity X
+
+> 1≤a<b ≤n
+
+(ea − eb)( ea − eb)⊤ = nI − 11 ⊤ = nπ 
+
+then yields 
+
+Eσ
+
+Λ(1) 
+
+> σ
+
+ = n
+
+2( n − 1) π. 
+
+The proof for the 2-Peer scheme is analogous. In a uniformly random cycle induced by σ, any unordered pair {a, b } appears as an edge with probability 
+
+P {a, b } is an edge  = 2
+
+n − 1 .
+
+Indeed, once the position of a in the cycle is fixed, the node b can occupy either of the two neighboring positions among the remaining n − 1 positions. Hence, 
+
+Eσ
+
+Λ(2) 
+
+> σ
+
+ = 14
+
+X
+
+> 1≤a<b ≤n
+
+2
+
+n − 1 (ea − eb)( ea − eb)⊤.
+
+Using the same identity as above, we obtain 
+
+Eσ
+
+Λ(2) 
+
+> σ
+
+ = n
+
+2( n − 1) π. 
+
+It remains to compute the second moments. We first consider the 1-Peer scheme. Recall that 
+
+Λ(1)  
+
+> σ
+
+= 12
+
+> m
+
+X
+
+> i=1
+
+uiu⊤ 
+
+> i
+
+, ui := eσ(2 i−1) − eσ(2 i).
+
+Since the pairs form a matching, the vectors ui have disjoint supports. Hence, 
+
+u⊤ 
+
+> i
+
+uj = 0 for i̸ = j, u⊤ 
+
+> i
+
+ui = 2 .
+
+Therefore, 
+
+ Λ(1) 
+
+> σ
+
+2 = 14
+
+> m
+
+X
+
+> i,j =1
+
+uiu⊤ 
+
+> i
+
+uj u⊤
+
+> j
+
+= 14
+
+> m
+
+X
+
+> i,j =1
+
+ui(u⊤ 
+
+> i
+
+uj )u⊤
+
+> j
+
+= 14
+
+> m
+
+X
+
+> i=1
+
+2uiu⊤
+
+> i
+
+= 12
+
+> m
+
+X
+
+> i=1
+
+uiu⊤
+
+> i
+
+= Λ (1)  
+
+> σ
+
+.
+
+20 Taking expectations gives 
+
+Eσ
+
+(Λ (1)  
+
+> σ
+
+)2 = Eσ
+
+Λ(1) 
+
+> σ
+
+ = n
+
+2( n − 1) π. 
+
+We now consider the 2-Peer scheme. Let 
+
+vi := eσ(i) − eσ(i+1) , σ(n + 1) = σ(1) .
+
+Then 
+
+Λ(2)  
+
+> σ
+
+= 14
+
+> n
+
+X
+
+> i=1
+
+viv⊤ 
+
+> i
+
+.
+
+For a fixed cycle, Λ(2)  
+
+> σ
+
+is one fourth of the usual Laplacian of a cycle graph. Its eigenvalues are therefore 
+
+λk = 1 − cos 
+
+ 2πk n
+
+
+
+, k = 0 , . . . , n − 1.
+
+Thus, 
+
+Tr 
+
+h Λ(2) 
+
+> σ
+
+2i
+
+= 14
+
+> n−1
+
+X
+
+> k=0
+
+
+
+1 − cos 
+
+ 2πk n
+
+ 2
+
+= 14
+
+> n−1
+
+X
+
+> k=0
+
+
+
+1 − 2 cos 
+
+ 2πk n
+
+
+
++ cos 2
+
+ 2πk n
+
+ 
+
+.
+
+Using n−1X
+
+> k=0
+
+cos 
+
+ 2πk n
+
+
+
+= 0 ,
+
+> n−1
+
+X
+
+> k=0
+
+cos 2
+
+ 2πk n
+
+
+
+= n
+
+2 ,
+
+we obtain 
+
+Tr 
+
+h Λ(2) 
+
+> σ
+
+2i
+
+= 14 (n + n
+
+2 ) = 3n
+
+8 .
+
+Moreover, the distribution of the random cycle is invariant under relabeling of the nodes. Hence 
+
+Eσ
+
+(Λ (2)  
+
+> σ
+
+)2
+
+must act identically on all directions orthogonal to 1 and must vanish on span {1}. Therefore, there exists a scalar α such that 
+
+Eσ
+
+(Λ (2)  
+
+> σ
+
+)2 = απ. 
+
+Taking traces yields 
+
+3n
+
+8 = Tr 
+
+
+
+Eσ
+
+(Λ (2)  
+
+> σ
+
+)2
+
+= Tr( αΠ) = α(n − 1) .
+
+Hence 
+
+α = 3n
+
+8( n − 1) .
+
+Consequently, 
+
+Eσ
+
+(Λ (2)  
+
+> σ
+
+)2 = 3n
+
+8( n − 1) π. 
+
+This concludes the proof. 
+
+Lemma 2 (Gradient mismatch with stochastic gradients) . Assume f is L-smooth. Let ∇F (x; ξ) be an unbiased stochastic estimator of ∇f (x), satisfying 
+
+E∇F (x; ξ) | x = ∇f (x), E∥∇ F (x; ξ) − ∇ f (x)∥2 | x ≤ σ2.
+
+Let 0 < β ≤ 1/L , and define 
+
+git := xit − xit,H ,
+
+where 
+
+xit,k +1 = xit,k − βH ∇F (xit,k ; ξit,k ), xit, 0 = xit.
+
+Then, 
+
+E git, ∇f (¯ xt)  . ≤ 6β2L22H ∥xit−¯xt∥2+24 β4L22H ∥∇ f (¯ xt)∥2+ 12 β4L22H  σ2− 12 E
+
+h
+
+git
+
+> 2
+
+i
+
+− 12 E∥∇ f (¯ xt)∥2
+
+21 Proof. We want to upper-bound 
+
+E git, ∇f (¯ xt)  .
+
+By the local stochastic update rule, 
+
+xit,k +1 = xit,k − βH ∇F (xit,k ; ξit,k ), k = 0 , . . . , H − 1.
+
+Iterating this recursion gives 
+
+xit,H = xit − βH
+
+> H−1
+
+X
+
+> k=0
+
+∇F (xit,k ; ξit,k ).
+
+Hence 
+
+git := −xit + xit,H = − βH
+
+> H−1
+
+X
+
+> k=0
+
+∇F (xit,k ; ξit,k ).
+
+Assume that Fit,k contains all randomness before sampling ξit,k , so that xit,k and ¯xt are Fit,k -measurable. Also assume conditional unbiasedness: 
+
+E∇F (xit,k ; ξit,k ) | F it,k 
+
+ = ∇fi(xit,k ).
+
+Then 
+
+E git, ∇f (¯ xt)  = − βH
+
+> H−1
+
+X
+
+> k=0
+
+E ∇F (xit,k ; ξit,k ), ∇f (¯ xt) 
+
+= − βH
+
+> H−1
+
+X
+
+> k=0
+
+E ∇fi(xit,k ), ∇f (¯ xt)  .
+
+In the homogeneous case fi = f , this becomes 
+
+E git, ∇f (¯ xt)  = − βH
+
+> H−1
+
+X
+
+> k=0
+
+E ∇f (xit,k ), ∇f (¯ xt)  .
+
+Now, we obtain 
+
+E git, ∇f (¯ xt)  = βE
+
+"* 
+
+− 1
+
+H
+
+> H−1
+
+X
+
+> k=0
+
+∇f (xit,k ), ∇f (¯ xt)
+
++# 
+
+= − β
+
+2 E∥ 1
+
+H
+
+> H−1
+
+X
+
+> k=0
+
+∇f (xit,k )∥2 − β
+
+2 E∥∇ f (¯ xt)∥2
+
++ β
+
+2 E
+
+"
+
+∥ 1
+
+H
+
+> H−1
+
+X
+
+> k=0
+
+(∇f (xit,k ) − ∇ f (¯ xt)) ∥2
+
+#
+
+.
+
+Using the inner-loop drift estimate from Lemma 3, 
+
+E∥xit,k − ¯xt∥2 ≤ 3
+
+
+
+1 + βL H
+
+2k
+
+E∥xit − ¯xt∥2
+
++ 3 E∥∇ f (¯ xt)∥2
+
+L2
+
+
+
+1 + βL H
+
+k
+
+− 1
+
+!2
+
++ 3 βσ 2
+
+L
+
+
+
+1 + βL H
+
+2k
+
+− 12 + βL H
+
+,
+
+22 and summing over k = 0 , . . . , H − 1, one obtains 
+
+E
+
+"H−1X
+
+> k=0
+
+∥xit,k − ¯xt∥2
+
+#
+
+≤ 3E∥xit − ¯xt∥2
+
+> H−1
+
+X
+
+> k=0
+
+
+
+1 + βL H
+
+2k
+
++ 3 E∥∇ f (¯ xt)∥2
+
+L2
+
+> H−1
+
+X
+
+> k=0
+
+"
+
+1 + βL H
+
+k
+
+− 1
+
+#2
+
++ 3 βσ 2
+
+L
+
+12 + βL HH−1X
+
+> k=0
+
+"
+
+1 + βL H
+
+2k
+
+− 1
+
+#
+
+.
+
+Let 
+
+a := 1 + βL H .
+
+Then 
+
+> H−1
+
+X
+
+> k=0
+
+a2k = a2H − 1
+
+a2 − 1 ,
+
+> H−1
+
+X
+
+> k=0
+
+(ak − 1) 2 = a2H − 1
+
+a2 − 1 − 2 aH − 1
+
+a − 1 + H, 
+
+and 
+
+> H−1
+
+X
+
+> k=0
+
+(a2k − 1) = a2H − 1
+
+a2 − 1 − H. 
+
+Therefore, 
+
+E
+
+"H−1X
+
+> k=0
+
+∥xit,k − ¯xt∥2
+
+#
+
+≤ 3 a2H − 1
+
+a2 − 1 E∥xit − ¯xt∥2
+
++ 3 E∥∇ f (¯ xt)∥2
+
+L2
+
+ a2H − 1
+
+a2 − 1 − 2 aH − 1
+
+a − 1 + H
+
+
+
++ 3 βσ 2
+
+L
+
+12 + βL H
+
+ a2H − 1
+
+a2 − 1 − H
+
+
+
+.
+
+Next, by Jensen’s inequality and L-smoothness, 
+
+E
+
+ 1
+
+H
+
+> H−1
+
+X
+
+> k=0
+
+ ∇f (xit,k ) − ∇ f (¯ xt) 2 ≤ 1
+
+H
+
+> H−1
+
+X
+
+> k=0
+
+E ∇f (xit,k ) − ∇ f (¯ xt) 2
+
+≤ L2
+
+H
+
+> H−1
+
+X
+
+> k=0
+
+E xit,k − ¯xt 
+
+> 2
+
+.
+
+Thus, 
+
+E git, ∇f (¯ xt)  ≤ − β
+
+2 E∥∇ f (¯ xt)∥2
+
++ βL 2
+
+2H
+
+> H−1
+
+X
+
+> k=0
+
+E xit,k − ¯xt 
+
+> 2
+
+.
+
+23 Substituting the previous drift-sum bound yields 
+
+E git, ∇f (¯ xt)  ≤ − β
+
+2 E∥ 1
+
+H
+
+> H−1
+
+X
+
+> k=0
+
+∇f (xit,k )∥2 − β
+
+2 E∥∇ f (¯ xt)∥2
+
++ 3βL 2
+
+2Ha2H − 1
+
+a2 − 1 E∥xit − ¯xt∥2
+
++ 3β
+
+2H
+
+ a2H − 1
+
+a2 − 1 − 2 aH − 1
+
+a − 1 + H
+
+
+
+E∥∇ f (¯ xt)∥2
+
++ 3β2Lσ 2
+
+2H
+
+12 + βL H
+
+ a2H − 1
+
+a2 − 1 − H
+
+
+
+.
+
+Since 
+
+a − 1 = βL H , a2 − 1 = βL H
+
+
+
+2 + βL H
+
+
+
+,
+
+we have 1
+
+Ha2H − 1
+
+a2 − 1 = 1
+
+βL a2H − 12 + βL H
+
+.
+
+Therefore, 
+
+E git, ∇f (¯ xt)  ≤ − β
+
+2 E∥∇ f (¯ xt)∥2 − β
+
+2 E∥ 1
+
+H
+
+> H−1
+
+X
+
+> k=0
+
+∇f (xit,k )∥2
+
++ 3L
+
+2
+
+
+
+1 + βL H
+
+2H
+
+− 12 + βL H
+
+E∥xit − ¯xt∥2
+
++ 3β
+
+2
+
+ 1
+
+βL 
+
+
+
+1 + βL H
+
+2H
+
+− 12 + βL H
+
+− 2
+
+βL 
+
+
+
+1 + βL H
+
+H
+
+− 1
+
+!
+
++ 1 
+
+ E∥∇ f (¯ xt)∥2
+
++ 3β2Lσ 2
+
+212 + βL H
+
+ 1
+
+βL 
+
+
+
+1 + βL H
+
+2H
+
+− 12 + βL H
+
+− 1
+
+ .
+
+Now assume 0 < βL ≤ 1. Then 
+
+
+
+1 + βL H
+
+H
+
+≤ eβL ,
+
+
+
+1 + βL H
+
+2H
+
+≤ e2βL ,
+
+and 
+
+2 + βL H ≥ 2.
+
+Hence 
+
+1 + βL H
+
+2H
+
+− 12 + βL H
+
+≤ e2βL − 12 ≤ βLe 2βL ≤ βLe 2.
+
+Thus, 
+
+3L
+
+2
+
+
+
+1 + βL H
+
+2H
+
+− 12 + βL H
+
+E∥xit − ¯xt∥2 ≤ 32 βL 2e2E∥xit − ¯xt∥2.
+
+Moreover, 
+
+1 + βL H
+
+k
+
+− 1
+
+!2
+
+≤  eβL − 12 ≤ β2L2e2,
+
+24 so 
+
+3β
+
+2H
+
+> H−1
+
+X
+
+> k=0
+
+"
+
+1 + βL H
+
+k
+
+− 1
+
+#2
+
+E∥∇ f (¯ xt)∥2 ≤ 32 β3L2e2E∥∇ f (¯ xt)∥2.
+
+Similarly, 
+
+1 + βL H
+
+2k
+
+− 12 + βL H
+
+≤ e2βL − 12 ≤ βLe 2,
+
+and therefore 
+
+3β2Lσ 2
+
+2H
+
+> H−1
+
+X
+
+> k=0
+
+
+
+1 + βL H
+
+2k
+
+− 12 + βL H
+
+≤ 32 β3L2e2σ2.
+
+Combining these estimates, we obtain 
+
+E git, ∇f (¯ xt)  ≤ − β
+
+2 E∥∇ f (¯ xt)∥2 + 32 β3L2e2E∥∇ f (¯ xt)∥2
+
++ 32 βL 2e2E∥xit − ¯xt∥2 + 32 β3L2e2σ2 − β
+
+2 E∥ 1
+
+H
+
+> H−1
+
+X
+
+> k=0
+
+∇f (xit,k )∥2.
+
+Equivalently, 
+
+E git, ∇f (¯ xt)  ≤ − β
+
+ 12 − 32 β2L2e2
+
+
+
+E∥∇ f (¯ xt)∥2 − β
+
+2 E∥ 1
+
+H
+
+> H−1
+
+X
+
+> k=0
+
+∇f (xit,k )∥2
+
++ 32 βL 2e2E∥xit − ¯xt∥2 + 32 β3L2e2σ2.
+
+This proves the desired bound whenever 0 < βL ≤ 1.
+
+Lemma 3 (Inner-loop drift in norm with stochastic gradients) . Assume that f is L-smooth. Let 
+
+∇F (x; ξ) be an unbiased stochastic estimator of ∇f (x), with variance bounded by σ2, i.e., 
+
+E∇F (x; ξ) = ∇f (x), E∥∇ F (x; ξ) − ∇ f (x)∥2 ≤ σ2.
+
+Suppose that the inner-loop iterates satisfy 
+
+xit,k +1 = xit,k − βH ∇F (xit,k ; ξit,k ), xit, 0 = xit.
+
+Then, for every k ∈ { 0, . . . , H },
+
+E∥xit,k − ¯xt∥2 xt] ≤ 3
+
+
+
+1 + βL H
+
+2k
+
+E∥xit − ¯xt∥2 + 3 E∥∇ f (¯ xt)∥2
+
+L2
+
+
+
+1 + βL H
+
+k
+
+− 1
+
+!2
+
++ 3 βσ 2
+
+L
+
+
+
+1 + βL H
+
+2k
+
+− 12 + βL H
+
+(35) 
+
+Proof. Let 
+
+dit,k := xit,k − ¯xt, ηit,k := ∇F (xit,k ; ξit,k ) − ∇ f (xit,k ).
+
+Then 
+
+dit,k +1 = dit,k − βH
+
+ ∇f (xit,k ) + ηit,k 
+
+.
+
+Taking norms and using the triangle inequality gives 
+
+∥dit,k +1 ∥ ≤ ∥ dit,k ∥ + βH ∥∇ f (xit,k )∥ + βH ∥ηit,k ∥.
+
+Since f is L-smooth, its gradient is L-Lipschitz. Hence 
+
+∥∇ f (xit,k )∥ ≤ ∥∇ f (¯ xt)∥ + ∥∇ f (xit,k ) − ∇ f (¯ xt)∥ ≤ ∥∇ f (¯ xt)∥ + L∥dit,k ∥.
+
+25 Therefore, 
+
+∥dit,k +1 ∥ ≤ 
+
+
+
+1 + βL H
+
+
+
+∥dit,k ∥ + βH ∥∇ f (¯ xt)∥ + βH ∥ηit,k ∥.
+
+Taking conditional expectation with respect to the randomness at step k, we obtain 
+
+∥dit,k +1 ∥ ≤ 
+
+
+
+1 + βL H
+
+
+
+∥dit,k ∥ + βH ∥∇ f (¯ xt)∥ + βH ∥ηit,k ∥.
+
+Let q = 1 + βL H , iterating this recursion from 0 to k − 1 yields 
+
+∥dit,k ∥ ≤ qk∥dit, 0∥ + βH
+
+> k−1
+
+X
+
+> j=0
+
+qj ∥∇ f (¯ xt)∥ + βH
+
+> k−1
+
+X
+
+> j=0
+
+qj ∥ηit,k ∥.
+
+Since dit, 0 = xit − ¯xt, we obtain 
+
+∥xit,k − ¯xt∥ ≤ 
+
+
+
+1 + βL H
+
+k
+
+∥xit − ¯xt∥ + βH ∥∇ f (¯ xt)∥
+
+> k−1
+
+X
+
+> j=0
+
+
+
+1 + βL H
+
+j
+
++ βH
+
+> k−1
+
+X
+
+> j=0
+
+qj ∥ηit,k ∥
+
+Finally, if L > 0, then 
+
+> k−1
+
+X
+
+> j=0
+
+
+
+1 + βL H
+
+j
+
+=
+
+
+
+1 + βL H
+
+k
+
+− 1
+
+> βL H
+
+.
+
+Therefore, 
+
+∥xit,k − ¯xt∥ ≤ 
+
+
+
+1 + βL H
+
+k
+
+∥xit − ¯xt∥ + βH ∥∇ f (¯ xt)∥
+
+
+
+1 + βL H
+
+k
+
+− 1
+
+> βL H
+
++ βH
+
+> k−1
+
+X
+
+> j=0
+
+qj ∥ηit,k ∥
+
+Consequently, 
+
+∥xit,k − ¯xt∥2 ≤ 3(1 + βL H )2k∥xit − ¯xt∥2 + 3 ∥∇ f (¯ xt)∥2
+
+L2 ((1 + βL H )k − 1) 2
+
++ 3 β2
+
+H
+
+> k−1
+
+X
+
+> j=0
+
+(1 + βL H )2j ∥ηit,j ∥2
+
+and 
+
+E∥xit,k − ¯xt∥2 ≤ 3
+
+
+
+1 + βL H
+
+2k
+
+E∥xit − ¯xt∥2 + 3 E∥∇ f (¯ xt)∥2
+
+L2
+
+
+
+1 + βL H
+
+k
+
+− 1
+
+!2
+
++ 3 β2σ2
+
+H
+
+> k−1
+
+X
+
+> j=0
+
+
+
+1 + βL H
+
+2j
+
+= 3 
+
+
+
+1 + βL H
+
+2k
+
+E∥xit − ¯xt∥2 + 3 E∥∇ f (¯ xt)∥2
+
+L2
+
+
+
+1 + βL H
+
+k
+
+− 1
+
+!2
+
++ 3 β2σ2
+
+H
+
+
+
+1 + βL H
+
+2k
+
+− 1
+
+
+
+1 + βL H
+
+2
+
+− 1= 3 
+
+
+
+1 + βL H
+
+2k
+
+E∥xit − ¯xt∥2 + 3 E∥∇ f (¯ xt)∥2
+
+L2
+
+
+
+1 + βL H
+
+k
+
+− 1
+
+!2
+
++ 3 βσ 2
+
+L
+
+
+
+1 + βL H
+
+2k
+
+− 12 + βL H
+
+.
+
+This proves the desired bound. 26 Table 4: Model configurations used in the pre-training experiments. The Q/K/V head dimension is 
+
+dmodel /n heads .
+
+Model Layers dmodel Attention heads KV heads Q/K/V head dim. Token Budget 
+
+134M 12 768 12 12 64 2.7 B 551M 16 1536 24 24 64 11 B 
+
+## B Experimental Protocol 
+
+Models. We pretrain Llama-3-style decoder-only Transformer models [ 11 ]. Table 4 reports the size-dependent architecture parameters. Both model configurations use causal attention, bf16 training, depth initialization, a context length of 2048 tokens, RoPE with θ = 10 ,000 , layer-normalization epsilon 10 −5, an FFN dimension multiplier of 1 with dimensions rounded to a multiple of 256. Flex attention is disabled in both configurations. 
+
+Data. We train on FineWeb [ 26 ]. The 134M-parameter model is trained on 2.7B tokens, and the 551M-parameter model is trained on 11B tokens, following the approximate 20-token-per-parameter allocation of Hoffmann et al. [13] . We tokenize with the LLaMA-2 tokenizer [ 32 ]provided in the Hugging Face repository togethercomputer/LLaMA-2-7B-32K , which has a 32K-token vocabulary, and pack examples into sequences of length 2048. Unless stated otherwise, all experiments use a global batch size of 2M tokens over the n workers. 
+
+Optimization. All methods use AdamW [ 21 ] for local optimization. We fix the weight decay at 0.1,set the momentum coefficients to (β1, β 2) = (0 .9, 0.95) , and tune the peak local learning rate for each method. The learning-rate schedule uses a 10% warmup phase that starts at 1% of the peak learning rate and then follows cosine decay. For DiLoCo-style methods, each worker performs H local updates before the outer step. In DiLoCo, workers compute a pseudo-gradient by All-Reduce and apply it through an outer optimizer; in GASLoC, this synchronized step is replaced by decentralized communication over the selected topology. Both DiLoCo and GASLoC use a Nesterov momentum optimizer [ 30 ] for the outer step, with learning rate and momentum tuned independently for each method. 
+
+Communication and implementation. For GASLoC-1-Peer, we enforce a non-overlapping sym-metric pairing at each synchronization step by randomly permuting the workers and pairing consecu-tive workers, so each worker communicates with exactly one peer per round. For GASLoC-2-Peer, we use the randomized procedure from section 3.2: after randomly permuting the workers, each worker communicates with its two adjacent workers in the induced ring. Experiments are conducted on clusters with 4 NVIDIA H100 GPUs per node. Intra-node communication uses NVIDIA NVLink, and inter-node communication uses InfiniBand. All methods are implemented in PyTorch using NCCL as the communication backend and launched with torchrun . For all 134M-parameter experiments, and for 551M-parameter experiments with n > 8, we simulate multiple logical workers per GPU. 
+
+Hyperparameters. We fixed AdamW weight decay and betas as described above and swept the learning rate and the outer optimizer hyperparameters. Taking into account the reduced computational cost, larger hyperparameter searches were conducted on the 134M-parameter model. Local learning rates were searched in the range 1 × 10 −3–8 × 10 −3 with a step-size of 1 × 10 −3, while outer learning rate and outer momentum were searched in {0., 4, 0.6, 0.8, 1.0} and {0.5, 0.7, 0.9}, respectively. Then, a finer search with a step size of 0.1 was carried out around the optimal values found in the first sweep. For the 551M-parameter model, we tuned the local learning rate and weight decay for DDP and DiLoCo, while for GASLoC, DAdam, and Local-DAdam the learning rate was tuned around the optimal value of baselines keeping the weight decay fixed. Meanwhile, the outer optimizer was minimally tuned around the optimal values for the smaller model. 27 w1     
+
+> w2
+> w3
+> w4
+> w5
+> w6
+> w7
+> w8
+> Round t
+> w1
+> w2
+> w3
+> w4
+> w5
+> w6
+> w7
+> w8
+> Round t+ 1
+> w1
+> w2
+> w3
+> w4
+> w5
+> w6
+> w7
+> w8
+> Round t+ 2
+
+Figure 5: Time-varying 1-Peer graph w1     
+
+> w2
+> w3
+> w4
+> w5
+> w6
+> w7
+> w8
+> Round t
+> w1
+> w2
+> w3
+> w4
+> w5
+> w6
+> w7
+> w8
+> Round t+ 1
+> w1
+> w2
+> w3
+> w4
+> w5
+> w6
+> w7
+> w8
+> Round t+ 2
+
+Figure 6: Time-varying 2-Peer graph 
+
+B.1 1-Peer and 2-Peer Topologies 
+
+At each communication round t, we construct a sparse undirected communication graph Gt = ( V, E t)
+
+where V = {1, . . . , n } is the set of workers and Et is the set of active peer-to-peer exchanges for that round. Unless otherwise stated, we assume that the underlying admissible graph is complete: every pair of workers can potentially communicate, but only a sparse subset of edges is activated at each round. To sample this subset, we first draw a random permutation of the workers and interpret it as a cycle. Each worker then selects the peer on its right or the 2 closest peers on this random cycle. Finally, we symmetrize the selections: an undirected edge {i, j } is included in Et whenever either worker i
+
+selects worker j, or worker j selects worker i.A fresh permutation is sampled at every communication round, so the active graph changes over time. This allows workers to communicate with different peers across rounds while keeping the number of active exchanges low. The same construction can be applied to arbitrary admissible topologies by restricting the possible peer selections to the edges of the underlying graph. Figures 5 and 6 show examples of 1- and 2-Peer topologies that vary from one round to the next. 
+
+## C Local-DAdam: Adapting DAdam to the Multi-Local-Step Setting 
+
+DAdam is naturally defined in the regime where communication is performed at every optimizer step. Given a row stochastic mixing matrix W for a specific communication graph, one DAdam [ 36 ] step can be written as 
+
+y(t) 
+
+> i
+
+← Optimizer in 
+
+x(t) 
+
+> i
+
+, ∇fi(x(t) 
+
+> i
+
+)
+
+
+
+, x(t+1)  
+
+> i
+
+← X
+
+> j∈N i
+
+wij x(t) 
+
+> j
+
++
+
+
+
+y(t) 
+
+> i
+
+− x(t)
+
+> i
+
+
+
+.
+
+DAdam mixes the pre-update parameters x(t) 
+
+> i
+
+and then applies the local optimizer displacement. Thus, DAdam is directly comparable to our protocol when H = 1 , where every local optimizer step is followed by communication. For H > 1, however, simply delaying the mixing operation until after a block of H local updates does not recover the original DAdam algorithm: it removes the per-step gossip operation on which DAdam is based and changes the optimization dynamics. To obtain a controlled baseline with the same communication schedule as DiLoCo [ 7] and GASLoC, we therefore define a delayed variant. Starting from x(t) 
+
+> i
+
+, worker i first performs H steps with 
+
+Optimizer in to obtain y(t,H ) 
+
+> i
+
+. It then forms a DAdam-style disagreement term using the parameters 28 Table 5: One-step Decentralized Methods. Results for the 134M-parameter model, using one local step per communication round. We compare DDP to decentralized methods GASLoC and DAdam across 8, 16, and 32 replicas.                                     
+
+> 8 replicas 16 replicas 32 replicas
+> AdamW DDP (ref.) 3.18 3.18 3.18
+> Topology GASLoC DAdam GASLoC DAdam GASLoC DAdam
+> 2-Peer 3.19 3.25 3.22 3.28 3.28 3.34 complete 3.24 3.23 3.29 3.25 3.36 3.30 1-Peer 3.20 3.25 3.24 3.29 3.31 3.37 ring 3.40 3.31 3.36 3.33 3.44 3.41
+
+Table 6: One-step Decentralized Methods. Validation loss for the 551M-parameter LLM using 8 and 16 replicas. 
+
+Method Topology Val Loss 8 replicas 16 replicas 
+
+AdamW DDP – 2.64 2.64 DAdam complete 2.70 2.70 DAdam ring 2.71 2.73 GASLoC ring 2.66 2.70 GASLoC-1-Peer complete 2.67 2.71 GASLoC-2-Peer complete 2.64 2.69 before local optimization and applies the outer update 
+
+x(t+1)  
+
+> i
+
+← Optimizer out y(t,H ) 
+
+> i
+
+,
+
+> n
+
+X
+
+> i=1
+
+wij 
+
+
+
+x(t) 
+
+> i
+
+− x(t)
+
+> j
+
+!
+
+When H = 1 and Optimizer out is SGD with fixed unit learning rate, this reduces to the usual DAdam update. For H > 1, the disagreement correction is stale with respect to the current local trajectories, because it depends only on x(t) 
+
+> j
+
+and not on the post-local states. Therefore, we interpret this method as a DAdam adaptation to the multi-step setting, rather than as the original overlapped DAdam algorithm. 
+
+## D Additional Results 
+
+We provide additional single-step results to complement the comparison in Section 4.1. Table 5 extends Table 1a for the smaller model, while Table 6 extends Table 2 for the 551M-parameter model. Across these configurations, the qualitative behavior remains consistent with the main results. GASLoC with randomized communications gives the strongest decentralized results, with the 2-Peer variant performing best overall. In particular, in the 8-replica setting, GASLoC-2-Peer can even match the reference performance for the larger model. The 1-Peer variant, instead, remains competitive, while benefiting from an even saparser communication. In contrast, DAdam does not show the same benefits from randomized communication. 
+
+## E The Role of the Outer Optimizer 
+
+The outer optimizer is a central component in GASLoC. Its role, in the decentralized setting, goes beyond local update correction: it helps reducing the communication complexity by acting as a form of communication acceleration. This makes the choice of the outer optimization method and its hyperparameters particularly important to study. In principle, replacing the communication over a complete graph, which reduces GASLoC to DiLoCo, with a randomized peer exchange could make the method more sensitive to the outer optimizer dynamics. 29 0.6 0.7 0.8 0.9          
+
+> Learning rate
+> 0.6
+> 0.7
+> 0.8
+> Momentum
+> 3.40 3.38 3.36 3.34 3.38 3.36 3.34 3.38 3.38 3.36 3.38 3.60
+> 3.35 3.40 3.45 3.50 3.55
+> Loss
+
+(a) GASLoC-2-Peer 0.6 0.7 0.8 0.9            
+
+> Learning rate
+> 0.6
+> 0.7
+> 0.8
+> Momentum
+> 3.39 3.32 3.30 3.30 3.37 3.30 3.30 3.44 3.37 3.31 3.42 3.67 3.35 3.40 3.45 3.50 3.55 3.60 3.65
+> Loss
+
+(b) GASLoC complete graph 
+
+Figure 8: Outer Optimizer Hyperparameters Sensitivity. Validation loss under different learning rates and momentum of the outer optimizer in the 8-worker setting for the 134M-parameter model. Comparing GASLoC-2-Peer to GASLoC communcating on the complete graph, both methods remain stable in similar regions of the sweep. 
+
+E.1 The Choice of the Outer Optimization 10 15 20 25 30 
+
+Number of workers 
+
+> 3.3
+> 3.4
+> 3.5
+> 3.6
+> 3.7
+> 3.8
+> 3.9
+> Val Loss
+> Nesterov SGDM SGD
+
+Figure 7: Effect of outer optimization method. Final validation loss of GASLoC-2-Peer using different outer optimizers as the number of workers increases. Momentum-based methods consistently outperform SGD, with Nesterov momentum achieving the best overall performance. We compare different outer optimizers in GASLoC-2-Peer, including vanilla SGD, SGDM and Nes-terov. The motivation behind this experiment lies in the interpretation of the outer optimizer as a communication-acceleration mechanism. Figure 7 confirms that momentum-based methods provide an advantage over plain SGD, with Nesterov momentum achieving the best validation loss. We observed the same behavior with up to 32 workers. This confirms the communication-acceleration of-fered by momentum in the decentralized setting. Al-though this trend is consistent with the observations previously reported by Douillard et al. [7] , it is im-portant to verify that these conclusions are also valid in the decentralized sparse-communication regime considered by GASLoC. 
+
+E.2 Hyperparameters Sensitivity 
+
+Communicating over a decentralized and sparse network, GASLoC-1-Peer and 2-Peer might be more sensitive to hyperparameters than a communication over a complete graph. Figure 8a shows that the potential sensitivity does not appear to be a limitation of the method. GASLoC-2-Peer remains stable over a broad region of the outer-optimizer hyperparameter space that was swept in the experiments and its best-performing region is not limited to a single configuration. Using GASLoC trained over a complete graph as a reference (Fig. 8b), we observe a comparable level of robustness, indicating that the introduction of randomized sparse communication does not substantially increase the complexity of tuning the outer optimizer. Although GASLoC-2-Peer exhibits slightly higher validation losses in the best-performing regions of the sweep, it shows lower spikes near the edges of the hyperparameter grid. 
+
+## F Compute Utilization in Bandwidth-Constrained Settings 
+
+We define the theoretical compute utilization of each method as 
+
+Tcompute 
+
+Tcompute + Tcomm 
+
+,
+
+30 10 0 10 1 10 2 10 3 10 4
+
+> Optimal bandwidth in Gbps
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Compute utilization
+> DDP DiLoCo
+> GASLoC -1-Peer
+> GASLoC -2-Peer
+
+Figure 9: Simulated compute utilization. We report theoretical compute utilization for a 70 B-parameter model as the non-straggler bandwidth varies, with one bandwidth straggler limited to 
+
+20% of that bandwidth. DDP and DiLoCo use All-Reduce communication and are therefore bot-tlenecked by the straggler. GASLoC-1-Peer and GASLoC-2-Peer use sparse communication and allow the straggler to perform fewer local steps, which increases estimated compute utilization in communication-constrained regimes. where Tcompute is the estimated time spent in pure computation and Tcomm is the estimated com-munication time. We estimate Tcompute from the model FLOP profile. The simulation assumes 16 workers, each with 8 GPUs, a theoretical FP16/BF16 peak throughput of 4.5 × 10 15 FLOPs/s per GPU, and a machine FLOP utilization of 40% . We then vary the maximum available bandwidth and introduce one bandwidth straggler whose link is limited to 20% of that bandwidth. Figure 9 reports the resulting theoretical trends for a 70 B-parameter Llama-3 model [ 11 ]. We compare DDP and DiLoCo, both implemented with All-Reduce communication, with GASLoC-1-Peer and GASLoC-2-Peer. For GASLoC, the communication-limited worker may perform fewer local steps, so that its slower communication link is partly offset by reduced local computation before synchronization. In this model, both sparse variants improve compute utilization relative to the All-Reduce baselines in bandwidth-constrained regimes. GASLoC-1-Peer exceeds 80% utilization once the non-straggler bandwidth reaches roughly 10 Gbps, while GASLoC-2-Peer exceeds this level at roughly 20 Gbps. 31 NeurIPS Paper Checklist 
+
+1. Claims 
+
+Question: Do the main claims made in the abstract and introduction accurately reflect the paper’s contributions and scope? Answer: [Yes] Justification: The abstract and introduction state the proposed method, its relationship to gossip-based communication and local steps, the homogeneous-setting convergence result, and the evaluated LLM pre-training regimes. The empirical claims are restricted to the baselines, model sizes, worker counts, and heterogeneous-bandwidth setting studied in section 4. Guidelines: • The answer [N/A] means that the abstract and introduction do not include the claims made in the paper. • The abstract and/or introduction should clearly state the claims made, including the contributions made in the paper and important assumptions and limitations. A [No] or [N/A] answer to this question will not be perceived well by the reviewers. • The claims made should match theoretical and experimental results, and reflect how much the results can be expected to generalize to other settings. • It is fine to include aspirational goals as motivation as long as it is clear that these goals are not attained by the paper. 2. Limitations 
+
+Question: Does the paper discuss the limitations of the work performed by the authors? Answer: [Yes] Justification: The paper discusses limitations including the homogeneous-objective as-sumptions in the theory, the model scales and worker counts evaluated, the use of a sim-ulated/normalized heterogeneous-bandwidth setting, and the sensitivity of decentralized methods to topology, local-step count, and optimizer tuning. Guidelines: • The answer [N/A] means that the paper has no limitation while the answer [No] means that the paper has limitations, but those are not discussed in the paper. • The authors are encouraged to create a separate “Limitations” section in their paper. • The paper should point out any strong assumptions and how robust the results are to violations of these assumptions (e.g., independence assumptions, noiseless settings, model well-specification, asymptotic approximations only holding locally). The authors should reflect on how these assumptions might be violated in practice and what the implications would be. • The authors should reflect on the scope of the claims made, e.g., if the approach was only tested on a few datasets or with a few runs. In general, empirical results often depend on implicit assumptions, which should be articulated. • The authors should reflect on the factors that influence the performance of the approach. For example, a facial recognition algorithm may perform poorly when image resolution is low or images are taken in low lighting. Or a speech-to-text system might not be used reliably to provide closed captions for online lectures because it fails to handle technical jargon. • The authors should discuss the computational efficiency of the proposed algorithms and how they scale with dataset size. • If applicable, the authors should discuss possible limitations of their approach to address problems of privacy and fairness. • While the authors might fear that complete honesty about limitations might be used by reviewers as grounds for rejection, a worse outcome might be that reviewers discover limitations that aren’t acknowledged in the paper. The authors should use their best judgment and recognize that individual actions in favor of transparency play an impor-tant role in developing norms that preserve the integrity of the community. Reviewers will be specifically instructed to not penalize honesty concerning limitations. 32 3. Theory assumptions and proofs 
+
+Question: For each theoretical result, does the paper provide the full set of assumptions and a complete (and correct) proof? Answer: [Yes] Justification: The main convergence statement explicitly states the smoothness, stochastic-gradient, initialization, step-size, and communication assumptions, and the proof is provided in Appendix A. Guidelines: • The answer [N/A] means that the paper does not include theoretical results. • All the theorems, formulas, and proofs in the paper should be numbered and cross-referenced. • All assumptions should be clearly stated or referenced in the statement of any theorems. • The proofs can either appear in the main paper or the supplemental material, but if they appear in the supplemental material, the authors are encouraged to provide a short proof sketch to provide intuition. • Inversely, any informal proof provided in the core of the paper should be complemented by formal proofs provided in appendix or supplemental material. • Theorems and Lemmas that the proof relies upon should be properly referenced. 4. Experimental result reproducibility 
+
+Question: Does the paper fully disclose all the information needed to reproduce the main ex-perimental results of the paper to the extent that it affects the main claims and/or conclusions of the paper (regardless of whether the code and data are provided or not)? Answer: [Yes] Justification: section 4 and section B specify the dataset, preprocessing/tokenization, model family and sizes, token budgets, batch size, optimizers, communication schedules, topologies, hardware, and implementation backend. The algorithmic update is given in algorithm 1, and the Local-DAdam adaptation is described separately in section B. Guidelines: • The answer [N/A] means that the paper does not include experiments. • If the paper includes experiments, a [No] answer to this question will not be perceived well by the reviewers: Making the paper reproducible is important, regardless of whether the code and data are provided or not. • If the contribution is a dataset and/or model, the authors should describe the steps taken to make their results reproducible or verifiable. • Depending on the contribution, reproducibility can be accomplished in various ways. For example, if the contribution is a novel architecture, describing the architecture fully might suffice, or if the contribution is a specific model and empirical evaluation, it may be necessary to either make it possible for others to replicate the model with the same dataset, or provide access to the model. In general. releasing code and data is often one good way to accomplish this, but reproducibility can also be provided via detailed instructions for how to replicate the results, access to a hosted model (e.g., in the case of a large language model), releasing of a model checkpoint, or other means that are appropriate to the research performed. • While NeurIPS does not require releasing code, the conference does require all submis-sions to provide some reasonable avenue for reproducibility, which may depend on the nature of the contribution. For example (a) If the contribution is primarily a new algorithm, the paper should make it clear how to reproduce that algorithm. (b) If the contribution is primarily a new model architecture, the paper should describe the architecture clearly and fully. (c) If the contribution is a new model (e.g., a large language model), then there should either be a way to access this model for reproducing the results or a way to reproduce the model (e.g., with an open-source dataset or instructions for how to construct the dataset). 33 (d) We recognize that reproducibility may be tricky in some cases, in which case authors are welcome to describe the particular way they provide for reproducibility. In the case of closed-source models, it may be that access to the model is limited in some way (e.g., to registered users), but it should be possible for other researchers to have some path to reproducing or verifying the results. 5. Open access to data and code 
+
+Question: Does the paper provide open access to the data and code, with sufficient instruc-tions to faithfully reproduce the main experimental results, as described in supplemental material? Answer: [Yes] Justification: The dataset used in the experiments is publicly available, and we will release the code accompanying the paper, including the implementation of GASLoC, the evaluated baselines, configuration files, and launch instructions. The experimental protocol in section 4 and section B specifies the dataset, preprocessing, model sizes, optimizer settings, commu-nication schedules, topologies, worker counts, and hardware setup needed to reproduce the main results. Guidelines: • The answer [N/A] means that paper does not include experiments requiring code. • Please see the NeurIPS code and data submission guidelines ( https://neurips.cc/ public/guides/CodeSubmissionPolicy ) for more details. • While we encourage the release of code and data, we understand that this might not be possible, so [No] is an acceptable answer. Papers cannot be rejected simply for not including code, unless this is central to the contribution (e.g., for a new open-source benchmark). • The instructions should contain the exact command and environment needed to run to reproduce the results. See the NeurIPS code and data submission guidelines ( https: //neurips.cc/public/guides/CodeSubmissionPolicy ) for more details. • The authors should provide instructions on data access and preparation, including how to access the raw data, preprocessed data, intermediate data, and generated data, etc. • The authors should provide scripts to reproduce all experimental results for the new proposed method and baselines. If only a subset of experiments are reproducible, they should state which ones are omitted from the script and why. • At submission time, to preserve anonymity, the authors should release anonymized versions (if applicable). • Providing as much information as possible in supplemental material (appended to the paper) is recommended, but including URLs to data and code is permitted. 6. Experimental setting/details 
+
+Question: Does the paper specify all the training and test details (e.g., data splits, hyperpa-rameters, how they were chosen, type of optimizer) necessary to understand the results? Answer: [Yes] Justification: section 4 and section B describe the FineWeb data, tokenizer, sequence length, model sizes, token budgets, global batch size, local AdamW optimizer, outer optimizer, communication frequency, worker counts, and communication topology. Guidelines: • The answer [N/A] means that the paper does not include experiments. • The experimental setting should be presented in the core of the paper to a level of detail that is necessary to appreciate the results and make sense of them. • The full details can be provided either with the code, in appendix, or as supplemental material. 7. Experiment statistical significance 
+
+Question: Does the paper report error bars suitably and correctly defined or other appropriate information about the statistical significance of the experiments? 34 Answer: [No] Justification: Following common practice in LLM pre-training, where full repeated-seed runs are often prohibitively expensive, we report single-run validation loss rather than repeated-seed error bars. To partially mitigate this limitation, we evaluate the same trends across multiple worker counts, communication topologies, local-step regimes, and model scales. Guidelines: • The answer [N/A] means that the paper does not include experiments. • The authors should answer [Yes] if the results are accompanied by error bars, confidence intervals, or statistical significance tests, at least for the experiments that support the main claims of the paper. • The factors of variability that the error bars are capturing should be clearly stated (for example, train/test split, initialization, random drawing of some parameter, or overall run with given experimental conditions). • The method for calculating the error bars should be explained (closed form formula, call to a library function, bootstrap, etc.) • The assumptions made should be given (e.g., Normally distributed errors). • It should be clear whether the error bar is the standard deviation or the standard error of the mean. • It is OK to report 1-sigma error bars, but one should state it. The authors should preferably report a 2-sigma error bar than state that they have a 96% CI, if the hypothesis of Normality of errors is not verified. • For asymmetric distributions, the authors should be careful not to show in tables or figures symmetric error bars that would yield results that are out of range (e.g., negative error rates). • If error bars are reported in tables or plots, the authors should explain in the text how they were calculated and reference the corresponding figures or tables in the text. 8. Experiments compute resources 
+
+Question: For each experiment, does the paper provide sufficient information on the com-puter resources (type of compute workers, memory, time of execution) needed to reproduce the experiments? Answer: [Yes] Justification: section B reports the training protocol like the model sizes, token budgets, worker counts, and logical-worker setup needed to estimate the compute required for each experiment. Guidelines: • The answer [N/A] means that the paper does not include experiments. • The paper should indicate the type of compute workers CPU or GPU, internal cluster, or cloud provider, including relevant memory and storage. • The paper should provide the amount of compute required for each of the individual experimental runs as well as estimate the total compute. • The paper should disclose whether the full research project required more compute than the experiments reported in the paper (e.g., preliminary or failed experiments that didn’t make it into the paper). 9. Code of ethics 
+
+Question: Does the research conducted in the paper conform, in every respect, with the NeurIPS Code of Ethics https://neurips.cc/public/EthicsGuidelines ?Answer: [Yes] Justification: The work is an algorithmic and empirical study of decentralized optimization for LLM pre-training and does not involve human subjects, private user data, deception, or deployment of a model in a real-world decision-making system. The experiments use existing research datasets and standard compute infrastructure. 35 Guidelines: • The answer [N/A] means that the authors have not reviewed the NeurIPS Code of Ethics. • If the authors answer [No], they should explain the special circumstances that require a deviation from the Code of Ethics. • The authors should make sure to preserve anonymity (e.g., if there is a special consid-eration due to laws or regulations in their jurisdiction). 10. Broader impacts 
+
+Question: Does the paper discuss both potential positive societal impacts and negative societal impacts of the work performed? Answer: [Yes] Justification: The paper discusses the positive impact of reducing communication bottle-necks, which may improve hardware utilization and make distributed pre-training more accessible. Guidelines: • The answer [N/A] means that there is no societal impact of the work performed. • If the authors answer [N/A] or [No], they should explain why their work has no societal impact or why the paper does not address societal impact. • Examples of negative societal impacts include potential malicious or unintended uses (e.g., disinformation, generating fake profiles, surveillance), fairness considerations (e.g., deployment of technologies that could make decisions that unfairly impact specific groups), privacy considerations, and security considerations. • The conference expects that many papers will be foundational research and not tied to particular applications, let alone deployments. However, if there is a direct path to any negative applications, the authors should point it out. For example, it is legitimate to point out that an improvement in the quality of generative models could be used to generate Deepfakes for disinformation. On the other hand, it is not needed to point out that a generic algorithm for optimizing neural networks could enable people to train models that generate Deepfakes faster. • The authors should consider possible harms that could arise when the technology is being used as intended and functioning correctly, harms that could arise when the technology is being used as intended but gives incorrect results, and harms following from (intentional or unintentional) misuse of the technology. • If there are negative societal impacts, the authors could also discuss possible mitigation strategies (e.g., gated release of models, providing defenses in addition to attacks, mechanisms for monitoring misuse, mechanisms to monitor how a system learns from feedback over time, improving the efficiency and accessibility of ML). 11. Safeguards 
+
+Question: Does the paper describe safeguards that have been put in place for responsible release of data or models that have a high risk for misuse (e.g., pre-trained language models, image generators, or scraped datasets)? Answer: [N/A] Justification: The paper does not release a new pre-trained language model, image generator, or scraped dataset. Guidelines: • The answer [N/A] means that the paper poses no such risks. • Released models that have a high risk for misuse or dual-use should be released with necessary safeguards to allow for controlled use of the model, for example by requiring that users adhere to usage guidelines or restrictions to access the model or implementing safety filters. • Datasets that have been scraped from the Internet could pose safety risks. The authors should describe how they avoided releasing unsafe images. 36 • We recognize that providing effective safeguards is challenging, and many papers do not require this, but we encourage authors to take this into account and make a best faith effort. 12. Licenses for existing assets 
+
+Question: Are the creators or original owners of assets (e.g., code, data, models), used in the paper, properly credited and are the license and terms of use explicitly mentioned and properly respected? Answer: [Yes] Justification: The paper cites the existing datasets, tokenizer/model references, software frameworks, and baseline methods used in the experiments, and the appendix states the relevant licenses and terms of use for these assets. Guidelines: • The answer [N/A] means that the paper does not use existing assets. • The authors should cite the original paper that produced the code package or dataset. • The authors should state which version of the asset is used and, if possible, include a URL. • The name of the license (e.g., CC-BY 4.0) should be included for each asset. • For scraped data from a particular source (e.g., website), the copyright and terms of service of that source should be provided. • If assets are released, the license, copyright information, and terms of use in the package should be provided. For popular datasets, paperswithcode.com/datasets 
+
+has curated licenses for some datasets. Their licensing guide can help determine the license of a dataset. • For existing datasets that are re-packaged, both the original license and the license of the derived asset (if it has changed) should be provided. • If this information is not available online, the authors are encouraged to reach out to the asset’s creators. 13. New assets 
+
+Question: Are new assets introduced in the paper well documented and is the documentation provided alongside the assets? Answer: [Yes] Justification: The paper introduces and will release code for GASLoC as a new research artifact. The released repository will include documentation, configuration files, and in-structions for reproducing the main experiments, including the communication topologies, local-step schedules, outer optimizer settings, and baseline implementations used in the paper. Guidelines: • The answer [N/A] means that the paper does not release new assets. • Researchers should communicate the details of the dataset/code/model as part of their submissions via structured templates. This includes details about training, license, limitations, etc. • The paper should discuss whether and how consent was obtained from people whose asset is used. • At submission time, remember to anonymize your assets (if applicable). You can either create an anonymized URL or include an anonymized zip file. 14. Crowdsourcing and research with human subjects 
+
+Question: For crowdsourcing experiments and research with human subjects, does the paper include the full text of instructions given to participants and screenshots, if applicable, as well as details about compensation (if any)? Answer: [N/A] Justification: The paper does not involve crowdsourcing, user studies, annotation tasks, or other research with human subjects. 37 Guidelines: • The answer [N/A] means that the paper does not involve crowdsourcing nor research with human subjects. • Including this information in the supplemental material is fine, but if the main contribu-tion of the paper involves human subjects, then as much detail as possible should be included in the main paper. • According to the NeurIPS Code of Ethics, workers involved in data collection, curation, or other labor should be paid at least the minimum wage in the country of the data collector. 15. Institutional review board (IRB) approvals or equivalent for research with human subjects 
+
+Question: Does the paper describe potential risks incurred by study participants, whether such risks were disclosed to the subjects, and whether Institutional Review Board (IRB) approvals (or an equivalent approval/review based on the requirements of your country or institution) were obtained? Answer: [N/A] Justification: The paper does not involve human subjects, crowdsourced participants, or collection of data from study participants, so IRB approval or equivalent human-subjects review is not applicable. Guidelines: • The answer [N/A] means that the paper does not involve crowdsourcing nor research with human subjects. • Depending on the country in which research is conducted, IRB approval (or equivalent) may be required for any human subjects research. If you obtained IRB approval, you should clearly state this in the paper. • We recognize that the procedures for this may vary significantly between institutions and locations, and we expect authors to adhere to the NeurIPS Code of Ethics and the guidelines for their institution. • For initial submissions, do not include any information that would break anonymity (if applicable), such as the institution conducting the review. 16. Declaration of LLM usage 
+
+Question: Does the paper describe the usage of LLMs if it is an important, original, or non-standard component of the core methods in this research? Note that if the LLM is used only for writing, editing, or formatting purposes and does not impact the core methodology, scientific rigor, or originality of the research, declaration is not required. Answer: [N/A] Justification: LLMs are the model class studied in the experiments, but no external LLM is used as an important, original, or non-standard component of the proposed method. Guidelines: • The answer [N/A] means that the core method development in this research does not involve LLMs as any important, original, or non-standard components. • Please refer to our LLM policy in the NeurIPS handbook for what should or should not be described. 38
