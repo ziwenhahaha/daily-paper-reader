@@ -1,0 +1,2149 @@
+Title: Proximal Policy Optimization for Amortized Discrete Sampling
+
+URL Source: https://arxiv.org/pdf/2606.15793v1
+
+Published Time: Tue, 16 Jun 2026 01:14:00 GMT
+
+Number of Pages: 28
+
+Markdown Content:
+# Proximal Policy Optimization for Amortized Discrete Sampling 
+
+Anna Zykova-Myzina ∗
+
+HSE University 
+
+azykova.myzina@gmail.com 
+
+Timofei Gritsaev ∗
+
+Constructor University 
+
+tgritsaev@gmail.com 
+
+Daniil Tiapkin †
+
+CMAP, CNRS, École polytechnique, IPP 
+
+daniil.tiapkin@polytechnique.edu 
+
+Nikita Morozov †
+
+HSE University 
+
+nvmorozov@hse.ru 
+
+Abstract 
+
+This paper explores policy gradient algorithms for training stochastic policies to sample from structured discrete probability distributions under the Generative Flow Network (GFlowNet) framework. Building on extensive theoretical connections between GFlowNets and entropy-regularized reinforcement learning, we derive equivalents of standard policy gradient algorithms for training GFlowNets, as well as experimentally explore their various methodological aspects, including baseline training and advantage estimation. Most importantly, our work is the first to derive and successfully apply proximal policy optimization to GFlowNets, showing its improved convergence speed and data efficiency compared to standard GFlowNet training objectives on benchmarks ranging from synthetic energies to molecular graph generation. 
+
+1 Introduction 
+
+In this paper, we consider a task of sampling from a probability distribution over a finite discrete space X with probability mass function p(x) = R(x)/Z, where R : X → R>0 is a positive reward function and Z = P 
+
+> x∈X
+
+R(x) is an unknown normalizing constant. The task arises in many domains, including statistical physics [ 32 , 45 ], bayesian statistics [ 22 , 11 ], computational biology [ 46 , 8] and natural language processing [ 12 , 25 ]. Generative Flow Networks (GFlowNets, [ 2]) are designed to solve this task when the space of interest X has a compositional structure: any object x can be sequentially constructed from "building blocks". This construction process induces a directed acyclic graph (DAG) environment, and GFlowNets train a stochastic policy to navigate it in order to match the distribution of interest p(x) over the terminal states. A line of work [ 42 , 7] uncovered deep theoretical connections between GFlowNets and entropy-regularized reinforcement learning [ 15 , 34 ], showing that in essence, GFlowNet framework utilizes reinforcement learning as a tool to train the policy for sampling. These works proved that, if intermediate rewards are appropriately defined in the DAG environment, the optimal policy in the entropy-regularized RL task coincides with the sampling policy GFlowNets aim to recover. Moreover, it was shown that existing GFlowNet training algorithms like Trajectory Balance [ 23 , TB], Detailed Balance [ 3, DB] and Subtrajectory Balance [ 21 , SubTB] can be viewed as variations of value-based RL algorithms SoftDQN [ 15 ] and PCL [ 27 ]. Most notably, this perspective showed that a large variety of existing RL algorithms can be directly applied to train policies for solving sampling tasks. GFlowNet training has been dominated by value-based objectives [ 3 , 23 ]. Policy gradient methods such as Proximal Policy Optimization (PPO, Schulman et al. 37 ) remain comparatively underexplored  
+
+> ∗Equal contribution. †Equal senior authorship. Preprint 2026.
+> arXiv:2606.15793v1 [cs.LG] 14 Jun 2026
+
+for sampling, despite being the dominant approach to large-scale RL post-training of language models [ 31 , 14 , 47 ] and diffusion models [ 4, 9], where they have proven to scale to large models and difficult problems. Beyond this empirical track record, policy gradient methods differ from value-based GFlowNet objectives fundamentally: rather than learning a globally consistent flow or partition function whose fixed point matches the target distribution, they iteratively improve the current policy using estimates of its own value. This distinction matters in practice. TB must jointly estimate the log-partition function log Z , and training is inefficient as long as this estimate is inaccurate [ 24 ] — a significant obstacle in large-scale problems where the log Z estimation poses a significant challenge itself. DB learns a flow function at every state and suffers from credit assignment difficulties over long trajectories [ 23 ]. Policy gradient methods sidestep such over-reliance on bootstrapping: the objective they need is the expected return of the current policy, which can be estimated directly from rollouts, without requiring any globally consistent object (partition function or flow) that must be accurate across the whole DAG, and they enable an effective bias-variance trade-off. Existing work on policy gradients for GFlowNets [ 29 ] adopts a reward formulation in which the per-step reward depends on the current forward policy, making the reward function itself non-stationary. This complicates theoretical understanding and, in particular, obstructs a clean derivation of multi-update methods such as PPO. In contrast, our work studies policy gradient algorithms within the theoretical framework of [ 42 ], starting from the soft policy improvement theorem [ 15 , 6] and culminating in proposing a variant of proximal policy optimization [ 37 ] as an approximate version of conservative policy iteration [ 18 ] for training GFlowNets, as well as exploring various methodological aspects. We highlight our main contributions: 1. We derive standard policy gradient objectives for training discrete samplers with Entropy-Regularized RL under the theoretical framework of [ 42 ]. We experimentally study various design choices related to policy gradient training, including variance reduction with value base-lines and advantage estimation [ 36 ], showing their crucial role in stable and efficient training of GFlowNets. 2. We derive Ent-PPO, a variant of PPO adapted to the soft-RL formulation of GFlowNet sampling. The derivation makes explicit two ingredients that any principled application of PPO to GFlowNet sampling must include, both of which were absent from the original attempt of [ 2]: the intermediate per-step rewards r(st, s t+1 ) = log PB(st | st+1 ) identified by [ 42 ], which make the soft-RL objective equivalent to the sampling problem; and the entropy regularization required by that equivalence, which in our derivation combines with an importance-weighted cross-entropy against the behavior policy to form an analytic KL trust region, replacing the heuristic entropy bonus of standard PPO. Without these corrections, PPO targets the wrong objective: with terminal rewards alone and no entropy term, its optimum is arg max x R(x) rather than the sampling target 
+
+R(x)/Z. We confirm this empirically and show that Ent-PPO improves over both naive PPO and the established off-policy GFlowNet objectives [23, 3, 21] across a range of benchmarks. Source code: github.com/tgritsaev/ent-ppo. 
+
+2 Background 
+
+2.1 Reinforcement Learning and Policy Gradients 
+
+This subsection collects the RL background needed for the methodology: the Markov decision process, value functions, entropy-regularized RL, soft policy improvement, and the two policy gradient algorithms we adapt — VPG and PPO. 
+
+Markov decision process. The basic object of RL is a Markov decision process (MDP), specified by a tuple M = ( S, A, P, r, γ, s init ), where S and A are finite state and action spaces, P is a Markovian transition kernel, r : S × A → R is a bounded reward, γ ∈ [0 , 1] is a discount factor, and sinit ∈ S is a fixed initial state. Each state s has a feasible action set As ⊆ A . A (Markovian) policy assigns to each s a distribution π(· | s) ∈ ∆( As). In deterministic MDPs — including the GFlowNet setting of Section 2.2 — every action is identified with its successor state, in which case we write r(s, s ′) and 
+
+π(s′ | s) interchangeably. For episodic problems we adopt the convention of an absorbing terminal state with zero reward, so all returns considered below are finite even when γ = 1 .2Value functions. The performance of a policy π is measured by the (soft) value 
+
+V πα (s) ≜ Eπ
+
+hP∞ 
+
+> t=0
+
+γt r(st, a t) + αH(π(· | st))  s0 = s
+
+i
+
+, (1) where α ≥ 0 controls entropy regularization [ 28 , 10 ]: α > 0 gives the entropy-regularized case, 
+
+α = 0 recovers classical RL. The associated Q-function and advantage: 
+
+Qπα(s, a ) ≜ r(s, a ) + γEs′∼P( s,a )[V πα (s′)] Aπα(s, a ) ≜ Qπα(s, a ) − V πα (s) − α log π(a | s), (2) where the advantage definition follows [ 6, Definition 5] and is normalized so that Ea∼π [Aπα(s, a )] = 0 .Using Ea∼π [− log π(a | st)] = H(π(· | st)) , the soft value also admits the sample-path form 
+
+V πα (s) = Eπ
+
+ P  
+
+> t
+
+γt(r(st, a t) − α log π(at | st)) | s0 = s, used in the appendix derivations. We write Jα(π) ≜ V πα (sinit ). A (soft-) optimal policy π⋆α maximizes V πα (s) at every s.
+
+(Soft) policy improvement. Given any πold , the policy 
+
+πnew (· | s) ∈ arg max π(·| s)∈∆( As)Ea∼π(·| s)[Qπold  
+
+> α
+
+(s, a )] + α H(π(· | s)) (3) satisfies V πnew  
+
+> α
+
+(s) ≥ V πold  
+
+> α
+
+(s) for every s. At α = 0 this is the classical greedy improvement theorem [18]; at α > 0 it is its soft analogue [6, Section 5]. Denote the right-hand side of (3) by Gπold  
+
+> α
+
+(π; s).
+
+Vanilla Policy Gradient. Policy gradient methods [ 44 , 43 , 40 ] parameterize the policy πθ and directly optimize Jα(πθ ) by stochastic gradient ascent. For an episodic trajectory τ = ( s0, a 0, . . . , a T −1, s T )
+
+of random length T , the policy gradient theorem yields 
+
+∇θ Jα(πθ ) = Eτ ∼πθ
+
+hPT −1 
+
+> t=0
+
+∇θ log πθ (at | st) Aπθ 
+
+> α
+
+(st, a t)
+
+i
+
+, (4) where Aπθ 
+
+> α
+
+is the soft advantage from Equation (2). The advantage admits multiple estimators with different bias-variance trade-offs, which we study in Section 4.1. 
+
+Proximal Policy Optimization. PPO [ 37 ] improves on Vanilla Policy Gradient (VPG) with markedly better stability and sample efficiency. Inspired by the same principles as Trust-Region Policy Optimization [ 35 , TRPO], it introduces two modifications absent in VPG: a clipping mechanism that stabilizes updates, and importance sampling, which enables multiple off-policy updates on freshly sampled rollouts. Together, these yield the following objective: 
+
+LPPO (θ; πold ) ≜ Eτ ∼πold 
+
+hPT −1 
+
+> t=0
+
+PPOClip  ρt(θ), A πold 
+
+> t
+
+i
+
+, (5) where PPOClip( ρ, A ) ≜ min  ρA, clip( ρ, 1−ε, 1+ ε) A, ρt(θ) ≜ πθ (at | st)/π old (at | st), and 
+
+ε > 0 is a small constant. We include a detailed discussion of PPO in Section A for further clarification. 
+
+2.2 Generative Flow Networks as Soft RL 
+
+In this section, we introduce GFlowNets and recall their equivalence with entropy-regularized RL at 
+
+α = γ = 1 [42, 7]. For detailed derivations of the GFlowNet objects, see [3, 23]. 
+
+Directed acyclic graphs. The generation process in GFlowNets is modelled as a sequence of constructive actions: we begin with an "empty" state and add a new component at each step. Formally, this is described by a finite directed acyclic graph (DAG) G = ( S, E), where S is a state space and 
+
+E ⊆ S × S is a set of edges. For each state s ∈ S , the set of actions As consists of all possible next states: s′ ∈ A s ⇔ s → s′ ∈ E . Each action corresponds to attaching a new component to the object represented by s, producing a new object s′. When s′ ∈ A s, we call s′ a child of s and s a parent of 
+
+s′. A designated initial state sinit ∈ S represents the "empty" object and is the unique state with no incoming edges. Every other state is reachable from sinit , and the set of terminal states, those with no outgoing edges, coincides with the space of interest X .
+
+Markovian flows. GFlowNets introduce state flows F(s) and edge flows F(s → s′). The training goal is to match terminal flows to rewards, F(x) = R(x) for x ∈ X ; a correct flow then satisfies 
+
+F(sinit ) = Z and induces the target distribution R(x)/Z. The associated forward and backward policies are PF(s′ | s) = F(s→s′) 
+
+> F(s)
+
+and PB(s | s′) = F(s→s′) 
+
+> F(s′)
+
+, where F(s) denotes the total outgoing flow at nonterminal states and the total incoming flow at noninitial states. Thus PF constructs objects 3Table 1: Notation map from GFlowNets to entropy-regularized RL. α = 1 , γ = 1 . π⋆α=1 stands for the optimal regularized policy. For detailed derivation, see [42, Appendix B].                              
+
+> GFlowNets PF(st+1 |st;θ)log PB(st|st+1 )log R(st)log Z log F(st)log F(st→st+1 )
+> Soft RL πθ(st+1 |st)r(st, s t+1 )r(st, s f)Vπ⋆
+> α=1 (sinit )Vπ⋆
+> α=1 (st)Qπ⋆
+> α=1 (st, s t+1 )
+
+from sinit , while PB decomposes trajectories in reverse. Equivalently, a Markovian flow is determined by either (Z , PF) or (R, PB).
+
+Training a GFlowNet. Given the reward R, standard GFlowNet objectives train a forward policy 
+
+PF(· | · , θ ), together with auxiliary quantities such as a state flow Fθ and, optionally, a backward policy PB, by enforcing flow consistency over the DAG. A unifying objective is Subtrajectory Balance (SubTB, Madan et al. 21), which applies to partial trajectories τ = ( sm, . . . , s n):
+
+LSubTB (τ ) = (log( Fθ (sm) Qn−1 
+
+> t=m
+
+PF(st+1 | st, θ )) − log( Fθ (sn) Qn−1 
+
+> t=m
+
+PB(st | st+1 , θ ))) 2, (6) with Fθ (x) = R(x) at terminal states. DB is the one-step special case n = m + 1 , while TB is the complete-trajectory special case sm = sinit , sn = x ∈ X , with Fθ (sinit ) identified with Zθ . SubTB scheme trains on a weighted combination of subtrajectory losses and, in the limits, recovers average DB and TB. We use DB, TB, and SubTB as GFlowNet baselines in Section 5. 
+
+Forward policy learning as a soft RL problem. [42 ] show that GFlowNet training admits an equivalent entropy-regularized RL formulation when the backward policy PB is fixed. On the same DAG G, define an episodic MDP whose action at state st is the choice of a child st+1 ∈ A st .Since each action is identified with its successor, we write st+1 in place of at, so the policy reads 
+
+πθ (st+1 | st). Identify the forward policy with the agent’s policy, πθ (st+1 | st) ≡ P F(st+1 | st, θ ).The per-step reward is defined as 
+
+r(st, s t+1 ) = 
+
+
+
+log PB(st | st+1 ), st /∈ X ∪ { sf },
+
+log R(st), st ∈ X ,
+
+0, st = sf ,
+
+(7) where sf is an absorbing terminal state appended to the DAG. The absorbing state is a standard technical device that extends each terminated GFlowNet trajectory to a varying-horizon one without altering its return. Crucially, once PB is fixed, the reward (7) is itself fixed and does not depend on the forward policy. This is in contrast to [29], where the reward depends on the forward policy. At γ = 1 and α = 1 , the soft-optimal policy under this formulation induces the target distribution 
+
+R(x)/Z over terminals, so the solution to the entropy-regularized RL objective coincides with the solution to the sampling problem. To show this, let PB(τ ) = 1Z R(sT ) QT −1 
+
+> t=0
+
+PB(st | st+1 ) be the backward-induced target distribution over complete trajectories. The reverse KL decomposes as [ 42 , Proposition 1]: KL ( PF ∥ P B) = −V πθ
+
+> α=1
+
+(sinit ) + log Z . Hence, minimizing the reverse KL is equivalent to maximizing the soft value V πθ
+
+> α=1
+
+(sinit ). At optimum, V π⋆
+
+> α=1
+
+(sinit ) = log Z , and the soft-optimal policy π⋆α=1 induces the terminal distribution P(x) ∝ R (x). The dictionary of the two viewpoints is given in Table 1. 
+
+Backward policy. A unique feature of GFlowNets that distinguishes them from pure soft RL is the ability to learn the backward policy jointly with the forward policy, which often leads to faster convergence [ 23 , 13 ]. From an RL perspective, this is unusual, since changing PB changes the reward (7) itself (see [13] for analysis). 
+
+3 Related work 
+
+The original GFlowNet paper [ 2] briefly experimented with PPO as a forward-policy training method but reported negative results. Two ingredients were missing. First, the intermediate per-step rewards 
+
+log PB(st | st+1 ), identified by [ 42 ] as necessary to align the soft-RL optimum with the sampling target, were absent — their formulation provides only the terminal log R(x), reducing the problem to standard RL with a sparse reward. Second, the entropy regularization required by the soft-RL equivalence was not included. The combination of these omissions makes the optimum of their objective arg max x R(x) rather than R(x)/Z, which is consistent with the mode-collapse behavior 4they reported. Section 5 confirms this empirically by showing that even with the correct intermediate rewards (Equation (7)), removing the entropy term alone causes naive PPO to collapse, particularly with multiple update epochs. [ 24 ] draw a formal connection between GFlowNets and variational inference, showing that the ex-pected on-policy gradient of TB with respect to the parameters of PF coincides with the REINFORCE gradient of the reverse KL, KL( PF ∥ P B). In our soft-RL terminology, this estimator is the simplest policy gradient (Section 4.1) with a scalar baseline: the trajectory-level coefficient they multiply with ∇θ log PF(τ ) equals (up to sign) the soft return P 
+
+> t
+
+gt, and the running-average control variate they subtract is shown to follow the same update rule as the learned log Z parameter in TB — giving a clean interpretation of log Z as a constant baseline for the simplest gradient. They do not study reward-to-go, state-dependent baselines, or advantage estimation, which we show in Section 4.1 substantially improve performance. The closest prior work is [ 29 ], which applies VPG to GFlowNet training; they do not extend to PPO, but study TRPO, which we include in our experiments. They adopt a different reward specification: the intermediate reward (for transitions to non-terminal states) is log PF 
+
+> PB
+
+, whereas we use log PB and include the entropy term separately. Their choice makes the reward non-stationary — it changes as 
+
+PF is updated — which complicates theoretical understanding and obstructs the derivation of trust-region methods such as PPO. Building on this framework, [ 30 ] propose a SubTB-based procedure for training value functions used in policy-based algorithms. Their procedure is complementary to ours: it could be used to train the value function that we use in gradient estimates in Section 4.1. We include it in our variance-reduction experiments in Section 5.2 alongside standard RL variance reduction techniques [36]. 
+
+4 Methodology 
+
+This section starts from VPG and discusses techniques from the RL and GFlowNets literature that improve policy-gradient estimation [ 40 , 36 , 30 ]. We include the derivations of the subsequent variance reduction approaches only for the sake of completeness in Section E. These techniques are well-known in RL literature and can be found in [40, 36, 43]. Throughout, we specialize to the GFlowNet regime α = γ = 1 . To keep formulas light, we write 
+
+˜V π := V πα=1 , ˜Qπ := Qπα=1 , ˜Aπ := Aπα=1 , and ˜J(π) := ˜V π (sinit ) for the corresponding soft return. 
+
+4.1 Variance reduction in Vanilla Policy Gradient 
+
+VPG samples a batch of trajectories from the current policy, estimates the policy gradient via Equa-tion (4), and takes a stochastic gradient ascent step. The full derivation is given in Section E.1; the resulting identity takes the standard form 
+
+∇θ ˜J(πθ ) = Eπθ
+
+hPT −1 
+
+> t=0
+
+∇θ log πθ (st+1 | st) Ψ t
+
+i
+
+, (8) where different choices of Ψt yield different unbiased estimators of the gradient with different variance. In implementation, Ψt is detached from the computation graph; the score-function identity guarantees that gradients flowing through Ψt vanish in expectation. We now describe five estimators in order of conceptual development, each building on the previous: the simplest policy gradient, reward-to-go, reward-to-go with a learned value baseline, Generalized Advantage Estimation (GAE), and GAE with Subtrajectory Evaluation Balance [ 30 ]. Their empirical ranking is given in Section 5. 
+
+Simplest policy gradient. The simplest estimator uses the full-trajectory soft return, which is the same for every gradient term (i.e., does not depend on t): 
+
+Ψt = PT −1 
+
+> k=0
+
+gk, gk = r(sk, s k+1 ) − log πθ (sk+1 | sk), (9) where gk is the one-step soft return. Substituting into Equation (8) gives an unbiased estimator of the policy gradient (see Section E.1), but with high variance. 
+
+Reward-to-go. A lower-variance estimator follows from the observation that rewards obtained before step t do not causally depend on the action at step t and contribute zero in expectation to the corresponding gradient term (the derivation in Section E.2). Dropping them gives the reward-to-go :
+
+Ψt = ˆRt = PT −1 
+
+> k=t
+
+gk. (10) 5This estimator is unbiased and has lower variance than the simplest gradient. All subsequent estimators build on reward-to-go, which empirically dominates the simplest form. This finding is consistent with the RL literature. 
+
+Learning the baseline function. Subtracting any function b(st) that depends only on the state from the return preserves unbiasedness, since Est+1 [∇θ log πθ (st+1 | st) b(st)] = 0 (see Section E.3). Such a b is called a baseline .The standard choice is the on-policy soft value V πθ (st), the expected soft return from st under πθ .Subtracting it from ˆRt removes the trajectory-level component shared across actions and substantially reduces gradient variance. Since V πθ is unknown, we approximate it with a neural network Vφ(st),trained alongside the policy to track the value of the current policy. This gives the advantage estimator 
+
+Ψt = ˆAt = ˆRt − Vφ(st). (11) We train Vφ by mean-squared-error regression onto the empirical soft return ˆRt = PT −1 
+
+> k=t
+
+gk, taking a few gradient steps per iteration (see Algorithm 1, line 7). Each iteration runs E epochs of stochastic gradient descent over the rollout batch, with each epoch splitting the batch into S mini-batches. E and 
+
+S are hyperparameters we ablate in Section 5.2. We use a separate neural network for Vφ, following standard RL practice. 
+
+Generalized Advantage Estimation. GAE [ 36 ] forms the advantage as an exponentially weighted sum of k-step soft TD residuals. Specialised to γ = 1 , the soft TD residual is 
+
+δt = gt + Vφ(st+1 ) − Vφ(st), (12) with Vφ(sT ) := 0 at the absorbing terminal state. The GAE advantage estimator is 
+
+ˆAt = PT −1−tk=0 λk δt+k, λ ∈ [0 , 1] . (13) The parameter λ trades off bias and variance asymmetrically: λ = 0 collapses to the one-step TD residual, which is low-variance but biased whenever Vφ̸ = ˜V πθ , while λ = 1 recovers reward-to-go with baseline, unbiased for any Vφ but with full Monte-Carlo variance. Intermediate values interpolate. The choice of λ has a significant effect on convergence speed in our experiments (see Section 5). When training with GAE, we replace the Monte-Carlo target for Vφ with the bootstrapped target 
+
+ˆV tgt  
+
+> t
+
+= sg[ ˆAt + Vφ(st)] , where sg denotes the stop-gradient operator. This keeps the value-function target consistent with the bias–variance trade-off that λ selects. All log-probabilities entering the targets ˆRt and ˆV tgt  
+
+> t
+
+are evaluated at the rollout-time policy and held fixed across update epochs. 
+
+Subtrajectory Evaluation Balance GAE. [30 ] replace the bootstrapped Monte-Carlo regression target for Vφ with a balance-based objective inspired by Sub-TB [ 21 ]. They observe that, for a fixed 
+
+πθ , the true soft value ˜V πθ (st) is uniquely characterised by the subtrajectory evaluation balance 
+
+(Sub-EB) condition: for all i < j ,
+
+EPF (τi:j )[log PF (τi:j | si) + Vφ(si)] = EPF (τi:j )[log PB (τi:j | sj ) + Vφ(sj )] , (14) with the boundary condition exp Vφ(sT ) := R(x) at terminal states. The corresponding training loss is a weighted sum of squared log-ratio residuals over all subtrajectories of a rollout, 
+
+LV (φ) = EPF (τ )
+
+hP 
+
+> i<j
+
+wj−i
+
+ δV (τi:j ; φ)2i
+
+, δV (τi:j ; φ) = log PF (τi:j |si) exp Vφ(si)      
+
+> PB(τi:j|sj) exp Vφ(sj)
+
+, (15) with θ frozen during the critic update. Compared to the bootstrapped MSE target of Equation (11), the Sub-EB loss has two distinguishing features: residuals are formed at the subtrajectory level rather than per edge, and Vφ(st) receives gradient signal from subtrajectories that both start at and end at st,rather than only those starting at st. We include SubEB-GAE as a baseline in Section 5. In contrast to other variance reduction schemes, this arises from GFlowNet literature, not RL. However, it also may be viewed though RL lens as a optimization of a sum of TD( k)-style estimates, whereas GAE plays a role of a single TD( λ)-style estimator [36]. 
+
+4.2 Entropic Proximal Policy Optimization 
+
+Standard PPO maximizes expected return with a hand-tuned entropy bonus. Even with the GFlowNet sampling reward of Equation (7), this objective ignores the entropy term required by the soft-RL equivalence (Section 2.2): its optimum concentrates on arg max x R(x) rather than sampling 6from R/Z [ 2]. We now derive a variant of PPO that maximizes the soft return directly, which we call Entropic PPO (Ent-PPO). The construction follows the same three steps as for standard PPO (Section A), with the per-state PI operator replaced by its soft analogue (3) ; a new feature is that a KL trust region emerges from soft PI rather than being imposed on top. 
+
+Soft policy improvement. At α = 1 , the soft PI operator (3) returns at every state s the maximizer of Gπold 
+
+> α=1
+
+(π; s) = Ea∼π(·| s)[ ˜Qπold (s, a )] + H(π(· | s)) . Aggregating along trajectories drawn from 
+
+πold yields the parametric surrogate, soft analogue of (21): 
+
+Lsoft (θ; πold ) ≜ Eτ ∼πold 
+
+hPT −1 
+
+> t=0
+
+Gπold 
+
+> α=1
+
+(πθ ; st)
+
+i
+
+. (16) 
+
+KL trust region from the soft advantage. Using the soft-advantage identity ˜Qπold = ˜Aπold + ˜V πold +log πold at α = 1 (rearranging Equation (2)) and dropping the θ-independent baseline ˜V πold (st), the per-step integrand becomes 
+
+Gπold 
+
+> α=1
+
+(πθ ; st) c
+
+= Es′∼πθ (·| st)
+
+ ˜Aπold (st, s ′) + log πold (s′ | st) + H(πθ (· | st)) , (17) where c
+
+= denotes equality up to a θ-independent constant. The cross-entropy and entropy combine into a single KL, 
+
+Es′∼πθ
+
+ log πold (s′ | st) + H(πθ (· | st)) = −KL  πθ (· | st) ∥ πold (· | st) (18) so the integrand reduces to Eπθ [ ˜Aπold (st, s ′)] −KL( πθ (· | st) ∥ πold (· | st)) . The KL is intrinsic to soft PI: it is the analytic, two-sided trust region against the behavior policy that soft policy improvement builds in for free, the same role that clipping plays in standard PPO. 
+
+Importance-weighted, clipped surrogate. We importance-weight the advantage term as in (22) ; the KL is computed analytically and requires no variance control. This yields the unclipped Ent-PPO surrogate 
+
+˜Lsoft (θ; πold ) ≜ Eτ ∼πold 
+
+hPT −1 
+
+> t=0
+
+ρt(θ) ˜Aπold  
+
+> t
+
+− KL  πθ (· | st) ∥ πold (· | st)i
+
+, (19) with ˜Aπold  
+
+> t
+
+≜ ˜Aπold (st, s t+1 ). The same trust-region rationale that motivates clipping in (23) applies to ρt here, on top of the analytic KL. The final Ent-PPO objective is 
+
+LEnt -PPO (θ) ≜ Eτ ∼πold 
+
+hPT −1 
+
+> t=0
+
+ℓEnt  
+
+> t
+
+(θ)
+
+i
+
+, (20) where the per-step loss combines the clipped advantage with the KL penalty: ℓEnt  
+
+> t
+
+(θ) ≜
+
+PPOClip( ρt(θ), ˜Aπold  
+
+> t
+
+) − KL( πθ (· | st) ∥ πold (· | st)) . We also refer to Section F for a more explicit TRPO-style derivation [18, 35]. 
+
+Comparison to standard PPO. PPO maximizes EPPOClip( ρt(θ), A t) + c2 H(πθ (· | st)) , with 
+
+At the standard (non-soft) advantage and c2 ≥ 0 a free exploration hyperparameter. Ent-PPO differs in three coupled ways: the advantage is soft; the entropy coefficient is fixed at α = 1 by the soft-RL equivalence rather than left as a free c2; and the entropy is paired with a cross-entropy against πold , the two combining into a KL penalty. Decomposing KL( πθ ∥ πold ) = −H (πθ ) − Eπθ
+
+ log πold 
+
+ makes the structure transparent: a fixed-coefficient entropy bonus (the principled analogue of standard PPO’s heuristic c2H) plus a cross-entropy that pulls πθ toward πold , the analytic counterpart of what clipping enforces stochastically. We show empirically in Section 5 that the absence of these corrections in standard PPO produces a biased policy, particularly with multiple update epochs per batch. 
+
+5 Experiments 
+
+5.1 Environments and evaluation 
+
+We use a standard range of environments and metrics in our experiments. We have a set of smaller environments: Hypergrid [ 2 ] and sequence-based environments TFBind8 and String QM9 [ 39 ]. For these problems, we use the Total Variation (TV) distance between the sampling model and the ground truth distribution. For ablation studies, we use Area Under the TV Curve (AUC) as a marginal metric measuring both the convergence speed and the final TV value. As for larger molecular graph 710 4 10 5        
+
+> Number of trajectories
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> TV
+> Hypergrid
+> 10 410 510 6
+> Number of trajectories
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> TV
+> TFBind8
+> 10 410 510 6
+> Number of trajectories
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> TV
+> String QM9
+> VPG (Simplest Policy Gradient) VPG (Reward-to-go) VPG (Value Baseline) VPG (GAE) VPG (SubEB-GAE)
+
+Figure 1: Comparison of five advantage estimators for VPG (simplest policy gradient, reward-to-go, reward-to-go with value baseline, SubEB-GAE, and GAE) on Hypergrid, TFBind8, and String QM9. Curves show TV distance vs. the number of reward evaluations. Lower is better. Lines show the mean over 3 seeds. Shaded regions show the min–max range. generation problems, we consider the sEH [ 2 ] and QM9 [ 17 ] (graph-based variant of QM9 induces a larger and more complex space than the small sequence-based variant) problems and use the Evidence Lower Bound (ELBO) and dataset-based Evidence Upper Bound (EUBO) following [ 5], which measure intra- and inter-mode coverage. We refer to Section B.1 for a more detailed description of experiments and metrics. 
+
+5.2 Variance Reduction in VPG 
+
+We first study the five advantage estimators of Section 4.1 on VPG, identifying the best variance-reduction strategy before turning to PPO. Figure 1 compares the simplest policy gradient, reward-to-go, reward-to-go with a learned value baseline, SubEB-GAE [ 30 ], and GAE [ 36 ] on all three environments. The ordering is consistent with established results in the RL literature: variance decreases mono-tonically as we move from the simplest gradient to GAE, and final TV improves correspondingly. The simplest gradient and reward-to-go converge slowly and to substantially worse final solutions on all benchmarks. Adding a learned value baseline produces a large improvement, and GAE further improves convergence speed on Hypergrid and final TV on TFBind8, while matching the value-baseline variant on QM9. Since SubEB-GAE performs slightly worse than GAE, we use GAE as the variance-reduction strategy for all subsequent experiments. 
+
+GAE ablation. We study the sensitivity of GAE training to three hyperparameters mentioned in methodology: the GAE parameter λ, and two value-network training choices: the number of training epochs per rollout batch and the number of mini-batch splits within each epoch. We perform a full grid search over λ ∈ { 0.5, 0.6, 0.7, 0.8, 0.9}, epochs ∈ { 1, 2, 4, 8}, and splits ∈ { 1, 2, 4, 8} on Hypergrid, identifying (λ, E, S ) = (0 .7, 4, 2) as the best configuration. Figure 4 then varies each hyperparameter individually around this optimum. AUC is stable across λ ∈ [0 .5, 0.8] , with λ = 0 .7
+
+achieving the best median. Higher values ( λ = 0 .9) substantially degrade performance, confirming the importance of tuning the bias-variance trade-off. The number of value-network training epochs has the largest effect among the three hyperparameters. A single epoch yields substantially higher AUC, indicating that the value network underfits the rollout data. Performance improves monotonically up to 4 epochs, then degrades for 8. Training the value network with a single mini-batch (splits 
+
+= 1 ) yields noticeably worse AUC, while splits ∈ { 2, 4} perform comparably. We prefer splits = 2 
+
+for its lower computational cost. Splits = 8 degrades performance, likely due to excessive noise in stochastic gradient updates. 
+
+5.3 Entropic Proximal Policy Optimization Ent-PPO outperforms other objectives on small and large experiments. Figure 2 compares Ent-PPO against DB [ 3 ], TB [ 23 ], SubTB [ 21 ], and TRPO [ 29 ] on the set of small problems. Even with K = 1 , where Ent-PPO reduces to VPG (GAE), the policy gradient approach already exceeds all baselines on all three environments. Figure 3 present results on the larger problem, sEH. Ent-PPO (K = 8 ) achieves the best ELBO among all methods and a substantially lower dataset-based EUBO than the off-policy baselines, indicating better coverage of the target distribution on both metrics. 810 4 10 5                
+
+> Number of trajectories
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> TV
+> Hypergrid
+> 10 410 510 6
+> Number of trajectories
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> TV
+> TFBind8
+> 10 410 510 6
+> Number of trajectories
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> TV
+> String QM9
+> DB ( K= 1 )TB ( K= 1 )SubTB ( K= 1 )TRPO Ent-PPO ( K= 1 ) / VPG (GAE) Ent-PPO ( K= 2 )Ent-PPO ( K= 4 )
+
+Figure 2: Ent-PPO with K ∈ { 1, 2, 4} update epochs per batch, compared against GFlowNet baselines (DB, TB, and SubTB) and TRPO on Hypergrid, TFBind8, and String QM9. Note that Ent-PPO ( K = 1 ) is equivalent to VPG (GAE). Curves show TV distance vs. the number of reward evaluations. Lower is better. Lines show the mean over 3 seeds. Shaded regions show the min–max range.                               
+
+> sEH 06 × 10 412 × 10 418 × 10 424 × 10 4
+> Number of trajectories
+> −20
+> 0
+> 20
+> 40
+> ELBO
+> 20 × 10 422 × 10 424 × 10 4
+> 40
+> 41
+> 40.42
+> 40.85
+> 41.35
+> 41.51
+> 06 × 10 412 × 10 418 × 10 424 × 10 4
+> Number of trajectories
+> 50
+> 60
+> 70
+> 80
+> Dataset-based EUBO
+> 06 × 10 412 × 10 418 × 10 424 × 10 4
+> Number of trajectories
+> −20
+> 0
+> 20
+> 40
+> ELBO
+> 20 × 10 422 × 10 424 × 10 4
+> 39
+> 40
+> 41
+> 42
+> 40.02
+> 41.23
+> 41.35
+> 41.51
+> 06 × 10 412 × 10 418 × 10 424 × 10 4
+> Number of trajectories
+> 50
+> 60
+> 70
+> 80
+> 90
+> Dataset-based EUBO
+> DB TB SubTB Ent-PPO ( K= 1 ) / VPG (GAE) Ent-PPO ( K= 2 )Ent-PPO ( K= 4 )Ent-PPO ( K= 8 )
+
+Figure 3: Ent-PPO compared against GFlowNet baselines (DB, TB, and SubTB) on sEH. Left: baselines use a single update per batch, while Ent-PPO varies K ∈ { 1, 2, 4, 8} update epochs. Right: baselines use K = 4 updates per batch, while Ent-PPO varies K ∈ { 4, 8} update epochs. Odd panels show ELBO vs. the number of reward evaluations (higher is better). Even panels show Dataset-based EUBO vs. the number of reward evaluations (lower is better). Lines show the mean over 3 seeds. Shaded regions show the min–max range. In contrast to the smaller experiments, further increasing K up to 8 is beneficial for this problem, which aligns with the RL literature, where more complex problems require more optimization steps. Figure 5 shows results on the largest considered problem, QM9. The performance gap between Ent-PPO and the baselines is the largest, showing the potential of our method to scale. 
+
+Multiple update epochs improve sample efficiency. Increasing K yields consistent improvement gains across all environments, as shown in Figure 2, Figure 3, and Figure 5. We additionally consider the setup where baselines perform multiple gradient updates per sampled batch of trajectories, similarly to Ent-PPO. This is theoretically viable since the baseline objectives are off-policy [ 42 ]. Figure 3, Figure 5, and Figure 6 show that Ent-PPO still retains its advantage in this setup. 
+
+The KL term is essential. The KL penalty distinguishes Ent-PPO from naive PPO and arises directly from the soft-RL derivation (Equation (20)). Figure 7 shows that this term is not a minor correction: removing it slows convergence and increases instability with few update epochs, and prevents convergence entirely with many. This empirically confirms the central claim of Section 4 that the entropy correction required by the soft-RL formulation is important. 
+
+Clipping is essential too. One might suspect that the KL penalty in Equation (20) — which is strict and analytic, not heuristic — already provides a strong enough trust region to make ratio clipping redundant. Figure 8 shows otherwise: removing the clipping while keeping the KL term causes training to diverge. The KL arises from the soft policy improvement objective and pins down the right optimum, but it does not bound the per-sample importance ratio, whose unbounded fluctuations across update epochs destabilize the gradient estimator. Clipping plays this distinct role and is needed alongside the KL. 
+
+We include the discussion on backward policy learning and results on QM9 in Section B.3 .96 Conclusion 
+
+We study policy gradient algorithms for sampling from discrete distributions under the GFlowNet framework. Our experiments show that, with appropriate variance reduction, even Vanilla Policy Gradient performs better than established off-policy GFlowNet objectives on small problems and outperforms two of three algorithms on larger problems. Building on this, we derive Ent-PPO, a PPO variant adapted to the soft-RL formulation of GFlowNet sampling, and show empirically that it further improves over VPG and outperforms the baselines on the entire set of problems. The KL penalty in our derivation, which arises naturally from the entropy regularization required by the soft-RL equivalence, is essential: removing it causes naive PPO to collapse, especially with multiple update epochs. An interesting direction for future work is adapting policy gradient methods within the soft-RL framework to sampling in continuous domains [20, 38, 5]. 
+
+Acknowledgmenents 
+
+This research was supported in part through computational resources of HPC facilities at HSE University [19]. 
+
+References 
+
+[1] Barrera, L. A., Vedenko, A., Kurland, J. V., Rogers, J. M., Gisselbrecht, S. S., Rossin, E. J., Woodard, J., Mariani, L., Kock, K. H., Inukai, S., et al. (2016). Survey of variation in human transcription factors reveals prevalent dna binding changes. Science , 351(6280):1450–1454. [2] Bengio, E., Jain, M., Korablyov, M., Precup, D., and Bengio, Y. (2021). Flow network based generative models for non-iterative diverse candidate generation. Neural Information Processing Systems (NeurIPS) .[3] Bengio, Y., Lahlou, S., Deleu, T., Hu, E. J., Tiwari, M., and Bengio, E. (2023). GFlowNet foundations. Journal of Machine Learning Research , 24(210):1–55. [4] Black, K., Janner, M., Du, Y., Kostrikov, I., and Levine, S. (2023). Training diffusion models with reinforcement learning. arXiv preprint arXiv:2305.13301 .[5] Blessing, D., Jia, X., Esslinger, J., Vargas, F., and Neumann, G. (2024). Beyond ELBOs: A large-scale evaluation of variational methods for sampling. International Conference on Machine Learning (ICML) .[6] Chan, A., Silva, H., Lim, S., Kozuno, T., Mahmood, A. R., and White, M. (2022). Greedification operators for policy optimization: Investigating forward and reverse kl divergences. Journal of Machine Learning Research , 23(253):1–79. [7] Deleu, T., Nouri, P., Malkin, N., Precup, D., and Bengio, Y. (2024). Discrete probabilistic inference as control in multi-path environments. Proceedings of the Fortieth Conference on Uncertainty in Artificial Intelligence , pages 997–1021. [8] Ding, Y. and Lawrence, C. E. (2003). A statistical sampling algorithm for rna secondary structure prediction. Nucleic acids research , 31(24):7280–7301. [9] Fan, Y., Watkins, O., Du, Y., Liu, H., Ryu, M., Boutilier, C., Abbeel, P., Ghavamzadeh, M., Lee, K., and Lee, K. (2023). Dpok: Reinforcement learning for fine-tuning text-to-image diffusion models. Advances in Neural Information Processing Systems , 36:79858–79885. [10] Geist, M., Scherrer, B., and Pietquin, O. (2019). A theory of regularized Markov decision processes. International Conference on Machine Learning (ICML) .[11] Green, P. J. (1995). Reversible jump markov chain monte carlo computation and bayesian model determination. Biometrika , 82(4):711–732. [12] Griffiths, T. L. and Steyvers, M. (2002). A probabilistic approach to semantic representation. In 
+
+Proceedings of the Annual Meeting of the Cognitive Science Society , volume 24. 10 [13] Gritsaev, T., Morozov, N., Samsonov, S., and Tiapkin, D. (2025). Optimizing backward policies in GFlownets via trajectory likelihood maximization. International Conference on Learning Representations (ICLR) .[14] Guo, D., Yang, D., Zhang, H., Song, J., Wang, P., Zhu, Q., Xu, R., Zhang, R., Ma, S., Bi, X., et al. (2025). Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. 
+
+arXiv preprint arXiv:2501.12948 .[15] Haarnoja, T., Tang, H., Abbeel, P., and Levine, S. (2017). Reinforcement learning with deep energy-based policies. In International conference on machine learning , pages 1352–1361. PMLR. [16] Ionides, E. L. (2008). Truncated importance sampling. Journal of Computational and Graphical Statistics , 17(2):295–311. [17] Jain, M., Raparthy, S. C., Hernández-Garcıa, A., Rector-Brooks, J., Bengio, Y., Miret, S., and Bengio, E. (2023). Multi-objective gflownets. In International conference on machine learning ,pages 14631–14653. PMLR. [18] Kakade, S. and Langford, J. (2002). Approximately optimal approximate reinforcement learning. In Proceedings of the nineteenth international conference on machine learning , pages 267–274. [19] Kostenetskiy, P., Chulkevich, R., and Kozyrev, V. (2021). HPC resources of the Higher School of Economics. Journal of Physics: Conference Series , 1740:012050. [20] Lahlou, S., Deleu, T., Lemos, P., Zhang, D., Volokhova, A., Hernández-Garcıa, A., Ezzine, L. N., Bengio, Y., and Malkin, N. (2023). A theory of continuous generative flow networks. 
+
+International Conference on Machine Learning (ICML) .[21] Madan, K., Rector-Brooks, J., Korablyov, M., Bengio, E., Jain, M., Nica, A. C., Bosc, T., Bengio, Y., and Malkin, N. (2023). Learning GFlowNets from partial episodes for improved convergence and stability. International Conference on Machine Learning (ICML) .[22] Madigan, D., York, J., and Allard, D. (1995). Bayesian graphical models for discrete data. 
+
+International statistical review/revue internationale de statistique , pages 215–232. [23] Malkin, N., Jain, M., Bengio, E., Sun, C., and Bengio, Y. (2022). Trajectory balance: Improved credit assignment in GFlowNets. Neural Information Processing Systems (NeurIPS) .[24] Malkin, N., Lahlou, S., Deleu, T., Ji, X., Hu, E. J., Everett, K. E., Zhang, D., and Bengio, Y. (2023). GFlowNets and variational inference. International Conference on Learning Representa-tions (ICLR) .[25] Miao, N., Zhou, H., Mou, L., Yan, R., and Li, L. (2019). Cgmh: Constrained sentence generation by metropolis-hastings sampling. In Proceedings of the AAAI Conference on Artificial Intelligence ,volume 33, pages 6834–6842. [26] Munos, R., Stepleton, T., Harutyunyan, A., and Bellemare, M. G. (2016). Safe and efficient off-policy reinforcement learning. In Advances in Neural Information Processing Systems , volume 29. [27] Nachum, O., Norouzi, M., Xu, K., and Schuurmans, D. (2017). Bridging the gap between value and policy based reinforcement learning. Neural Information Processing Systems (NeurIPS) .[28] Neu, G., Jonsson, A., and Gómez, V. (2017). A unified view of entropy-regularized Markov decision processes. arXiv preprint arXiv:1705.07798 .[29] Niu, P., Wu, S., Fan, M., and Qian, X. (2024). GFlowNet training by policy gradients. In Salakhutdinov, R., Kolter, Z., Heller, K., Weller, A., Oliver, N., Scarlett, J., and Berkenkamp, F., editors, Proceedings of the 41st International Conference on Machine Learning , volume 235 of 
+
+Proceedings of Machine Learning Research , pages 38344–38380. PMLR. [30] Niu, P., Wu, S., and Qian, X. (2026). Evaluating GFlownet from partial episodes for stable and flexible policy-based training. In The Fourteenth International Conference on Learning Representations .11 [31] Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C., Mishkin, P., Zhang, C., Agarwal, S., Slama, K., Ray, A., et al. (2022). Training language models to follow instructions with human feedback. Advances in neural information processing systems , 35:27730–27744. [32] Potts, R. B. (1952). Some generalized order-disorder transformations. In Mathematical proceedings of the cambridge philosophical society , volume 48, pages 106–109. Cambridge University Press. [33] Ramakrishnan, R., Dral, P. O., Rupp, M., and Von Lilienfeld, O. A. (2014). Quantum chemistry structures and properties of 134 kilo molecules. Scientific data , 1(1):1–7. [34] Schulman, J., Chen, X., and Abbeel, P. (2017a). Equivalence between policy gradients and soft q-learning. arXiv preprint arXiv:1704.06440 .[35] Schulman, J., Levine, S., Abbeel, P., Jordan, M., and Moritz, P. (2015a). Trust region policy optimization. In International Conference on Machine Learning , pages 1889–1897. PMLR. [36] Schulman, J., Moritz, P., Levine, S., Jordan, M. I., and Abbeel, P. (2015b). High-dimensional continuous control using generalized advantage estimation. CoRR , abs/1506.02438. [37] Schulman, J., Wolski, F., Dhariwal, P., Radford, A., and Klimov, O. (2017b). Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 .[38] Sendera, M., Kim, M., Mittal, S., Lemos, P., Scimeca, L., Rector-Brooks, J., Adam, A., Bengio, Y., and Malkin, N. (2024). Improved off-policy training of diffusion samplers. Neural Information Processing Systems (NeurIPS) .[39] Shen, M. W., Bengio, E., Hajiramezanali, E., Loukas, A., Cho, K., and Biancalani, T. (2023). Towards understanding and improving gflownet training. In International conference on machine learning , pages 30956–30975. PMLR. [40] Sutton, R. S., McAllester, D., Singh, S., and Mansour, Y. (1999). Policy gradient methods for reinforcement learning with function approximation. In Advances in Neural Information Processing Systems , volume 12. [41] Tiapkin, D., Agarkov, A., Morozov, N., Maksimov, I., Tsyganov, A., Gritsaev, T., and Samsonov, S. (2025). gfnx: Fast and scalable library for generative flow networks in jax. arXiv preprint arXiv:2511.16592 .[42] Tiapkin, D., Morozov, N., Naumov, A., and Vetrov, D. P. (2024). Generative flow networks as entropy-regularized rl. In International Conference on Artificial Intelligence and Statistics , pages 4213–4221. PMLR. [43] Williams, R. J. (1992). Simple statistical gradient-following algorithms for connectionist reinforcement learning. Machine learning , 8:229–256. [44] Williams, R. J. and Peng, J. (1991). Function optimization using connectionist reinforcement learning algorithms. Connection Science , 3(3):241–268. [45] Wolff, U. (1989). Collective monte carlo updating for spin systems. Physical Review Letters ,62(4):361. [46] Yang, Z. and Rannala, B. (1997). Bayesian phylogenetic inference using dna sequences: a markov chain monte carlo method. Molecular biology and evolution , 14(7):717–724. [47] Yu, Q., Zhang, Z., Zhu, R., Yuan, Y., Zuo, X., Yue, Y., Dai, W., Fan, T., Liu, G., Liu, L., et al. (2025). Dapo: An open-source llm reinforcement learning system at scale, 2025. URL https://arxiv. org/abs/2503.14476 , 1:2. 12 A Proximal Policy Optimization 
+
+PPO [ 37 ] is an alternative to Vanilla Policy Gradient (VPG) with markedly better stability and sample efficiency. Like TRPO [ 35 ], it can be derived as a parametric, gradient-based approximation of an underlying policy improvement scheme. We construct it in three steps: (i) the exact policy iteration (PI) operator, (ii) an off-policy, importance-weighted surrogate of its objective, and (iii) a trust-region correction in the spirit of conservative policy iteration [CPI; 18]. 
+
+Policy iteration as per-state maximization. The PI operator returns, at every state s,
+
+πPI (· | s) ∈ arg max π(·| s)∈∆( As)
+
+P 
+
+> a∈A s
+
+π(a | s) Qπold (s, a ),
+
+mirroring the classical greedy update. Subtracting the constant baseline V πold (s) does not change the maximizer but reduces the variance of sample-based estimates; aggregating along trajectories drawn from πold yields the surrogate 
+
+L(θ; πold ) ≜ Eτ ∼πold 
+
+hPT −1
+
+> t=0
+
+P
+
+> a′∈A st
+
+πθ (a′ | st) Aπold (st, a ′)
+
+i
+
+. (21) When πold visits every state, the maximizers of L coincide with the PI update; more generally, L
+
+serves as a first-order surrogate for J(πθ ) − J(πold ) around πold [18 , 35 ], which is what justifies treating it as a stand-in for J during off-policy optimization. 
+
+Unclipped surrogate via importance sampling. The inner sum over Ast is impractical for large action spaces. A single-sample importance estimator yields the equivalent form 
+
+L(θ; πold ) = Eτ ∼πold 
+
+hPT −1 
+
+> t=0
+
+ρt(θ) Aπold 
+
+> t
+
+i
+
+, (22) where ρt(θ) ≜ πθ (at | st)/π old (at | st) and Aπold  
+
+> t
+
+≜ Aπold (st, a t). This form requires only rollouts from πold together with an estimate of Aπold .
+
+From CPI to a clipped trust region. Maximizing (22) without restriction is unsafe: the surrogate is only a good proxy for J in a neighborhood of πold , and unbounded ratios ρt(θ) produce high-variance gradient estimates. CPI controls this by mixing the PI target with πold ; TRPO enforces an explicit KL trust region. PPO produces a similar effect with a cheaper, asymmetric mechanism inspired by 
+
+truncated importance sampling [ 16 , 26 ]: the contribution of any transition whose ratio strays outside 
+
+[1 − ε, 1 + ε] in the rewarding direction is capped, 
+
+LPPO (θ; πold ) ≜ Eτ ∼πold 
+
+"T −1X
+
+> t=0
+
+PPOClip  ρt(θ), A πold 
+
+> t
+
+#
+
+,
+
+PPOClip( ρ, A ) ≜ min  ρA, clip( ρ, 1−ε, 1+ ε) A . (23) The pessimistic min removes the incentive to push ρt further from 1 once the surrogate becomes untrustworthy, while leaving the gradient unattenuated in the safe regime. 13 B Extended discussion of considered problems, evaluation protocol, and experimental results 
+
+B.1 Environments Hypergrid [ 2] is a synthetic d-dimensional discrete hypercube of side length H, with reward concentrated at the 2d corners of the grid and small elsewhere. We use d = 4 , H = 20 , giving 
+
+|X | = 160 000 terminal states. 
+
+TFBind8 [39 ] is a DNA sequence design task: the goal is to generate length-8 sequences over 
+
+{A, C, G, T }. The reward is the measured binding activity of the generated sequence to the human transcription factor SIX6 [1], giving |X | = 4 8 = 65 536 terminal states out of 87 381 states in total. 
+
+String QM9 is a small-molecule generation environment. We use the prepend/append formula-tion [ 39 ] with 11 building blocks and trajectories of length up to 5, giving |X | = 11 5 = 161 051 
+
+terminal states out of 178 156 in total. The reward is predicted by a proxy network trained on the QM9 dataset [ 33 ] to estimate the HOMO-LUMO gap, a molecular property relevant for chemical reactivity. 
+
+sEH [ 2 ] is a fragment-based molecular graph generation task using a junction-tree representation. Molecules are generated as trees of molecular fragments by sequentially adding fragments from the 72-fragment vocabulary of [ 2] and specifying chemically valid attachment points between adjacent fragments. This induces a large combinatorial state space: the original formulation estimates up to 
+
+10 16 states, with roughly 100 –2000 available actions per state depending on the number of available stems. The environment includes a stop action and masks invalid attachments. We use a maximum of 9 fragments. Rewards are given by the pretrained MPNN proxy from [ 2], which predicts sEH binding affinity for the generated molecule. 
+
+QM9 [17 ] is a molecular graph generation task based on the QM9 dataset [ 33 ]. Molecules are con-structed atom-by-atom and bond-by-bond with up to 9 heavy atoms from the alphabet {C, N, F, O}.At each step the model can add an atom, add a bond between existing atoms, set node or bond attributes such as charge, explicit hydrogens, chirality, or bond order, or terminate the trajectory. The induced MDP is combinatorially large: a trajectory can contain up to roughly 128 construction steps, including atom additions, bond additions, attribute assignments, and termination, and the number of candidate actions in a 9-heavy-atom state is on the order of a few hundred before chemical-validity masks are applied. The reward is the same as for String QM9. 
+
+B.2 Evaluation Synthetic experiments. For small experiments (Hypergrid, TFBind8, and Small QM9), the exact target distribution R(x)/Z is tractable. We evaluate sampling quality using the exact total variation (TV) distance between the ground truth and the distribution induced by the forward policy. For ablations we summarise each training run by the area under the TV curve (AUC). AUC captures both convergence speed and final TV in a single scalar. 
+
+Molecular graph generation. For large experiments, the state space is too large for exact TV distance evaluation. Following [ 5 ], we instead report the Evidence Lower Bound (ELBO) and Evidence Upper Bound (EUBO) on log Z , defined as: 
+
+ELBO = Eπθ
+
+"
+
+log R(sT ) · QT −1 
+
+> t=0
+
+PB(st | st+1 )
+
+QT −1 
+
+> t=0
+
+πθ (st+1 | st)
+
+#
+
+≤ log Z 
+
+≤ EsT ∼R (x)/Z, τ ∼P B(·| sT )
+
+"
+
+log R(sT ) · QT −1 
+
+> t=0
+
+PB(st | st+1 )
+
+QT −1 
+
+> t=0
+
+πθ (st+1 | st)
+
+#
+
+= EUBO 
+
+ELBO measures intra-mode coverage, as trajectories are sampled from πθ . EUBO measures mode coverage by sampling terminal states from the target distribution R(x)/Z. Since the true target distribution is unavailable in practice, we use proxy EUBO, where terminal states are drawn from a fixed dataset and trajectory log-weights are reweighted by reward. These metrics are preferable to the mode-count and top-k reward statistics, which measure optimiza-tion quality rather than distributional fidelity. A policy that concentrates mass on a few high-reward 14 modes can score well on top-k metrics while badly mismatching the target R(x)/Z. ELBO and EUBO instead directly bound log Z . Crucially, the two bounds are complementary: ELBO is insensitive to uncovered modes (since πθ never samples them), while EUBO is insensitive to over-represented ones (since sampling is from the target). Reporting both provides a two-sided diagnostic of distributional accuracy. All experiments are repeated over 3 random seeds; figures report the mean, with shaded regions showing the min–max range. Hyperparameters for all methods, including the off-policy baselines DB, TB, and SubTB and on-policy TRPO, are tuned, and full ranges and selected values are reported in Section G. 
+
+B.3 Extended discussion of experimental results SubEB-GAE. We aim to reproduce the algorithm presented in the original work [ 30 ]. The paper does not discuss mini-batch splits or multiple epochs for value learning, hence we set E to 1 and 
+
+S to 1 for these experiments. However, we find these techniques useful for GAE, which shows the potential of SubEB-GAE. 
+
+Trajectory Likelihood Maximization enables Ent-PPO backward policy learning. In contrast to off-policy baselines, Ent-PPO does not admit a joint forward–backward objective; this limitation is intrinsic to sampling algorithms derived from RL objectives and was noted in [ 42 ]. Trajectory Likelihood Maximization [13, TLM], defined as 
+
+TLM = −Eτ ∼P F
+
+"
+
+log  
+
+> T−1
+
+Y
+
+> t=0
+
+PB(st | st+1 , φ )
+
+#
+
+∇φTLM = ∇φ KL( PF∥P B), (24) was proposed as a simple yet effective loss that enables backward policy learning for the RL-based algorithms of [ 42 ]. With the stabilization tricks of [ 13 ], it also outperforms naive backward policy learning within a single off-policy objective, and can be used as backward learning strategy with DB, TB, and SubTB. Figure 9 presents results for off-policy baselines and Ent-PPO with learned PB, where the off-policy baselines train the backward policy jointly and Ent-PPO uses TLM. Ent-PPO converges faster than the off-policy baselines. For Ent-PPO, we consider two backward-policy learning schemes, and both outperform Ent-PPO with fixed PB (Figure 10, right). The first applies a single TLM update per iteration. The second performs K TLM updates per iteration on a freshly sampled rollout, equalizing the number of gradient steps taken by the forward and backward policies. The second scheme is less theoretically grounded, since TLM is motivated as a stochastic estimate of ∇φ KL( PF∥P B), but achieves better results in practice. 
+
+Backward policy learning can improve performance. Figure 10 compares algorithms with fixed PB against the same algorithms with learned PB. Learning the backward policy speeds up convergence, a well-known result from [23, 13]. We do not include similar experiments for TFBind8, since this is an autoregressive environment with a fixed backward policy. For String QM9, we do not observe a difference between off-policy methods with learned and fixed backward policies. The same results are found for Ent-PPO. We hypothesize this happens due to the limited expressivity of the backward policy in this task: it can only choose from which side, left or right, to erase a symbol. 
+
+QM9. Figure 5 compares Ent-PPO against off-policy baselines on QM9. Ent-PPO ( K = 1 ) and TB (K = 4 ) are excluded because the former shows unstable training and the latter diverges. Interestingly, the gap between the best Ent-PPO and the best baseline is significantly larger here than on Hypergrid, the string problems, and sEH. Moreover, TB with multiple updates performs worse than with a single update. We attribute this to the larger scale of the problem. In contrast to TB, increasing K for Ent-PPO consistently leads to improved performance. 15 C Figures 0.5 0.6 0.7 0.8 0.9 
+
+> 0.070
+> 0.075
+> 0.080
+> 0.085
+> 0.090
+> 0.095
+> 0.100
+> AUC
+
+GAE λ   
+
+> 1248
+
+E value-network training epochs    
+
+> 1248
+
+S mini-batch splits 
+
+Figure 4: Sensitivity of GAE training to three hyperparameters, evaluated on Hypergrid: the GAE parameter λ, the number of value-network training epochs per batch, and the number of mini-batch splits within each epoch. For each panel, the labeled hyperparameter varies while the other two are fixed at their best values, (λ, E, S ) = (0 .7, 4, 2) . Lower AUC (area under the TV curve) is better. Box plots show the median, Q1, and Q3 across 5 seeds. Whiskers extend to the min and max. 
+
+QM9 0 2.5 × 10 4 5 × 10 4 7.5 × 10 4 10 × 10 4                      
+
+> Number of trajectories
+> −20
+> −10
+> 0
+> 10
+> 20
+> 30
+> 40
+> ELBO
+> 6 × 10 48 × 10 410 × 10 4
+> 30.0
+> 32.5
+> 35.0
+> 37.5
+> 40.0
+> 33.28
+> 33.81
+> 37.26
+> 02.5 × 10 45 × 10 47.5 × 10 410 × 10 4
+> Number of trajectories
+> 30
+> 40
+> 50
+> 60
+> 70
+> 80
+> Dataset-based EUBO
+> 02.5 × 10 45 × 10 47.5 × 10 410 × 10 4
+> Number of trajectories
+> −20
+> −10
+> 0
+> 10
+> 20
+> 30
+> 40
+> ELBO
+> 6 × 10 48 × 10 410 × 10 4
+> 0
+> 20
+> 40
+> 24.31
+> 31.64
+> 37.26
+> 02.5 × 10 45 × 10 47.5 × 10 410 × 10 4
+> Number of trajectories
+> 30
+> 40
+> 50
+> 60
+> 70
+> 80
+> Dataset-based EUBO
+> DB TB SubTB Ent-PPO ( K= 2 )Ent-PPO ( K= 4 )
+
+Figure 5: Ent-PPO compared against GFlowNet baselines (DB, TB, and SubTB) on QM9. Left: baselines use a single update per batch, while Ent-PPO varies K ∈ { 1, 2, 4} update epochs. Right: baselines use K = 4 updates per batch, while Ent-PPO uses K = 4 update epochs. Ent-PPO ( K = 1 )shows instable performance and TB ( K = 4 ) diverges, hence excluded. Odd panels show ELBO vs. the number of reward evaluations (higher is better). Even panels show Dataset-based EUBO vs. the number of reward evaluations (lower is better). Lines show the mean over 3 seeds. Shaded regions show the min–max range. 10 4 10 5
+
+Number of trajectories 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+> TV
+
+Hypergrid 
+
+10 4 10 5 10 6
+
+Number of trajectories 
+
+0.2 
+
+0.3 
+
+0.4 
+
+> TV
+
+TFBind8 
+
+10 4 10 5 10 6
+
+Number of trajectories 
+
+0.00 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+> TV
+
+String QM9        
+
+> DB ( K= 4 )TB ( K= 4 )SubTB ( K= 4 )Ent-PPO ( K= 4 )
+
+Figure 6: Ent-PPO compared against off-policy baselines (DB, TB, SubTB) when all methods perform four gradient updates per batch. Ent-PPO retains its advantage on all three environments. Lines show the mean over 3 seeds. Shaded regions show the min–max range. 16 10 4 10 5                        
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Hypergrid
+> TV
+> K= 4
+> 10 410 5
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> K= 8
+> 10 410 5
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> K= 16
+> 10 410 5
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> K= 32
+> 10 410 510 6
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> 0.35
+> TFBind8
+> TV
+> 10 410 510 6
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> 0.35
+> 10 410 510 6
+> 0.20
+> 0.25
+> 0.30
+> 0.35
+> 10 410 510 6
+> 0.20
+> 0.25
+> 0.30
+> 0.35
+> 10 410 510 6
+> Number of trajectories
+> 0.000
+> 0.025
+> 0.050
+> 0.075
+> 0.100
+> 0.125
+> 0.150
+> String QM9
+> TV
+> 10 410 510 6
+> Number of trajectories
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> 0.12
+> 0.14
+> 0.16
+> 10 410 510 6
+> Number of trajectories
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> 0.12
+> 0.14
+> 0.16
+> 10 410 510 6
+> Number of trajectories
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> 0.12
+> 0.14
+> 0.16
+> Ent-PPO PPO
+
+Figure 7: Effect of removing the KL penalty from Ent-PPO (Equation (20)) on Hypergrid, TFBind8, and String QM9, with K ∈ { 4, 8, 16 , 32 } update epochs per batch. Without the KL term, which reduces Ent-PPO to naive PPO, convergence slows and less stable for K ∈ { 4, 8} and fails entirely for larger K. The KL penalty is essential to the algorithm. Lines show the mean over 3 seeds. Shaded regions show the min–max range 10 4 10 5
+
+Number of trajectories 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> TV
+
+Hypergrid 
+
+Ent-PPO w/ clip ( K = 4) Ent-PPO w/o clip ( K = 4) Ent-PPO w/o clip ( K = 8) Ent-PPO w/o clip ( K = 16) Ent-PPO w/o clip ( K = 32) 
+
+Figure 8: Effect of removing the clipping from Ent-PPO (Equation (20)) on Hypergrid with K ∈{4, 8, 16 , 32 } update epochs per batch. Without the clipping mechanism, convergence slows for 
+
+K ∈ { 4, 8} and fails entirely for larger K. The clipping is essential to the algorithm. Lines show the mean over 3 seeds. Shaded regions show the min–max range. 17 10 4 10 5
+
+Number of trajectories 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+> TV
+
+Hypergrid 
+
+DB ( K = 4 ) TB ( K = 4 ) SubTB ( K = 4 ) Ent-PPO ( K = 4 ) TLM* (4 steps) Figure 9: Ent-PPO with TLM-based backward policy learning compared against off-policy baselines (DB, TB, SubTB) that learn backward policy jointly within a single objective on Hypergrid. K = 4 
+
+for all methods. Ent-PPO converges faster than the off-policy baselines. Curves show TV distance vs. the number of reward evaluations. Lower is better. Lines show the mean over 3 seeds. Shaded regions show the min–max range. 10 4 10 5                   
+
+> Number of trajectories
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> TV
+> DB ( K= 4 )
+> 10 410 5
+> Number of trajectories
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> TV
+> TB ( K= 4 )
+> 10 410 5
+> Number of trajectories
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> TV
+> SubTB ( K= 4 )
+> 10 410 5
+> Number of trajectories
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> TV
+> Ent-PPO ( K= 4 )
+> Hypergrid
+> DB ( K= 4 )TB ( K= 4 )SubTB ( K= 4 )Ent-PPO ( K= 4 )Ent-PPO (K=4) TLM* (4 steps) Fixed PbLearned Pb
+
+Figure 10: Algorithms with fixed uniform backward policy compared against the same algorithms with learned backward policy on Hypergrid. Off-policy baselines learn PB jointly with their main objective. Ent-PPO uses TLM, and the right panel shows both Ent-PPO backward-policy learning schemes discussed in Section B.3. Learned backward policy consistently speeds up convergence. Curves show TV distance vs. the number of reward evaluations. Lower is better. Lines show the mean over 3 seeds. Shaded regions show the min–max range. 18 D Pseudocode 
+
+Algorithm 1 Vanilla Policy Gradient 
+
+Require: initial policy parameters θ0, initial value function parameters φ0, backward policy PB,reward R 
+
+> 1:
+
+for k = 0 , 1, 2, . . . do  
+
+> 2:
+
+Collect a set of trajectories Dk = {τi} by running πθk . 
+
+> 3:
+
+Assign per-step rewards r(st, s t+1 ) along each trajectory using PB and R as in Equation (7).  
+
+> 4:
+
+Compute advantage estimates ˆAt using one of the methods from Section 4.1, and corresponding value-fit targets yt (the Monte-Carlo soft return ˆRt = PT −1 
+
+> k=t
+
+gk for the simplest, reward-to-go, and baseline estimators; the bootstrapped target sg[ ˆAt + ˜Vφ(st)] for GAE).  
+
+> 5:
+
+Estimate the policy gradient: 
+
+ˆgk = 1
+
+|D k|
+
+X  
+
+> τ∈D k
+> T−1
+
+X
+
+> t=0
+
+∇θk log πθk (st+1 | st) · ˆAt. 
+
+> 6:
+
+Update θk+1 by stochastic gradient ascent on ˆgk using Adam.  
+
+> 7:
+
+Fit the value function by mean-squared-error regression: 
+
+φk+1 = arg min 
+
+> φ
+
+1
+
+|D k| T
+
+X  
+
+> τ∈D k
+> T−1
+
+X
+
+> t=0
+
+  ˜Vφ(st) − yt
+
+2,
+
+via several steps of stochastic gradient descent using Adam.  
+
+> 8:
+
+end for Algorithm 2 Entropic Proximal Policy Optimisation 
+
+Require: initial policy parameters θ0, initial value function parameters φ0, backward policy PB,reward R, clip ε, GAE parameter λ, number of update epochs K 
+
+> 1:
+
+for k = 0 , 1, 2, . . . do  
+
+> 2:
+
+Collect a set of trajectories Dk = {τi} by running πθk . 
+
+> 3:
+
+Assign per-step rewards r(st, s t+1 ) along each trajectory using PB and R as in Equation (7).  
+
+> 4:
+
+Compute soft TD residuals δt = gt + ˜Vφk (st+1 ) − ˜Vφk (st), GAE advantages ˆAt =
+
+PT −1−tj=0 λj δt+j , and value-fit targets yt = sg[ ˆAt + ˜Vφk (st)] . These quantities are held fixed across the K inner epochs. Set θ ← θk, φ ← φk. 
+
+> 5:
+
+for e = 1 , . . . , K do  
+
+> 6:
+
+Estimate the Ent-PPO gradient (Equation (20)): 
+
+ˆgk,e = ∇θ
+
+1
+
+|D k|
+
+X  
+
+> τ∈D k
+> T−1
+
+X
+
+> t=0
+
+h
+
+PPOClip  ρt(θ), ˆAt
+
+ − KL  πθ (· | st) ∥ πθk (· | st)i
+
+,
+
+where ρt(θ) = πθ (st+1 | st)/π θk (st+1 | st) and PPOClip is defined in Equation (5); πθk
+
+plays the role of πold from the main text.  
+
+> 7:
+
+Update θ by stochastic gradient ascent on ˆgk,e using Adam.  
+
+> 8:
+
+Fit the value function by mean-squared-error regression: 
+
+φ ← arg min 
+
+> φ
+
+1
+
+|D k| T
+
+X  
+
+> τ∈D k
+> T−1
+
+X
+
+> t=0
+
+  ˜Vφ(st) − yt
+
+2,
+
+via several steps of stochastic gradient descent using Adam.  
+
+> 9:
+
+end for  
+
+> 10:
+
+Set θk+1 ← θ, φk+1 ← φ. 
+
+> 11:
+
+end for 
+
+19 E Standard Policy Gradient Derivations 
+
+The derivations below specialize standard policy-gradient results to the soft-RL formulation of GFlowNet sampling (Section 2.2) at α = γ = 1 . We include these derivations for the sake of completeness. These methods can be found in [ 43 , 40 , 36 ]. We use the abbreviations ˜V π , ˜Qπ ,
+
+˜Aπ from Section 4.1 and write ˜J(πθ ) = ˜V πθ (sinit ). Both algorithms in Section D take the GFN backward policy PB and reward R as input; line 3 of each algorithm constructs the soft-MDP reward via (7), after which the forward policy is trained as in a standard MDP. We denote by T the set of trajectories of length T starting at sinit , where T is the maximum trajectory length and shorter trajectories are padded by repeated visits to the absorbing state sf . Padding contributes zero reward, so all sums effectively truncate at the first absorbing transition. The rewards 
+
+r(st, s t+1 ) are independent of θ since PB is fixed. 
+
+E.1 Simplest policy gradient 
+
+For brevity, write the per-step soft return 
+
+gt = r(st, s t+1 ) − log πθ (st+1 | st)
+
+as in Section 4.1, and the trajectory return 
+
+Gθ (τ ) =  
+
+> T−1
+
+X
+
+> t=0
+
+gt,
+
+so that ˜J(πθ ) = Eτ ∼πθ [Gθ (τ )] by Equation (1) at α = γ = 1 . Trajectories are sampled with probability Pθ (τ ) = QT −1 
+
+> t=0
+
+πθ (st+1 | st), hence 
+
+∇θ log Pθ (τ ) =  
+
+> T−1
+
+X
+
+> t=0
+
+∇θ log πθ (st+1 | st).
+
+Both Pθ and Gθ depend on θ, so we apply the product rule: 
+
+∇θ ˜J(πθ ) = X 
+
+> τ∈T
+
+∇θ Pθ (τ ) · Gθ (τ ) + X 
+
+> τ∈T
+
+Pθ (τ ) · ∇ θ Gθ (τ )= Eπθ
+
+"T −1X
+
+> t=0
+
+∇θ log πθ (st+1 | st) · Gθ (τ )
+
+#
+
+− Eπθ
+
+"T −1X
+
+> t=0
+
+∇θ log πθ (st+1 | st)
+
+#
+
+,
+
+where the first equality uses ∇θ Pθ = Pθ ∇θ log Pθ , and the second uses ∇θ Gθ =
+
+− PT −1 
+
+> t=0
+
+∇θ log πθ (st+1 | st) (the rewards r(st, s t+1 ) are θ-independent because PB is fixed). The second expectation vanishes by the score-function identity. Conditioning on st,
+
+Est+1 ∼πθ (·| st)
+
+∇θ log πθ (st+1 | st) st
+
+ = X
+
+> s′
+
+∇θ πθ (s′ | st) = ∇θ
+
+X
+
+> s′
+
+πθ (s′ | st) = ∇θ 1 = 0 ,
+
+and the tower rule extends this to the unconditional expectation. We obtain the simplest policy gradient: 
+
+∇θ ˜J(πθ ) = Eπθ
+
+"T −1X
+
+> t=0
+
+∇θ log πθ (st+1 | st) · Gθ (τ )
+
+#
+
+.
+
+E.2 Reward-to-go policy gradient 
+
+We show that the trajectory return Gθ (τ ) = PT −1 
+
+> k=0
+
+gk in the simplest policy gradient can be replaced by the reward-to-go ˆRt = PT −1 
+
+> k=t
+
+gk, since transitions occurring before step t contribute zero in expectation to the gradient term at step t.20 Split the trajectory return into past and reward-to-go: 
+
+Eπθ
+
+"T −1X
+
+> t=0
+
+∇θ log πθ (st+1 | st) · Gθ (τ )
+
+#
+
+= Eπθ
+
+"T −1X
+
+> t=0
+
+∇θ log πθ (st+1 | st) 
+
+> T−1
+
+X
+
+> k=t
+
+gk
+
+#
+
++ Eπθ
+
+"T −1X
+
+> t=0
+
+∇θ log πθ (st+1 | st)
+
+> t−1
+
+X
+
+> k=0
+
+gk
+
+#
+
+.
+
+The second (past) term vanishes. The sum Pt−1 
+
+> k=0
+
+gk depends only on s0, . . . , s t, hence is 
+
+σ(s0, . . . , s t)-measurable. By the tower rule, 
+
+Eπθ
+
+"T −1X
+
+> t=0
+
+∇θ log πθ (st+1 | st)
+
+> t−1
+
+X
+
+> k=0
+
+gk
+
+#
+
+= 
+
+> T−1
+
+X
+
+> t=0
+
+Eπθ
+
+"
+
+E
+
+"
+
+∇θ log πθ (st+1 | st)
+
+> t−1
+
+X
+
+> k=0
+
+gk s0, . . . , s t
+
+## 
+
+= 
+
+> T−1
+
+X
+
+> t=0
+
+Eπθ
+
+" t−1X
+
+> k=0
+
+gk
+
+!
+
+· E
+
+h
+
+∇θ log πθ (st+1 | st) st
+
+i#
+
+= 0 ,
+
+where the last equality uses the score-function identity E[∇θ log πθ (st+1 | st) | st] = 0 from Sec-tion E.1. The t = 0 term vanishes trivially since the inner sum is empty. We obtain the reward-to-go policy gradient: 
+
+∇θ ˜J(πθ ) = Eπθ
+
+"T −1X
+
+> t=0
+
+∇θ log πθ (st+1 | st) · ˆRt
+
+#
+
+.
+
+E.3 Baseline 
+
+The reward-to-go gradient can be further refined by subtracting a state-dependent baseline b(st) from 
+
+ˆRt. For any function b : S → R, the same score-function identity used in Section E.1 gives 
+
+Eπθ[∇θ log πθ (st+1 | st) · b(st)] = Eπθ
+
+b(st) · E∇θ log πθ (st+1 | st) st
+
+| {z }
+
+> =0
+
+ = 0 ,
+
+since b(st) is σ(s0, . . . , s t)-measurable. Subtracting b(st) therefore preserves unbiasedness: 
+
+∇θ ˜J(πθ ) = Eπθ
+
+"T −1X
+
+> t=0
+
+∇θ log πθ (st+1 | st) ·   ˆRt − b(st)#
+
+.
+
+The standard choice is b(st) = ˜V πθ (st), which removes the trajectory-level component shared across actions at st and substantially reduces the variance of the sample estimate. Since ˜V πθ is unknown, it is replaced in practice with a learned approximation ˜Vφ(st) (see Section 4.1). 
+
+E.4 Advantage policy gradient 
+
+We now express the reward-to-go gradient in terms of the soft Q-function and the soft advantage from Equation (2). Starting from the reward-to-go form derived in Section E.2: the score ∇θ log πθ (st+1 | st) is 
+
+σ(st, s t+1 )-measurable, so by the tower rule and the Markov property the conditioning collapses to 
+
+(st, s t+1 ):
+
+∇θ ˜J(πθ ) = Eπθ
+
+"T −1X
+
+> t=0
+
+∇θ log πθ (st+1 | st) · ˆRt
+
+#
+
+= 
+
+> T−1
+
+X
+
+> t=0
+
+Eπθ
+
+h
+
+∇θ log πθ (st+1 | st) · E
+
+h ˆRt st, s t+1 
+
+ii 
+
+.
+
+21 The inner expectation evaluates to 
+
+E
+
+h ˆRt st, s t+1 
+
+i
+
+= gt + E
+
+" T −1X
+
+> k=t+1
+
+gk st+1 
+
+#
+
+=  r(st, s t+1 ) − log πθ (st+1 | st) + ˜V πθ (st+1 )= ˜Qπθ (st, s t+1 ) − log πθ (st+1 | st),
+
+where the second equality uses the sample-path soft-value identity (1) at α = γ = 1 to identify 
+
+E[PT −1 
+
+> k=t+1
+
+gk | st+1 ] = ˜V πθ (st+1 ), and the third uses the soft Bellman relation ˜Qπθ (s, s ′) = 
+
+r(s, s ′)+ ˜V πθ (s′) (under deterministic transitions and the action-as-successor convention, the entropy is paid at the successor state via ˜V πθ (s′), with no explicit term in ˜Qπθ ). Substituting back: 
+
+∇θ ˜J(πθ ) = Eπθ
+
+"T −1X
+
+> t=0
+
+∇θ log πθ (st+1 | st) ·   ˜Qπθ (st, s t+1 ) − log πθ (st+1 | st)#
+
+.
+
+Subtracting the baseline b(st) = ˜V πθ (st) as in Section E.3 and recognising the soft advantage 
+
+˜Aπθ (s, s ′) = ˜Qπθ (s, s ′) − ˜V πθ (s) − log πθ (s′ | s)
+
+from Equation (2) at α = 1 yields: 
+
+∇θ ˜J(πθ ) = Eπθ
+
+"T −1X
+
+> t=0
+
+∇θ log πθ (st+1 | st) · ˜Aπθ (st, s t+1 )
+
+#
+
+,
+
+which is the soft-advantage form of Equation (4) specialized to α = γ = 1 .22 F Entropic PPO 
+
+In this section, we re-derive the Ent-PPO algorithm from the same perspective as PPO was derived in the seminal paper [ 37 ]. We start from the soft version of the performance-difference lemma [18 , 28 , 10 ] and then characterize how the soft surrogate objective ˜Lsoft (θ; πold ), defined in Section 4.2, appears as a natural first-order approximation to it. Afterwards, we characterize the error between 
+
+˜Lsoft (θ; πold ) and ˜J(πθ ) − ˜J(πold ) as a function of the distance between πθ and πold to justify the theoretical necessity of the trust-region component. Throughout this section we use the notation of Sections 2.1 and 4 specialized to the GFlowNet regime 
+
+α = γ = 1 with the action-as-successor convention, and we write dπt ∈ ∆( S) for the marginal distribution of st under trajectories sampled from π starting at sinit .
+
+Soft performance-difference lemma. The classical performance-difference lemma of Kakade and Langford [18] extends to the entropy-regularised regime; equivalent statements appear in Neu et al. [28] and Geist et al. [10] . The form below is specialised to our finite-horizon, deterministic-transition setting at α = γ = 1 .
+
+Lemma 1 (Soft performance-difference lemma) . For any two policies π and πold ,
+
+˜J(π) − ˜J(πold ) = Eτ ∼π
+
+"T −1X
+
+> t=0
+
+ ˜Aπold (st, s t+1 ) − KL  π(· | st) ∥ πold (· | st)#
+
+. (25) The result is well-known in the soft RL literature [ 28 , 10 ], and we provide a proof for the sake of completeness. 
+
+Proof. From (1) at α = γ = 1 , together with the identity Ea∼π [− log π(a | s)] = H(π(· | s)) , the soft value admits the sample-path form 
+
+˜V π (sinit ) = Eτ ∼π
+
+"T −1X
+
+> t=0
+
+ r(st, s t+1 ) − log π(st+1 | st)#
+
+.
+
+Pathwise, the telescoping identity PT −1
+
+> t=0
+
+  ˜V πold (st+1 ) − ˜V πold (st) = ˜V πold (sT ) − ˜V πold (s0) = 
+
+− ˜V πold (sinit ) holds because s0 = sinit and ˜V πold (sT ) = 0 at the absorbing state. Substituting this into the previous display, 
+
+˜V π (sinit ) − ˜V πold (sinit ) = Eτ ∼π
+
+"T −1X
+
+> t=0
+
+
+
+r(st, s t+1 ) − log π(st+1 | st) + ˜V πold (st+1 ) − ˜V πold (st)
+
+#
+
+.
+
+Identifying ˜Qπold (st, s t+1 ) = r(st, s t+1 ) + ˜V πold (st+1 ) from (2) (deterministic transitions, γ = 1 ), 
+
+˜J(π) − ˜J(πold ) = Eτ ∼π
+
+"T −1X
+
+> t=0
+
+ ˜Qπold (st, s t+1 ) − ˜V πold (st) − log π(st+1 | st)
+
+#
+
+.
+
+The advantage definition in (2) at α = 1 rearranges to ˜Qπold (s, s ′) − ˜V πold (s) = ˜Aπold (s, s ′) + log πold (s′ | s), hence 
+
+˜J(π) − ˜J(πold ) = Eτ ∼π
+
+"T −1X
+
+> t=0
+
+ ˜Aπold (st, s t+1 ) + log πold (st+1 | st) − log π(st+1 | st)
+
+#
+
+. (26) Conditional on st, the inner expectation of the last two log-probabilities under st+1 ∼ π(· | st)
+
+equals − KL( π(· | st) ∥ πold (· | st)) , which is σ(st)-measurable; the tower rule then yields (25) .
+
+Approximation by soft surrogate objective. The right-hand side of (25) is impractical to optimise directly: at the start of an Ent-PPO iteration we have rollouts from πold , not from πθ . Following the strategy of CPI [ 18 ] and TRPO [ 35 ], we replace the on-policy distribution under π in (25) by the analogous distribution under πold . The next lemma shows that the soft surrogate Lsoft defined in (16) is exactly this substitution. 23 Lemma 2 (Surrogate as state-distribution swap) . Define the per-state functional 
+
+φ(πθ ; s) ≜ Es′∼πθ (·| s)
+
+ ˜Aπold (s, s ′) − KL  πθ (· | s) ∥ πold (· | s). (27) 
+
+Then, the following bound holds 
+
+˜Lsoft (θ; πold ) =  
+
+> T−1
+
+X
+
+> t=0
+
+Est∼dπold 
+
+> t
+
+φ(πθ ; st) , ˜J(πθ ) − ˜J(πold ) =  
+
+> T−1
+
+X
+
+> t=0
+
+Est∼dπθt
+
+φ(πθ ; st). (28) 
+
+Proof. Follows from applying the tower rule to (19) and (25) with the inner expectation taken over st+1 ∼ πθ (· | st), the integrand becomes exactly φ(πθ ; st) (the KL term in (25) is already 
+
+σ(st)-measurable). (28) make the surrogate-vs-true relationship transparent: both quantities are sums over time of the 
+
+same per-state functional φ(πθ ; ·), evaluated under different state distributions ( dπold  
+
+> t
+
+for the surrogate, 
+
+dπθ 
+
+> t
+
+for the truth). They coincide at θ = θold , where both vanish, and agree to first order in θ at θold —the same property that justifies CPI, TRPO, and PPO in the unregularised case. 
+
+Policy improvement guarantees. We now bound the surrogate-vs-true error and use it to derive a CPI-style monotone improvement guarantee for Ent-PPO. The key observation is that the per-state functional φ admits a clean decomposition into two non-negative KL terms. Let π♯ 
+
+> old
+
+denote the soft greedy of πold , i.e. the unique maximizer in (3) at α = 1 when applied to πold :
+
+π♯
+
+> old
+
+(s′ | s) = exp   ˜Qπold (s, s ′)P 
+
+> u∈A s
+
+exp   ˜Qπold (s, u ) , s ∈ S , s ′ ∈ A s. (29) 
+
+Proposition 3 (Two-term decomposition of φ). For every s ∈ S ,
+
+φ(πθ ; s) = KL  πold (· | s) ∥ π♯
+
+> old
+
+(· | s) − KL  πθ (· | s) ∥ π♯
+
+> old
+
+(· | s). (30) 
+
+Proof. Set Λ( s) ≜ log P 
+
+> u∈A s
+
+exp( ˜Qπold (s, u )) , so that (29) reads log π♯
+
+> old
+
+(s′ | s) = ˜Qπold (s, s ′) −
+
+Λ( s). For any policy π,
+
+Es′∼π
+
+ ˜Qπold (s, s ′) + H(π(· | s)) = Es′∼π
+
+ log π♯
+
+> old
+
+(s′ | s) + Λ( s) − Es′∼π
+
+ log π(s′ | s)
+
+= Λ( s) − KL  π(· | s) ∥ π♯
+
+> old
+
+(· | s). (31) Applied with π = πold , the left-hand side of (31) equals ˜V πold (s) by the soft Bellman equation at 
+
+α = 1 , so Λ( s) = ˜V πold (s) + KL  πold (· | s) ∥ π♯
+
+> old
+
+(· | s). Substituting back into (31) at π = πθ and rearranging, 
+
+Es′∼πθ
+
+ ˜Qπold (s, s ′) + H(πθ (· | s)) − ˜V πold (s) = KL( πold ∥ π♯
+
+> old
+
+) − KL( πθ ∥ π♯
+
+> old
+
+).
+
+The left-hand side equals φ(πθ ; s) by the calculation in the proof of Lemma 2. The decomposition (30) has a crisp interpretation. The first term, KL( πold ∥ π♯
+
+> old
+
+), is independent of θ
+
+and quantifies how far πold is from being soft-optimal — it vanishes if and only if πold is a fixed point of soft policy improvement. The second term penalises deviation of πθ from the soft-greedy target 
+
+π♯
+
+> old
+
+, attaining its global minimum (zero) at πθ = π♯
+
+> old
+
+, which is the exact soft-policy-iteration step. Combining Lemma 2 and Proposition 3, 
+
+˜Lsoft (θ; πold ) = E(πold ) − 
+
+> T−1
+
+X
+
+> t=0
+
+Est∼dπold 
+
+> t
+
+ KL  πθ (· | st) ∥ π♯
+
+> old
+
+(· | st) , (32) where 
+
+E(πold ) ≜ 
+
+> T−1
+
+X
+
+> t=0
+
+Est∼dπold 
+
+> t
+
+ KL  πold (· | st) ∥ π♯
+
+> old
+
+(· | st) ≥ 0 (33) is the soft Bellman residual of πold averaged along its own occupancy. The supremum of (32) over θ
+
+equals E(πold ), attained at πθ = π♯
+
+> old
+
+, which yields the following lemma. 24 Lemma 4 (Soft fixed point) . max θ ˜L(θ; πold ) = E(πold ) = 0 if and only if πold (· | s) = π♯
+
+> old
+
+(· | s)
+
+for every s reachable under πold . In that case πold is the soft-optimal policy and induces the target sampling distribution R/Z over X .Proof. Each summand in (33) is non-negative, so E(πold ) = 0 iff KL( πold (· | s) ∥ π♯
+
+> old
+
+(· | s)) = 0 for every s with dπold  
+
+> t
+
+(s) > 0 for some t, which is equivalent to πold = π♯ 
+
+> old
+
+on those states. By (29) this is the soft Bellman optimality equation at α = 1 , whose unique solution on reachable states is π⋆α=1 
+
+(Geist et al. 10 , Theorem 1). The equivalence in Section 2.2 (see also Tiapkin et al. 42 , Proposition 1) then identifies the induced terminal distribution with R/Z.We are now in position to bound the surrogate-vs-true error. 
+
+Proposition 5 (Surrogate error bound) . Let 
+
+¯δ(θ) ≜ max   
+
+> 0≤t≤T−1
+
+Es∼dπold 
+
+> t
+
+q
+
+KL  πθ (· | s) ∥ πold (· | s) , M (θ) ≜ max  
+
+> s∈S
+
+φ(πθ ; s) .
+
+Then ˜J(πθ ) − ˜J(πold ) − ˜Lsoft (θ; πold ) ≤ T (T −1) 2 M (θ) ¯δ(θ), (34) 
+
+and M (θ) ≤ ∥ KL( πold ∥ π♯
+
+> old
+
+)∥∞ + ∥ KL( πθ ∥ π♯
+
+> old
+
+)∥∞ < ∞, where the supremums are over S.Proof. Subtracting two equations of (28), 
+
+˜J(πθ ) − ˜J(πold ) − ˜Lsoft (θ; πold ) =  
+
+> T−1
+
+X
+
+> t=0
+
+dπθ 
+
+> t
+
+− dπold  
+
+> t
+
+, φ (πθ ; ·) . (35) Bound each summand by |⟨· , ·⟩| ≤ M (θ) · TV( dπθ 
+
+> t
+
+, d πold  
+
+> t
+
+). The standard occupancy-mismatch inequality for finite-horizon MDPs (Schulman et al. 35, Lemma 3) gives 
+
+TV  dπθ 
+
+> t
+
+, d πold 
+
+> t
+
+ ≤
+
+> t−1
+
+X
+
+> t′=0
+
+Es∼dπold 
+
+> t′
+
+TV  πθ (· | s), π old (· | s) ,
+
+so PT −1 
+
+> t=0
+
+TV( dπθ 
+
+> t
+
+, d πold  
+
+> t
+
+) ≤ T (T −1) 2 max t′ Edπold  
+
+> t′
+
+[TV( πθ , π old )] ≤ T (T −1) 2√2 · ¯δ(θ), where the last inequality follows from Pinsker’s inequality. The bound on M (θ) is immediate from (30) and the triangle inequality, with finiteness following from π♯ 
+
+> old
+
+having full support on every As.
+
+Monotone improvement. Combining (32) with (34) yields the central inequality 
+
+˜J(πθ ) − ˜J(πold ) ≥ E (πold ) − 
+
+> T−1
+
+X
+
+> t=0
+
+Edπold 
+
+> t
+
+ KL( πθ ∥ π♯
+
+> old
+
+)| {z } 
+
+> = ˜Lsoft (θ;πold )by (32)
+
+− T (T −1) 2√2 M (θ) ¯δ(θ). (36) The two negative terms call for fundamentally different mechanisms. The first expression is the soft surrogate itself; Lemma 3 rewrites it as a difference of two non-negative KLs that makes the soft-policy-iteration target π♯ 
+
+> old
+
+visible. Its supremum over θ is E(πold ) ≥ 0,attained at πθ = π♯
+
+> old
+
+, and it equals zero at πθ = πold ; Lemma 4 shows it furthermore vanishes uniformly only at the soft-optimal policy. Crucially, the analytic KL penalty KL( πθ ∥ πold ) in (20) is intrinsic to this term: it is the regulariser that emerges from soft policy improvement via the entropy-cross-entropy identity (18) , and maximising ˜Lsoft (θ; πold ) already balances the soft advantage against it. The surrogate is therefore self-regularised — no additional mechanism is needed to keep its maximiser well-defined. The second negative term tells a different story. It is controlled by ¯δ(θ), the expected KL( πθ ∥ πold )
+
+along dπold , which introduces a necessity for an additional trust-region mechanism beyond the one already present in ˜Lsoft (θ; πold ), and importance-ratio clipping plays exactly this role . This explains, at the level of the bound, why removing either component is harmful — the KL penalty (Figure 7) and the clipping (Figure 8) — and why the effect of each is most pronounced with multiple update epochs per batch. 25 Adaptive trust region. The relative importance of the two mechanisms is not constant along training. As πold approaches the soft-optimal policy, E(πold ) → 0 and π♯ 
+
+> old
+
+→ πold by Lemma 4, so the deviation KL( πθ ∥ πold ) that the inner-loop maximiser would naturally produce shrinks; the trust-region term M (θ)¯δ(θ) in (36) is then also goes to zero and the additional control provided by clipping becomes correspondingly less consequential. The mechanism is most needed early in training, when E(πold ) is large and the surrogate maximiser pushes πθ aggressively towards π♯
+
+> old
+
+. This is in contrast to standard PPO in unregularised RL, where the analogous bound contains no quantity that vanishes at the optimal policy, so the trust-region error term remains comparably significant throughout training. 
+
+Scope of the guarantee. We view (36) as a CPI-style motivation for the algorithmic structure of Ent-PPO rather than a convergence theorem: it is a per-step bound, the constants M (θ) and ¯δ(θ)
+
+depend on πold , and the inner-loop optimiser only approximately maximises the surrogate. 26 G Hyperparameters 
+
+All hyperparameters are summarised in Table 2. 
+
+G.1 Synthetic problems 
+
+In this section, all methods are implemented in the gfnx library [ 41 ] and trained with the Adam optimizer with default momentum parameters. The backward policy PB is fixed to be uniform over parents in experiments where it is not learned. All experiments are conducted on CPU. 
+
+Batch size and training budget. All methods use a batch size of 16 trajectories per iteration. Hypergrid is trained for 31 250 iterations ( 5 × 10 5 total trajectories); TFBind8 for 200 000 iterations (3.2 × 10 6 total trajectories); QM9 for 50 000 iterations ( 8 × 10 5 total trajectories). All experiments are repeated over 3 random seeds. 
+
+Network architectures. All policy and value networks share the same hidden size of 256 and depth of 2. In all cases, the value baseline network mirrors the policy encoder architecture with a scalar output head; the two networks do not share parameters. 
+
+Policy learning rate. We tune the policy learning rate on the off-policy baselines (DB, TB, SubTB) over the grid {10 −3, 3 × 10 −4, 10 −4} using 3 seeds, selecting the value that minimizes AUC. This yields 10 −3 for Hypergrid and 3 × 10 −4 for TFBind8 and QM9. All methods — VPG variants, Ent-PPO, DB, TB, and SubTB—use these same policy learning rates on the respective environments. 
+
+TB. log Zθ is trained with a separate Adam optimizer with learning rate 10 −1.
+
+SubTB. We set SubTB-λ to 0.9 following [21]. 
+
+Ent-PPO. The PPO clipping parameter is set to ε = 0 .2.
+
+Value baseline. For VPG (Value Baseline), we tune the value network learning rate from 
+
+{lr π , lr π /3}, the number of value-network training epochs per rollout batch from {1, 2}, and the number of mini-batch splits within each epoch from {1, 2} (see Section 4.1 for the definition of these quantities), using 3 seeds on each environment. The selected configuration is: value learning rate 
+
+= lr π , 2 epochs, 1 split. 
+
+GAE. Based on the grid search described in Section 5.2, we tune the GAE parameter λ ∈{0.5, 0.6, 0.7, 0.8, 0.9}, value-network training epochs E ∈ {1, 2, 4, 8}, and mini-batch splits 
+
+S ∈ { 1, 2, 4, 8} for VPG on Hypergrid. The selected configuration is (λ, E, S ) = (0 .7, 4, 2) 
+
+with value learning rate lr π /3. This configuration is applied for Ent-PPO and TRPO across all environments. 
+
+G.2 Molecular graph generation. 
+
+For molecular graph experiments, all methods are implemented in the gflownet-recursionpharma library and trained with the Adam optimizer using default momentum parameters. The backward policy PB is fixed to be uniform over parents in all experiments. All experiments are conducted on NVIDIA GPU A100 with 40GB memory. Each individual run completed in under 48 hours of wall-clock time. For stable metrics evaluation, we instantiate a target network with Exponential Moving Average (EMA) and τ = 0 .05 , which is used for ELBO and EUBO evaluation. 
+
+Batch size and training budget. sEH uses a batch size of 256 trajectories per iteration and QM9 uses 128 . All experiments are run for 1 000 iterations and repeated over 3 random seeds. 
+
+Network architectures. All policy and value networks share the same hidden size of 128 and depth of 4. The value baseline network mirrors the policy encoder architecture with a scalar output head; the two networks do not share parameters. 27 Policy learning rate. All experiments use the same standard learning rate 10 −4.
+
+TB. log Zθ is trained with a separate Adam optimizer at learning rate 10 −3.
+
+SubTB. SubTB-λ = 1 .
+
+Ent-PPO. Interestingly, hyperparameters found on synthetic problems transfer well to the larger molecular graph environments and require little additional tuning. The PPO clipping parameter is set to ε = 0 .2. The selected configuration is (λ, E, S ) = (0 .7, 4, 8) with value learning rate lr π /3,applied to both sEH and QM9. The values of λ and E match those selected on the synthetic problems; only the number of mini-batch splits S increases (from 2 to 8), reflecting the larger per-iteration batch size. We verified this configuration by varying one hyperparameter at a time as in the previous section and observed no further improvement. Table 2: Hyperparameters used in all experiments. 
+
+(a) Synthetic experiments.                                  
+
+> Hyperparameter Hypergrid TFBind8 String QM9
+> Shared across all methods
+> Optimizer Adam Batch size (trajectories) 16 Hidden size 256 Network depth 2Policy learning rate 10 −33×10 −43×10 −4
+> TB
+> log Zlearning rate 10 −1
+> SubTB
+> λ0.9
+> Ent-PPO only
+> Clip ε0.2
+> VPG (GAE) / Ent-PPO
+> Value learning rate lr π/3
+> Value training epochs E4GAE λ0.7 Mini-batch splits S2
+> VPG (Value Baseline)
+> Value learning rate lr π
+> Value training epochs E2Mini-batch splits S1
+
+(b) Molecular graph experiments.                       
+
+> Hyperparameter sEH QM9
+> Shared across all methods
+> Optimizer Adam Batch size (trajectories) 256 128 Hidden size 128 Network depth 4Policy learning rate 10 −4
+> TB
+> log Zlearning rate 10 −3
+> SubTB
+> λ1
+> Ent-PPO only
+> Clip ε0.2
+> VPG (GAE) / Ent-PPO
+> Value learning rate lr π/3
+> Value training epochs E4GAE λ0.7 Mini-batch splits S8
+
+28

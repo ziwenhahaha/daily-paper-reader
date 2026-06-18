@@ -1,0 +1,646 @@
+Title: Adaptive Multi-Resolution Procedural Knowledge Compression for Large Language Models
+
+URL Source: https://arxiv.org/pdf/2606.12203v1
+
+Published Time: Thu, 11 Jun 2026 01:12:48 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# Adaptive Multi-Resolution Procedural Knowledge Compression for Large Language Models 
+
+Changyue Wang *1 , Weihang Su 1, Qingyao Ai †1 , Yichen Tang 1,
+
+Runzhong Qiao 1, Xuancheng Li 1, Min Zhang 1, Yiqun Liu 11Department of Computer Science and Technology, Tsinghua University 
+
+Abstract 
+
+Large language models (LLMs) are widely used to tackle complex tasks with autonomous workflows. Recently, reusable natural language skills have emerged as a popular paradigm to inject procedural knowledge into LLM ap-plications. Since popular skills are often in-voked repeatedly, placing their full text in ev-ery context significantly increases prefill cost and latency. While text compression tech-niques have the potential to solve this prob-lem, most existing methods are designed to compress factual knowledge in documents in-stead of procedural knowledge, making them insufficient for skill compression. In this pa-per, we argue that an effective skill compres-sion method should: 1) preserve logical de-pendencies among workflows and tool proto-cols, 2) enable lightweight, offline compres-sion for frequently updated community skills, and 3) be adaptable to varying complexities across skills. To address this, we present 
+
+SKIM (SKI ll co M pression), an adaptive multi-resolution soft token compression framework for procedural skills. Depending on the com-plexity of each skill, SKIM creates different numbers of soft tokens that not only improve the efficiency of LLM inference, but also pre-serve the effectiveness of skill usage. Experi-ments indicate that SKIM compresses skills to 30 to 60 percent of their original token length while preserving task performance better than existing compression methods. 1
+
+1 Introduction 
+
+Skill, a type of data structure that stores reusable procedural knowledge specifying when and how a large language model (LLM) should invoke a ca-pability, follow a workflow, or interact with tools, has been shown to be effective in improving the  
+
+> *cy-wang24@mails.tsinghua.edu.cn
+> †Corresponding Author: aiqy@tsinghua.edu.cn
+> 1We have released our code at https://github.com/beb r2/SKIM
+
+performance of LLM agents in downstream tasks. Such skills are often written as natural-language files such as SKILL.md , making them easy for users to create, edit, and share (Zhou et al., 2026; Su et al., 2026). While this natural-language format has made skills an attractive abstraction for build-ing, distributing, and reusing agent capabilities, de-ploying them at scale introduces substantial costs in terms of token consumption. Typically, every in-vocation requires placing the full skill text into the model’s context window. As agent skill ecosystems like OpenClaw (OpenClaw, 2026b) increasingly power daily workflows for many developers, popu-lar skills are downloaded and then invoked across diverse systems (Jiang et al., 2026), causing re-dundant token overhead to accumulate. Therefore, even reducing a small fraction of prompt tokens for these skills can translate into aggregate compu-tational and latency savings. Furthermore, since users can freely modify these natural-language skills and deploy them across various inference backends, the direct application of traditional key-value (KV) cache reuse (Kwon et al., 2023) be-comes unfeasible. A natural way to reduce this overhead is to com-press skill content before deployment. Existing text compression methods can be broadly divided into hard compression, which selects discrete text tokens (Pan et al., 2024; Jiang et al., 2024), and soft compression, which maps contexts into continuous representations (Ge et al., 2024; Li et al., 2025b,a). These methods have been primarily developed and evaluated for generic prompts, long-context under-standing, or document-centric tasks, where pre-serving salient semantic content or query-relevant evidence is often sufficient. In such settings, a com-pressed context can remain useful as long as the critical facts or evidence are still recoverable. Unfortunately, unlike descriptive documents, skills encapsulate procedural knowledge (Chen et al., 2026), presenting three unique compression 1                     
+
+> arXiv:2606.12203v1 [cs.CL] 10 Jun 2026 Skill Text
+> # Coffee Price Data — Single-Day Lookup Guide
+> ##[Data Source]: The coffee database ( LoadDB[coffee] ) contains daily coffee futures price data.
+> Columns: Date ,Open ,High ,Low ,Close ,Volume ,Currency . Dates are stored in YYYY-MM-DD .
+> ##[Standard Lookup Workflow]
+> { ... The remaining skill specifies the exact lookup workflow, column semantics, and so on.}
+> Factual Question
+> Q: What columns does this database contain?
+> A: Date, Open, High, Low, Close, Volume, Currency.
+> ICAE
+> Procedural Question
+> Q: What was the opening price of coffee on 2001-12-06?
+> Thought 1: 123.00
+> Action 1: Finish[123.00]
+> SKIM
+> ICAE
+> SKIM
+> Thought 1: We need to load the coffee database.
+> Action 1: LoadDB[coffee]
+> ... {Some other loops (observation and thought) ...}
+> Action 2: FilterDB[Date=2001-12-06]
+> ... {Some other loops (observation, action and thought) ...}
+> Action 4: Finish[42.75]
+> Observation 4: Answer: 42.75
+
+Figure 1: A ToolQA example. Factual information can be recovered from compressed skills, but the procedural question requires preserving workflow specified by skill. 
+
+challenges for existing text compression methods. First, skill compression must preserve procedural dependencies. Such information is not stored as simply as some factual keywords. Therefore, rather than merely retaining isolated facts, compression must strictly preserve the dependencies between conditions, tool arguments, and other information in the skill, as severing even one logical link can lead to execution failure. For example, Figure 1 shows a case where we use ICAE (Ge et al., 2024), a representative context compression method for LLMs, to compress a skill. When the compressed skill is used for a factual question, the performance of the system is fine. However, when it is used on a task that actually requires the procedural knowl-edge in the skill, ICAE breaks the system and pro-duces wrong results. Second, the sharing and deployment paradigm of skills differs fundamentally from static texts (Hu et al., 2026). Since users actively share, modify, and distribute skills, their compressed representa-tions must be rapidly regenerable and easily trans-mittable. Consequently, the resulting artifacts must be storage efficient. Furthermore, the process of encoding a new or updated skill must be compu-tationally lightweight, relying only on a simple forward pass rather than expensive online gradient backpropagation required by temporary training methods like TokMem (Wu et al., 2026). Third, skills differ significantly in complexity and information density. A fixed compression rate cannot simultaneously adapt to all skills, and the optimal rate for one skill might even vary across models. Therefore, an ideal framework should rep-resent a skill under multiple token budgets and automatically select the appropriate compression resolution for specific skill and model pairs. To address these challenges, we propose SKIM 
+
+(SKI ll co Mpression), an adaptive multi-resolution soft token compression framework. Following dual model compression architectures such as DRIFT (Xie et al., 2026), SKIM uses a compressor to en-code the skill and a projector to map the resulting soft tokens into the target LLM space. SKIM is trained via a progressive three-stage paradigm, in-cluding skill reconstruction, procedural warm-up, and skill task alignment, to preserve executable de-pendencies. During skill task alignment, the target LLM is adapted via a single Low-Rank Adaptation (LoRA) (Hu et al., 2022) module, ensuring param-eter efficiency. To accommodate varying skill com-plexities, SKIM supports representing a skill un-der multiple token budgets (resolutions) simultane-ously. Before deployment, an offline self-judgment mechanism automatically selects the lowest-budget resolution that maintains execution accuracy. This design perfectly aligns with the nature of skill deployment paradigm. Developers can dis-tribute skills as lightweight, pre-computed soft to-ken bundles for different mainstream target mod-els, functioning similarly to a prebuilt artifact in software distribution. When a skill is updated, its compressed representation is instantly regenerated via a single forward pass. Furthermore, the multi-resolution design seamlessly adapts to the varying complexities of different skills. During online in-ference, the serving infrastructure simply loads the pre-selected soft tokens and switches to the shared LoRA adapter, without additional latency. Our contributions are summarized as follows: • We formulate procedural skill compression as dis-tinct from factual document compression, where preserving executable logic is central. • We propose SKIM, a skill compression frame-work that combines progressive training with of-fline self-judgment for resolution selection. • We evaluate SKIM on several skill-based datasets, showing that it outperforms existing methods in token reduction while maintaining high skill task accuracy. 2Work Form Offline Compression Lightweight Knowledge Type                             
+
+> LLMLingua-2 (Pan et al., 2024) hard tokens Yes Yes General LongLLMLingua (Jiang et al., 2024) hard tokens No Yes Factual ICAE (Ge et al., 2024) soft tokens Yes Yes Factual 500xCompressor (Li et al., 2025b) soft tokens & KV Cache Yes Yes Factual DRIFT (Xie et al., 2026) soft tokens No Yes Factual TokMem (Wu et al., 2026) soft tokens Yes No Procedural SKIM soft tokens Yes Yes Procedural
+
+Table 1: Comparison of prompt compression methods. Lightweight denotes forward compression without gradient optimization. Knowledge Type specifies the form of knowledge targeted by each method. 
+
+2 Related Work 
+
+2.1 Skills for Large Language Models 
+
+Large Language Models (LLMs) have evolved into agentic problem solvers for complex tasks. Recent work has extended retrieval augmented generation from declarative knowledge to procedural capabili-ties, where reusable external resources are selected and applied at inference time (Su et al., 2024b,a, 2025b,a). A growing paradigm is therefore to pack-age procedural knowledge as skills (Chen et al., 2026), which can augment agent frameworks such as OpenClaw (OpenClaw, 2026b). A skill is usu-ally written as a SKILL.md file. During inference, after one or more skills are selected, their main body fields are loaded into the LLM context. A recent large scale study reports that online skills av-erage more than 2,000 tokens and that some exceed 10,000 tokens (Cho et al., 2026). Moreover, plat-forms like ClawHub (OpenClaw, 2026a) provide centralized repositories for skill sharing, acceler-ating their adoption, which significantly increases prompt token consumption. 
+
+2.2 Prompt Compression 
+
+Prompt compression generally reduces computa-tion cost by distilling redundant context, falling into two categories. Hard compression explicitly prunes discrete tokens. For instance, LLMLingua-2 (Pan et al., 2024) provides task-agnostic compres-sion, whereas LongLLMLingua (Jiang et al., 2024) utilizes a query-aware mechanism for retrieval sce-narios but introduces additional online latency. Fur-thermore, these hard techniques often discard struc-tural elements necessary for executable logic. Alter-natively, soft compression projects text into contin-uous representations. ICAE (Ge et al., 2024) maps text into continuous embeddings, and 500xCom-pressor (Li et al., 2025b) retains KV cache tensors. For this reason, 500xCompressor introduces mas-sive storage pressure, rendering it unsuitable for skill distribution scenarios. To address the lack of procedural compression, TokMem (Wu et al., 2026) distills an instruction sequence into a single token. However, it demands costly gradient-based optimization for every new procedure, making it impractical for skill ecosystems where community iterations are rapid. Recently, DRIFT (Xie et al., 2026) leverages a dual model soft token architec-ture to extract factual information. Yet, it requires online compression to process retrieved long texts and the user query, thereby introducing runtime overhead. Building upon such architecture, SKIM optimizes a compressor and a target LLM specifi-cally for procedural skills, while ensuring offline compression and lightweight forward pass. We summarize these differences in Table 1. 
+
+3 Methodology 
+
+In this section, we describe SKIM as a framework for replacing selected skill content with continu-ous tokens. We define the compression task, then present the architecture, the progressive training, offline resolution selection, and inference. 
+
+3.1 Overview 
+
+A skill often contains name, description, content, and other metadata fields. The content field is the main body and commonly specifies procedural guidance, tool descriptions, and usage constraints. We focus on the content field of a skill, since this field is the skill body loaded into the LLM context after selection. Given skill content s and a user query u, the goal is to replace the full skill content text in the input prompt with a compact continuous representation while preserving the procedural be-havior specified by s. For a target LLM M with embedding dimension dM , SKIM produces a ma-trix EK (s) ∈ RK×dM under a token budget K.The budget K is selected from an ordered set K,where smaller values correspond to more aggres-sive compression. SKIM contains a compressor, 3learnable slot tokens, a projector, and a target LLM adapted with LoRA. The compressor reads the skill and slot tokens, the projector maps slot position hid-den states into the target LLM embedding space, and the resulting soft tokens are inserted into the target context together with the user query. Figure 2 summarizes the pipeline. During train-ing, the same skill is optimized under multiple res-olutions so that the compressor learns representa-tions that remain useful when truncated. Before deployment, SKIM compresses each skill for each target model using the corresponding compressor, projects the representation into the target model space, and stores the full soft token artifact. It then runs an offline diagnostic evaluation to record the resolution selected for that skill and target model. At inference, the target LLM receives text tokens for the query and soft tokens for each skill, and switches to the LoRA adapter to generate response. 
+
+3.2 Multi-Resolution Compressor 
+
+SKIM follows the dual model soft token design used in recent context compression work (Liu and Qiu, 2025; Xie et al., 2026). The compressor Cθ
+
+is an autoregressive backbone LLM that receives tokenized skill content followed by Kmax learnable slot tokens. These slot tokens are trained param-eters and remain fixed after training. After the compressor forward pass, the hidden states at the slot token positions form a latent representation 
+
+Z(s) ∈ RKmax ×dC , where dC is the compressor hidden dimension. A multilayer perceptron (MLP) projector Pϕ maps this latent representation into the target model space: 
+
+EKmax (s) = Pϕ(Z(s)) ∈ RKmax ×dM . (1) For a lower resolution K < K max , SKIM uses the prefix EK (s) = EKmax (s)1: K . Since one high resolution representation can be truncated to ob-tain lower resolutions, a platform can store a single artifact per skill and target model, then choose a smaller budget without recomputing the represen-tation. When a prompt contains multiple skills, SKIM compresses each independently. The pro-jected soft token sequences are then concatenated in the same order as the selected skills. Then, the target LLM with LoRA adapter is called with the soft token sequence and the user query. 
+
+3.3 Progressive Training 
+
+SKIM uses three training stages. Each stage op-timizes the compressor, learnable slot tokens, and projector with full parameter updates, but differs in supervision and whether the target LLM is adapted. For each training example, the loss is averaged over resolutions returned by K. This objective teaches the model to support multiple budgets. 
+
+Stage 1: Skill Reconstruction. The first stage learns a general skill representation from a large corpus of skills collected from the web. The target LLM is frozen. Given a skill s, SKIM inserts 
+
+EK (s) into a reconstruction prompt and optimizes the negative log likelihood of the original text: 
+
+Lrec = − 1
+
+|K| 
+
+X
+
+> K∈K
+
+log pM (s | EK (s), r rec ), (2) where rrec is a short reconstruction instruction. This stage encourages the slot states to retain the core information in the skill content before the model is exposed to downstream tasks. 
+
+Stage 2: Procedural Question Answering Warm Up. The second stage aligns the compressed rep-resentation with procedural question answering. Unlike factual knowledge Question Answering (QA), where labeled question answer pairs are rela-tively abundant, labeled QA data for executable skills are much more limited. To address this data scarcity, we introduce this procedural warm-up stage that repurposes WikiHow (Koupaee and Wang, 2018) as weakly supervised question answer-ing data. WikiHow is a large scale summarization dataset crawled from “how-to articles” on the Wik-iHow website. For our purpose, the article title serves as the question, the article body serves as procedural text, and the summary serves as a con-cise answer. Each example therefore contains a procedural document d, a query q, and an answer 
+
+a. The document is compressed while the query remains plain text: 
+
+Lqa = − 1
+
+|K| 
+
+X
+
+> K∈K
+
+log pM (a | EK (d), q ). (3) Since the target LLM is frozen, this stage mainly trains the compressor side to expose information in a form that the target model can consume. The warm-up signal moves the compressor beyond re-construction by aligning procedural text with an-swer generation before skill tasks are introduced. 
+
+Stage 3: Skill Task Alignment. The third stage uses the same task format and loss as the warm-up stage but replaces WikiHow documents with 4Target LLM        
+
+> Skill As Full Text Skill As KSoft Tokens . . .
+> Silver Answer Answer-K
+> . . .
+> Target LLM
+> Offline Resolution Selection
+> Selected Resolution K *
+> Progressive Training (Loss is averaged over all resolutions)
+> Compressor
+> Side Target LLM Query
+> Compressor
+> Side
+> Target LLM
+> Answer
+> Answer or
+> Trace
+> Compressor
+> Side Target LLM
+> Reconstruction
+> Prompt
+> Skill Text Skill Text
+> Skill Text
+> Procedural
+> Document
+> Stage 1: Skill Reconstruction
+> Stage 2: Procedural QA Warm up
+> Stage 3: Skill Task Alignment
+> Compressor
+> Skill
+> Slot
+> Tokens
+> Target LLM Soft Tokens
+
+Compressor Side 
+
+> Projector
+> Hidden States
+> Query
+> Offline
+> Compression
+> Online Inference
+> Query
+> LoRA
+> LoRA
+> K = 256, 512 ...
+
+Figure 2: Overview of SKIM. The upper panel illustrates the training process and offline resolution selection, where the compressor (consisting of slot tokens, an LLM-based compressor, and an MLP projector) learns to convert skills into soft-token prefixes aligned with the target LLM’s embedding space. The lower panel shows the inference architecture, where SKIM selects the soft-token prefix corresponding to the offline-determined optimal resolution and prepends it to the target LLM. 
+
+real skills from the first stage. Our goal here is to align the compressed continuous tokens and the tar-get model’s behavior with actual skill-conditioned tasks, which often require complex decision mak-ing, tool calls, or the joint use of multiple skills. To build this training data, we employ a high-capacity LLM (GPT-5.2 in our implementation (OpenAI, 2025)) as an evaluator. This LLM first evaluates the collected skills, filtering out documents with weak procedural content. For the remaining skills, it generates skill-dependent user questions and ex-tracts relevant metadata (e.g., tool requirements or splittability). Then, supervised answers are gen-erated by the target model. We prompt it to fol-low skill guidance to prevent it from bypassing the skill text and relying solely on its parametric mem-ory. Furthermore, to effectively train the model on complex real-world behaviors, our data construc-tion specifically addresses two critical properties of skills: • Tool Usage Simulation: Many skills specify external tool usage. To ensure the framework can trigger correct tool workflows, we synthesize ReAct-style traces (Yao et al., 2023) with inter-leaved Thought, Action, and Observation steps. Since accessing APIs for collected diverse web skills is impractical, when generating answers, we use the target LLM itself as a simulator to generate simulated tool observations conditioned on the tool schema, query, and partial trajectory. • Multi-Skill Composition: Some queries require integrating multiple skills. Since evaluating every pairwise combination of skills is computationally prohibitive, we use a top-down “skill split” strat-egy. The high-capacity LLM rewrites a complex skill into self-contained subskills while using the original skill text to generate the corresponding question. During training, SKIM compresses these subskills independently and concatenates their soft tokens to model multi-skill scenarios. Algorithm 2 in Appendix B summarizes this data construction procedure. In this training stage, the target LLM is adapted through a LoRA mod-ule, while the compressor, slot tokens, and pro-jector remain trainable. This single, unified LoRA adapter is shared across all skills, aligning the target model’s behavior with the continuous skill tokens, without modifying its full parameters. 53.4 Offline Resolution Selection 
+
+Since skills differ in complexity, different skills re-quire different compression budgets. A simple skill may be represented with only a few soft tokens, whereas a multi-step procedural skill may require a higher resolution. We therefore select a skill-model specific resolution before deployment. Algorithm 1 shows the related pseudocode. For each skill s, SKIM selects its compression resolution through an offline calibration step. The target LLM first generates N diagnostic questions from the original skill text. For each question, the target LLM is prompted with the full skill text to produce a reference answer, which serves as a silver standard because no human label is available. We then replace the full skill text with compressed soft tokens at each resolution K ∈ K , generating one candidate answer per resolution. The model itself compares each candidate answer with the corre-sponding full-text reference answer and computes a fidelity score αK (s) for each resolution. Given a threshold τ , SKIM chooses the smallest resolution whose fidelity reaches the threshold: 
+
+K⋆(s) = min {K ∈ K : αK (s) ≥ τ }. (4) If no compressed resolution reaches the threshold, the system falls back to the original skill text. This offline calibration adds no latency to user requests. 
+
+3.5 Inference 
+
+At inference time, a single skill uses its selected res-olution K⋆(s). For a prompt with multiple skills, SKIM compresses each skill and concatenates their soft token sequences as in the third training stage. The system fetches the corresponding soft token prefixes, activates the LoRA adapter, concatenates the soft tokens with the user query, and runs the tar-get LLM forward pass to decode the final response. Importantly, the LoRA adapter trained in Stage 3 is a single, unified module shared across all skills, including unseen ones. The online path merely involves skill lookup (which depends on the skill retrieval system), soft token loading, and standard LLM decoding with the LoRA activated. Modern inference engines like vLLM (Kwon et al., 2023) support pre-loading and switching LoRA adapters with minimal overhead. For queries not requiring skills, the system seamlessly deactivates the adapter to preserve the base model’s original capabilities. When a skill is updated, the shared LoRA or the compressor requires no retraining. The publisher can regenerate the corresponding soft token artifact through a compressor forward pass, and may rerun the offline resolution selection step only when the edit is substantial. This preserves the convenient distribution property of natural language skills. 
+
+4 Experimental Setup 
+
+4.1 Tasks and Data 
+
+We evaluate SKIM on five datasets: Big-CodeBench (Zhuo et al., 2025), CHAMP (Mao et al., 2024), LogicBench (Parmar et al., 2024), TheoremQA (Chen et al., 2023), and ToolQA (Zhuang et al., 2023). For each task, we use the golden skill annotations provided by SRA-Bench (Su et al., 2026). This setup fixes the relevant skill content for each instance, so the comparison fo-cuses on how the skill is represented in the context. These tasks cover code generation, mathematical reasoning, logical reasoning, theorem question an-swering, and tool use question answering. The first four datasets use single-turn QA evaluation, whereas ToolQA uses ReAct multi-turn decision making with tool observations. For each instance, the user query remains plain text, while the skill content is either inserted in full or replaced by com-pressed tokens. Table 3 lists the dataset statistics. 
+
+4.2 Models 
+
+We evaluate two target LLMs: Qwen3-8B (Yang et al., 2025) (with itself as compressor) and the 14B Phi-4 (Abdin et al., 2024) (with the 3.8B Phi-4-mini-instruct as compressor). Therefore, this set-ting lets us examine changes across model families, target model sizes, and compressor sizes. For each target model, SKIM runs model specific offline resolution selection for each skill. 
+
+4.3 Baselines 
+
+We compare against two non compression refer-ences. Naive does not load any skill, and Full Text loads the golden skills without compression. We also include LLMLingua-2 (Pan et al., 2024), a hard token compression baseline which has three settings in the main table. The small and medium settings use compression ratios 0.3 and 0.55. The large setting uses 0.7 for BigCodeBench and 0.75 for the other tasks, so that its token counts roughly match the higher budget SKIM settings. In ad-dition, we report ICAE (Ge et al., 2024) and 500xCompressor (Li et al., 2025b) as soft com-pression baselines. Since these methods struggle 6Table 2: Main results on the five datasets with golden skills (accuracy (%) / average added skill tokens). 500xCom. denotes 500xCompressor. SKIM Fix-256 and Fix-512 use fixed soft token budgets for every skill, while Adaptive selects between 256 tokens, 512 tokens, and the full text fallback with the offline exam. LLMLingua-2 (S/M/L) use compression ratios chosen to roughly match the three SKIM token settings. Bold SKIM entries mark cases where the method has higher accuracy and fewer tokens than at least one LLMLingua-2 baseline.                                                                                                                                                                                                                                 
+
+> Model Dataset Metric Naive Full Text Soft Baselines LLMLingua-2 SKIM 500xCom. ICAE SMLFix-256 Fix-512 Adaptive
+> Qwen3-8B
+> BigCodeBench Acc. (%) 40.96 49.30 0.18 29.47 40.70 43.60 46.05 44.21 45.53 46.93 # Token 04676 256 256 1300 2655 3362 708 1414 3172
+> CHAMP Acc. (%) 48.88 68.16 3.14 27.80 52.47 55.61 57.40 54.26 61.43 65.92 # Token 01941 256 256 594 1122 1477 438 877 1424
+> LogicBench Acc. (%) 77.11 85.26 33.29 62.11 82.50 83.55 85.13 83.16 85.00 83.68 # Token 01089 256 256 318 604 816 256 512 438
+> TheoremQA Acc. (%) 52.07 68.81 14.32 28.38 56.49 62.92 66.13 60.24 64.79 67.87
+> # Token 0935 256 256 281 535 710 256 509 727 ToolQA Acc. (%) 28.04 47.97 0.00 7.13 37.06 43.08 45.45 35.66 43.92 46.92 # Token 01010 256 256 294 573 769 256 512 754
+> Phi-4
+> BigCodeBench Acc. (%) 43.77 52.19 0.09 0.88 45.26 47.46 49.30 46.58 49.12 50.35 # Token 04628 256 256 1284 2615 3316 708 1414 1889
+> CHAMP Acc. (%) 52.02 61.43 12.11 30.94 59.19 62.78 64.57 58.74 57.85 61.88
+> # Token 01933 256 256 589 1114 1469 438 877 1664 LogicBench Acc. (%) 48.55 75.66 60.53 60.66 53.42 63.16 68.03 63.16 74.74 66.97 # Token 01093 256 256 319 607 820 256 512 335
+> TheoremQA Acc. (%) 45.38 51.14 15.13 18.61 47.39 45.65 48.73 43.78 48.33 48.73 # Token 0921 256 256 272 521 693 256 509 682
+> ToolQA Acc. (%) 14.83 9.79 0.00 0.00 4.48 14.48 15.24 23.08 26.78 17.27 # Token 0996 256 256 287 561 755 256 512 705
+
+to concatenate multi-span soft tokens for QA tasks, we address multi-skill scenarios by first concatenat-ing the skill texts and then compressing them to a fixed length. The selection of these baselines cor-responds to those in Table 1 featuring both offline and lightweight compression, as this preserves the inherent nature of skills. Further details on baseline implementation are in Appendix C. 
+
+4.4 Implementation Details 
+
+For SKIM, we report three variants. SKIM Fix-256 and SKIM Fix-512 use a fixed soft token bud-get for every skill. For the few skills shorter than their compressed form, we directly use the full-text form. SKIM Adaptive uses the offline resolution selection to choose among 256 tokens, 512 tokens, and the full text for each skill. The offline exam generates 10 diagnostic questions per skill. The se-lection accuracy threshold is 0.9. For multi-skill in-stances, we use the highest selected budget among the referenced skills when a shared compression setting is needed. Further hyperparameters and set-tings, as well as the prompt templates, are provided in Appendix C and D, respectively. 
+
+5 Experimental Results 
+
+5.1 Main Results 
+
+Table 2 reports task accuracy and average added tokens across both target models and five datasets. Full Text usually outperforms Naive, demonstrat-ing the value of skill annotations, although it also adds hundreds to thousands of tokens per in-stance. Generic soft compression struggles to re-tain this benefit: ICAE and 500xCompressor often underperform Naive, indicating that factual com-pression methods transfer poorly to skill settings. SKIM achieves a superior accuracy-token trade-off compared to LLMLingua-2, requiring compa-rable or smaller token budgets. This stems from SKIM aligning continuous tokens with procedural knowledge and employing resolution selection to perceive skill complexity and compression rates, whereas LLMLingua-2 prunes text without explicit procedural execution supervision. Figure 3 shows the overall trade-off between accuracy and tokens for all methods, where SKIM performs the best. Within SKIM, Adaptive improves over fixed budget variants on most datasets, approaching or sometimes exceeding Full Text accuracy while us-70 500 1000 1500 2000 
+
+> Average added skill tokens
+> 20
+> 40
+> 60
+> Average accuracy (%)
+> LLMLingua-2
+> SKIM
+> Naive
+> Full Text
+> 500x
+> ICAE
+
+Figure 3: Average token accuracy tradeoff across the two target models and five datasets. For LLMLingua-2 and SKIM, settings are first sorted by added skill tokens within each model dataset pair, and the same rank is then averaged across the ten pairs. Lines connect settings from the same method family. 
+
+ing fewer tokens. This follows from the offline exam, which dynamically selects lower resolutions when diagnostic answers are sufficient. In a few cases like Phi-4 on LogicBench, a single thresh-old may heavily favor token reduction by selecting more low-resolution skills, which slightly reduces accuracy relative to Fix-512. Figure 6 in the ap-pendix shows the selected resolution distribution. Furthermore, Adaptive uses Full Text answers as silver references. This dependency is usually rea-sonable, as golden skills generally improve the tar-get model. However, if the provided skill text is unhelpful or the model fails to follow it (e.g., Phi-4 on ToolQA, where Full Text underperforms Naive), the resulting weak silver reference causes Adaptive to fall below fixed SKIM variants. 
+
+5.2 Ablation Studies 
+
+Due to the cost of running all variants on every set-ting, we conduct the ablations mainly with Qwen3-8B on the four datasets excluding ToolQA. 
+
+5.2.1 Training Stages 
+
+To test whether each training stage contributes to compressed skill use, we compare the full recipe with variants that remove one stage or replace the final skill task data. Figure 4 shows that recon-struction and procedural warm up alone are not sufficient for downstream skill tasks. Keeping the skill task stage while removing either earlier stage produces usable performance, but remains below the complete recipe. Replacing skill task data with documents and questions from HotpotQA (Yang et al., 2018), while still using self-generated an-swers, also lowers performance. Replacing the Stage 3 target model answers with GPT-5.2 teacher answers performs poorly. This suggests the final 60         
+
+> 70
+> 59.8 58.2 56.6
+> 52.8
+> 60.5 60.7 60.0
+> 56.7
+> 54.2
+> 64.2
+> Naive Full Text Fix-256 Fix-512
+> w/o
+> Stage 3
+> w/o
+> Stage 2
+> w/o
+> Stage 1
+> Hotpot.
+> Data
+> GPT
+> Teacher
+> Complete
+> 0
+> 10
+> 0.9 0.9
+> Stage Ablation Stage 3 Data Variants
+> Macro accuracy (%)
+
+Figure 4: Training ablation for Qwen3-8B over Big-CodeBench, CHAMP, LogicBench, and TheoremQA. Bars under Stage Ablation remove one training stage. Bars under Stage 3 Data Variants replace the Stage 3 skill task data with HotpotQA data or replace self-generated answers with GPT-5.2 teacher answers. Com-plete uses the main SKIM training recipe. 0 2500 5000 7500       
+
+> Tokens
+> 40
+> 42
+> 44
+> 46
+> Acc. (%)
+> Qwen3-8B
+> 02500 5000 7500
+> Tokens
+> 44
+> 46
+> 48
+> 50
+> Acc. (%)
+> Phi-4
+> LLMLingua-2 SKIM Full Text Naive
+
+Figure 5: BigCodeBench stress results under retrieved distractor skills. LLMLingua-2 and SKIM connect their compression settings. 
+
+stage benefits from target-distribution supervision, rather than from stronger off policy answers alone. 
+
+5.2.2 Longer Context Stress Test 
+
+To evaluate retrieval noise and extended contexts, we construct a BigCodeBench stress setting, cho-sen for its long inputs and outputs. To each in-stance’s golden skill set, we appended top-ranked non-gold skills retrieved via bge-base-en-v1.5 
+
+(Xiao et al., 2024) until reaching five skills, thereby artificially inflating noise and context length. Figure 5 demonstrates that SKIM outper-forms LLMLingua-2 at comparable or lower token budgets. For Phi-4, higher-resolution SKIM vari-ants surpass Full Text while using fewer tokens. This likely occurs because Phi-4’s 16k context win-dow is heavily burdened by the uncompressed full text and distractors. The results confirm SKIM’s in-tended benefit: effectively alleviating context pres-sure while preserving essential skill signals. Additional ablations on offline resolution selec-tion, untrained resolution budgets, and target model adaptation are reported in Appendix E. 86 Conclusion 
+
+In this work, we present SKIM, an adaptive multi-resolution soft token compression framework for procedural skills. It trains representations through reconstruction, procedural QA, and skill task align-ment, selecting resolutions through offline self-judgment. Experiments indicate that SKIM bet-ter preserves task accuracy than generic hard and soft baselines under smaller token budgets. Thus, SKIM effectively resolves the efficiency-accuracy trade-off in procedural skill deployment. 
+
+7 Limitations 
+
+This work has two limitations. First, our experi-ments use two target LLMs, Qwen3-8B and Phi-4. Due to training resource constraints, we do not evaluate SKIM on substantially larger models. The results therefore leave open how the accuracy and token tradeoff changes when the target model is stronger. Second, SKIM trains model specific pro-jectors and LoRA adapters. This design improves alignment between soft tokens and the target LLM, but it also means that a compressed artifact is not directly portable across unrelated model families. In settings where a skill repository supports many target models, the repository may need to store several model specific artifacts for the same skill. Future work can study whether a unified compres-sor with target specific projectors can reduce this storage cost while preserving model alignment. 
+
+References 
+
+Marah Abdin, Jyoti Aneja, Harkirat Behl, Sébastien Bubeck, Ronen Eldan, Suriya Gunasekar, Michael Harrison, Russell J. Hewett, Mojan Javaheripi, Piero Kauffmann, James R. Lee, Yin Tat Lee, Yuanzhi Li, Weishung Liu, Caio C. T. Mendes, Anh Nguyen, Eric Price, Gustavo de Rosa, Olli Saarikivi, and 8 others. 2024. Phi-4 technical report. Preprint ,arXiv:2412.08905. Le Chen, Erhu Feng, Yubin Xia, and Haibo Chen. 2026. Skvm: Revisiting language vm for skills across heterogenous llms and harnesses. Preprint ,arXiv:2604.03088. Wenhu Chen, Ming Yin, Max Ku, Pan Lu, Yixin Wan, Xueguang Ma, Jianyu Xu, Xinyi Wang, and Tony Xia. 2023. Theoremqa: A theorem-driven question answering dataset. In Proceedings of the 2023 Con-ference on Empirical Methods in Natural Language Processing, EMNLP 2023, Singapore, December 6-10, 2023 , pages 7889–7901. Association for Compu-tational Linguistics. Hongcheol Cho, Ryangkyung Kang, and Youngeun Kim. 2026. Skillret: A large-scale benchmark for skill retrieval in llm agents. Preprint , arXiv:2605.05726. Tao Ge, Jing Hu, Lei Wang, Xun Wang, Si-Qing Chen, and Furu Wei. 2024. In-context autoencoder for con-text compression in a large language model. In The Twelfth International Conference on Learning Rep-resentations, ICLR 2024, Vienna, Austria, May 7-11, 2024 . OpenReview.net. Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. 2022. Lora: Low-rank adaptation of large language models. In The Tenth International Conference on Learning Representations, ICLR 2022, Virtual Event, April 25-29, 2022 . OpenReview.net. Haichuan Hu, Ye Shang, and Quanjun Zhang. 2026. Red skills or blue skills? a dive into skills published on clawhub. Preprint , arXiv:2604.13064. Huiqiang Jiang, Qianhui Wu, Xufang Luo, Dong-sheng Li, Chin-Yew Lin, Yuqing Yang, and Lili Qiu. 2024. LongLLMLingua: Accelerating and enhanc-ing LLMs in long context scenarios via prompt com-pression. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Vol-ume 1: Long Papers) , pages 1658–1677, Bangkok, Thailand. Association for Computational Linguistics. Yukun Jiang, Yage Zhang, Michael Backes, Xinyue Shen, and Yang Zhang. 2026. Harmfulskillbench: How do harmful skills weaponize your agents? 
+
+Preprint , arXiv:2604.15415. Nikhil Khandekar, Qiao Jin, Guangzhi Xiong, Soren Dunn, Serina S. Applebaum, Zain Anwar, Maame Sarfo-Gyamfi, Conrad W. Safranek, Abid A Anwar, Andrew Zhang, Aidan Gilson, Maxwell B. Singer, Amisha D. Dave, Andrew Taylor, Aidong Zhang, Qingyu Chen, and Zhiyong Lu. 2024. Medcalc-bench: Evaluating large language models for medical calculations. In Advances in Neural Information Pro-cessing Systems 38: Annual Conference on Neural Information Processing Systems 2024, NeurIPS 2024, Vancouver, BC, Canada, December 10 - 15, 2024 .Mahnaz Koupaee and William Yang Wang. 2018. Wik-ihow: A large scale text summarization dataset. 
+
+Preprint , arXiv:1810.09305. Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gon-zalez, Hao Zhang, and Ion Stoica. 2023. Efficient memory management for large language model serv-ing with pagedattention. In Proceedings of the 29th Symposium on Operating Systems Principles , SOSP ’23, page 611–626, New York, NY, USA. Association for Computing Machinery. Xuancheng Li, Haitao Li, Yujia Zhou, Qingyao Ai, and Yiqun Liu. 2025a. Atacompressor: Adaptive task-aware compression for efficient long-context process-ing in llms. In Proceedings of the 2025 Annual In-ternational ACM SIGIR Conference on Research and 
+
+9Development in Information Retrieval in the Asia Pacific Region, SIGIR-AP 2025, Xi’an, China, De-cember 7-10, 2025 , pages 343–352. ACM. Zongqian Li, Yixuan Su, and Nigel Collier. 2025b. 500xCompressor: Generalized prompt compression for large language models. In Proceedings of the 63rd Annual Meeting of the Association for Compu-tational Linguistics (Volume 1: Long Papers) , pages 25081–25091, Vienna, Austria. Association for Com-putational Linguistics. Fanfan Liu and Haibo Qiu. 2025. Context cascade com-pression: Exploring the upper limits of text compres-sion. Preprint , arXiv:2511.15244. Yujun Mao, Yoon Kim, and Yilun Zhou. 2024. CHAMP: A competition-level dataset for fine-grained analyses of llms’ mathematical reasoning capabilities. In Find-ings of the Association for Computational Linguistics, ACL 2024, Bangkok, Thailand and virtual meeting, August 11-16, 2024 , Findings of ACL, pages 13256– 13274. Association for Computational Linguistics. Tri Nguyen, Mir Rosenberg, Xia Song, Jianfeng Gao, Saurabh Tiwary, Rangan Majumder, and Li Deng. 2016. MS MARCO: A human gener-ated machine reading comprehension dataset. CoRR ,abs/1611.09268. OpenAI. 2025. Introducing GPT-5.2. OpenAI blog post. OpenClaw. 2026a. ClawHub — clawhub.ai. https: //clawhub.ai/ . [Accessed 19-05-2026]. OpenClaw. 2026b. OpenClaw — Personal AI Assistant — openclaw.ai. https://openclaw.ai/ . [Accessed 19-05-2026]. Zhuoshi Pan, Qianhui Wu, Huiqiang Jiang, Menglin Xia, Xufang Luo, Jue Zhang, Qingwei Lin, Victor Rühle, Yuqing Yang, Chin-Yew Lin, H. Vicky Zhao, Lili Qiu, and Dongmei Zhang. 2024. LLMLingua-2: Data dis-tillation for efficient and faithful task-agnostic prompt compression. In Findings of the Association for Com-putational Linguistics: ACL 2024 , pages 963–981, Bangkok, Thailand. Association for Computational Linguistics. Mihir Parmar, Nisarg Patel, Neeraj Varshney, Mutsumi Nakamura, Man Luo, Santosh Mashetty, Arindam Mitra, and Chitta Baral. 2024. LogicBench: Towards systematic evaluation of logical reasoning ability of large language models. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 13679– 13707, Bangkok, Thailand. Association for Compu-tational Linguistics. Jeff Rasley, Samyam Rajbhandari, Olatunji Ruwase, and Yuxiong He. 2020. Deepspeed: System opti-mizations enable training deep learning models with over 100 billion parameters. In Proceedings of the 26th ACM SIGKDD International Conference on Knowledge Discovery & Data Mining , KDD ’20, page 3505–3506, New York, NY, USA. Association for Computing Machinery. Weihang Su, Qian Dong, Qingyao Ai, and Yiqun Liu. 2025a. Dynamic and parametric retrieval augmented generation. In Proceedings of the 2025 Annual Inter-national ACM SIGIR Conference on Research and Development in Information Retrieval in the Asia Pacific Region , pages 453–458. Weihang Su, Jianming Long, Qingyao Ai, Yichen Tang, Changyue Wang, Yiteng Tu, and Yiqun Liu. 2026. Skill retrieval augmentation for agentic ai. Preprint ,arXiv:2604.24594. Weihang Su, Yichen Tang, Qingyao Ai, Changyue Wang, Zhijing Wu, and Yiqun Liu. 2024a. Miti-gating entity-level hallucination in large language models. In Proceedings of the 2024 Annual Inter-national ACM SIGIR Conference on Research and Development in Information Retrieval in the Asia Pacific Region , pages 23–31. Weihang Su, Yichen Tang, Qingyao Ai, Zhijing Wu, and Yiqun Liu. 2024b. Dragin: Dynamic retrieval augmented generation based on the real-time informa-tion needs of large language models. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,pages 12991–13013. Weihang Su, Yichen Tang, Qingyao Ai, Junxi Yan, Changyue Wang, Hongning Wang, Ziyi Ye, Yujia Zhou, and Yiqun Liu. 2025b. Parametric retrieval augmented generation. In Proceedings of the 48th International ACM SIGIR Conference on Research and Development in Information Retrieval , pages 1240–1250. Zijun Wu, Yongchang Hao, and Lili Mou. 2026. Tok-mem: One-token procedural memory for large lan-guage models. Preprint , arXiv:2510.00444. Shitao Xiao, Zheng Liu, Peitian Zhang, Niklas Muen-nighoff, Defu Lian, and Jian-Yun Nie. 2024. C-pack: Packed resources for general chinese embeddings. In 
+
+Proceedings of the 47th International ACM SIGIR Conference on Research and Development in Infor-mation Retrieval , SIGIR ’24, page 641–649, New York, NY, USA. Association for Computing Machin-ery. Wenxuan Xie, Yujia Wang, Xin Tan, Chaochao Lu, Xia Hu, and Xuhong Wang. 2026. Decoupled reasoning with implicit fact tokens (drift): A dual-model frame-work for efficient long-context inference. Preprint ,arXiv:2602.10021. An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, Day-iheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao Ge, Haoran Wei, Huan Lin, Jialong Tang, and 41 others. 2025. Qwen3 technical report. Preprint ,arXiv:2505.09388. 
+
+10 Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Ben-gio, William W. Cohen, Ruslan Salakhutdinov, and Christopher D. Manning. 2018. Hotpotqa: A dataset for diverse, explainable multi-hop question answer-ing. In Proceedings of the 2018 Conference on Em-pirical Methods in Natural Language Processing, Brussels, Belgium, October 31 - November 4, 2018 ,pages 2369–2380. Association for Computational Linguistics. Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik R. Narasimhan, and Yuan Cao. 2023. React: Synergizing reasoning and acting in language models. In The Eleventh International Conference on Learning Representations, ICLR 2023, Kigali, Rwanda, May 1-5, 2023 . OpenReview.net. Yingli Zhou, Wang Shu, Yaodong Su, Wenchuan Du, Yixiang Fang, and Xuemin Lin. 2026. A comprehen-sive survey on agent skills: Taxonomy, techniques, and applications. Preprint , arXiv:2605.07358. Yuchen Zhuang, Yue Yu, Kuan Wang, Haotian Sun, and Chao Zhang. 2023. Toolqa: A dataset for LLM ques-tion answering with external tools. In Advances in Neural Information Processing Systems 36: Annual Conference on Neural Information Processing Sys-tems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023 .Terry Yue Zhuo, Minh Chien Vu, Jenny Chim, Han Hu, Wenhao Yu, Ratnadira Widyasari, Imam Nur Bani Yusuf, Haolan Zhan, Junda He, Indraneil Paul, Simon Brunner, Chen Gong, James Hoang, Armel Randy Zebaze, Xiaoheng Hong, Wen-Ding Li, Jean Kad-dour, Ming Xu, Zhihan Zhang, and 2 others. 2025. Bigcodebench: Benchmarking code generation with diverse function calls and complex instructions. In 
+
+The Thirteenth International Conference on Learning Representations, ICLR 2025, Singapore, April 24-28, 2025 . OpenReview.net. 
+
+A Offline Resolution Selection Algorithm 
+
+We provide the pseudocode for the offline resolu-tion selection procedure in Algorithm 1. 
+
+B Stage 3 Data Construction Algorithm 
+
+Algorithm 2 summarizes the Stage 3 data construc-tion procedure. GPT-5.2 is used only for source skill evaluation, question generation, and skill split-ting. For each target model, SKIM runs answer generation with that target model. 
+
+C Dataset and Hyperparameter Details 
+
+Table 3 summarizes the five datasets used in the main comparison. The skill columns are com-puted from the SRA-Bench golden skill annota-tions, while the question counts come from the 
+
+Algorithm 1 Offline resolution selection for one skill                                                                
+
+> Require: Skill text s, resolutions K, question count N,threshold τ
+> Ensure: Selected mode for skill s
+> 1: Generate questions Q={qi}Ni=1 from s
+> 2: for each question qi∈ Q do
+> 3: Generate reference answer afull
+> iwith the base target model and the full skill text 4: for each resolution K∈ K do
+> 5: Generate candidate answer aKiwith EK(s)
+> 6: Judge whether aKimatches afull
+> i
+> 7: end for
+> 8: end for
+> 9: for each resolution K∈ K do
+> 10: Compute αK(s)as the fraction of accepted candidate answers 11: end for
+> 12: if there exists Ksuch that αK(s)≥τthen
+> 13: return the smallest such K
+> 14: else
+> 15: return full skill text 16: end if
+
+task instances. BigCodeBench and CHAMP con-tain multi-skill cases, whereas LogicBench, Theo-remQA, and ToolQA use a single annotated skill per instance. ToolQA is the only dataset in this group that requires tool style interaction. We do not include MedCalcBench (Khandekar et al., 2024) in the main comparison, since some of its skills are short and do not provide enough room to evaluate compression behavior. Next, we show the training data details of SKIM. For Stage 1, we use an open-source skill dataset, where skills are collected from GitHub reposito-ries. 2 We filter out skills shorter than 500 charac-ters, since these examples are often low quality or underspecified. We also verify that the minimum character edit distance between any retained train-ing skill and any golden skill in the test dataset is greater than 2200, which indicates that the eval-uation golden skills do not appear in the training pool. Table 4 reports the approximate size of the data used by each SKIM training stage. Stage 1 uses the filtered collected skill documents for recon-struction, Stage 2 uses WikiHow procedural QA, and Stage 3 uses generated skill task QA from eval-uated source skills. During the training stage, we employ DeepSpeed (Rasley et al., 2020) to improve training efficiency and reduce memory consump-tion. Table 5 lists the main SKIM implementation set-tings. It includes the model and compressor pairs, candidate resolution budgets, projector configura-
+
+> 2https://huggingface.co/datasets/LittleDinoC/agent-skills
+
+11 Table 3: Task statistics for the five evaluation datasets. Question counts follow the task data, and gold skill counts follow the corresponding skill annotations. Avg. skills reports the mean number of annotated gold skills per test instance. Mixed means that both single skill and multi skill instances appear. 
+
+Dataset Task Type Questions Gold Skills Avg. Skills Multi Skill Tool Use 
+
+BigCodeBench Code generation 1,140 139 2.76 Yes No CHAMP Math reasoning 223 89 1.71 Mixed No LogicBench Logical reasoning 760 19 1.00 No No TheoremQA Theorem question answering 747 320 1.00 No No ToolQA Tool use question answering 1,430 14 1.00 No Yes 
+
+Table 4: Approximate training data scale for SKIM.         
+
+> Stage Data source Approximate scale
+> Stage 1 Collected skill documents 60.9k training skills Stage 2 WikiHow procedural QA 214.3k processed QA examples from WikiHow, using the cleaned version 4
+> Stage 3 Generated skill task QA Evaluated source skills with 5 candidate questions per skill, totally ~60k training examples
+
+tion, LoRA settings, offline exam parameters, and inference decoding parameters. Table 6 summarizes the implementation details for ICAE and 500xCompressor. For their train-ing data, we align with ATACompressor (Li et al., 2025a) and extract contexts with QA supervi-sion from HotpotQA (Yang et al., 2018) and MS-MARCO (Nguyen et al., 2016). We sample about 60,000 training examples, which is comparable to the source pool used for our Stage 3 skill task align-ment data. We employ the official 500xCompressor code with the default experimental setup. 3
+
+D Prompt Templates 
+
+This appendix lists the prompt templates used by the data construction and offline exam stages. The skill evaluation prompt is used before Stage 3 to filter collected skills, generate candidate user ques-tions, identify tools, and decide whether ReAct style answers are appropriate. The skill decompo-sition prompt is used in the same data preparation stage to split a complex skill into self contained sub-skills, which gives controlled multi-skill training examples. The skill QA answer guidance prompt is appended when the target model generates super-vised answers for Stage 3, so that answer genera-tion follows the provided skill instead of relying only on generic model behavior. The tool observa-tion simulator prompt is used during ReAct data generation to produce Observation text from a tool schema, an action, and the partial trajectory. The offline question generation and answer judgment 
+
+> 3
+
+https://github.com/ZongqianLi/500xCompressor 
+
+> 4
+
+https://huggingface.co/datasets/gursi26/wikihow-cleaned 
+
+prompts are used by the resolution selection exam described in Algorithm 1. Skill Evaluation Prompt 
+
+System Prompt. You are an expert evaluator for AI agent skills. Return only valid JSON. Do not output markdown. Follow the schema exactly. 
+
+User Prompt Template. You are given one skill ob-ject in JSON. Evaluate this skill from the perspective of whether it provides useful additional constraints, operational guidance, or capabilities to a base LLM. Tasks: 0) Give quality_score from 0 to 5 (higher is better). 1) Generate exactly {k} concrete user ques-tions that this skill can solve. These questions should be the users’ actual real-life problems, rather than merely asking about the content of the Skill. 2) Esti-mate whether this skill can be split into independent sub-skills that each solve one problem without de-pending on other skills. Return split_skill_count (0 if not splittable). 3) Identify tools involved in this skill. If no tools are needed, return an empty list. If tools are involved, return a list where each tool includes: name, description, input params (name + description), output params (name + description). En-vironment which returns information can be treated as tools too. The name of the tool is a function name that starts with a capital letter. 4) Judge whether the problem-solving flow is better suited to ReAct (Thought-Action-Observation). Return a boolean and a short reason. Output requirements: - Return valid JSON only. -Keep field names exactly as provided in the schema. - No additional top-level fields beyond the schema. Schema: {output_schema} Skill JSON: {skill_json} 
+
+12 Table 5: Implementation details for SKIM.                                             
+
+> Group Setting Value
+> Models Qwen3-8B target and compressor Qwen3-8B target, Qwen3-8B compressor Models Phi-4 target and compressor Phi-4 14B target, Phi-4-mini-instruct 3.8B compressor Resolution Candidate budgets 256 and 512 soft tokens, with full text fallback Architecture Projector 3 layers, hidden size 8192 Architecture Low resolution construction Prefix truncation from the 512 token artifact Training Shared settings Weight decay 0.01, warmup ratio 0.02, bfloat16, gradient checkpointing Training Stage 1 Learning rate 1×10 −4, global batch size 192, max length 2048 Training Later stages Learning rate 7×10 −5, global batch size 192, max length 2048 Training Stage 1 schedule At most 20 epochs, with early stopping when training loss is below 2×10 −3
+> Training Stage 2 schedule 4 epochs as warm up Training Stage 3 schedule Early stopping when training loss is below 0.25
+> LoRA Target LLM adaptation Rank 16, alpha 32, dropout 0.05 Offline exam Question generation 10 questions per skill, temperature 0.2, max output 2048 tokens Offline exam Judgment and selection Full text answer as reference, temperature 0.0, threshold 0.9 Inference Decoding No sampling, temperature 0.1, top p0.95, max new tokens 1024
+
+Table 6: Key hyperparameters for the ICAE and 500xCompressor soft compression baselines. 
+
+Group Setting Value 
+
+Data Source datasets HotpotQA and MS-MARCO QA records Data Sampling and split 60k sampled examples Compression Memory budget 256 memory tokens Pretraining Schedule 3 epochs, learning rate 1 × 10 −4, warmup 300 steps QA fine tuning Schedule 10 epochs, learning rate 5 × 10 −5, warmup 300 steps LoRA Adapter configuration Rank 64, alpha 32, dropout 0.05 
+
+Skill Decomposition Prompt 
+
+System Prompt. You are an expert skill decomposi-tion assistant for AI agent skills. Return only valid JSON. Do not output markdown code fences. 
+
+User Prompt Template. You are given one origi-nal skill and its evaluation result. Decompose it into exactly {split_count} independent sub-skills. Each sub-skill must be self-contained and able to solve one clear problem without relying on other skills. Hard requirements: 1) Output exactly {split_count} sub-skills. 2) Every sub-skill must contain all re-quired fields: name, description, content. 3) content must be markdown text and should be practical, ex-ecutable skill content (not placeholder text). 4) Pre-serve essential operational details from the original skill that are needed to solve the target problem. 5) Avoid overlap between sub-skills as much as possi-ble. Output requirements: - Return valid JSON only. -Keep top-level keys exactly as in the schema. - No additional top-level keys. Schema: {output_schema} Input skill JSON: {skill_json} 
+
+Skill QA Answer Guidance Prompt 
+
+Generation Add Extra Prompt. 
+
+Responses must follow the suggestions or guidelines provided in the Skill text. Seamlessly integrate the Skill text guidelines into your problem-solving process. Justify your planning steps as they occur by explicitly linking them to the relevant key content from the Skill text. 
+
+Tool Observation Simulator Prompt 
+
+Tool Simulator System Prompt. You simulate tool execution for ReAct training data. Always return a concrete best-effort tool output as plain text. Never refuse, never say you do not know, never say mock data, and never return placeholders. 
+
+Tool Simulator User Template. You are simulating a tool call in a QA ReAct trajectory. Question: {query} Available tools (JSON): {tools_json} Current action: {action} Action name: {action_type} Action arguments: {action_args} Conversation scratchpad (truncated): {scratchpad} Return exactly the observation text for this action. It must be specific and plausible. 
+
+13 Algorithm 2 Stage 3 skill task data construction 
+
+Require: Source skills S, target model M , evaluator G
+
+Ensure: Stage 3 training set D for M
+
+1: Notation: v is validity, Q questions, T tool specs, bsplit 
+
+split flag, breact ReAct flag 2: Notation: R is skill context, τ trace, q question, a answer, 
+
+h thought, u action, o observation 3: D ← ∅ 
+
+4: for each source skill s ∈ S do 
+
+5: (v, Q, T , b split , b react ) ← EvalSkill G(s)
+
+6: if v = false then 
+
+7: continue 8: end if 
+
+9: if bsplit = true then 
+
+10: R ← SplitSkill G(s)
+
+11: else 
+
+12: R ← { s}
+
+13: end if 
+
+14: for each question q ∈ Q do 
+
+15: if breact = false then 
+
+16: a ← DirectAnswer M (R, q )
+
+17: Add (R, q, a ) to D
+
+18: else 
+
+19: τ ← ∅ , finished ← false 
+
+20: while finished = false do 
+
+21: (h, u ) ← ReactStep M (R, q, T , τ )
+
+22: if u is F INISH then 
+
+23: Append (h, u ) to τ and set finished ←
+
+true 
+
+24: else 
+
+25: o ← SimulateTool M (q, T , u, τ )
+
+26: Append (h, u, o ) to τ
+
+27: end if 
+
+28: end while 
+
+29: Add (R, q, τ ) to D
+
+30: end if 
+
+31: end for 
+
+32: end for 
+
+33: return D
+
+Offline Question Generation Prompt 
+
+System Prompt. You are an expert evaluator that designs benchmark QA questions for skill capability testing. Return valid JSON only. 
+
+User Prompt Template. You are given one skill ob-ject. Generate exactly {n_questions} user questions that can be solved with this skill. Requirements: 1) Questions must be concrete, an-swerable, and diverse. 2) Questions should focus on practical task completion, not asking to summarize the skill itself. 3) Questions must test mastery of the skill WITHOUT leaking the skill content directly. Do not ask questions that can be answered by simply copying from the skill text. 4) If the skill involves code/programming or tool usage, questions should focus on code generation or tool calling tasks that require applying the skill’s knowledge. 5) Keep each question concise but specific. 6) Return valid JSON only with exactly the schema below. Schema: {output_schema} Skill JSON: {skill_json} BigCodeBench   
+
+> CHAMP
+> LogicBench
+> TheoremQA
+> ToolQA
+> 0
+> 25
+> 50
+> 75
+> 100
+> Selected mode (%)  256 512 Full
+
+Figure 6: Distribution of final SKIM resolution choices for Qwen3-8B across the datasets in Table 2. Bars show the proportion assigned to 256 tokens, 512 tokens, or Full Text by the offline exam procedure. 
+
+Offline Answer Judgment Prompt 
+
+System Prompt. You are a strict answer equivalence judge. Return valid JSON only. 
+
+User Prompt Template. Judge whether the can-didate answer is correct compared to the reference answer for the same question. Dataset style: {dataset} Question: {question} Reference answer (ground truth from full_text mode): {reference_answer} Candidate answer: {candidate_answer} Rules: 1) Judge semantic correctness, not string iden-tity. 2) If candidate contradicts key facts in reference, mark incorrect. 3) If reference is empty/invalid, this item should be skipped by caller (not judged). 4) Output valid JSON only with schema below. Schema: {output_schema} 
+
+E Further Ablation Studies 
+
+E.1 Offline Resolution Selection 
+
+To test whether the offline exam controls the ac-curacy and token tradeoff, we vary the judgment threshold, the number of generated questions, and the candidate modes. Figure 9 shows the expected pattern in which stricter thresholds load more skill information and improve accuracy. The main threshold of 0.9 is close to the strictest setting in accuracy while using fewer tokens. Generating more exam questions also improves selection qual-ity, at the cost of selecting larger budgets more often. Finally, allowing the exam to choose among compressed candidates and Full Text gives the best accuracy among the tested candidate sets. Adding Naive can reduce tokens, but it also lowers accu-racy, which suggests that the exam is more reliable when it decides how much skill information to load 14 64 128 256 384 512    
+
+> Soft token budget
+> 55
+> 60
+> 65
+> Macro accuracy (%)
+> 58.0
+> 60.2 60.5
+> 62.5
+> 64.1
+> SKIM Naive Full Text
+
+Figure 7: Untrained resolution budget ablation for Qwen3-8B on BigCodeBench, CHAMP, LogicBench, and TheoremQA. Only 256 and 512 tokens are used as training resolutions, while 64, 128, and 384 tokens are evaluated by prefix truncation at inference time. Dashed lines mark the Naive and Full Text references. Frozen        
+
+> r=4
+> r=16
+> r=64
+> 50
+> 60
+> 70
+> Macro accuracy (%)
+> 59.3
+> 60.9 60.5 61.8 61.2
+> 63.5 64.2 64.1
+> Naive Full Text Fix-256 Fix-512
+
+Figure 8: Third stage LoRA ablation for Qwen3-8B on BigCodeBench, CHAMP, LogicBench, and Theo-remQA. This ablation is run in the skill task alignment stage. Frozen trains the compressor side while keeping the target LLM weights fixed, and the rank variants use LoRA with alpha set to twice the rank. 
+
+instead of deciding whether to load any skill in-formation. Moreover, applying the exam without compressed candidates uses more tokens than our main setting and still gives lower accuracy. 
+
+E.2 Untrained Resolution Budgets 
+
+To test whether the multi-resolution representation transfers beyond the budgets used during training, we evaluate Qwen3-8B with soft token budgets 
+
+K ∈ { 64 , 128 , 256 , 384 , 512 }. Only 256 and 512 tokens are used as training resolutions, while the other budgets are obtained by prefix truncation at inference time. Figure 7 shows that the model remains above the Naive reference even at 64 to-kens, and accuracy generally increases as the bud-get grows. The 384 token setting is not a training resolution, but it improves over 256 tokens and approaches the 512 token result. This pattern sug-gests that SKIM learns a representation that can adapt to intermediate and lower budgets, although Full Text still provides the upper reference. 
+
+E.3 Target Model Adaptation 
+
+To test whether the target model must adapt to continuous skill tokens, we compare frozen target LLM training with several LoRA ranks in the third stage. Figure 8 shows that freezing the target LLM is weaker than using LoRA, especially at the larger resolution. Small rank LoRA already recovers most of the gain, and larger ranks are close to each other. Thus, target model adaptation is important, but excessively large LoRA ranks are unnecessary. 
+
+F Qualitative Case Study 
+
+Table 7 shows a ToolQA coffee lookup case from 
+
+toolqa_008 . The factual schema question is an-swered by both compressed methods, while the procedural lookup requires the model to preserve the ordered database operations specified by the skill. 
+
+G Licensing 
+
+Qwen3-8B is released under the Apache License 2.0. Phi-4, Phi-4-mini-Instruct, and bge-base-en-v1.5 are released under the MIT license. For the datasets, LogicBench, TheoremQA, CHAMP, and SRA-Bench are released under the MIT license. BigCodeBench and ToolQA are released under the Apache License 2.0. The objective of this paper is academic exploration, which is consistent with the permitted use under this license. 15 0.5    
+
+> 0.7
+> 0.9
+> 1
+> Threshold
+> 62
+> 64
+> 66
+> Acc. (%)
+> Self Judgment Threshold
+> 2
+> 4
+> 6
+> 8
+> 10
+> # Questions
+> 64
+> 65
+> 66
+> Acc. (%)
+> Exam Question Count
+> 1200 1400 1600 1800
+> Tokens
+> 65.5
+> 66.0
+> 66.5
+> Acc. (%)
+> Comp+Full
+> Naive+Full
+> Naive + Comp + Full
+> Candidate Mode Set
+> 500
+> 1000
+> 1500
+> Tokens
+> 1000
+> 1200
+> 1400
+> Tokens
+
+Figure 9: Offline resolution selection ablations for Qwen3-8B on BigCodeBench, CHAMP, LogicBench, and TheoremQA. The first panel varies the self judgment accuracy threshold, the second varies the number of generated exam questions per skill, and the third varies the candidate modes available during the exam. The first two panels report macro accuracy and macro average added tokens, while the third plots candidate settings by token count and accuracy. In the third panel, Comp+Full uses compressed and full skill candidates, Naive+Full uses the no skill answer and full skill text, and Naive + Comp + Full enables all three candidate types. 
+
+Skill Content. # Coffee Price Data, Single Day Lookup Guide ## Data Source 
+
+The coffee database ( LoadDB[coffee] ) contains daily coffee futures price data. Columns: Date , Open , High , Low , Close ,
+
+Volume , Currency .Dates are stored in YYYY-MM-DD format. All values are stored as strings internally. 
+
+## Standard Lookup Workflow 
+
+For any question about a specific trading day, use this three step workflow: 
+
+1. LoadDB[coffee] 
+
+{... The remaining skill specifies the exact single day lookup workflow, column semantics, derived computations, and notes for missing trading days.} 
+
+Factual question. What columns does this database contain? 
+
+Answer from ICAE. Date, Open, High, Low, Close, Volume, Currency 
+
+Answer from SKIM. The coffee database contains the following columns: Date, Open, High, Low, Close, Volume, and Currency. 
+
+Procedural question. What was the opening price of coffee on 2001-12-06? 
+
+Answer from ICAE. Thought 1: 123.00 Action 1: Finish[123.00] Observation 1: Answer: 123.00 
+
+Answer from SKIM. Thought 1: This is a question related to coffee prices. We need to load the coffee database. Action 1: LoadDB[coffee] Observation 1: We have successfully loaded the coffee database, including the following columns: Date, Open, High, Low, Close, Volume, Currency. Thought 2: We need to filter the information related to the query. Action 2: FilterDB[Date=2001-12-06] Observation 2: We have successfully filtered the data (1 rows). Thought 3: We then need to know the opening price. Action 3: GetValue[Open] Observation 3: 42.75 Thought 4: The opening price of coffee on 2001-12-06 is 42.75. Action 4: Finish[42.75] Observation 4: Answer: 42.75 
+
+Table 7: Qualitative comparison on a ToolQA coffee database skill. Red text marks factual fields or procedural steps that match the expected lookup behavior. In this case, both methods recover the factual schema, but only SKIM preserves the operation sequence needed to answer the value lookup. 
+
+16
