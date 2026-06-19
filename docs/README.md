@@ -6,38 +6,32 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-06-18
-- 运行时间：2026-06-18 21:53:48 UTC
+- 最新运行日期：2026-06-19
+- 运行时间：2026-06-19 21:13:42 UTC
 - 运行状态：成功
-- 本次总论文数：5
+- 本次总论文数：3
 - 精读区：0
-- 速读区：5
+- 速读区：3
 
 ### 今日简报（AI）
-今日速览5篇前沿论文，聚焦超大规模图学习与分布式系统优化。
-最值得关注的是十亿节点推荐系统的全生命周期协同设计，以及联邦学习中的高效模型更新压缩技术。
-建议普通读者优先了解大模型时代背后的算力与系统优化思路，建立对AI基础设施的宏观认知。
-- 详情：[/202606/18/README](/202606/18/README)
+今日速读3篇分布式与联邦学习前沿，聚焦通信带宽优化。
+最值得关注CXL侧低比特梯度聚合与基于子空间混合的上下文并行训练，两者均为大模型训练降本增效提供了新解法。
+建议普通读者优先了解“如何用低比特或子空间技术省带宽”的核心思路，无需深究底层硬件细节。
+- 详情：[/202606/19/README](/202606/19/README)
 
 ### 精读区论文标签
 - 本次无精读推荐。
 
 ### 速读区论文标签
-1. [RankGraph-2: Lifecycle Co-Design for Billion-Node Graph Learning in Recommendation](/202606/18/2606.18379v1-rankgraph-2-lifecycle-co-design-for-billion-node-graph-learning-in-recommendation)  
-   标签：评分：7.0/10、query:dgnn-nas
-   evidence：十亿节点图学习系统协同设计
-2. [Fundamental Limits of Hypergraph Edge Partitioning under Independent Edge Sampling](/202606/18/2606.13491v1-fundamental-limits-of-hypergraph-edge-partitioning-under-independent-edge-sampling)  
+1. [NEURON-Fabric: CXL-Side Low-Bit Gradient Aggregation for Distributed Training](/202606/19/2606.15045v1-neuron-fabric-cxl-side-low-bit-gradient-aggregation-for-distributed-training)  
    标签：评分：6.0/10、query:dgnn-nas
-   evidence：用于分布式计算的超图边划分
-3. [MUFFLe: Efficient Model Update Compression via Generalized Deduplication for Federated Learning](/202606/18/2606.14354v1-muffle-efficient-model-update-compression-via-generalized-deduplication-for-federated-learning)  
+   evidence：用于分布式训练通信效率的低比特梯度聚合
+2. [Mixtures of Subspaces for Bandwidth Efficient Context Parallel Training](/202606/19/2606.16384v1-mixtures-of-subspaces-for-bandwidth-efficient-context-parallel-training)  
    标签：评分：6.0/10、query:dgnn-nas
-   evidence：联邦学习中的通信高效更新压缩
-4. [parRSB: Exascale Spectral Element Mesh Partitioning](/202606/18/2606.14659v1-parrsb-exascale-spectral-element-mesh-partitioning)  
+   evidence：通信高效的去中心化训练
+3. [Sensing-Native Over-the-Air Federated Learning](/202606/19/2606.17117v1-sensing-native-over-the-air-federated-learning)  
    标签：评分：6.0/10、query:dgnn-nas
-   evidence：最小化通信量的并行可扩展图分区器
-5. [NEURON-Fabric: CXL-Side Low-Bit Gradient Aggregation for Distributed Training](/202606/18/2606.15045v1-neuron-fabric-cxl-side-low-bit-gradient-aggregation-for-distributed-training)  
-   标签：评分：6.0/10、query:dgnn-nas
-   evidence：用于分布式训练的低位梯度聚合
+   evidence：通信高效的分布式模型训练
 
 
 <div class="dpr-home-promo-card">

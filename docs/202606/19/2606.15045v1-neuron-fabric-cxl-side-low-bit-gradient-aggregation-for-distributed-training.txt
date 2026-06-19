@@ -1,0 +1,600 @@
+Title: NEURON-Fabric: CXL-Side Low-Bit Gradient Aggregation for Distributed Training
+
+URL Source: https://arxiv.org/pdf/2606.15045v1
+
+Published Time: Tue, 16 Jun 2026 00:21:15 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# NEURON-Fabric: CXL-Side Low-Bit Gradient Aggregation for Distributed Training 
+
+## Ziqiang Wang 
+
+Carleton University Ottawa, Ontario, Canada 
+
+ziqiangwang@cmail.carleton.ca 
+
+## Changcheng Huang 
+
+Carleton University Ottawa, Ontario, Canada 
+
+ChangChengHuang@cunet.carleton.ca 
+
+## Chung-Horng Lung 
+
+Carleton University Ottawa, Ontario, Canada 
+
+chlung@sce.carleton.ca 
+
+## Abstract 
+
+In large-model distributed training, especially large language model (LLM) workloads, gradient All-Reduce increasingly stresses the memory and communication path. This paper asks whether a Compute Express Link (CXL) memory con-troller can aggregate low-bit gradient signals as gradient cache lines pass through it, while preserving a 32-bit floating-point (FP32) path for workloads, layers, or phases that should not use low-bit approximation. We denote G as the gradient: G-Binary refers to binary sign-count aggregation of gradient payloads, while G-Ternary indicates ternary-gated gradient aggregation. We present NEURON-Fabric, a CXL-side con-troller architecture that performs these packed aggregation operations near CXL memory and exposes a simple control interface for selecting the low-bit or FP32 path. Cycle-level timing experiments isolate the controller datapath and show that the measured five-cycle low-bit aggregation datapath adds at most 1.67% exposed runtime overhead in the full last-level cache (LLC) miss regime; under bandwidth pressure, the same compute stage is hidden by CXL service time. Func-tional tests confirm byte-exact identity read-back, G-Binary sign-count aggregation, and G-Ternary ternary gating. Sepa-rately, end-to-end training checks quantify the communica-tion and accuracy tradeoff: low-bit aggregation remains close to FP32 on CIFAR-10/Residual Network 18 (ResNet-18) and Stanford Sentiment Treebank 2 (SST-2)/DistilBERT, while full-path low-bit aggregation fails on CIFAR-100/ResNet-18. Layer-wise diagnostics identify the classifier head as the sensitive component: keeping the backbone low-bit while leaving the head on FP32 recovers 73.0–73.1% accuracy ver-sus 74.45% for same-runner FP32 and reduces gradient traffic to 3.6–5.4% of the FP32 baseline. Hardware synthesis and field-programmable gate array (FPGA) place-and-route esti-mates suggest that the 512-bit aggregation datapath is small enough to be treated as a near-memory datapath extension, not a separate accelerator-scale block. 
+
+Keywords: Compute Express Link (CXL), memory controllers, near-memory aggregation, distributed training, gradient com-munication, low-bit communication 
+
+## 1 Introduction 
+
+Large model training repeatedly moves gradient tensors through the memory and network hierarchy. For Gener-ative Pre-trained Transformer 3 (GPT-3)-scale models [ 5 ], a full 32-bit gradient tensor is hundreds of gigabytes; even smaller models can exceed graphics processing unit (GPU) last-level cache (LLC) capacity during collective communi-cation. Once active gradient footprints miss in cache, the memory-controller path becomes part of the All-Reduce cost. This regime is the reason to look below the usual software collective layer. For small models, shaving gradient payloads at a Compute Express Link (CXL) controller is unlikely to matter unless the experiment deliberately exposes cache misses and controller service time. For large training jobs, however, the same gradient movement is repeated over many layers, buckets, and steps, so controller-side gradient aggre-gation can be valuable even if the primitive is narrow. In this paper, aggregation means combining gradient contributions from multiple workers for the same parameter bucket. We therefore use controlled vision and language fine-tuning runs to test correctness and convergence boundaries, while using transformer-scale trace replay to ask whether the datapath would be exposed in the communication path. At the same time, sign-based gradient methods and low-bit learning systems such as BNN and BitNet show that many workloads can tolerate sign or ternary update informa-tion [ 3 , 11 , 16 ]. This motivates NEURON-Fabric, a CXL-side controller architecture for such low-bit gradient aggregation. NEURON-Fabric does not change model computation, model weights, or backpropagation; it changes how gradient com-munication payloads are represented and combined at the controller response path. We call the two evaluated NEURON-Fabric controller primitives gradient-binary (G-Binary) and gradient-ternary (G-Ternary). The arithmetic is borrowed from BNN and BitNet-style low-bit learning, but the controller applies it only to gradient communication payloads. G-Binary reduces each worker contribution to a sign-coded payload that maps naturally to PopCount and narrow add-tree logic. G-Ternary keeps the same sign-count structure but adds a zero gate that can suppress weak or uncertain entries. These are intention-ally aggressive low-bit endpoints in the gradient-aggregation design space: simple enough to fit in a controller-resident datapath, but not assumed to be universally safe. INT8, FP8, 
+
+> 1
+> arXiv:2606.15045v1 [cs.DC] 13 Jun 2026 Ziqiang Wang, Changcheng Huang, and Chung-Horng Lung
+
+block-floating-point, or mixed-precision formats could pro-vide more conservative accuracy/traffic tradeoffs, at the cost of scale metadata, wider arithmetic, and rounding or satura-tion policy. NEURON-Fabric therefore treats precision as a policy-selectable dimension. This naming is intentional. G-Binary and G-Ternary are not claims that the model is trained as a BNN or BitNet, nor that one-bit or ternary communication is always the right ac-curacy point. They name two gradient-payload formats that are aggressive enough to stress the accuracy boundary and simple enough to evaluate as controller-resident logic. More conservative formats are compatible with the same admis-sion framework, but would answer a different cost/accuracy question. Existing software compression and in-network aggrega-tion systems cut network/software traffic in the stack [ 9 , 14 ,22 , 23 ]; however, they do not answer a different architectural question: can the Compute Express Link (CXL)-side memory controller aggregate packed gradient signs as gradient cache lines pass through the controller? NEURON-Fabric explores this design point. The architec-ture places a short G-Binary/G-Ternary aggregation datapath in the CXL controller and exposes a control interface that can keep FP32 as the calibration/recovery path while ad-mitting low-bit aggregation only when the workload, layer, or phase can tolerate it. The central result is not that low-bit aggregation should always replace FP32, but that a CXL controller can expose a hardware-light, traffic-saving aggre-gation mode whose safe operating region can be identified by workload- and layer-aware admission. NEURON-Fabric is therefore not a universal replacement for FP32 All-Reduce, NVIDIA Collective Communications Library (NCCL) [ 17 ]/ Remote Direct Memory Access (RDMA), or switch aggre-gation. Its value is to cut admitted gradient traffic at the memory-controller boundary down to 3.6–5.4% of the FP32 baseline in the layer-aware CIFAR-100 [ 12 ] setting, while retaining FP32 as the calibration and recovery path when low-bit aggregation would harm training. 
+
+Contributions. 
+
+• A CXL-side low-bit aggregation architecture that com-bines identity read-back, G-Binary sign-count aggre-gation, and G-Ternary ternary gating in the controller datapath. 
+
+• A timing and operating-envelope evaluation showing that the five-cycle low-bit aggregation datapath is not the bottleneck under the configured CXL service model and adds at most 1.67% exposed overhead in the measured full LLC-miss regime. 
+
+• Evidence for accurate low-bit regimes: CIFAR-10 with ResNet-18 [ 10 ] and SST-2 [ 24 , 25 ] with DistilBERT [ 21 ]retain near-FP32 accuracy under selected low-bit ag-gregation settings. 
+
+• A boundary result and recovery mechanism: CIFAR-100 rejects full-path low-bit aggregation, but layer-aware admission recovers most accuracy by keeping the classifier head on FP32 while reducing traffic by 94.6–96.4%. 
+
+• Hardware plausibility evidence from gate-equivalent modeling, Yosys [ 26 ] synthesis, and nextpnr ECP5 routing checks [28, 29]. 
+
+Evidence scope. Our evaluation separates controller mech-anism, training quality, scale-proxy, and hardware-plausibility evidence. gem5 timing and the functional tester validate the controller path and byte-level G-Binary/G-Ternary se-mantics; CIFAR-10, SST-2, and CIFAR-100 test convergence regimes and boundary behavior. GPT-scale trace replay mod-els only the gradient-communication component, while syn-thesis and FPGA proxies bound datapath plausibility rather than replacing foundry implementation. The rest of the paper is organized as follows. Section 2 defines the CXL near-memory opportunity, the low-bit ag-gregation semantics, and the scope of the sign-gradient base-lines. Section 3 presents the NEURON-Fabric architecture, including the controller datapath, the G-Binary/G-Ternary aggregation datapath, and the FP32 calibration and recovery path. Section 4 describes the simulation, functional, training, and hardware-evaluation methodology. Section 5 quantifies the timing overhead and operating envelope of the controller datapath, and Section 6 validates the packed-sign aggrega-tion semantics. Section 7 evaluates training accuracy, traffic reduction, and the workload boundary exposed by CIFAR-100. Section 8 reports control-plane pilot results, Section 9 positions NEURON-Fabric against software and optimizer baselines, and Section 10 summarizes synthesis and place-and-route evidence. Finally, Section 11 discusses limitations and future work, and Section 12 concludes. 
+
+## 2 Background 
+
+This section defines the CXL placement, low-bit aggregation semantics, and baseline taxonomy used by the rest of the paper. 
+
+CXL near-memory opportunity. CXL 3.0 provides co-herent host/accelerator access to memory pools and fabric devices [ 6 ]. Prior CXL memory work focuses on pooling, disaggregation, or latency/bandwidth management [ 1 , 8 , 13 ]. NEURON-Fabric instead asks whether a CXL controller can perform useful gradient aggregation while serving CXL-targeted cache-line traffic. This is narrower than general near-memory computation. The operation is not arbitrary tensor execution near memory; 
+
+> 2NEURON-Fabric: CXL-Side Low-Bit Gradient Aggregation for Distributed Training
+
+it is a fixed cache-line reduction over a small packed repre-sentation. That restriction is important for hardware plausi-bility. A CXL memory controller is not a GPU, and the de-sign should not depend on large static random-access mem-ory (SRAM) buffers, floating-point datapaths, or software-managed compute kernels inside the controller. The opportu-nity is that gradient communication already moves similarly structured cache lines through the controller, and sign or ternary aggregation can be implemented with regular bit-wise logic. 
+
+Low-bit aggregation semantics. The low-bit signal helps because gradient communication is often bandwidth-bound. Replacing FP32 gradient values with packed signs or ternary symbols reduces the gradient payload, and the corresponding aggregation can be implemented with regular bitwise logic rather than floating-point addition. Let 𝑊 be the number of workers, 𝑘 index a worker, and 
+
+𝑖 index a gradient element. Worker 𝑘 still produces an ordi-nary FP32 gradient value 𝑔 𝑘,𝑖 ; for an admitted low-bit bucket, the communication runtime encodes its sign as 𝑏 𝑘,𝑖 before writing the CXL-resident payload. The controller consumes these packed bits, where 𝑏 𝑘,𝑖 = 1 denotes a positive sign and 
+
+𝑏 𝑘,𝑖 = 0 denotes a non-positive sign, and forms: 
+
+𝑏 𝑘,𝑖 = 1{sgn (𝑔 𝑘,𝑖 ) > 0},𝑐 𝑖 = PopCount (𝑏 0,𝑖 , . . . , 𝑏 𝑊 −1,𝑖 ),𝑎 𝑖 = 2𝑐 𝑖 − 𝑊 , 𝑢 bin  
+
+> 𝑖
+
+= sgn (𝑎 𝑖 ).
+
+Here 𝑐 𝑖 ∈ [ 0,𝑊 ] is the sign count and 𝑎 𝑖 ∈ [− 𝑊 ,𝑊 ] is the signed vote margin. The returned G-Binary update is 𝑢 bin  
+
+> 𝑖
+
+.The packed functional test checks the byte-level count 𝑐 𝑖 ,while the convergence tests interpret the same count through 
+
+𝑢 bin  
+
+> 𝑖
+
+.G-Ternary adds a zero gate 𝑚 𝑖 ∈ { 0, 1} and returns 
+
+𝑢 ter  
+
+> 𝑖
+
+= 𝑚 𝑖 𝑢 bin  
+
+> 𝑖
+
+.
+
+Unless otherwise stated, the evaluated controller gate is a fixed 2-of-3 pattern over flattened gradient elements: two consecutive elements keep the G-Binary update, and the third returns zero. For example, with eight workers, a six-positive, two-negative vote returns a positive G-Binary di-rection; if the G-Ternary gate is zero for that element, the G-Ternary datapath returns zero instead. In this paper, G-Binary and G-Ternary denote controller-side communication primitives inspired by BNN/BitNet arith-metic; they do not quantize the model weights or claim the full co-designed training recipe of prior low-bit model sys-tems [16]. This point matters for evaluation. Prior low-bit model sys-tems can use model-aware recipes such as scaling, clipping, optimizer changes, and layer-specific training schedules. NEURON-Fabric starts from a more constrained substrate: the controller observes the gradient communication payload and can replace the returned aggregate with a low-bit sig-nal. This constrained placement also lowers the integration burden. Unlike full low-bit model recipes, NEURON-Fabric does not require rewriting the model architecture, changing layer definitions, or retraining with a model-specific quan-tization schedule. The runtime encodes compact gradient payloads, and the controller aggregates them with regular bit-wise/counting logic. The tradeoff is that this hardware-light path cannot rely on model-aware compensation; it removes magnitude information and therefore places more burden on admission control. Admission control is the policy that decides whether a workload, layer group, or training phase is allowed to use the low-bit aggregation path. If diagnostics indicate that the low-bit signal is reliable, the controller admits G-Binary or G-Ternary aggregation. If not, the controller keeps that group on the FP32 path for calibration or recovery. Later experiments evaluate when each workload and layer group can safely use low-bit aggregation and when the controller should remain on the FP32 path. 
+
+Sign-gradient baselines. We include two sign-gradient baselines because a “sign” update can be formed at differ-ent points in the reduction pipeline. MajoritySignSGD is communication-comparable to G-Binary: each worker con-tributes only a sign for each gradient element, and the update direction is determined by the majority sign across workers. It therefore tests whether sign-only distributed reduction can preserve accuracy, although it is still implemented as a software baseline rather than a CXL datapath. SignOfMean is a stronger optimizer reference but is not communication-comparable. It first computes the FP32 mean gradient and only then takes the sign, so the full-precision reduction has already been performed. We include it to sep-arate the convergence strength of sign updates from the hardware question of whether a controller-resident low-bit aggregation primitive can provide the same communication savings. 
+
+Evaluation assumptions. Four modeling choices bound what the evaluation claims. First, gem5 [ 4 , 15 ] timing uses configured DDR5-like DRAM and CXL service points plus a five-cycle aggregation datapath, meaning a five-controller-cycle pipeline for the low-bit block; these are modeling points, not measured commercial-device numbers. Second, gem5 timing experiments retain ordinary identity read-back, while a separate functional test validates the G-Binary and G-Ternary transformed-payload semantics. Third, because gem5, Astra-Sim [ 27 ], and NS-3 [ 20 ] model different clocks and levels of detail, collective timing and network telemetry are passed into gem5 as traces rather than through synchro-nized co-simulation. Fourth, convergence experiments split minibatches into virtual workers to test aggregation seman-tics, not eight-physical-GPU NCCL scaling. 
+
+> 3Ziqiang Wang, Changcheng Huang, and Chung-Horng Lung
+
+Table 1. Design requirements and validation evidence.        
+
+> Requirement Reason Evidence Preserve FP32 path needed for calibration and recovery control pilots Keep datapath short must fit CXL service interval timing envelope Validate byte semantics low-bit path must not corrupt read-back functional test Admit selectively low-bit is not safe for all workloads/layers CIFAR-100 boundary Keep hardware regular controller logic must scale with line width synthesis/routing
+
+Table 1 summarizes the resulting design requirements and points to the evidence used to validate each one. 
+
+## 3 Architecture 
+
+The previous section defined the low-bit payload semantics and the evaluation assumptions. This section turns those se-mantics into a controller interface: a read-response datapath for admitted CXL-resident gradient payloads, plus a control path that selects whether the response is transformed by the low-bit datapath or left on the normal full-precision route. Fig. 1 shows the node-level organization. GPU gradient traffic targets a CXL-attached memory region. The datapath carries cache-line payloads and returns either identity bytes, an FP32 bypass response, or a G-Binary/G-Ternary aggregate; the control path only writes mode metadata. For an admit-ted low-bit bucket, the runtime derives a communication payload from the ordinary FP32 gradients before the write: G-Binary stores one sign bit per gradient element, while G-Ternary stores sign bits plus zero-gate bits. The model and backpropagation still produce FP32 gradients; only the communication payload is encoded into a packed low-bit format. Runtime then writes that packed payload into the CXL-resident gradient buffer. On the later read response, the controller applies the selected identity, G-Binary, G-Ternary, or FP32 path. 
+
+CXL protocol scope. NEURON-Fabric places aggregation on the CXL.mem-side response path for gradient buffers. CXL.io handles ordinary enumeration/configuration, and CXL.cache is unchanged in our model. Thus NEURON-Fabric changes the returned aggregation payload, not the cache-line or coherence protocol. The controller does not run backprop-agation, optimizer logic, or model-level quantization; those remain in the training stack. It only transforms admitted gradient communication payloads on the response path. Table 2 defines the four payload modes selected by the control path. 
+
+Datapath. The low-bit datapath is 512 bits wide, match-ing the 64-byte CXL response granularity. In G-Binary mode, each byte encodes packed signs from eight virtual workers 
+
+> GPU workers
+> shared LLC cache lines
+> CXL fabric/link
+> CXL controller
+> mode latch
+> G-Binary/ G-Ternary datapath
+> bypass return
+> pooled CXL memory
+> FP32 runtime aggregation software fallback
+> Control path: trace forecast + fabric telemetry loss feedback
+> write-side payload
+> read-response transform
+> payload
+> mode metadata
+
+Figure 1. NEURON-Fabric node architecture. The runtime writes ordinary FP32 or admitted packed low-bit payloads into the CXL-resident gradient buffer; on a later read re-sponse, the controller selects identity/bypass or the G-Binary/G-Ternary aggregate transform without overwrit-ing stored bytes. A discrete CXL switch is only required in switched pooled-memory deployments. 
+
+Table 2. Controller-visible aggregation modes selected by the control path.           
+
+> Mode Returned payload Role in the policy identity original cache-line bytes functional read-back check FP32 bypass normal full-precision path warm-up, calibration, recovery G-Binary majority sign aggregate 1-bit low-traffic relief G-Ternary ternary sign/zero aggregate sparse low-bit relief
+
+and XNOR/PopCount logic computes the returned sign count. G-Ternary reuses the count datapath and applies the recur-ring ternary zero gate. The modeled five-cycle delay cov-ers request decode, sign unpacking/alignment, per-element counts, majority or ternary gating, mode selection, and re-sponse registration; Section 10 checks that this depth is plau-sible for a 2 GHz target rather than assuming a single-cycle 512-bit block. 
+
+Control interface. The controller exposes a mode latch rather than embedding training policy in the datapath. The control plane is organized into three roles: a Predictor that estimates collective pressure from trace-derived timing and bandwidth forecasts, a Commander that proposes a mode from network telemetry, and a Supervisor that keeps or re-covers to FP32 when training-health telemetry is unsafe. In this paper, network telemetry is replayed communication-state information such as bandwidth pressure and cache-line demand, while training-health telemetry is runtime feedback such as loss trend, warm-up diagnostics, and recovery trig-gers. These signals drive mode selection; the controller itself receives only mode metadata. The Predictor does not ob-serve gradients, weights, or loss; its stored forecasts include 
+
+> 4NEURON-Fabric: CXL-Side Low-Bit Gradient Aggregation for Distributed Training
+
+forward/backward duration, All-Reduce timing, gradient vol-ume, shard bytes per GPU, peak CXL bandwidth demand, and cache-line read count. The control plane writes only mode metadata; it does not inspect or rewrite gradient payloads. 
+
+Admission and recovery. Training begins on the FP32 bypass path while the control plane records loss, gradient, and communication telemetry. If the Commander admits a low-bit mode for a phase or parameter group, it writes the corresponding G-Binary or G-Ternary mode from Table 2 into the controller mode latch. Later reads still follow the normal CXL read/response flow, but the controller returns the sign-count aggregate instead of the bypass payload. If the Supervisor observes sustained loss growth or another recovery trigger, it clears the latch back to FP32 for cooldown and calibration; after recovery, the same admission rule may re-enable low-bit aggregation. 
+
+Write-side payload materialization. NEURON-Fabric keeps the training interface and the memory-controller in-terface separate. Model forward/backward computation still produces ordinary FP32 gradients, and the training stack still decides which gradient buckets are being communi-cated. For an admitted low-bit bucket, the communication runtime derives a compact communication representation from those FP32 gradients before the write: G-Binary uses packed sign bits, while G-Ternary uses packed sign bits plus zero-gate bits. The runtime then writes that representation into the CXL-resident gradient buffer as ordinary cache-line payloads. In other words, the CXL-resident region remains a byte-addressed gradient communication buffer. 
+
+Read-side aggregation. The controller-side operation happens later, when an aggregate is read. The memory con-troller does not interpret model structure, tensor semantics, layer roles, or training state, nor does it execute backprop-agation or optimizer logic. The controller operates at CXL cache-line granularity. For an admitted aggregate read, it in-terprets the returned cache-line payload under the selected mode. The read-side transform is non-destructive: it does not overwrite the bytes at the target addresses or mutate model/optimizer state. It only changes what the requester receives on that aggregate read response. Warm-up, rejected admission, calibration, and recovery use the ordinary FP32 payload path, so the same buffer interface can fall back to full-precision communication when low-bit aggregation is unsafe. 
+
+Latency decomposition. Let 𝑇 agg denote the low-bit ag-gregation delay. The timing model includes a per-line CXL bandwidth gate: a configurable limiter that spaces cache-line service events according to the available link bandwidth. We call this spacing the bandwidth-gate interval. Because ag-gregation is registered behind the same controller service, that interval can hide part or all of the low-bit aggregation datapath. The exposed low-bit component is approximately 
+
+𝑇 exposed = max (0,𝑇 agg − 𝑇 overlap ),
+
+where 𝑇 overlap is the part of the bandwidth-gate interval and adjacent queued memory service that overlaps the aggrega-tion datapath. This is why NEURON-Fabric is useful only in some regimes: the same five-cycle datapath can be hid-den under bandwidth pressure or exposed when controller queues are sparse. 
+
+## 4 Methodology 
+
+The methodology follows the architectural decomposition above. It proceeds from controller timing and byte semantics to training quality, admission, control, and hardware plausi-bility: first isolating when the read-side low-bit transform is exposed by the CXL cache-line service path, then sepa-rating that timing question from correctness, convergence, control behavior, and implementation plausibility. Table 3 summarizes these evidence blocks. The timing experiments use gem5 with controlled DDR5-like and CXL-like service parameters. Astra-Sim supplies collective timing for the large language model (LLM)-scale projection, reported using BERT-large, GPT-2 XL, and GPT-3 model profiles. NS-3 supplies telemetry replay for the control-path check. The training experiments run model compute on Compute Unified Device Architecture (CUDA) where applicable and apply the selected aggregation rule to virtual-worker gradients, following the evaluation assumptions in Section 2. All accuracy numbers are reported as top-1 validation accuracy for vision or classification accuracy for SST-2. Com-munication ratios count the gradient payload transferred under the selected aggregation representation and normal-ize it to the same-runner FP32 gradient payload. The ratios are therefore not wall-clock training speedups; they are the communication pressure that the controller-side mechanism would remove if the selected low-bit mode is admitted. Unless otherwise stated, low-bit traffic results assume that admitted buckets have already been encoded by the communication runtime as the selected packed sign or ternary payloads before entering the CXL-resident buffer. 
+
+Default configuration. Unless otherwise stated, gem5 timing runs use eight virtual workers issuing 64-byte cache-line accesses through a configured CXL service model with 128 GiB/s bandwidth, 200 ns fixed memory-access latency, and an 8 MiB LLC. The controller datapath uses the 512-bit, five-controller-cycle G-Binary/G-Ternary datapath from Sec-tion 3. The measured exposed-cost anchor uses a 2 MiB/GPU active gradient-buffer footprint across the eight workers, forcing the 16 MiB active footprint beyond the LLC; trace replay and the envelope sweep inherit this full-LLC-miss anchor. CUDA convergence experiments run on one CUDA 
+
+> 5
+
+Ziqiang Wang, Changcheng Huang, and Chung-Horng Lung 
+
+Table 3. Evaluation evidence map and workload scope. 
+
+Claim Evidence block Workload/protocol What it answers Timing exposure gem5 timing, bucket replay, operating-envelope sweep synthetic cache-line streams; BERT/GPT profiles whether the datapath is exposed in the controller path and whether bursty gradient buckets change that conclusion Functional correctness packed-sign validation packed eight-worker sign packets; deterministic controller test whether identity, G-Binary, and G-Ternary read-back semantics are exact Validated convergence CIFAR-10 and SST-2 runs ResNet-18 and DistilBERT; CUDA training/fine-tuning with 8 virtual workers whether low-bit aggregation works in validated vision and Transformer regimes Boundary/admission CIFAR-100 and layer-aware runs ResNet-18; CUDA training with 8 virtual workers where full-path low-bit aggregation fails and how the failure localizes into an admission rule Control safety CUSUM and guarded recovery pilots CIFAR-10/ResNet-18 traces with live mode selection and controlled degradation windows whether telemetry and training feedback can keep FP32 available for warm-up, rejection, and recovery Hardware plausibility datapath synthesis and place-and-route summary 512-bit G-Binary/G-Ternary datapath cost model whether the datapath is small and regular enough for a controller-resident implementation 
+
+device and simulate eight workers by splitting each batch be-fore software aggregation; they check convergence and com-munication representation, not physical multi-GPU through-put. 
+
+## 5 Low-Bit Datapath Timing Envelope 
+
+This section separates controller-datapath cost from mem-ory service, cache filtering, bucket scheduling, and controller scale-out. The goal is to bound when the five-cycle low-bit datapath becomes visible, not to claim that low-bit aggrega-tion always accelerates a step. 
+
+5.1 Measured Datapath Exposure 
+
+Table 4 reports the exposed cost of adding the five-cycle G-Binary datapath, i.e., the portion not hidden by memory-service and bandwidth-gate delay. We refer to this non-congested service setting as healthy-CXL; in congested-CXL settings, bandwidth-gate and queueing delay can hide the low-bit work. Under the default modeling anchor in Sec-tion 4, G-Binary adds 1.11% overhead with one synthetic cache-line request stream and remains below 2% across mea-sured scaling and full-LLC-miss runs. These numbers isolate the incremental cost of the low-bit datapath under the con-figured service model; they do not compare commercial CXL and DDR5 DRAM memory systems. A GPT-scale sanity check multiplies Astra-Sim All-Reduce windows for BERT-large [ 7], GPT-2 XL [ 19 ], and GPT-3 [ 5 ]by the 1.67% full-LLC-miss component, giving 0.78M, 3.4M, and 399M exposed cycles. The workload-shaped replay and sensitivity sweep provide the main timing evidence. 
+
+5.2 Bucketized Trace Replay 
+
+The trace replay replaces the uniform stream with 32 MiB gradient buckets from BERT-large, GPT-2 XL, and GPT-3 profiles. Bucket overlap is a baseline framework scheduling 
+
+Table 4. Measured G-Binary datapath timing exposure. 
+
+Result Observation Takeaway 1-request stream G-Binary overhead 1.11% low exposed cost 1–8 request stream overhead 0.55–1.88% bounded scaling full LLC-miss overhead 1.67% worst measured exposure scale-out, healthy 1.07–1.67% bounded across 1–8 controller stacks scale-out, congested hidden–1.11% overlap can disappear as stacks split BERT-large GPT-2 XL GPT-3    
+
+> 10 2
+> 10 3
+> 10 4
+> Step time (ms, log)
+> 9.7% shorter
+> 10.0% shorter
+> 0.6% shorter
+> (a) Bucket overlap reduces baseline step time
+> Sequential
+> Bucket overlap
+> BERT-large GPT-2 XL GPT-3
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> 1.25
+> 1.50
+> 1.75
+> 2.00
+> G-Binary overhead vs FP32 ref. (%)
+> 1.40% 1.39%
+> 1.65%
+> (b) G-Binary datapath exposure
+
+Figure 2. Gradient-bucket trace replay. Panel (a) shows base-line bucket overlap with the backward tail. Panel (b) isolates healthy-CXL exposed cost after adding the G-Binary datap-ath; congested-CXL cases are hidden by the bandwidth gate. effect: early buckets communicate while later backward op-erators still run. Fig. 2 asks whether that burstiness exposes more controller cost. In the healthy-CXL case, adding the G-Binary datapath leaves only a 1.25–1.65% increment over the FP32 no-aggregation reference. 
+
+6NEURON-Fabric: CXL-Side Low-Bit Gradient Aggregation for Distributed Training 
+
+5.3 Envelope and Scale-Out 
+
+Fig. 3 maps when the timing conclusion stops holding. Panel (a) varies CXL bandwidth and low-bit datapath delay. The mea-sured 5-cycle datapath stays below a 2% exposed-cost gate across the bandwidth sweep, while deeper 10-cycle and 20-cycle datapaths exceed the gate at high CXL bandwidth be-cause less bandwidth-gate delay is available to hide computa-tion. Panel (b) varies the fixed CXL memory-access latency; changing this latency shifts the base memory-service path but does not make the measured 5-cycle datapath the domi-nant cost. Panel (c) varies the active gradient footprint rela-tive to LLC capacity and shows why the full-LLC-miss point is the conservative exposed case: once the active footprint exceeds LLC capacity, more accesses reach the CXL con-troller. Panel (d) delays mode telemetry updates and shows that even a 10 ms late update adds less than 0.04% step cost in this model. The scale-out rows in Table 4 add one more stress case. Splitting one shared CXL controller into 𝑁 ∈ { 1, 2, 4, 8}
+
+stacks reduces queueing but can also remove overlap that previously hid the low-bit datapath. Across the 8-GPU LLC-miss sweep, the exposed overhead remains bounded rather than growing with stack count. 
+
+## 6 Functional Correctness 
+
+The timing model is meaningful only if the controller im-plements the intended aggregation semantics. The subtlety is the validation oracle. A conventional memory regression assumes identity memory and would flag any read value that differs from the last write to the same address as a fail-ure. That check remains correct for identity mode, but it is the wrong oracle for G-Binary and G-Ternary because their read response is intentionally a transformed aggregate over the worker packets. We therefore validate the controller with mode-specific expected values: identity mode uses byte-for-byte read-back, while G-Binary and G-Ternary use a transformation-aware software oracle that computes the Section 2 reduction before comparing against the controller response. The packed-sign validation writes sign packets for eight virtual workers and reads them back under three modes: iden-tity, G-Binary, and G-Ternary. This is a fixed 64-byte-packet read-back test over the same address range, not a traffic-volume measurement. The harness selects the expected pay-load from the active controller mode rather than forcing every mode to satisfy read-equals-write. The payloads re-turned by all three modes match their corresponding oracle exactly, closing the byte-semantics check before the paper turns to training quality. 
+
+## 7 Training Evidence and Boundary 
+
+Functional correctness does not imply training quality. This section first checks where G-Binary/G-Ternary preserve con-vergence, then uses a harder workload to expose the admis-sion boundary. 
+
+7.1 Validated Low-Bit Regimes 
+
+Fig. 4 combines convergence curves with final mean and standard deviation at each endpoint. On CIFAR-10/ResNet-18, G-Binary and G-Ternary remain within 2 points of FP32 and within 1 point of MajoritySignSGD. On full-data SST-2/DistilBERT, all three low-bit/sign methods remain in the same final-accuracy band as FP32 across three seeds. The three SST-2 epochs are the full supervised fine-tuning sched-ule from a pretrained DistilBERT checkpoint, not a truncated pretraining run. 
+
+7.2 Harder-Workload Boundary 
+
+We use boundary here in an empirical sense: it is the point where applying the same low-bit aggregation policy to every layer no longer preserves training quality. CIFAR-100/ResNet-18 exposes this case: Fig. 5 shows that full-path G-Binary and G-Ternary lag FP32 by about 11.6 points and trail the sign-gradient references by about 8 points. This is a use-ful negative result rather than a failed run. It leads to the systems conclusion that admission must be workload- and layer-aware. CIFAR-100 keeps the same architecture family as CIFAR-10 but makes the classification problem harder, which sepa-rates “the low-bit aggregation datapath can execute” from “the whole workload can tolerate removing magnitude in-formation everywhere.” A universal low-bit path would be attractive for hardware simplicity, but this result shows that the control interface must preserve a normal FP32 route for sensitive workloads, layers, or phases. 
+
+7.3 Layer-Aware Admission 
+
+Layer-wise diagnostics localize the failure. We measure low-bit/FP32 cosine alignment between the low-bit and FP32 aggregate vectors for the same layer group; values near 1 indicate matching update directions, while values near 0 in-dicate a nearly orthogonal signal. At epoch 20, Table 5 shows weak CIFAR-100 classifier-head alignment but a well-aligned backbone, suggesting a selective policy: low-bit backbone, FP32 head. 
+
+Table 5. Epoch-20 low-bit/FP32 cosine diagnostics.          
+
+> Dataset Global Backbone Head CIFAR-10 G-Binary/G-Ternary .505/.415 .694/.567 .531/.435 CIFAR-100 G-Binary/G-Ternary .510/.419 .723/.591 .174/.142 7
+
+Ziqiang Wang, Changcheng Huang, and Chung-Horng Lung 8 16 32 64 128 256 
+
+CXL bandwidth (GiB/s) 
+
+1
+
+5
+
+10 
+
+20                     
+
+> G-Binary compute cycles  0.0 0.0 0.0 0.0 0.0 0.2
+> 0.0 0.0 0.1 0.5 1.2 1.2
+> 0.0 0.1 0.6 1.4 2.5 2.5
+> 0.1 0.6 1.5 2.8 5.0 5.0
+
+(a) Exposed G-Binary overhead (%) 
+
+100 150 200 250 300 350 400 
+
+CXL latency (ns) 
+
+0.5 
+
+1.0 
+
+1.5 
+
+2.0 
+
+2.5 
+
+3.0 
+
+> Overhead over FP32 path (%)
+
+(b) CXL memory access latency sensitivity 
+
+> BERT-large
+> GPT-2 XL
+> GPT-3
+
+2 1 21 23 25
+
+Active footprint per GPU (MiB) 
+
+0
+
+20 
+
+40 
+
+60 
+
+80 
+
+100 
+
+> Controller-visible misses (%)
+
+(c) CXL-visible access exposure 
+
+> 8 MiB LLC
+> 50 MiB LLC
+
+0 10 1 10 0 10 1
+
+Policy telemetry delay (ms) 
+
+0.00 
+
+0.01 
+
+0.02 
+
+0.03 
+
+> Step-cost penalty (%)
+> 10 ms: 0.035%
+
+(d) Telemetry-delay bound 
+
+Figure 3. Operating-envelope sensitivity sweep. Panel (a) maps exposed overhead across CXL bandwidth and G-Binary compute cycles; panel (b) varies the fixed CXL memory-access latency; panel (c) shows how LLC capacity controls controller-visible accesses; panel (d) bounds policy telemetry delay as a late mode update. 25 50 75 100 125 150 
+
+Epoch 
+
+40 
+
+50 
+
+60 
+
+70 
+
+80 
+
+90 
+
+> Validation accuracy (%)
+> FP32 91.70 ±0.18
+> G-Binary 90.04 ±0.60
+> G-Ternary 90.13 ±0.21
+> MajoritySignSGD 90.96 ±0.39
+
+ResNet-18 full CIFAR-10, n=3 1 2 3
+
+Epoch 
+
+88.5 
+
+89.0 
+
+89.5 
+
+90.0 
+
+90.5 
+
+91.0 
+
+> Validation accuracy (%)
+> FP32 90.25 ±0.30
+> G-Binary 90.44 ±0.33
+> G-Ternary 90.14 ±0.57
+> MajoritySignSGD 90.18 ±0.40
+
+SST-2 DistilBERT fine-tuning, n=3 
+
+Figure 4. Validated low-bit convergence regimes. Left: full 100-epoch CIFAR-10/ResNet-18 training. Right: complete three-epoch SST-2/DistilBERT fine-tuning. Endpoint labels report final mean ± standard deviation across three seeds. 
+
+8NEURON-Fabric: CXL-Side Low-Bit Gradient Aggregation for Distributed Training 20 40 60 80 100 120  
+
+> Epoch
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> 80
+> Validation accuracy (%)
+> Final acc. ( vs FP32)
+> FP32 74.3 ±0.2 (--)
+> MajoritySignSGD 70.5 ±0.3 (-3.8)
+> SignOfMean 70.7 ±0.1 (-3.7)
+> G-Binary 62.6 ±0.7 (-11.7)
+> G-Ternary 62.7 ±0.4 (-11.6)
+
+CIFAR-100 workload-sensitivity boundary 
+
+Figure 5. CIFAR-100 boundary. Full-path G-Binary and G-Ternary remain far below FP32 and the sign-gradient refer-ences. Endpoint labels report final mean ± standard deviation and Δ versus FP32 across three seeds. 
+
+Table 6. CIFAR-100 layer-aware mixed aggregation, three seeds.                               
+
+> Policy Final acc. (%) Traffic vs. FP32 FP32 all 74 .45 ±0.28 1.0000 G-Binary all 62 .33 ±0.31 0.0313 G-Ternary all 62 .22 ±0.64 0.0494 G-Binary backbone + FP32 head 73 .11 ±0.11 0.0357 G-Ternary backbone + FP32 head 73 .04 ±0.32 0.0537 FP32 backbone + G-Binary head 72 .46 ±0.36 0.9956 FP32 backbone + G-Ternary head 67 .26 ±0.30 0.9957
+
+Table 6 validates the diagnostic. Low-bit backbone with an FP32 head recovers most accuracy while preserving most traffic reduction: G-Binary reaches 73 .11 ± 0.11 % at 0.0357 ×
+
+FP32 gradient traffic, and G-Ternary reaches 73 .04 ± 0.32 %at 0.0537 ×. The reverse split is weaker and retains almost all FP32 traffic, confirming that the classifier-head signal is the sensitive component. Traffic ratios count only gradient payload representation, not unrelated framework overheads or end-to-end training time. A final ablation checks whether the layer-aware recovery is merely a learning-rate effect. Because the tuned low-bit and FP32 runs use different learning rates, we keep the clas-sifier head on FP32 aggregation but assign it the low-bit learning rate. The model still reaches 73 .24 ± 0.56 % with a G-Binary backbone and FP32 head, and 73 .22 ± 0.31 % with a G-Ternary backbone and FP32 head. Recovery therefore comes primarily from preserving the head aggregation signal rather than from the learning-rate choice. The boundary lesson is not to disable low-bit aggregation entirely. Instead, the controller should admit the large, well-aligned backbone while keeping the sensitive head on FP32. The always-on low-bit execution lacks that calibration and recovery point. 
+
+## 8 Control-Plane Pilots 
+
+NEURON-Fabric exposes a control interface because training evidence rejects unconditional full-path low-bit execution. The method therefore keeps FP32 as a calibration and re-covery path: training begins on FP32, low-bit modes are admitted only after diagnostics pass, and unsafe buckets or layer groups can return to FP32 when telemetry or training-health guards fail. The pilot question is whether telemetry and training-health feedback can drive these online mode choices. For this paper, the ladder is not a learned policy. It maps diagnostics to the lowest-traffic mode that passes, keeps a sensitive head on FP32 when only the backbone passes, and recovers to FP32 if training-health telemetry degrades. The calibration remains workload-specific while adaptive Commander/Supervisor policies are future work. Fig. 6 expands one CIFAR-10/ResNet-18 recovery pilot into an epoch-level trace. It uses four traces to separate references from control behavior: always-FP32 and always-G-Binary are fixed-mode baselines, FP32-default tests admission into low-bit aggregation, and G-Binary-default tests FP32 recovery from low-bit execution. After admission, the Supervisor can return to FP32 during an injected degradation window and re-enable low-bit aggregation after recovery. The G-Binary-default policy keeps 81.11% of steps low-bit, uses 0.214x FP32 communication on average, and ends at 90 .87 ± 1.04 %. The endpoint stays within the run-to-run variation of the FP32 and always-G-Binary references, so the pilot demonstrates guarded recovery behavior rather than a fixed universal threshold. 0 20 40 60 
+
+Epoch 
+
+50 
+
+60 
+
+70 
+
+80 
+
+90 
+
+100 
+
+> Validation accuracy (%)
+> label-noise
+> window
+> 90.4%; 0% saved
+> 90.6%; 97% saved
+> 89.6%; 0.5% saved
+> 90.9%; 79% saved
+
+Guarded recovery convergence 
+
+> FP32
+> G-Binary
+> FP32-default
+> G-Binary-default
+
+Figure 6. Guarded recovery pilot over 60 epochs. Endpoint callouts report final validation accuracy and average traffic saved relative to FP32 communication. 
+
+> 9Ziqiang Wang, Changcheng Huang, and Chung-Horng Lung
+
+Beyond the recovery trace, the scoped pilots exercise the same interface in two additional settings. On the CIFAR-100 live loop, the policy selects G-Ternary-backbone/FP32-head, matching the layer-aware boundary result. On SST-2/DistilBERT, calibration transfers after tuning, with the all-G-Binary policy reaches 90.71%. Together, these pilots show that the controller interface can express warm-up, ad-mission, selective fallback, and recovery across more than one workload. 
+
+## 9 Baseline Positioning 
+
+NEURON-Fabric occupies a different point from software compression, in-network aggregation, and optimizer-only sign methods. CXL pooling reduces memory-placement pres-sure but still returns full-gradient traffic. NCCL/RDMA ring All-Reduce preserves FP32 semantics but moves large gra-dient volumes. Scalable Hierarchical Aggregation Protocol (SHARP) [ 9 ] and SwitchML-style aggregation [ 22 ] reduce network traffic, but they depend on switch support and do not place aggregation in the CXL memory controller. The two sign-gradient baselines serve different roles: Majori-tySignSGD tests a sign-only communication pattern, while SignOfMean tests the accuracy of taking a sign after the FP32 mean has already been computed. NEURON-Fabric reduces memory-side gradient traffic when low-bit admission is safe and keeps FP32 as the calibration/recovery path when it is not. The distinction is where the reduction happens and what information is available when it happens. MajoritySignSGD is communication-comparable to a sign path because each worker can send a sign before aggregation, but its update rule is still a software training method. SignOfMean is an accuracy-oriented reference: it first forms the FP32 mean and then takes a sign, so it is not a communication-equivalent controller primitive. NEURON-Fabric moves this collective point to the CXL memory-controller boundary: admitted gradient buckets are encoded as low-bit payloads before the write, and the controller returns the selected aggregate on the read-response path while the FP32 software collective remains available for calibration and recovery. Fig. 7 folds the traffic matrix into a two-panel view of the GPT-2 XL payload. Panel (a) reports modeled communication time for one All-Reduce operation, and panel (b) positions the same paths by normalized traffic and observed conver-gence evidence. These numbers compare only the modeled gradient-communication component under the stated pay-load and path assumptions; they are not end-to-end training-step speedups. The modeled communication time for NEURON-Fabric comes from two assumptions that must both hold: gradient traffic reaches the CXL controller, and the admitted work-load can use packed G-Binary or G-Ternary aggregation. In this model, the controller-side G-Binary and G-Ternary rows 
+
+Table 7. Hardware plausibility summary for the 512-bit dat-apath.         
+
+> Metric Value Gate-equivalent estimate 24,716 Estimated area 0.004943 mm 2
+> Estimated dynamic energy 6.179 pJ/line Estimated 2 GHz slack 155 ps Yosys generic cells 4,358 Yosys registers 1,803 ECP5 routed target 100 MHz met
+
+take 2.77 ms and 4.38 ms for the GPT-2 XL payload, compared with 87.31–228.00 ms for the FP32 collective references. Ma-joritySignSGD has slightly lower normalized traffic than the G-Binary row, but it is not a controller-resident primitive. SignOfMean is included only to separate optimizer strength from communication equivalence, because it requires the full-precision mean before taking the sign. 
+
+## 10 Hardware Plausibility 
+
+The final question is whether the low-bit aggregation data-path is credible as controller datapath logic, rather than an accelerator-scale block hidden behind a timing constant. We check this with three proxies: a gate-equivalent estimate for the 512-bit five-cycle datapath, generic-cell synthesis over several datapath widths, and an out-of-context FPGA place-and-route proxy. The 512-bit point has positive estimated slack against a 2 GHz target, passes generic-cell synthesis, and meets a 100 MHz out-of-context FPGA route target. Ta-ble 7 summarizes the corresponding area, energy, cell-count, and route checks. These proxy results do not replace foundry synthesis; they support treating the aggregation datapath as a small regular datapath candidate rather than only a timing placeholder. For the timing sweep in Fig. 8, the pass threshold is the 2 GHz cycle period: 500 ps. A pipeline configuration therefore passes only when its maximum stage delay fits within one 2 GHz controller cycle. The 512-bit datapath is one representative point in a width sweep. The Yosys/ABC generic-cell sweep [ 2 , 26 ] passes structural checks for 64, 128, 256, 512, and 1024-bit datapaths, with total cells growing from 606 at 64 bits to 8,646 at 1024 bits. The nextpnr/Project Trellis ECP5 routing proxy [ 28 , 29 ]also passes across the same width range: the 512-bit datapath routes at 184.88 MHz and the 1024-bit stress point still routes at 155.74 MHz against a 100 MHz target. These checks do not prove a 2 GHz ASIC implementation, but they provide structural support for treating the five-cycle datapath as a plausible controller block. Fig. 8 shows the scaling trend behind the 512-bit summary. 
+
+> 10
+
+NEURON-Fabric: CXL-Side Low-Bit Gradient Aggregation for Distributed Training 10 1 10 2
+
+One All-Reduce payload time (ms, log) 
+
+> NF G-Binary
+> NF G-Ternary
+> MajoritySignSGD
+> CXL-FP32
+> RDMA-FP32
+> Switch-FP32
+> SignOfMean
+> 2.8
+> 4.4
+> 6.4
+> 87.3
+> 205.5
+> 228.0
+> 205.5
+
+(a) GPT-2 XL full-gradient payload 
+
+10 1 10 0
+
+GPU gradient traffic / FP32 ring All-Reduce baseline (log) 
+
+90.0 
+
+90.5 
+
+91.0 
+
+91.5 
+
+92.0 
+
+92.5 
+
+93.0 
+
+93.5 
+
+94.0 
+
+> Observed final accuracy (%)
+
+(b) Volume/accuracy positioning 
+
+> 0.0357, 90.04%
+> 0.0564, 90.13%
+> 0.0312, 90.96%
+> 1.14, 91.70%
+> 1, 91.70%
+> 1.14, 91.70%
+> 1, 93.67%
+> NF G-Binary
+> NF G-Ternary
+> MajoritySignSGD
+> CXL-FP32
+> RDMA-FP32
+> Switch-FP32
+> SignOfMean
+
+Figure 7. Modeled gradient-communication component for one GPT-2 XL payload. NEURON-Fabric occupies a controller-side low-bit point: lower modeled gradient traffic than FP32 collectives when low-bit admission is valid, but not a universal replacement for software optimizers or switch-supported aggregation. 26 27 28 29 210     
+
+> Datapath width (bits)
+> 0
+> 2
+> 4
+> 6
+> 8
+> 10
+> Estimated area (10  3 mm 2)
+> (a) Area scales with datapath width
+> 1 cycle
+> 2 cycle
+> 3 cycle
+> 5 cycle
+> 1235
+> Pipeline cycles
+> 0
+> 100
+> 200
+> 300
+> 400
+> 500
+> 600
+> 700
+> Max stage delay (ps)
+> fail
+> pass
+> pass pass
+> (b) 512-bit datapath timing
+> 2 GHz cycle
+
+Figure 8. Hardware-cost model. Area scales regularly with datapath width and pipeline depth; in the gate-equivalent model, the 512-bit five-cycle datapath has positive estimated slack against a 2 GHz target. The 500 ps pass threshold in the timing panel is the cycle period of a 2 GHz datapath stage. 
+
+## 11 Limitations and Future Work 
+
+The evaluation assumptions in Section 2 bound what this paper claims: it evaluates a CXL controller primitive and an admission mechanism, not a deployed end-to-end training runtime. The remaining limitations are therefore policy and integration gaps around that primitive. The policy results are also intentionally conservative. The deterministic ladder uses cosine-alignment thresholds from warm-up diagnostics, and the Transformer pilot shows that thresholds calibrated on vision do not transfer unchanged to fine-tuning. The current paper therefore claims a con-troller mechanism plus a measured admission boundary, not a universal policy oracle. The correct next step is a workload-calibrated adaptive Commander/Supervisor policy. Unlike the deterministic ladder used here, such a policy could com-bine the signals already exposed by the prototype–layer diag-nostics, loss trend, and communication pressure–with richer training signals such as gradient norms and update-history features. The remaining production gap is metadata and runtime plumbing between the training framework and the CXL-resident gradient buffers. A complete system would need compiler or framework support to label parameter groups and map those groups to CXL-resident gradient buffers. The distributed training runtime would then attach mode meta-data to collective operations, encode packed sign or ternary payloads for admitted buckets, and account for that encoding cost. Finally, recovery events must be reported back to the training runtime so that fallback and re-admission remain vis-ible to the framework. This is future integration work rather than an evaluation assumption: the experiments evaluate whether the controller primitive and admission mechanism are useful once such metadata and payload-encoding hooks are available. 
+
+## 12 Conclusion 
+
+Our simulations show that CXL-side low-bit gradient aggre-gation is a plausible near-memory mechanism for distributed training, but only as a scoped controller-level substrate. The timing results show that a five-cycle G-Binary/G-Ternary datapath has low exposed cost and can be hidden under bandwidth pressure. Functional tests show exact packed-sign semantics. Training evidence shows that low-bit aggrega-tion is accurate on selected workloads, but harder-workload boundary evidence rules out unconditional full-path low-bit execution. Layer-aware admission converts that boundary into a useful operating point: low-bit backbone aggregation with an FP32 classifier head preserves most of the accuracy while reducing gradient traffic by more than 94%. The re-sulting design principle is that FP32 anchors calibration and 
+
+11 Ziqiang Wang, Changcheng Huang, and Chung-Horng Lung 
+
+recovery, while G-Binary/G-Ternary provides a controller-side relief mode only when the workload, layer, or phase admits it. 
+
+## Acknowledgments 
+
+This work used computational resources provided by the Digital Research Alliance of Canada, including access to the Narval cluster. 
+
+## References 
+
+[1] Daniel S. Berger, Daniel Ernst, Huaicheng Li, Pantea Zardoshti, Monish Shah, Samir Rajadnya, Scott Lee, Lisa Hsu, Ishwar Agarwal, Mark D. Hill, and Ricardo Bianchini. 2023. Design Tradeoffs in CXL-Based Memory Pools for Public Cloud Platforms. IEEE Micro 43, 2 (2023), 30–38. https://doi.org/10.1109/MM.2023.3241586 
+
+[2] Berkeley Logic Synthesis and Verification Group. n.d.. ABC: A System for Sequential Synthesis and Verification. https://people.eecs.berkeley. edu/~alanmi/abc/ . Accessed: 2026-05-21. [3] Jeremy Bernstein, Yu-Xiang Wang, Kamyar Azizzadenesheli, and Ani-mashree Anandkumar. 2018. signSGD: Compressed Optimisation for Non-Convex Problems. In Proc. ICML .[4] Nathan Binkert, Bradford Beckmann, Gabriel Black, Steven K. Rein-hardt, Ali Saidi, Arkaprava Basu, Joel Hestness, Derek R. Hower, Tushar Krishna, Somayeh Sardashti, Rathijit Sen, Korey Sewell, Muhammad Shoaib, Nilay Vaish, Mark D. Hill, and David A. Wood. 2011. The gem5 Simulator. ACM SIGARCH Computer Architecture News 39, 2 (2011), 1–7. [5] Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D. Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, Sandhini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan, Rewon Child, Aditya Ramesh, Daniel M. Ziegler, Jeffrey Wu, Clemens Winter, Christopher Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec Radford, Ilya Sutskever, and Dario Amodei. 2020. Language Models are Few-Shot Learners. In Proc. NeurIPS . 1877–1901. [6] CXL Consortium. 2022. Compute Express Link Specification Revision 3.0. https://www.computeexpresslink.org .[7] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2019. BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding. In Proc. NAACL-HLT . 4171–4186. [8] Donghyun Gouk, Sangwon Lee, Miryeong Kwon, and Myoungsoo Jung. 2022. Direct Access, High-Performance Memory Disaggregation with DirectCXL. In Proc. USENIX ATC . 287–294. [9] Richard L. Graham, Devendar Bureddy, Pak Lui, Hal Rosenstock, Gilad Shainer, Gil Bloch, Dror Goldenerg, Mike Dubman, Sasha Kotchu-bievsky, Vladimir Koushnir, Lion Levi, Alex Margolin, Tamir Ronen, Alexander Shpiner, Oded Wertheim, and Eitan Zahavi. 2016. Scalable Hierarchical Aggregation Protocol (SHARP): A Hardware Architecture for Efficient Data Reduction. In Proc. 1st Workshop on Optimization of Communication in HPC (COM-HPC) . 1–10. [10] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. 2016. Deep Residual Learning for Image Recognition. In Proc. CVPR . 770–778. [11] Itay Hubara, Matthieu Courbariaux, Daniel Soudry, Ran El-Yaniv, and Yoshua Bengio. 2016. Binarized Neural Networks. In Proc. NeurIPS .4107–4115. [12] Alex Krizhevsky. 2009. Learning Multiple Layers of Features from Tiny Images . Technical Report. University of Toronto. [13] Huaicheng Li, Daniel S. Berger, Lisa Hsu, Daniel Ernst, Pantea Zar-doshti, Stanko Novakovic, Monish Shah, Samir Rajadnya, Scott Lee, Ishwar Agarwal, Mark D. Hill, Marcus Fontoura, and Ricardo Bian-chini. 2023. Pond: CXL-Based Memory Pooling Systems for Cloud Platforms. In Proc. ASPLOS . 574–587. [14] Yujun Lin, Song Han, Huizi Mao, Yu Wang, and William J. Dally. 2018. Deep Gradient Compression: Reducing the Communication Bandwidth for Distributed Training. In Proc. ICLR .[15] Jason Lowe-Power, Abdul Mutaal Ahmad, Ayaz Akram, Mohammad Alian, Rico Amslinger, Matteo Andreozzi, Adrià Armejach, Nils As-mussen, Brad Beckmann, Srikant Bharadwaj, Gabe Black, Gedare Bloom, Bobby R. Bruce, Daniel Rodrigues Carvalho, Jeronimo Cas-trillon, Lizhong Chen, Nicolas Derumigny, Stephan Diestelhorst, Wendy Elsasser, Carlos Escuin, Marjan Fariborz, Amin Farmahini-Farahani, Pouya Fotouhi, Ryan Gambord, Jayneel Gandhi, Dibakar Gope, Thomas Grass, Anthony Gutierrez, Bagus Hanindhito, Andreas Hansson, Swapnil Haria, Austin Harris, Timothy Hayes, Adrian Her-rera, Matthew Horsnell, Syed Ali Raza Jafri, Radhika Jagtap, Hanhwi Jang, Reiley Jeyapaul, Timothy M. Jones, Matthias Jung, Subash Kan-noth, Hamidreza Khaleghzadeh, Yuetsu Kodama, Tushar Krishna, Tom-maso Marinelli, Christian Menard, Andrea Mondelli, Miquel Moreto, Tiago Mück, Omar Naji, Krishnendra Nathella, Hoa Nguyen, Nikos Nikoleris, Lena E. Olson, Marc Orr, Binh Pham, Pablo Prieto, Trivikram Reddy, Alec Roelke, Mahyar Samani, Andreas Sandberg, Javier Setoain, Boris Shingarov, Matthew D. Sinclair, Tuan Ta, Rahul Thakur, Giacomo Travaglini, Michael Upton, Nilay Vaish, Ilias Vougioukas, William Wang, Zhengrong Wang, Norbert Wehn, Christian Weis, David A. Wood, Hongil Yoon, and Éder F. Zulian. 2020. The gem5 Simulator: Version 20.0+. arXiv preprint arXiv:2007.03152 (2020). [16] Shuming Ma, Hongyu Wang, Lingxiao Ma, Lei Wang, Wenhui Wang, Shaohan Huang, Li Dong, Ruiping Wang, Jilong Xue, and Furu Wei. 2024. The Era of 1-Bit LLMs: All Large Language Models are in 1.58 Bits. arXiv preprint arXiv:2402.17764 (2024). [17] NVIDIA. n.d.. NVIDIA Collective Communications Library (NCCL). 
+
+https://developer.nvidia.com/nccl . Accessed: 2026-05-23. [18] E. S. Page. 1954. Continuous Inspection Schemes. Biometrika 41, 1/2 (1954), 100–115. [19] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, and Ilya Sutskever. 2019. Language Models are Unsupervised Multitask Learners . Technical Report. OpenAI. [20] George F. Riley and Thomas R. Henderson. 2010. The ns-3 Network Simulator. In Modeling and Tools for Network Simulation . Springer, 15–34. [21] Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf. 2019. DistilBERT, a Distilled Version of BERT: Smaller, Faster, Cheaper and Lighter. arXiv preprint arXiv:1910.01108 (2019). [22] Amedeo Sapio, Marco Canini, Chen-Yu Ho, Jacob Nelson, Panos Kalnis, Changhoon Kim, Arvind Krishnamurthy, Masoud Moshref, Dan R. K. Ports, and Peter Richtarik. 2021. Scaling Distributed Machine Learning with In-Network Aggregation. In Proc. NSDI . 785–808. [23] Frank Seide, Hao Fu, Jasha Droppo, Gang Li, and Dong Yu. 2014. 1-Bit Stochastic Gradient Descent and Its Application to Data-Parallel Distributed Training of Speech DNNs. In Proc. Interspeech . 1058–1062. 
+
+https://doi.org/10.21437/Interspeech.2014-274 
+
+[24] Richard Socher, Alex Perelygin, Jean Wu, Jason Chuang, Christopher D. Manning, Andrew Y. Ng, and Christopher Potts. 2013. Recursive Deep Models for Semantic Compositionality Over a Sentiment Treebank. In Proc. EMNLP . 1631–1642. [25] Alex Wang, Amanpreet Singh, Julian Michael, Felix Hill, Omer Levy, and Samuel R. Bowman. 2019. GLUE: A Multi-Task Benchmark and Analysis Platform for Natural Language Understanding. In Proc. ICLR .[26] Clifford Wolf and Johann Glaser. 2013. Yosys: A Free Verilog Synthesis Suite. In Proc. Austrochip .[27] William Won, Taekyung Heo, Saeed Rashidi, Srinivas Sridharan, Sudar-shan Srinivasan, and Tushar Krishna. 2023. ASTRA-sim2.0: Modeling Hierarchical Networks and Disaggregated Systems for Large-Model Training at Scale. In Proc. ISPASS . 283–294. https://doi.org/10.1109/ ISPASS57527.2023.00035 
+
+12 NEURON-Fabric: CXL-Side Low-Bit Gradient Aggregation for Distributed Training 
+
+[28] YosysHQ nextpnr Developers. n.d.. nextpnr: A Portable FPGA Place and Route Tool. https://github.com/YosysHQ/nextpnr . Accessed: 2026-05-21. [29] YosysHQ Project Trellis Developers. n.d.. Project Trellis: Documenta-tion and Tools for Lattice ECP5 FPGAs. https://github.com/YosysHQ/ prjtrellis . Accessed: 2026-05-21. 13
