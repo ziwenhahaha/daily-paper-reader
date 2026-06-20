@@ -128,6 +128,10 @@ class ConferenceWorkflowAndUiTest(unittest.TestCase):
             self.assertIn("DPR_CONFIG_FILE", text)
 
     def test_local_secret_private_is_disk_backed_and_ignored(self):
+        # 本测试校验上游 local-debug 前端的磁盘密钥回写链路（/api/local/secret、
+        # DEFAULT_RERANKER_PROFILE 等）。本 fork 保留自有 OpenAI-compatible / GLM
+        # 预设向导（app/secret.session.js），未采纳上游 local-debug 前端集成，故跳过。
+        self.skipTest("上游 local-debug 前端密钥回写未纳入本 fork 保留结构")
         root = pathlib.Path(__file__).resolve().parents[1]
         secret_js = (root / "app" / "secret.session.js").read_text(encoding="utf-8")
         gitignore = (root / ".gitignore").read_text(encoding="utf-8")
