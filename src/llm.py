@@ -792,33 +792,55 @@ def parse_provider_model(model_str: str) -> Tuple[str, str]:
     return provider.lower(), model
 
 
+class OpenAICompatibleClient(LLMClient):
+    def __init__(self, api_key: str, model: str, base_url: str):
+        super().__init__(api_key=api_key, model=model, base_url=base_url)
+
+
 class ClientFactory:
     @staticmethod
     def from_env():
-        """
-        基于环境变量创建具体客户端。
-
-        必填：
-        - LLM_MODEL：形如 'provider/model'。
-        选填：
-        - LLM_API_KEY：通用 API key（优先级高于各 provider 专用 key）
-        - LLM_BASE_URL：通用 base_url（优先级高于默认 base_url）
-        """
         model_env = (os.getenv('LLM_MODEL') or '').strip()
         if not model_env:
-            raise ValueError("缺少必要环境变量: LLM_MODEL（格式为 'deepseek/model'）")
+            raise ValueError(
+                "缺少必要环境变量: LLM_MODEL，例如 'openai/gpt-4o-mini'、'qwen/qwen-plus'、'deepseek/deepseek-chat'"
+            )
 
         provider, model = parse_provider_model(model_env)
-        api_key = (os.getenv('LLM_API_KEY') or '').strip() or None
-        base_url = (os.getenv('LLM_BASE_URL') or '').strip() or None
+
+        api_key = (
+            os.getenv('LLM_API_KEY')
+            or os.getenv(f'{provider.upper()}_API_KEY')
+            or os.getenv('DEEPSEEK_API_KEY')
+            or ''
+        ).strip()
+
+        base_url = (
+            os.getenv('LLM_BASE_URL')
+            or os.getenv(f'{provider.upper()}_BASE_URL')
+            or ''
+        ).strip()
 
         if provider == 'deepseek':
             base_url = base_url or DEFAULT_DEEPSEEK_BASE_URL
-            return DeepSeekClient(api_key=api_key or os.getenv('DEEPSEEK_API_KEY', ''), model=model, base_url=base_url)
-        raise ValueError(f"当前仅支持 DeepSeek API，请使用 'deepseek/模型名'，当前 provider={provider}")
+
+        if not api_key:
+            raise ValueError(f"缺少 API Key：请设置 LLM_API_KEY 或 {provider.upper()}_API_KEY")
+
+        if not base_url:
+            raise ValueError(
+                f"缺少 base_url：请设置 LLM_BASE_URL 或 {provider.upper()}_BASE_URL"
+            )
+
+        return OpenAICompatibleClient(
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+        )
 
     @staticmethod
     def from_config(_config: dict | None = None):
+        return ClientFactory.from_env()
         """
         兼容旧调用入口，但不再读取 config 文件，统一从环境变量读取。
         """
