@@ -2634,6 +2634,7 @@ window.$docsify = {
                 if (e.button !== 0) return; // 只处理左键
                 e.preventDefault();
                 e.stopPropagation();
+                console.log('[DPR-badge] mousedown fired on badge', badge.textContent);
 
                 // 标记 badge 拖拽进行中 —— wrapper 的 click handler 检查此标志
                 const parentToggle = badge.closest('.sidebar-day-toggle,.sidebar-conference-toggle');
@@ -2650,6 +2651,7 @@ window.$docsify = {
                 ghost.style.left = (e.clientX - rect.width / 2) + 'px';
                 ghost.style.top = (e.clientY - rect.height / 2) + 'px';
                 document.body.appendChild(ghost);
+                console.log('[DPR-badge] ghost created and appended');
 
                 badge.style.opacity = '0';
 
@@ -2671,51 +2673,37 @@ window.$docsify = {
 
                   const dx = ev.clientX - startX, dy = ev.clientY - startY;
                   const dist = Math.sqrt(dx * dx + dy * dy);
+                  console.log('[DPR-badge] mouseup: dist=' + dist.toFixed(1) + ' (threshold=60)');
 
                   if (dist > 60) {
                     // ── 拖远：标记已读并消失 ──
-                    let popDone = false;
-                    const cleanupPop = () => {
-                      if (popDone) return;
-                      popDone = true;
-                      if (ghost.parentNode) ghost.remove();
-                      const groupLi = badge.closest('li');
-                      if (groupLi) {
-                        const links = groupLi.querySelectorAll('a.dpr-sidebar-item-link[href*="#/"]');
-                        links.forEach((a) => {
-                          const href = (a.getAttribute('href') || '').replace(/^#/, '');
-                          if (href) markPaperRead(href, 'read');
-                        });
+                    console.log('[DPR-badge] distance > 60, marking as read...');
+                    const groupLi = badge.closest('li');
+                    const links = groupLi ? groupLi.querySelectorAll('a.dpr-sidebar-item-link[href*="#/"]') : [];
+                    console.log('[DPR-badge] found ' + links.length + ' paper links to mark read');
+                    links.forEach((a) => {
+                      const href = (a.getAttribute('href') || '').replace(/^#/, '');
+                      if (href) {
+                        console.log('[DPR-badge] marking read:', href);
+                        markPaperRead(href, 'read');
                       }
-                      badge.style.opacity = '';
-                      updateSidebarUnreadBadges();
-                      clearDragFlag();
-                    };
-                    ghost.classList.add('popping');
-                    ghost.addEventListener('animationend', cleanupPop, { once: true });
-                    setTimeout(cleanupPop, 500); // 兜底
+                    });
+                    badge.style.opacity = '';
+                    updateSidebarUnreadBadges();
+                    clearDragFlag();
+                    if (ghost.parentNode) ghost.remove();
                   } else {
                     // ── 拖近：弹回原位 ──
-                    let returnDone = false;
-                    const cleanupReturn = () => {
-                      if (returnDone) return;
-                      returnDone = true;
-                      if (ghost.parentNode) ghost.remove();
-                      badge.style.opacity = '';
-                      clearDragFlag();
-                    };
-                    ghost.classList.add('returning');
-                    void ghost.offsetWidth; // 强制 reflow
-                    ghost.style.left = (origLeft - rect.width / 2) + 'px';
-                    ghost.style.top = (origTop - rect.height / 2) + 'px';
-                    ghost.style.transform = 'scale(1)';
-                    ghost.addEventListener('transitionend', cleanupReturn, { once: true });
-                    setTimeout(cleanupReturn, 350); // 兜底
+                    console.log('[DPR-badge] distance < 60, returning to origin');
+                    badge.style.opacity = '';
+                    clearDragFlag();
+                    if (ghost.parentNode) ghost.remove();
                   }
                 };
 
                 document.addEventListener('mousemove', onMouseMove, true);
                 document.addEventListener('mouseup', onMouseUp, true);
+                console.log('[DPR-badge] document listeners attached');
               });
             }
           }
