@@ -14,7 +14,7 @@ import time
 import xml.etree.ElementTree as ET
 from urllib.parse import quote_plus
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 import fitz  # PyMuPDF
 import requests
@@ -1319,7 +1319,7 @@ def build_markdown_content(
     published = str(paper.get("published") or "").strip()
     if published:
         published = published[:10]
-    pdf_url = str(paper.get("link") or paper.get("pdf_url") or "").strip()
+    pdf_url = str(paper.get("pdf_url") or paper.get("link") or "").strip()
     score = paper.get("llm_score")
     evidence = str(paper.get("canonical_evidence") or "").strip()
     tldr = (
@@ -1450,7 +1450,7 @@ def process_paper(
     arxiv_id = str(paper.get("id") or paper.get("paper_id") or "").strip()
     md_path, txt_path, paper_id = prepare_paper_paths(docs_dir, date_str, title, arxiv_id)
     abstract_en = (paper.get("abstract") or "").strip()
-    pdf_url = str(paper.get("link") or paper.get("pdf_url") or "").strip()
+    pdf_url = str(paper.get("pdf_url") or paper.get("link") or "").strip()
     paper_llm_client = create_llm_client()
 
     glance = ""
@@ -1626,7 +1626,7 @@ def process_paper(
                 return paper_id, title
 
             # 生成详细总结
-            pdf_url = str(paper.get("link") or paper.get("pdf_url") or "").strip()
+            pdf_url = str(paper.get("pdf_url") or paper.get("link") or "").strip()
             ensure_text_content(pdf_url, txt_path)
             summary = generate_deep_summary(md_path, txt_path, client=paper_llm_client)
             if summary:
@@ -1665,7 +1665,7 @@ def process_paper(
         return paper_id, title
 
     # 新文件：生成完整内容
-    pdf_url = str(paper.get("link") or paper.get("pdf_url") or "").strip()
+    pdf_url = str(paper.get("pdf_url") or paper.get("link") or "").strip()
     ensure_text_content(pdf_url, txt_path)
     figures, tables = maybe_generate_paper_media(
         paper,
@@ -1697,6 +1697,34 @@ def process_paper(
     # 速读区：不生成额外的总结，只保留速览和摘要
 
     return paper_id, title
+
+
+def _extract_paper_href(line: str) -> str | None:
+    m = re.search(r'href="([^"]+)"', line)
+    return m.group(1) if m else None
+
+
+def _extract_day_block_papers(block_lines: List[str]) -> Tuple[List[str], List[str]]:
+    """Extract paper link lines from a sidebar day block, grouped by section.
+
+    Returns (deep_lines, quick_lines).
+    """
+    deep_lines: List[str] = []
+    quick_lines: List[str] = []
+    current = "deep"
+    for line in block_lines:
+        if "精读区" in line:
+            current = "deep"
+            continue
+        if "速读区" in line:
+            current = "quick"
+            continue
+        if 'href="#/' in line and line.strip().startswith("*"):
+            if current == "quick":
+                quick_lines.append(line)
+            else:
+                deep_lines.append(line)
+    return deep_lines, quick_lines
 
 
 def update_sidebar(
@@ -1778,16 +1806,33 @@ def update_sidebar(
             day_idx = i
             break
 
+    existing_deep_lines: List[str] = []
+    existing_quick_lines: List[str] = []
     if day_idx != -1:
         end = day_idx + 1
         while end < len(lines):
             if lines[end].startswith("  * ") and not lines[end].startswith("    * "):
                 break
             end += 1
+        existing_deep_lines, existing_quick_lines = _extract_day_block_papers(
+            lines[day_idx + 1 : end]
+        )
         del lines[day_idx:end]
 
+    new_hrefs: Set[str] = set()
+    for pid, _, _ in deep_entries:
+        new_hrefs.add(f"#/{pid}")
+    for pid, _, _ in quick_entries:
+        new_hrefs.add(f"#/{pid}")
+    extra_deep = [
+        l for l in existing_deep_lines if _extract_paper_href(l) not in new_hrefs
+    ]
+    extra_quick = [
+        l for l in existing_quick_lines if _extract_paper_href(l) not in new_hrefs
+    ]
+
     block: List[str] = [day_heading]
-    if deep_entries:
+    if deep_entries or extra_deep:
         block.append("    * 精读区\n")
         for paper_id, title, tags in deep_entries:
             safe_title = html.escape((title or "").strip() or paper_id)
@@ -1798,7 +1843,8 @@ def update_sidebar(
                 "      * "
                 f'<a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="{href}" data-sidebar-item="{payload_json}">{safe_title}</a>\n'
             )
-    if quick_entries:
+        block.extend(extra_deep)
+    if quick_entries or extra_quick:
         block.append("    * 速读区\n")
         for paper_id, title, tags in quick_entries:
             safe_title = html.escape((title or "").strip() or paper_id)
@@ -1809,6 +1855,7 @@ def update_sidebar(
                 "      * "
                 f'<a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="{href}" data-sidebar-item="{payload_json}">{safe_title}</a>\n'
             )
+        block.extend(extra_quick)
 
     insert_idx = daily_idx + 1
     lines[insert_idx:insert_idx] = block

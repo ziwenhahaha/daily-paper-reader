@@ -886,16 +886,60 @@ window.$docsify = {
           console.error('Zotero meta update failed:', e);
         });
 
+      // 公共工具：保护 LaTeX 公式不被 marked 破坏
+      // 在 beforeEach 阶段调用，将公式包裹成 HTML 标签（marked 不解析 HTML）
+      const protectLatex = (text) => {
+        if (!text) return text;
+        // 1) 将 \[...\] 转为 $$...$$，\(...\) 转为 $...$
+        //    注意：\[ 可能在行首也可能在行内
+        text = text.replace(/\\\[([\s\S]*?)\\\]/g, (_, inner) => `$$${inner}$$`);
+        text = text.replace(/\\\((.*?)\\\)/g, (_, inner) => `$${inner}$`);
+        // 2) 保护块级公式 $$...$$ → <div class="dpr-math" data-display="true">
+        text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, inner) => {
+          const escaped = inner.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          return `<div class="dpr-math" data-display="true">${escaped}</div>`;
+        });
+        // 3) 保护行内公式 $...$ → <span class="dpr-math" data-display="false">
+        //    不跨行，排除 $ 后紧跟空格或 $ 前紧跟空格的情况（减少误匹配）
+        text = text.replace(/\$([^\$\n]+?)\$/g, (match, inner) => {
+          // 排除明显不是公式的情况（如 $10 这种价格）
+          if (/^\d+$/.test(inner.trim())) return match;
+          const escaped = inner.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          return `<span class="dpr-math" data-display="false">${escaped}</span>`;
+        });
+        return text;
+      };
+
       // 公共工具：在指定元素上渲染公式
       const renderMathInEl = (el) => {
-        if (!window.renderMathInElement || !el) return;
-        window.renderMathInElement(el, {
-          delimiters: [
-            { left: '$$', right: '$$', display: true },
-            { left: '$', right: '$', display: false },
-          ],
-          throwOnError: false,
-        });
+        if (!el) return;
+        // 优先渲染 protectLatex 产生的 .dpr-math 标签
+        if (window.katex) {
+          el.querySelectorAll('.dpr-math').forEach((node) => {
+            const latex = node.textContent;
+            const displayMode = node.getAttribute('data-display') === 'true';
+            try {
+              window.katex.render(latex, node, {
+                displayMode,
+                throwOnError: false,
+              });
+            } catch (e) {
+              // 渲染失败保留原文
+            }
+          });
+        }
+        // 兜底：对纯文本中残留的 $...$ / $$...$$ 用 auto-render 处理
+        if (window.renderMathInElement) {
+          window.renderMathInElement(el, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$', right: '$', display: false },
+              { left: '\\[', right: '\\]', display: true },
+              { left: '\\(', right: '\\)', display: false },
+            ],
+            throwOnError: false,
+          });
+        }
       };
 
       // 公共工具：简单表格 + 标记修正：
@@ -946,6 +990,10 @@ window.$docsify = {
         // 保护 LaTeX 公式：先用占位符替换，渲染后再恢复
         const latexBlocks = [];
         let protectedText = text;
+
+        // 先将 \[...\] → $$...$$ 和 \(...\) → $...$
+        protectedText = protectedText.replace(/\\\[([\s\S]*?)\\\]/g, (_, inner) => `$$${inner}$$`);
+        protectedText = protectedText.replace(/\\\((.*?)\\\)/g, (_, inner) => `$${inner}$`);
 
         // 保护块级公式 $$...$$
         protectedText = protectedText.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
@@ -1757,14 +1805,30 @@ window.$docsify = {
           // 绑定点击：使用 capture 阶段，确保即使旧版本已有 handler 也能覆盖
           if (!wrapper.dataset.dprDayToggleBound) {
             wrapper.dataset.dprDayToggleBound = '1';
+
+            // --- 拖拽检测：记录 pointerdown 起始位置，click 时判断是否为拖拽 ---
+            let _dayTogglePtrStart = null;
+            wrapper.addEventListener('pointerdown', (pe) => {
+              _dayTogglePtrStart = { x: pe.clientX, y: pe.clientY };
+            }, true);
+
             wrapper.addEventListener(
               'click',
               (e) => {
-                // 点击菜单控件时，不触发日期折叠（否则 capture 阶段会先被 wrapper 拦截，导致菜单无响应）
+                // badge 正在拖拽中，吞掉 click
+                if (wrapper._dprBadgeDragging) return;
+                // 拖拽距离超过阈值时，视为拖拽操作，不触发折叠
+                if (_dayTogglePtrStart) {
+                  const dx = e.clientX - _dayTogglePtrStart.x;
+                  const dy = e.clientY - _dayTogglePtrStart.y;
+                  _dayTogglePtrStart = null;
+                  if (Math.abs(dx) > 5 || Math.abs(dy) > 5) return;
+                }
+                // 点击菜单控件或未读 badge 时，不触发日期折叠
                 try {
                   const target = e && e.target && e.target.closest
                     ? e.target.closest(
-                        '.sidebar-day-menu-trigger,.sidebar-day-menu,.sidebar-day-menu-item',
+                        '.sidebar-day-menu-trigger,.sidebar-day-menu,.sidebar-day-menu-item,.dpr-unread-badge',
                       )
                     : null;
                   if (target) return;
@@ -1782,7 +1846,7 @@ window.$docsify = {
                 state.__latestDay = latestDay;
                 ensureStateSaved();
                 // 先做一次即时同步（保证交互反馈），再在动画结束后做一次终态校准，
-                // 否则列表在 max-height 过渡中继续位移，会让高亮条“越开越往上偏”。
+                // 否则列表在 max-height 过渡中继续位移，会让高亮条”越开越往上偏”。
                 requestAnimationFrame(() => {
                   syncSidebarActiveIndicator({ animate: false });
                 });
@@ -2025,7 +2089,23 @@ window.$docsify = {
 
           if (!wrapper.dataset.dprConferenceToggleBound) {
             wrapper.dataset.dprConferenceToggleBound = '1';
+
+            // --- 拖拽检测：记录 pointerdown 起始位置，click 时判断是否为拖拽 ---
+            let _confTogglePtrStart = null;
+            wrapper.addEventListener('pointerdown', (pe) => {
+              _confTogglePtrStart = { x: pe.clientX, y: pe.clientY };
+            }, true);
+
             const toggle = (event) => {
+              // badge 正在拖拽中，吞掉 click
+              if (wrapper._dprBadgeDragging) return;
+              // 拖拽距离超过阈值时，视为拖拽操作，不触发折叠
+              if (event && event.type === 'click' && _confTogglePtrStart) {
+                const dx = event.clientX - _confTogglePtrStart.x;
+                const dy = event.clientY - _confTogglePtrStart.y;
+                _confTogglePtrStart = null;
+                if (Math.abs(dx) > 5 || Math.abs(dy) > 5) return;
+              }
               if (event) {
                 event.preventDefault();
                 event.stopPropagation();
@@ -2111,6 +2191,10 @@ window.$docsify = {
       const READ_STORAGE_KEY = 'dpr_read_papers_v1';
 
       const loadReadState = () => {
+        // 认证用户优先从 Supabase 缓存读取
+        if (window.DPRReadStateSync && window.DPRReadStateSync.isActive()) {
+          return window.DPRReadStateSync.getAll();
+        }
         try {
           if (!window.localStorage) return {};
           const raw = window.localStorage.getItem(READ_STORAGE_KEY);
@@ -2135,11 +2219,36 @@ window.$docsify = {
       };
 
       const saveReadState = (state) => {
+        // localStorage 始终保存（离线回退）
         try {
-          if (!window.localStorage) return;
-          window.localStorage.setItem(READ_STORAGE_KEY, JSON.stringify(state));
+          if (window.localStorage) {
+            window.localStorage.setItem(READ_STORAGE_KEY, JSON.stringify(state));
+          }
         } catch {
           // ignore
+        }
+      };
+
+      const markPaperRead = (paperId, status) => {
+        if (!paperId) return;
+        const st = status || 'read';
+        // 写 localStorage
+        const state = loadReadState();
+        state[paperId] = st;
+        saveReadState(state);
+        // 同步到 Supabase
+        if (window.DPRReadStateSync && window.DPRReadStateSync.isActive()) {
+          window.DPRReadStateSync.markRead(paperId, st);
+        }
+      };
+
+      const clearPaperRead = (paperId) => {
+        if (!paperId) return;
+        const state = loadReadState();
+        delete state[paperId];
+        saveReadState(state);
+        if (window.DPRReadStateSync && window.DPRReadStateSync.isActive()) {
+          window.DPRReadStateSync.clearRead(paperId);
         }
       };
 
@@ -2447,6 +2556,166 @@ window.$docsify = {
         showShareModal(url, preview ? `精美预览：${preview}` : '');
       };
 
+      // --- Sidebar 未读 badge 更新 ---
+      const updateSidebarUnreadBadges = () => {
+        const nav = document.querySelector('.sidebar-nav');
+        if (!nav) return;
+        const state = loadReadState();
+
+        let badgeCount = 0;
+
+        // 找到所有一级和二级分组（Conference/Daily 下的日期或会议名）
+        nav.querySelectorAll('li').forEach((li) => {
+          // 跳过叶子节点（论文条目本身）
+          const childUl = li.querySelector('ul');
+          if (!childUl) return;
+
+          // 收集该 li 下所有论文链接（递归所有后代）
+          const paperLinks = li.querySelectorAll('a.dpr-sidebar-item-link[href*="#/"]');
+          if (!paperLinks.length) return;
+
+          let total = 0;
+          let readCount = 0;
+          paperLinks.forEach((a) => {
+            const href = a.getAttribute('href') || '';
+            const m = href.match(/#\/(.+)$/);
+            if (!m) return;
+            const paperId = m[1].replace(/\/$/, '');
+            total++;
+            if (state[paperId]) readCount++;
+          });
+
+          const unread = total - readCount;
+
+          // 找到该 li 的标题元素：尝试多种选择器
+          let titleEl = li.querySelector(':scope > p')
+            || li.querySelector(':scope > a')
+            || li.querySelector(':scope > div')
+            || li.querySelector(':scope > strong')
+            || li.querySelector(':scope > span');
+
+          // docsify 可能把分组头渲染为直接文本节点，没有包裹标签
+          // 这种情况需要创建一个包裹 span
+          if (!titleEl) {
+            // 检查 li 的第一个子节点是否是文本
+            const firstNode = li.childNodes[0];
+            if (firstNode && firstNode.nodeType === 3 && firstNode.textContent.trim()) {
+              const wrapper = document.createElement('span');
+              wrapper.className = 'dpr-sidebar-group-title';
+              wrapper.textContent = firstNode.textContent;
+              li.replaceChild(wrapper, firstNode);
+              titleEl = wrapper;
+            }
+          }
+
+          if (!titleEl) return;
+
+          // 找到或创建 badge — 放在 actions 按钮组的左边
+          let badge = li.querySelector(':scope > .sidebar-day-toggle > .dpr-unread-badge')
+            || titleEl.querySelector('.dpr-unread-badge');
+          if (!badge) {
+            badge = document.createElement('span');
+            badge.className = 'dpr-unread-badge';
+            // 如果存在 sidebar-day-toggle-actions，插到它前面
+            const actions = titleEl.querySelector('.sidebar-day-toggle-actions');
+            if (actions) {
+              titleEl.insertBefore(badge, actions);
+            } else {
+              titleEl.appendChild(badge);
+            }
+          }
+          badge.textContent = unread > 0 ? String(unread) : '';
+          badge.setAttribute('data-count', String(unread));
+          if (unread > 0) {
+            badgeCount++;
+            if (!badge._dprDragBound) {
+              badge._dprDragBound = true;
+              badge.addEventListener('mousedown', (e) => {
+                if (e.button !== 0) return; // 只处理左键
+                e.preventDefault();
+                e.stopPropagation();
+                console.log('[DPR-badge] mousedown fired on badge', badge.textContent);
+
+                // 标记 badge 拖拽进行中 —— wrapper 的 click handler 检查此标志
+                const parentToggle = badge.closest('.sidebar-day-toggle,.sidebar-conference-toggle');
+                if (parentToggle) parentToggle._dprBadgeDragging = true;
+
+                const rect = badge.getBoundingClientRect();
+                const startX = e.clientX, startY = e.clientY;
+                const origLeft = rect.left + rect.width / 2;
+                const origTop = rect.top + rect.height / 2;
+
+                const ghost = document.createElement('span');
+                ghost.className = 'dpr-unread-badge-ghost';
+                ghost.textContent = badge.textContent;
+                ghost.style.left = (e.clientX - rect.width / 2) + 'px';
+                ghost.style.top = (e.clientY - rect.height / 2) + 'px';
+                document.body.appendChild(ghost);
+                console.log('[DPR-badge] ghost created and appended');
+
+                badge.style.opacity = '0';
+
+                const clearDragFlag = () => {
+                  setTimeout(() => {
+                    if (parentToggle) parentToggle._dprBadgeDragging = false;
+                  }, 80);
+                };
+
+                // --- 用 document 级别的 mousemove/mouseup，最可靠的拖拽模式 ---
+                const onMouseMove = (ev) => {
+                  ghost.style.left = (ev.clientX - rect.width / 2) + 'px';
+                  ghost.style.top = (ev.clientY - rect.height / 2) + 'px';
+                };
+
+                const onMouseUp = (ev) => {
+                  document.removeEventListener('mousemove', onMouseMove, true);
+                  document.removeEventListener('mouseup', onMouseUp, true);
+
+                  const dx = ev.clientX - startX, dy = ev.clientY - startY;
+                  const dist = Math.sqrt(dx * dx + dy * dy);
+                  console.log('[DPR-badge] mouseup: dist=' + dist.toFixed(1) + ' (threshold=60)');
+
+                  if (dist > 60) {
+                    // ── 拖远：标记已读并消失 ──
+                    console.log('[DPR-badge] distance > 60, marking as read...');
+                    const groupLi = badge.closest('li');
+                    const links = groupLi ? groupLi.querySelectorAll('a.dpr-sidebar-item-link[href*="#/"]') : [];
+                    console.log('[DPR-badge] found ' + links.length + ' paper links to mark read');
+                    links.forEach((a) => {
+                      const href = a.getAttribute('href') || '';
+                      const m = href.match(/#\/(.+)$/);
+                      if (m) {
+                        const paperId = m[1].replace(/\/$/, '');
+                        console.log('[DPR-badge] marking read:', paperId);
+                        markPaperRead(paperId, 'read');
+                      }
+                    });
+                    badge.style.opacity = '';
+                    updateSidebarUnreadBadges();
+                    clearDragFlag();
+                    if (ghost.parentNode) ghost.remove();
+                  } else {
+                    // ── 拖近：弹回原位 ──
+                    console.log('[DPR-badge] distance < 60, returning to origin');
+                    badge.style.opacity = '';
+                    clearDragFlag();
+                    if (ghost.parentNode) ghost.remove();
+                  }
+                };
+
+                document.addEventListener('mousemove', onMouseMove, true);
+                document.addEventListener('mouseup', onMouseUp, true);
+                console.log('[DPR-badge] document listeners attached');
+              });
+            }
+          }
+        });
+
+        if (badgeCount === 0) {
+          console.debug('[DPR] updateSidebarUnreadBadges: no badges added (0 groups with unread)');
+        }
+      };
+
 	      const markSidebarReadState = (currentPaperId) => {
 	        const nav = document.querySelector('.sidebar-nav');
 	        if (!nav) return;
@@ -2454,9 +2723,9 @@ window.$docsify = {
 	        const state = loadReadState();
         if (currentPaperId) {
           if (!state[currentPaperId]) {
+            markPaperRead(currentPaperId, 'read');
             state[currentPaperId] = 'read';
           }
-          saveReadState(state);
         }
 
         const applyLiState = (li, paperIdFromHref) => {
@@ -2643,6 +2912,9 @@ window.$docsify = {
 
 	          applyLiState(li, paperIdFromHref);
 	        });
+
+          // 更新分组未读 badge
+          updateSidebarUnreadBadges();
 	      };
 
       const scoreToStarRating = (scoreValue) => {
@@ -4460,8 +4732,9 @@ window.$docsify = {
         }
 
         // 生成论文页面 HTML + 正文
+        // ★ 保护正文中的 LaTeX 公式不被 marked 破坏
         const paperHtml = renderPaperFromMeta(meta);
-        return paperHtml + body;
+        return paperHtml + protectLatex(body);
       });
 
       const refreshDeferredPageEnhancements = () => {
@@ -4493,6 +4766,51 @@ window.$docsify = {
         'dpr-deferred-assets-ready',
         refreshDeferredPageEnhancements,
       );
+
+      // --- 阅读状态同步初始化 ---
+      // 用户解锁密钥后（mode=full），用 GitHub Token 获取用户名，初始化 Supabase 同步
+      const initReadStateSync = async () => {
+        try {
+          if (window.DPR_ACCESS_MODE !== 'full') return;
+          if (!window.DPRReadStateSync) return;
+          const secret = window.decoded_secret_private || {};
+          const token = (secret.github && secret.github.token) || '';
+          if (!token) return;
+          // 获取 GitHub 用户名
+          const resp = await fetch('https://api.github.com/user', {
+            headers: { Authorization: 'Bearer ' + token },
+          });
+          if (!resp.ok) return;
+          const user = await resp.json();
+          const username = (user && user.login) || '';
+          if (!username) return;
+          // 读取 Supabase 配置
+          const supabaseUrl = (window.$docsify && window.$docsify.supabaseUrl)
+            || (window.jsyaml ? '' : '')
+            || 'https://lyucdwgefyfbmaiopjbk.supabase.co';
+          const anonKey = 'sb_publishable_lX-oi64Uxyd7SIVv3_w2Uw_MTOojeKq';
+          await window.DPRReadStateSync.init(supabaseUrl, anonKey, username);
+          // 迁移 localStorage 已有数据
+          const localState = (() => {
+            try {
+              const raw = window.localStorage.getItem(READ_STORAGE_KEY);
+              return raw ? JSON.parse(raw) : null;
+            } catch { return null; }
+          })();
+          if (localState && Object.keys(localState).length) {
+            window.DPRReadStateSync.migrateFromLocalStorage(localState);
+          }
+          // 重新渲染 sidebar 状态
+          updateSidebarUnreadBadges();
+          markSidebarReadState(null);
+        } catch (e) {
+          console.warn('[DPR] ReadState init error:', e);
+        }
+      };
+      document.addEventListener('dpr-access-mode-changed', (e) => {
+        const mode = e && e.detail && e.detail.mode;
+        if (mode === 'full') initReadStateSync();
+      });
 
       // --- Docsify 生命周期钩子 ---
       hook.doneEach(function () {

@@ -22,7 +22,7 @@ except Exception:  # pragma: no cover
 
 
 ARXIV_SOURCE_KEY = "arxiv"
-DEFAULT_SUPPORTED_SOURCES = (ARXIV_SOURCE_KEY, "biorxiv", "medrxiv", "chemrxiv", "neurips", "iclr", "icml", "acl", "emnlp", "aaai")
+DEFAULT_SUPPORTED_SOURCES = (ARXIV_SOURCE_KEY, "biorxiv", "medrxiv", "chemrxiv", "neurips", "iclr", "icml", "acl", "emnlp", "aaai", "cvpr", "eccv", "ijcai")
 
 
 def _norm(value: Any) -> str:

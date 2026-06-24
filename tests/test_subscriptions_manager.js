@@ -154,19 +154,31 @@ function testConferenceCurrentYearDisabledForPendingSources() {
   const currentYear = String(new Date().getFullYear());
   const previousYear = String(new Date().getFullYear() - 1);
 
+  // Pending current year: NeurIPS, ICML are disabled for current year
   assert.equal(isConferenceYearSelectable('NeurIPS', currentYear), false);
   assert.equal(isConferenceYearSelectable('NIPS', currentYear), false);
   assert.equal(isConferenceYearSelectable('ICML', currentYear), false);
   assert.equal(isConferenceYearSelectable('NeurIPS', previousYear), true);
   assert.equal(isConferenceYearSelectable('NIPS', previousYear), true);
   assert.equal(isConferenceYearSelectable('ICML', previousYear), true);
+  // 2026 available only for ICLR and AAAI
+  assert.equal(isConferenceYearSelectable('ICLR', currentYear), true);
+  assert.equal(isConferenceYearSelectable('AAAI', currentYear), true);
+  assert.equal(isConferenceYearSelectable('CVPR', currentYear), false);
+  assert.equal(isConferenceYearSelectable('ECCV', currentYear), false);
+  assert.equal(isConferenceYearSelectable('IJCAI', currentYear), false);
+  // ECCV biennial: odd years disabled
+  assert.equal(isConferenceYearSelectable('ECCV', '2024'), true);
+  assert.equal(isConferenceYearSelectable('ECCV', '2025'), false);
+  assert.equal(isConferenceYearSelectable('ECCV', '2023'), false);
 }
 
 function testConferenceDefaultYearOnlySelects2025() {
   __setRunSelectionState({ conferencePairs: [] });
   __initializeConferenceChoices();
   const pairs = __getSelectedConferenceYearPairs().sort();
-  assert.deepEqual(pairs, ['ICML:2025', 'NeurIPS:2025']);
+  // 不再默认勾选，由用户手动选择
+  assert.deepEqual(pairs, []);
 }
 
 function testQuickRunUnsavedMessageClearsAfterSave() {

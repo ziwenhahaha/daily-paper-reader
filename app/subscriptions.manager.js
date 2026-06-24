@@ -94,9 +94,22 @@ window.SubscriptionsManager = (function () {
   ].join('\n');
 
   const QUICK_RUN_CONFERENCES = [
-    'NeurIPS',
+    'ICLR',
     'ICML',
+    'NeurIPS',
+    'AAAI',
+    'CVPR',
+    'ECCV',
+    'IJCAI',
+    'ACL',
+    'EMNLP',
   ];
+  // 2026 年会议数据可用性（截至 2026-06）：
+  // 有数据: ICLR 2026, AAAI 2026
+  // 无数据: CVPR 2026（刚结束未上传）, 其余未举办
+  const CONFERENCE_2026_AVAILABLE = new Set(['ICLR', 'AAAI']);
+  // ECCV 是双年会议（偶数年）
+  const BIENNIAL_EVEN_CONFERENCES = new Set(['ECCV']);
   const CONFERENCES_WITH_PENDING_CURRENT_YEAR = new Set([
     'NIPS',
     'NEURIPS',
@@ -456,14 +469,7 @@ window.SubscriptionsManager = (function () {
   };
 
   const initializeConferenceChoices = () => {
-    if (!selectedConferenceYearPairs.size) {
-      const defaultYear = '2025';
-      QUICK_RUN_CONFERENCES.forEach((conference) => {
-        if (isConferenceYearSelectable(conference, defaultYear)) {
-          selectedConferenceYearPairs.add(`${conference}:${defaultYear}`);
-        }
-      });
-    }
+    // 不默认勾选任何会议年份，由用户手动选择
   };
 
   const getConferenceYearOptions = () => {
@@ -472,15 +478,50 @@ window.SubscriptionsManager = (function () {
   };
 
   const isConferenceYearSelectable = (conference, year) => {
+    return !getConferenceYearDisabledReason(conference, year);
+  };
+
+  /**
+   * 返回不可选的原因文案；可选时返回空字符串。
+   */
+  const getConferenceYearDisabledReason = (conference, year) => {
     const conf = normalizeText(conference).toUpperCase();
-    const yearText = normalizeText(year);
+    const yearNum = parseInt(normalizeText(year), 10);
+    if (!Number.isFinite(yearNum)) return '无效年份';
+    // ECCV 双年（偶数年才有）
+    if (BIENNIAL_EVEN_CONFERENCES.has(conf) && yearNum % 2 !== 0) {
+      return `${conf} 为双年会议，仅偶数年举办（如 2024、2026）`;
+    }
+    // 2026 年可用性
+    const currentYear = new Date().getFullYear();
+    if (yearNum >= currentYear && !CONFERENCE_2026_AVAILABLE.has(conf)) {
+      const ESTIMATED_DATES = {
+        CVPR:    '2026 年 7 月（论文上传后）',
+        ICML:    '2026 年 7 月会后',
+        IJCAI:   '2026 年 8 月会后',
+        ACL:     '2026 年 7 月会后',
+        EMNLP:   '2026 年 11 月会后',
+        NEURIPS: '2026 年 12 月会后',
+        NIPS:    '2026 年 12 月会后',
+        ECCV:    '2026 年秋季会后',
+      };
+      const est = ESTIMATED_DATES[conf];
+      if (est) return `预计 ${est} 纳入`;
+      return `${yearNum} 年暂无数据`;
+    }
+    // 原有的"当年待定"逻辑
     if (
       CONFERENCES_WITH_PENDING_CURRENT_YEAR.has(conf)
-      && yearText === String(new Date().getFullYear())
+      && yearNum === currentYear
     ) {
-      return false;
+      const PENDING_DATES = {
+        ICML:    '预计 2026 年 7 月会后纳入',
+        NEURIPS: '预计 2026 年 12 月会后纳入',
+        NIPS:    '预计 2026 年 12 月会后纳入',
+      };
+      return PENDING_DATES[conf] || `${yearNum} 年论文尚未公开`;
     }
-    return true;
+    return '';
   };
 
   const renderConferenceChoiceButtons = () => {
@@ -491,14 +532,15 @@ window.SubscriptionsManager = (function () {
           const yearButtons = getConferenceYearOptions()
             .map((year) => {
               const active = selectedConferenceYearPairs.has(`${name}:${year}`);
-              const disabled = !isConferenceYearSelectable(name, year);
+              const reason = getConferenceYearDisabledReason(name, year);
+              const disabled = !!reason;
               return `<button
                 class="dpr-choice-pill${active ? ' is-active' : ''}${disabled ? ' is-disabled' : ''}"
                 type="button"
                 data-conference="${name}"
                 data-conference-year="${year}"
                 aria-pressed="${active ? 'true' : 'false'}"
-                ${disabled ? `disabled title="${year} 暂未接入，暂不可选择"` : ''}
+                ${disabled ? `disabled title="${escapeHtml(reason)}"` : ''}
               >${year}</button>`;
             })
             .join('');
@@ -627,9 +669,11 @@ window.SubscriptionsManager = (function () {
     const selectedProfiles = getSelectedProfilesForRun();
     const selectedProfileCount = selectedProfiles.length;
     const dailySelectedProfileCount = selectedProfileCount;
+    const MAX_CONFERENCE_PROFILES = 2;
+    const profileOverLimit = selectedProfileCount > MAX_CONFERENCE_PROFILES;
     const dailyBlocked = hasUnsavedChanges || dailySelectedProfileCount < 1;
     const conferenceBlocked =
-      hasUnsavedChanges || selectedProfileCount < 1 || selectedConferenceYearPairs.size < 1;
+      hasUnsavedChanges || selectedProfileCount < 1 || selectedConferenceYearPairs.size < 1 || profileOverLimit;
     renderProfilePickers();
     [
       [quickRunStartBtn, dailyBlocked],
@@ -642,6 +686,8 @@ window.SubscriptionsManager = (function () {
       if (blocked) {
         if (hasUnsavedChanges) {
           title = btn === quickRunConferenceBtn ? '请先保存后再检索会议论文。' : '请先保存后再抓取。';
+        } else if (btn === quickRunConferenceBtn && profileOverLimit) {
+          title = `会议检索最多选择 ${MAX_CONFERENCE_PROFILES} 个词条，当前已选 ${selectedProfileCount} 个。`;
         } else if (selectedProfileCount < 1) {
           title = '请先在上方选择至少一个词条。';
         } else if (btn === quickRunConferenceBtn && !selectedConferenceYearPairs.size) {
@@ -658,9 +704,30 @@ window.SubscriptionsManager = (function () {
         : '请选择至少一个词条。';
     }
     if (conferenceHintEl) {
-      conferenceHintEl.textContent = selectedProfileCount > 0
-        ? `已选 ${selectedProfileCount} 个词条。`
-        : '先勾选词条，再勾选年份。';
+      const confCount = selectedConferenceYearPairs.size;
+      const profCount = selectedProfileCount;
+      if (profCount > MAX_CONFERENCE_PROFILES) {
+        conferenceHintEl.textContent = `会议检索最多选择 ${MAX_CONFERENCE_PROFILES} 个词条，当前已选 ${profCount} 个，请取消部分词条。`;
+        conferenceHintEl.style.color = '#c00';
+      } else if (confCount > 5) {
+        conferenceHintEl.textContent = `最多同时选择 5 个会议年份（已选 ${confCount} 个），请取消部分后再添加。`;
+        conferenceHintEl.style.color = '#c00';
+      } else if (confCount > 0 && profCount > 0) {
+        const totalTasks = confCount * profCount;
+        const estMin = totalTasks * 5;
+        const estCost = (totalTasks * 0.2).toFixed(1);
+        conferenceHintEl.textContent = `${profCount} 个词条 × ${confCount} 个会议 = ${totalTasks} 组任务，预计耗时约 ${estMin} 分钟，费用约 ¥${estCost}`;
+        conferenceHintEl.style.color = '';
+      } else if (confCount > 0 && profCount === 0) {
+        conferenceHintEl.textContent = '请先在上方勾选词条（最多 2 个）。';
+        conferenceHintEl.style.color = '';
+      } else if (profCount > 0 && confCount === 0) {
+        conferenceHintEl.textContent = '请勾选会议年份。每组任务约需 5 分钟，费用约 ¥0.2';
+        conferenceHintEl.style.color = '';
+      } else {
+        conferenceHintEl.textContent = '先勾选词条（最多 2 个），再勾选会议年份（最多 5 个）。每组约 5 分钟 / ¥0.2';
+        conferenceHintEl.style.color = '';
+      }
     }
     if (hasUnsavedChanges && quickRunMsgEl) {
       quickRunMsgEl.textContent = '有未保存修改，请先保存。';
@@ -1586,6 +1653,12 @@ window.SubscriptionsManager = (function () {
         if (selectedConferenceYearPairs.has(key)) {
           selectedConferenceYearPairs.delete(key);
         } else {
+          if (selectedConferenceYearPairs.size >= 5) {
+            // 超过上限，不添加，显示提示
+            renderConferenceChoiceButtons();
+            refreshQuickRunButtons();
+            return;
+          }
           selectedConferenceYearPairs.add(key);
         }
         renderConferenceChoiceButtons();

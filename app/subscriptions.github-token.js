@@ -159,6 +159,19 @@ window.SubscriptionsGithubToken = (function () {
     return null;
   };
 
+  const readRepoOwnerJson = async () => {
+    const candidates = ['.repo-owner.json', 'docs/.repo-owner.json', '/.repo-owner.json'];
+    for (const url of candidates) {
+      try {
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) continue;
+        const data = await res.json();
+        if (data && data.owner && data.repo) return data;
+      } catch { }
+    }
+    return null;
+  };
+
   // 验证 GitHub Token 并检查权限
   const verifyGithubToken = async (token, options = {}) => {
     const { requireWorkflow = true } = options;
@@ -199,10 +212,7 @@ window.SubscriptionsGithubToken = (function () {
       }
 
       // 3. 获取当前页面的仓库信息
-      // 规则：
-      // - 若运行在 localhost（含 127.0.0.1），默认仓库名为 daily-paper-reader，owner 为当前登录用户
-      // - 若运行在 username.github.io/repo-name，则从 URL 解析 owner/repo
-      // - 其它域名：尝试从当前站点 config.yaml 中读取 github 信息
+      // 优先级：.repo-owner.json > *.github.io URL 正则 > config.yaml > userData.login 兜底
       const currentUrl = window.location.href;
       const urlObj = new URL(currentUrl);
       const host = urlObj.hostname || '';
@@ -210,28 +220,35 @@ window.SubscriptionsGithubToken = (function () {
       let repoOwner = '';
       let repoName = '';
 
-      // 情况 A：本地开发（localhost 或 127.0.0.1）
       if (host === 'localhost' || host === '127.0.0.1') {
         repoOwner = userData.login || '';
         repoName = 'daily-paper-reader';
       } else {
-        // 情况 B：GitHub Pages
-        const githubPagesMatch = currentUrl.match(
-          /https?:\/\/([^.]+)\.github\.io\/([^\/]+)/,
-        );
-        if (githubPagesMatch) {
-          repoOwner = githubPagesMatch[1];
-          repoName = githubPagesMatch[2];
-        } else {
-          const parsedRepo = await readConfigYamlForRepo();
-          if (parsedRepo) {
-            repoOwner = parsedRepo.owner || repoOwner;
-            repoName = parsedRepo.repo || repoName;
+        const repoMeta = await readRepoOwnerJson();
+        if (repoMeta) {
+          repoOwner = repoMeta.owner;
+          repoName = repoMeta.repo;
+          if (userData.login && repoMeta.owner && userData.login.toLowerCase() !== repoMeta.owner.toLowerCase()) {
+            throw new Error(
+              `Token 用户 ${userData.login} 与站点所有者 ${repoMeta.owner} 不一致`,
+            );
           }
-          // 情况 C：其它域名，尝试从当前站点的 config.yaml 中读取 github 信息
-          // 若 config.yaml 未提供 owner，则至少使用当前用户作为 owner
-          if (!repoOwner) {
-            repoOwner = userData.login || '';
+        } else {
+          const githubPagesMatch = currentUrl.match(
+            /https?:\/\/([^.]+)\.github\.io\/([^\/]+)/,
+          );
+          if (githubPagesMatch) {
+            repoOwner = githubPagesMatch[1];
+            repoName = githubPagesMatch[2];
+          } else {
+            const parsedRepo = await readConfigYamlForRepo();
+            if (parsedRepo) {
+              repoOwner = parsedRepo.owner || repoOwner;
+              repoName = parsedRepo.repo || repoName;
+            }
+            if (!repoOwner) {
+              repoOwner = userData.login || '';
+            }
           }
         }
       }

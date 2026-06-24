@@ -400,7 +400,7 @@ def normalize_paper(x: Dict[str, Any]) -> Dict[str, Any] | None:
     pid = _norm(x.get("id"))
     if not pid:
         return None
-    return {
+    row = {
         "id": pid,
         "title": _norm(x.get("title")),
         "abstract": _norm(x.get("abstract")),
@@ -412,6 +412,10 @@ def normalize_paper(x: Dict[str, Any]) -> Dict[str, Any] | None:
         "source": _norm(x.get("source") or "supabase"),
         "updated_at": _now_iso(),
     }
+    pdf_url = _norm(x.get("pdf_url"))
+    if pdf_url:
+        row["pdf_url"] = pdf_url
+    return row
 
 
 def deduplicate_rows_by_id(rows: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], int]:

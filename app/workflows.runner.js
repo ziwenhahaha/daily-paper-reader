@@ -1020,9 +1020,13 @@ window.DPRWorkflowRunner = (function () {
   const normalizeConferenceName = (value) => {
     const text = String(value || '').trim();
     const lower = text.toLowerCase();
-    if (lower === 'nips' || lower === 'neurips') return 'NeurIPS';
-    if (lower === 'icml') return 'ICML';
-    return '';
+    const MAP = {
+      nips: 'NeurIPS', neurips: 'NeurIPS',
+      icml: 'ICML', iclr: 'ICLR', aaai: 'AAAI',
+      cvpr: 'CVPR', eccv: 'ECCV', ijcai: 'IJCAI',
+      acl: 'ACL', emnlp: 'EMNLP',
+    };
+    return MAP[lower] || '';
   };
 
   const normalizeConferenceYears = (values) => {

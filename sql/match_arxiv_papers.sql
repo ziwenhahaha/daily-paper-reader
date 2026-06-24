@@ -28,6 +28,7 @@ RETURNS TABLE (
   categories        jsonb,
   published         timestamptz,
   link              text,
+  pdf_url           text,
   source            text,
   similarity        float8
 )
@@ -42,6 +43,7 @@ AS $$
     p.categories,
     p.published,
     p.link,
+    p.pdf_url,
     p.source,
     1 - (p.embedding <=> query_embedding) AS similarity
   FROM arxiv_papers p
@@ -68,6 +70,7 @@ RETURNS TABLE (
   categories        jsonb,
   published         timestamptz,
   link              text,
+  pdf_url           text,
   source            text,
   similarity        float8
 )
@@ -82,6 +85,7 @@ AS $$
     p.categories,
     p.published,
     p.link,
+    p.pdf_url,
     p.source,
     1 - (p.embedding <=> query_embedding) AS similarity
   FROM arxiv_papers p
@@ -108,6 +112,7 @@ RETURNS TABLE (
   categories        jsonb,
   published         timestamptz,
   link              text,
+  pdf_url           text,
   source            text,
   similarity        float8,
   score             float8
@@ -123,6 +128,7 @@ AS $$
     p.categories,
     p.published,
     p.link,
+    p.pdf_url,
     p.source,
     0::float8 AS similarity,
     ts_rank_cd(

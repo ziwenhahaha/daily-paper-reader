@@ -17,6 +17,7 @@ returns table (
   categories jsonb,
   published timestamptz,
   link text,
+  pdf_url text,
   source text,
   similarity float8
 )
@@ -31,6 +32,7 @@ as $$
     p.categories,
     p.published,
     p.link,
+    p.pdf_url,
     p.source,
     1 - (p.embedding <=> query_embedding) as similarity
   from public.biorxiv_papers p
@@ -56,6 +58,7 @@ returns table (
   categories jsonb,
   published timestamptz,
   link text,
+  pdf_url text,
   source text,
   similarity float8,
   score float8
@@ -71,6 +74,7 @@ as $$
     p.categories,
     p.published,
     p.link,
+    p.pdf_url,
     p.source,
     0::float8 as similarity,
     ts_rank_cd(

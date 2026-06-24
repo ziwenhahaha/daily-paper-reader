@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import html
 import importlib.util
@@ -293,6 +294,23 @@ def resolve_conference_pdf_url(paper: Dict[str, Any]) -> str:
     match = re.search(r"[?&]id=([^&#]+)", link)
     if "openreview.net/forum" in link and match:
         return f"https://openreview.net/pdf?id={match.group(1)}"
+    # CVF (CVPR/WACV): .../html/XXX_paper.html → .../papers/XXX_paper.pdf
+    if "openaccess.thecvf.com" in link and "/html/" in link:
+        return link.replace("/html/", "/papers/").replace("_paper.html", "_paper.pdf")
+    # ECVA (ECCV): .../html/3012_ECCV_2024_paper.php → .../papers/03012.pdf (zero-padded to 5 digits)
+    if "ecva.net" in link and "/html/" in link:
+        m = re.search(r"/html/(\d+)_", link)
+        if m:
+            base = link[:link.index("/html/")]
+            padded = m.group(1).zfill(5)
+            return f"{base}/papers/{padded}.pdf"
+        return link.replace("/html/", "/pdf/").replace("_paper.php", "_paper.pdf")
+    # ACL Anthology: https://aclanthology.org/2025.findings-emnlp.1018/ → .../2025.findings-emnlp.1018.pdf
+    if "aclanthology.org" in link:
+        clean = link.rstrip("/")
+        if not clean.endswith(".pdf"):
+            return clean + ".pdf"
+        return clean
     return link
 
 
@@ -897,10 +915,9 @@ def update_sidebar_with_conference(
     display_min_score: float = CONFERENCE_DISPLAY_MIN_SCORE,
 ) -> None:
     sidebar_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = sidebar_path.read_text(encoding="utf-8").splitlines(keepends=True) if sidebar_path.exists() else []
     conference, years = parse_conference_result_name(result_path)
     marker = build_conference_marker(conference, years)
-    existing_paper_lines = extract_conference_paper_lines(lines, marker)
+
     block = build_conference_block(
         result_path,
         docs_dir=docs_dir,
@@ -908,12 +925,21 @@ def update_sidebar_with_conference(
         deep_min_score=deep_min_score,
         display_min_score=display_min_score,
     )
-    remove_existing_conference_block(lines, marker)
-    heading_idx = ensure_conference_heading(lines)
-    block = merge_conference_paper_lines(block, existing_paper_lines, conference, years)
-    lines[heading_idx + 1:heading_idx + 1] = block
-    sort_conference_blocks(lines)
-    sidebar_path.write_text("".join(lines), encoding="utf-8")
+
+    lock_path = sidebar_path.parent / ".sidebar.lock"
+    with open(lock_path, "w") as lock_fd:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            lines = sidebar_path.read_text(encoding="utf-8").splitlines(keepends=True) if sidebar_path.exists() else []
+            existing_paper_lines = extract_conference_paper_lines(lines, marker)
+            remove_existing_conference_block(lines, marker)
+            heading_idx = ensure_conference_heading(lines)
+            block = merge_conference_paper_lines(block, existing_paper_lines, conference, years)
+            lines[heading_idx + 1:heading_idx + 1] = block
+            sort_conference_blocks(lines)
+            sidebar_path.write_text("".join(lines), encoding="utf-8")
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
 
 def choose_result_file(paths: Iterable[Path]) -> Path:
