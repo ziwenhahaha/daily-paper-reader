@@ -7,78 +7,18 @@
     root.DPRLLMConfigUtils = api;
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-  const DEFAULT_PLATO_BASE_URL = 'https://api.bltcy.ai/v1';
-  const DEFAULT_PLATO_CHAT_MODELS = [
-    'gemini-3-flash-preview-thinking-1000',
-    'deepseek-v3.2',
-    'gpt-5-chat',
-    'gemini-3-pro-preview',
+  const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+  const DEFAULT_DEEPSEEK_CHAT_MODELS = [
+    'deepseek-v4-flash',
+    'deepseek-v4-pro',
   ];
-  const OPENAI_COMPATIBLE_PRESETS = Object.freeze({
+  const DEEPSEEK_V4_MAX_OUTPUT_TOKENS = 393216;
+  const DEEPSEEK_PRESETS = Object.freeze({
     deepseek: Object.freeze({
       key: 'deepseek',
       label: 'DeepSeek 官方',
       baseUrl: 'https://api.deepseek.com',
-      models: Object.freeze(['deepseek-chat', 'deepseek-reasoner']),
-      profile: 'deepseek',
-      supportsReranker: false,
-    }),
-    glm: Object.freeze({
-      key: 'glm',
-      label: 'GLM Coding Plan',
-      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
-      models: Object.freeze([
-        'glm-5.2',
-        'glm-5.1',
-        'glm-5',
-        'glm-4.7',
-        'glm-4.7-flash',
-        'glm-4.7-flashx',
-        'glm-4.6',
-        'glm-4.5-air',
-        'glm-4.5-airx',
-        'glm-4.5-flash',
-      ]),
-      profile: 'generic-openai',
-      supportsReranker: false,
-    }),
-    minimax: Object.freeze({
-      key: 'minimax',
-      label: 'MiniMax Coding Plan',
-      baseUrl: 'https://api.minimaxi.com/v1',
-      models: Object.freeze(['MiniMax-M2.5', 'MiniMax-M2.7', 'MiniMax-M2.1']),
-      profile: 'generic-openai',
-      supportsReranker: false,
-    }),
-    kimi: Object.freeze({
-      key: 'kimi',
-      label: 'Kimi 编程预设',
-      baseUrl: 'https://api.moonshot.ai/v1',
-      models: Object.freeze(['kimi-k2.5', 'kimi-k2-turbo-preview', 'kimi-k2-thinking']),
-      profile: 'generic-openai',
-      supportsReranker: false,
-    }),
-    openai: Object.freeze({
-      key: 'openai',
-      label: 'OpenAI 官方',
-      baseUrl: 'https://api.openai.com/v1',
-      models: Object.freeze(['gpt-4.1-mini', 'gpt-4.1']),
-      profile: 'generic-openai',
-      supportsReranker: false,
-    }),
-    blt: Object.freeze({
-      key: 'blt',
-      label: '柏拉图 BLTCY',
-      baseUrl: 'https://api.bltcy.ai/v1',
-      models: Object.freeze([
-        'gemini-3-flash-preview-thinking-1000',
-        'deepseek-v3.2',
-        'gpt-5-chat',
-        'gemini-3-pro-preview',
-      ]),
-      profile: 'plato',
-      supportsReranker: true,
-      rerankerModel: 'qwen3-reranker-4b',
+      models: Object.freeze(['deepseek-v4-flash', 'deepseek-v4-pro']),
     }),
   });
 
@@ -173,62 +113,54 @@
     const safeSecret = secret && typeof secret === 'object' ? secret : {};
     const llmProvider = safeSecret.llmProvider || {};
     const explicit = normalizeText(llmProvider.type || llmProvider.provider || '').toLowerCase();
-    if (explicit === 'plato' || explicit === 'openai-compatible') {
-      return explicit;
+    if (explicit === 'deepseek') {
+      return 'deepseek';
     }
-    const summary = resolveSummaryLLM(safeSecret);
-    if (!summary) return 'plato';
-    if (/bltcy\.ai|gptbest\.vip/i.test(summary.baseUrl)) {
-      return 'plato';
-    }
-    return 'openai-compatible';
+    return 'deepseek';
   };
 
-  const getOpenAICompatiblePreset = (key) => {
+  const getDeepSeekPreset = (key) => {
     const presetKey = normalizeText(key).toLowerCase();
-    const preset = OPENAI_COMPATIBLE_PRESETS[presetKey];
+    const preset = DEEPSEEK_PRESETS[presetKey];
     if (!preset) return null;
     return {
       key: preset.key,
       label: preset.label,
       baseUrl: preset.baseUrl,
       models: [...preset.models],
-      profile: preset.profile,
-      supportsReranker: !!preset.supportsReranker,
-      rerankerModel: preset.rerankerModel || '',
     };
   };
 
   const inferChatApiProfile = (baseUrl, model) => {
     const normalizedBaseUrl = normalizeBaseUrlForStorage(baseUrl || '').toLowerCase();
     const normalizedModel = normalizeText(model || '').toLowerCase();
-    const preset = Object.values(OPENAI_COMPATIBLE_PRESETS).find(
-      (item) => normalizeBaseUrlForStorage(item.baseUrl || '').toLowerCase() === normalizedBaseUrl,
-    );
-    if (preset && preset.profile) {
-      return preset.profile;
-    }
-    if (
-      /(^|\/\/)(api\.)?deepseek\.com(?:$|\/)/i.test(normalizedBaseUrl)
-      || normalizedModel.startsWith('deepseek-')
-    ) {
+    if (/(^|\/\/)(api\.)?deepseek\.com(?:$|\/)/i.test(normalizedBaseUrl)) {
       return 'deepseek';
     }
-    if (/bltcy\.ai|gptbest\.vip/i.test(normalizedBaseUrl)) {
-      return 'plato';
+    if (normalizedModel.startsWith('deepseek-')) {
+      return 'deepseek';
     }
-    return 'generic-openai';
+    return 'unsupported';
+  };
+
+  const resolveJsonResponseMode = ({ baseUrl, model, preferSchema = true }) => {
+    return 'json_object';
+  };
+
+  const isDeepSeekV4Model = (model) => {
+    const normalizedModel = normalizeText(model || '').toLowerCase();
+    return normalizedModel === 'deepseek-v4-flash' || normalizedModel === 'deepseek-v4-pro';
+  };
+
+  const resolveMaxOutputTokens = ({ baseUrl, model } = {}) => {
+    const profile = inferChatApiProfile(baseUrl, model);
+    if (profile === 'deepseek' && isDeepSeekV4Model(model)) {
+      return DEEPSEEK_V4_MAX_OUTPUT_TOKENS;
+    }
+    return null;
   };
 
   const shouldUseXApiKeyHeader = ({ baseUrl, model }) => {
-    const normalizedBaseUrl = normalizeBaseUrlForStorage(baseUrl || '').toLowerCase();
-    const normalizedModel = normalizeText(model || '').toLowerCase();
-    if (
-      /^minimax-/i.test(normalizedModel)
-      || /(^|\/\/)api\.minimax(?:i)?\.(?:io|com)(?:$|\/)/i.test(normalizedBaseUrl)
-    ) {
-      return false;
-    }
     return true;
   };
 
@@ -238,27 +170,16 @@
       messages: Array.isArray(messages) ? messages : [],
       stream: true,
     };
-    const profile = inferChatApiProfile(baseUrl, model);
-    if (profile === 'plato') {
-      payload.reasoning = { effort: 'medium' };
-      payload.extra_body = { return_reasoning: true };
-    } else if (profile === 'deepseek' && normalizeText(model).toLowerCase() === 'deepseek-reasoner') {
-      payload.thinking = { type: 'enabled' };
+    const maxTokens = resolveMaxOutputTokens({ baseUrl, model });
+    if (maxTokens) {
+      payload.max_tokens = maxTokens;
     }
     return payload;
   };
 
   const buildConnectivityTestPayload = ({ baseUrl, model }) => {
     const normalizedModel = normalizeText(model);
-    const normalizedBaseUrl = normalizeBaseUrlForStorage(baseUrl || '').toLowerCase();
-    const wantsMaxCompletionTokens =
-      /^glm-/i.test(normalizedModel)
-      || /open\.bigmodel\.cn/.test(normalizedBaseUrl)
-      || /thinking/i.test(normalizedModel)
-      || /^kimi-/i.test(normalizedModel)
-      || /^minimax-/i.test(normalizedModel)
-      || normalizedModel.toLowerCase() === 'deepseek-reasoner';
-    const payload = {
+    return {
       model: normalizedModel,
       messages: [
         {
@@ -271,27 +192,14 @@
         },
       ],
       temperature: 0,
-      max_tokens: 2048,
+      max_tokens: 256,
     };
-    if (wantsMaxCompletionTokens) {
-      payload.max_completion_tokens = 2048;
-    }
-    const profile = inferChatApiProfile(baseUrl, model);
-    if (profile === 'deepseek' && normalizedModel.toLowerCase() === 'deepseek-reasoner') {
-      payload.thinking = { type: 'disabled' };
-    }
-    // GLM Coding Plan / 智谱 BigModel：连通性测试不需要思考，显式关闭
-    // 避免 reasoning token 占满 max_tokens 后 content 返回空串。
-    if (/open\.bigmodel\.cn/.test(normalizedBaseUrl) || /^glm-/i.test(normalizedModel)) {
-      payload.thinking = { type: 'disabled' };
-    }
-    return payload;
   };
 
   return {
-    DEFAULT_PLATO_BASE_URL,
-    DEFAULT_PLATO_CHAT_MODELS,
-    OPENAI_COMPATIBLE_PRESETS,
+    DEFAULT_DEEPSEEK_BASE_URL,
+    DEFAULT_DEEPSEEK_CHAT_MODELS,
+    DEEPSEEK_PRESETS,
     normalizeText,
     normalizeBaseUrlForStorage,
     buildChatCompletionsEndpoint,
@@ -299,8 +207,11 @@
     resolveChatModels,
     resolveSummaryLLM,
     inferProviderType,
-    getOpenAICompatiblePreset,
+    getDeepSeekPreset,
     inferChatApiProfile,
+    resolveJsonResponseMode,
+    isDeepSeekV4Model,
+    resolveMaxOutputTokens,
     shouldUseXApiKeyHeader,
     buildStreamingChatPayload,
     buildConnectivityTestPayload,

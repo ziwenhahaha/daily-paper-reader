@@ -536,7 +536,6 @@ class LLMClient:
 
         # GLM Coding Plan / 智谱 BigModel：主流程（论文总结/过滤/改写）不需要思考，
         # 显式关闭思考模式以避免 reasoning token 吞掉输出预算并拖慢流水线。
-        # 聊天区走前端 buildStreamingChatPayload，不经过本方法，不受影响。
         try:
             model_lower = (model_name or '').lower()
             base_url_lower = (self.base_url or '').lower()
