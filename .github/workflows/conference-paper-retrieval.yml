@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       conference:
-        description: "会议名：NIPS/NeurIPS 或 ICML"
+        description: "会议名：NIPS/NeurIPS、ICML、ICLR、AAAI、CVPR、ECCV、IJCAI、ACL 或 EMNLP"
         required: true
         default: "ICML"
       years:
@@ -44,7 +44,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: conference-paper-retrieval
+  group: conference-${{ github.event.inputs.conference }}-${{ github.event.inputs.years }}
   cancel-in-progress: false
 
 jobs:
@@ -62,6 +62,41 @@ jobs:
       DPR_ICML_PAPERS_TABLE: icml_openreview_papers
       DPR_ICML_VECTOR_RPC_EXACT: match_icml_openreview_papers_exact
       DPR_ICML_BM25_RPC: match_icml_openreview_papers_bm25
+      DPR_ENABLE_ICLR_BACKEND: "1"
+      DPR_ICLR_ENABLED: "1"
+      DPR_ICLR_PAPERS_TABLE: iclr_openreview_papers
+      DPR_ICLR_VECTOR_RPC_EXACT: match_iclr_openreview_papers_exact
+      DPR_ICLR_BM25_RPC: match_iclr_openreview_papers_bm25
+      DPR_ENABLE_AAAI_BACKEND: "1"
+      DPR_AAAI_ENABLED: "1"
+      DPR_AAAI_PAPERS_TABLE: aaai_papers
+      DPR_AAAI_VECTOR_RPC_EXACT: match_aaai_papers_exact
+      DPR_AAAI_BM25_RPC: match_aaai_papers_bm25
+      DPR_ENABLE_CVPR_BACKEND: "1"
+      DPR_CVPR_ENABLED: "1"
+      DPR_CVPR_PAPERS_TABLE: cvpr_papers
+      DPR_CVPR_VECTOR_RPC_EXACT: match_cvpr_papers_exact
+      DPR_CVPR_BM25_RPC: match_cvpr_papers_bm25
+      DPR_ENABLE_ECCV_BACKEND: "1"
+      DPR_ECCV_ENABLED: "1"
+      DPR_ECCV_PAPERS_TABLE: eccv_papers
+      DPR_ECCV_VECTOR_RPC_EXACT: match_eccv_papers_exact
+      DPR_ECCV_BM25_RPC: match_eccv_papers_bm25
+      DPR_ENABLE_IJCAI_BACKEND: "1"
+      DPR_IJCAI_ENABLED: "1"
+      DPR_IJCAI_PAPERS_TABLE: ijcai_papers
+      DPR_IJCAI_VECTOR_RPC_EXACT: match_ijcai_papers_exact
+      DPR_IJCAI_BM25_RPC: match_ijcai_papers_bm25
+      DPR_ENABLE_ACL_BACKEND: "1"
+      DPR_ACL_ENABLED: "1"
+      DPR_ACL_PAPERS_TABLE: acl_papers
+      DPR_ACL_VECTOR_RPC_EXACT: match_acl_papers_exact
+      DPR_ACL_BM25_RPC: match_acl_papers_bm25
+      DPR_ENABLE_EMNLP_BACKEND: "1"
+      DPR_EMNLP_ENABLED: "1"
+      DPR_EMNLP_PAPERS_TABLE: emnlp_papers
+      DPR_EMNLP_VECTOR_RPC_EXACT: match_emnlp_papers_exact
+      DPR_EMNLP_BM25_RPC: match_emnlp_papers_bm25
       RERANK_PROFILE: ${{ secrets.RERANK_PROFILE }}
       RERANK_PROVIDER: ${{ secrets.RERANK_PROVIDER }}
       RERANK_MODEL: ${{ secrets.RERANK_MODEL }}
@@ -263,8 +298,15 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           branch="${GITHUB_REF_NAME:-main}"
 
+          TOKENS="$(CONFERENCE_INPUT="${{ github.event.inputs.conference }}" YEARS_INPUT="${{ github.event.inputs.years }}" python -c 'import os, sys; sys.path.insert(0, "src"); from conference_retrieval import build_years_token, parse_conferences, parse_years; print("-".join(parse_conferences(os.environ.get("CONFERENCE_INPUT", "")))); print(build_years_token(parse_years(os.environ.get("YEARS_INPUT", ""))))')"
+          CONF_TOKEN="$(echo "$TOKENS" | sed -n '1p')"
+          YEAR_TOKEN="$(echo "$TOKENS" | sed -n '2p')"
+          RUN_DATE="$(date -u +%Y%m%d)"
+          COMMIT_MSG="[chore] conference retrieval: ${CONF_TOKEN} ${YEAR_TOKEN}"
+
           shopt -s nullglob
-          paths=(archive/*/rank/conference-*.supabase.llm.json docs/_sidebar.md docs/conference docs/assets/figures docs/assets/tables)
+          echo '{"owner":"'"$GITHUB_REPOSITORY_OWNER"'","repo":"'"${GITHUB_REPOSITORY#*/}"'"}' > docs/.repo-owner.json
+          paths=(archive/*/rank/conference-*.supabase.llm.json docs/_sidebar.md docs/conference docs/assets/figures docs/assets/tables docs/.repo-owner.json)
           if [ "${#paths[@]}" -eq 0 ]; then
             echo "No conference output files to commit."
             exit 0
@@ -276,9 +318,41 @@ jobs:
             exit 0
           fi
 
-          git commit -m "[chore] conference retrieval"
-          git status --short
-          git reset --hard HEAD
-          git fetch origin "$branch"
-          git rebase -X theirs "origin/$branch"
-          git push origin HEAD:"$branch"
+          git commit -m "$COMMIT_MSG"
+
+          for attempt in 1 2 3 4 5; do
+            git fetch origin "$branch"
+
+            if git merge-base --is-ancestor "origin/$branch" HEAD 2>/dev/null; then
+              git push origin HEAD:"$branch" && { echo "[OK] push (fast-forward) on attempt $attempt"; exit 0; }
+            fi
+
+            if git rebase "origin/$branch" 2>/dev/null; then
+              git push origin HEAD:"$branch" && { echo "[OK] push (rebase) on attempt $attempt"; exit 0; }
+              git reset --hard ORIG_HEAD 2>/dev/null || true
+            else
+              git rebase --abort 2>/dev/null || true
+            fi
+
+            echo "[WARN] push attempt $attempt failed, re-merging sidebar on latest origin..."
+            [ "$attempt" -eq 5 ] && { echo "::error::Failed to push after 5 attempts"; exit 1; }
+            sleep "$((attempt * 3))"
+
+            local_head="$(git rev-parse HEAD)"
+            git reset --hard "origin/$branch"
+
+            git checkout "$local_head" -- docs/conference docs/assets/figures docs/assets/tables docs/.repo-owner.json 2>/dev/null || true
+            git checkout "$local_head" -- "archive/${RUN_DATE}/rank/conference-${CONF_TOKEN}-${YEAR_TOKEN}.supabase.llm.json" 2>/dev/null || true
+
+            python src/conference_sidebar.py \
+              --result "archive/${RUN_DATE}/rank/conference-${CONF_TOKEN}-${YEAR_TOKEN}.supabase.llm.json" \
+              --result "archive/${RUN_DATE}/rank/conference-${CONF_TOKEN}-${YEAR_TOKEN}.supabase.rerank.json" \
+              --result "archive/${RUN_DATE}/filtered/conference-${CONF_TOKEN}-${YEAR_TOKEN}.supabase.rrf.json" \
+              --sidebar docs/_sidebar.md \
+              --display-min-score 4 \
+              --deep-min-score 4 || true
+
+            git add "${paths[@]}"
+            git diff --cached --quiet && { echo "[OK] no changes after re-merge, skipping"; exit 0; }
+            git commit -m "$COMMIT_MSG"
+          done
