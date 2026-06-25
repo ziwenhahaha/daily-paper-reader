@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-# 统一订阅解析模块：
-# - 输出 BM25 / Embedding / LLM refine 可直接消费的数据（仅基于 intent_profiles）
-# - 支持迁移阶段门禁（A/B/C）
+# Unified subscription parsing module:
+# - Outputs data directly consumable by BM25 / Embedding / LLM refine (based only on intent_profiles)
+# - Supports migration-stage gating (A/B/C)
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ import re
 
 try:
   from source_config import list_known_source_keys, validate_profile_paper_sources
-except Exception:  # pragma: no cover - 兼容 package 导入路径
+except Exception:  # pragma: no cover - compatibility with the package import path
   from src.source_config import list_known_source_keys, validate_profile_paper_sources
 
 try:
   from query_boolean import clean_expr_for_embedding
-except Exception:  # pragma: no cover - 兼容 package 导入路径
+except Exception:  # pragma: no cover - compatibility with the package import path
   from src.query_boolean import clean_expr_for_embedding
 
 
@@ -489,10 +489,10 @@ def _build_from_profiles(subs: Dict[str, Any], known_sources: List[str]) -> Dict
 
 def build_pipeline_inputs(config: Dict[str, Any]) -> Dict[str, Any]:
   """
-  统一输出流水线输入：
-  - bm25_queries：供 Step 2.1 使用
-  - embedding_queries：供 Step 2.2 使用
-  - context_keywords/context_queries：供 Step 4 使用
+  Produce unified pipeline inputs:
+  - bm25_queries: used by Step 2.1
+  - embedding_queries: used by Step 2.2
+  - context_keywords/context_queries: used by Step 4
   """
   cfg = config or {}
   subs = (cfg.get("subscriptions") or {}) if isinstance(cfg, dict) else {}
@@ -509,7 +509,7 @@ def build_pipeline_inputs(config: Dict[str, Any]) -> Dict[str, Any]:
     plan = profile_plan
     source = "intent_profiles"
   else:
-    # 阶段 A/B/C：未配置新链路则返回空输入，避免回退到旧结构。
+    # Stages A/B/C: if the new pipeline is not configured, return empty inputs to avoid falling back to the old structure.
     plan = {
       "profiles": [],
       "bm25_queries": [],

@@ -1,1 +1,1 @@
-"""Daily Paper Reader 源码包。"""
+"""Daily Paper Reader source code package."""

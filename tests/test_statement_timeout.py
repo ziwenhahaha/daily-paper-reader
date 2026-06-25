@@ -314,37 +314,37 @@ class SupabaseBm25ShardFallbackTest(unittest.TestCase):
             }
         ]
 
-        timeout_msg = 'rpc 查询失败：HTTP 500 {"code":"57014","message":"canceling statement due to statement timeout"}'
+        timeout_msg = 'RPC query failed: HTTP 500 {"code":"57014","message":"canceling statement due to statement timeout"}'
         responses = {
             (datetime(2026, 3, 1, tzinfo=timezone.utc), datetime(2026, 3, 8, tzinfo=timezone.utc)): ([], timeout_msg),
             (datetime(2026, 3, 1, tzinfo=timezone.utc), datetime(2026, 3, 4, tzinfo=timezone.utc)): (
                 [
                     {"id": "p1", "title": "Paper 1", "abstract": "A", "authors": [], "published": "2026-03-03T00:00:00+00:00", "link": "https://example/p1", "score": 0.91},
                 ],
-                "rpc 查询成功：1 条",
+                "RPC query successful: 1 records",
             ),
             (datetime(2026, 3, 4, tzinfo=timezone.utc), datetime(2026, 3, 7, tzinfo=timezone.utc)): (
                 [
                     {"id": "p2", "title": "Paper 2", "abstract": "B", "authors": [], "published": "2026-03-05T00:00:00+00:00", "link": "https://example/p2", "score": 0.60},
                 ],
-                "rpc 查询成功：1 条",
+                "RPC query successful: 1 records",
             ),
-            (datetime(2026, 3, 7, tzinfo=timezone.utc), datetime(2026, 3, 8, tzinfo=timezone.utc)): ([], "rpc 查询成功：0 条"),
+            (datetime(2026, 3, 7, tzinfo=timezone.utc), datetime(2026, 3, 8, tzinfo=timezone.utc)): ([], "RPC query successful: 0 records"),
             (datetime(2026, 3, 8, tzinfo=timezone.utc), datetime(2026, 3, 15, tzinfo=timezone.utc)): (
                 [
                     {"id": "p3", "title": "Paper 3", "abstract": "C", "authors": [], "published": "2026-03-10T00:00:00+00:00", "link": "https://example/p3", "score": 0.95},
                     {"id": "p1", "title": "Paper 1 dup", "abstract": "A2", "authors": [], "published": "2026-03-11T00:00:00+00:00", "link": "https://example/p1b", "score": 0.88},
                 ],
-                "rpc 查询成功：2 条",
+                "RPC query successful: 2 records",
             ),
-            (datetime(2026, 3, 15, tzinfo=timezone.utc), datetime(2026, 3, 22, tzinfo=timezone.utc)): ([], "rpc 查询成功：0 条"),
+            (datetime(2026, 3, 15, tzinfo=timezone.utc), datetime(2026, 3, 22, tzinfo=timezone.utc)): ([], "RPC query successful: 0 records"),
             (datetime(2026, 3, 22, tzinfo=timezone.utc), datetime(2026, 3, 29, tzinfo=timezone.utc)): (
                 [
                     {"id": "p4", "title": "Paper 4", "abstract": "D", "authors": [], "published": "2026-03-24T00:00:00+00:00", "link": "https://example/p4", "score": 0.72},
                 ],
-                "rpc 查询成功：1 条",
+                "RPC query successful: 1 records",
             ),
-            (datetime(2026, 3, 29, tzinfo=timezone.utc), datetime(2026, 3, 31, tzinfo=timezone.utc)): ([], "rpc 查询成功：0 条"),
+            (datetime(2026, 3, 29, tzinfo=timezone.utc), datetime(2026, 3, 31, tzinfo=timezone.utc)): ([], "RPC query successful: 0 records"),
         }
 
         seen_windows = []
@@ -426,37 +426,37 @@ class SupabaseVectorExactShardFallbackTest(unittest.TestCase):
             }
         ]
 
-        timeout_msg = 'rpc 查询失败：HTTP 500 {"code":"57014","message":"canceling statement due to statement timeout"}'
+        timeout_msg = 'RPC query failed: HTTP 500 {"code":"57014","message":"canceling statement due to statement timeout"}'
         responses = {
             (datetime(2026, 3, 1, tzinfo=timezone.utc), datetime(2026, 3, 8, tzinfo=timezone.utc)): ([], timeout_msg),
             (datetime(2026, 3, 1, tzinfo=timezone.utc), datetime(2026, 3, 4, tzinfo=timezone.utc)): (
                 [
                     {"id": "p1", "title": "Paper 1", "abstract": "A", "authors": [], "published": "2026-03-03T00:00:00+00:00", "link": "https://example/p1", "similarity": 0.91},
                 ],
-                "rpc 查询成功：1 条",
+                "RPC query successful: 1 records",
             ),
             (datetime(2026, 3, 4, tzinfo=timezone.utc), datetime(2026, 3, 7, tzinfo=timezone.utc)): (
                 [
                     {"id": "p2", "title": "Paper 2", "abstract": "B", "authors": [], "published": "2026-03-05T00:00:00+00:00", "link": "https://example/p2", "similarity": 0.60},
                 ],
-                "rpc 查询成功：1 条",
+                "RPC query successful: 1 records",
             ),
-            (datetime(2026, 3, 7, tzinfo=timezone.utc), datetime(2026, 3, 8, tzinfo=timezone.utc)): ([], "rpc 查询成功：0 条"),
+            (datetime(2026, 3, 7, tzinfo=timezone.utc), datetime(2026, 3, 8, tzinfo=timezone.utc)): ([], "RPC query successful: 0 records"),
             (datetime(2026, 3, 8, tzinfo=timezone.utc), datetime(2026, 3, 15, tzinfo=timezone.utc)): (
                 [
                     {"id": "p3", "title": "Paper 3", "abstract": "C", "authors": [], "published": "2026-03-10T00:00:00+00:00", "link": "https://example/p3", "similarity": 0.95},
                     {"id": "p1", "title": "Paper 1 dup", "abstract": "A2", "authors": [], "published": "2026-03-11T00:00:00+00:00", "link": "https://example/p1b", "similarity": 0.88},
                 ],
-                "rpc 查询成功：2 条",
+                "RPC query successful: 2 records",
             ),
-            (datetime(2026, 3, 15, tzinfo=timezone.utc), datetime(2026, 3, 22, tzinfo=timezone.utc)): ([], "rpc 查询成功：0 条"),
+            (datetime(2026, 3, 15, tzinfo=timezone.utc), datetime(2026, 3, 22, tzinfo=timezone.utc)): ([], "RPC query successful: 0 records"),
             (datetime(2026, 3, 22, tzinfo=timezone.utc), datetime(2026, 3, 29, tzinfo=timezone.utc)): (
                 [
                     {"id": "p4", "title": "Paper 4", "abstract": "D", "authors": [], "published": "2026-03-24T00:00:00+00:00", "link": "https://example/p4", "similarity": 0.72},
                 ],
-                "rpc 查询成功：1 条",
+                "RPC query successful: 1 records",
             ),
-            (datetime(2026, 3, 29, tzinfo=timezone.utc), datetime(2026, 3, 31, tzinfo=timezone.utc)): ([], "rpc 查询成功：0 条"),
+            (datetime(2026, 3, 29, tzinfo=timezone.utc), datetime(2026, 3, 31, tzinfo=timezone.utc)): ([], "RPC query successful: 0 records"),
         }
 
         seen_windows = []

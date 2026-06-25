@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""本地调试后端：静态托管前端，并把工作流触发映射成本地子进程。"""
+"""Local debug backend: statically serves the frontend and maps workflow triggers to local subprocesses."""
 
 from __future__ import annotations
 
@@ -136,7 +136,7 @@ class RunStore:
         config_path = ""
         if config:
             if yaml is None:
-                raise RuntimeError("本地调试后端缺少 PyYAML，无法写入浏览器缓存配置。")
+                raise RuntimeError("The local debug backend lacks PyYAML and cannot write the browser-cache config.")
             config_path = str(run_dir / "config.yaml")
             Path(config_path).write_text(
                 yaml.safe_dump(config, allow_unicode=True, sort_keys=False, width=10**9),
@@ -331,7 +331,7 @@ def build_command(workflow_key: str, workflow_file: str, inputs: dict[str, str])
             ),
             (
                 "if [ -f docs/_sidebar.md ] && grep -Fq \"$TOPIC_MARKER\" docs/_sidebar.md; then\n"
-                "  echo \"[INFO] 已存在会议词条，跳过重复检索：conference=${CONF_TOKEN}-${YEAR_TOKEN} profile=${DPR_FILTER_PROFILE_TAG:-General}\"\n"
+                "  echo \"[INFO] Conference entry already exists, skipping duplicate retrieval: conference=${CONF_TOKEN}-${YEAR_TOKEN} profile=${DPR_FILTER_PROFILE_TAG:-General}\"\n"
                 "  exit 0\n"
                 "fi"
             ),
@@ -350,7 +350,7 @@ def build_command(workflow_key: str, workflow_file: str, inputs: dict[str, str])
     if workflow_file == "sync.yml" or workflow_key == "sync":
         return ["git", "status", "--short"]
 
-    raise ValueError(f"本地调试后端暂不支持 workflow: {workflow_key or workflow_file}")
+    raise ValueError(f"The local debug backend does not yet support workflow: {workflow_key or workflow_file}")
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -453,7 +453,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _save_local_config(self) -> None:
         if yaml is None:
-            return self._json({"ok": False, "error": "本地调试后端缺少 PyYAML，无法写入 config.yaml。"}, status=500)
+            return self._json({"ok": False, "error": "The local debug backend lacks PyYAML and cannot write config.yaml."}, status=500)
         try:
             length = int(self.headers.get("Content-Length") or "0")
             payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
@@ -476,7 +476,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Daily Paper Reader 本地调试后端")
+    parser = argparse.ArgumentParser(description="Daily Paper Reader local debug backend")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8567)
     args = parser.parse_args()
@@ -486,7 +486,7 @@ def main() -> None:
     print(f"[local-debug] serving http://{display_host}:{args.port}", flush=True)
     if display_host != args.host:
         print(f"[local-debug] listening on {args.host}:{args.port}", flush=True)
-    print("[local-debug] 前端在 localhost 下触发任务会调用本地 /api/local/workflows/dispatch", flush=True)
+    print("[local-debug] When triggered under localhost, the frontend calls the local /api/local/workflows/dispatch", flush=True)
     server.serve_forever()
 
 

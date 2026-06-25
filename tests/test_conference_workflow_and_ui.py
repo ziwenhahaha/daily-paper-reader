@@ -97,7 +97,7 @@ class ConferenceWorkflowAndUiTest(unittest.TestCase):
         self.assertIn("refreshLocalRun(r.runId)", runner)
         self.assertIn("runConferenceRetrieval(conf, years, {", manager)
         self.assertIn("profile_tag: profileTags.join(',')", manager)
-        self.assertIn("会议论文检索", manager)
+        self.assertIn("Conference Paper Retrieval", manager)
         self.assertNotIn("showPrettyConfirm", manager)
         self.assertNotIn("确认对 <strong>", manager)
         self.assertNotIn("dpr-run-confirm", css)

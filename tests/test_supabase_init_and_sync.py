@@ -32,7 +32,7 @@ class SupabaseInitAndSyncTest(unittest.TestCase):
                 src_dir / "maintain" / "sync.py",
             )
         except Exception as exc:
-            raise unittest.SkipTest(f"依赖不足，跳过 Supabase 初始化相关测试: {exc}")
+            raise unittest.SkipTest(f"Insufficient dependencies; skipping Supabase initialization tests: {exc}")
 
     def test_resolve_date_token_long_range(self):
         token = self.init_mod.resolve_date_token("", 30)

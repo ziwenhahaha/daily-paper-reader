@@ -10,7 +10,7 @@ from common import TODAY_STR, cleanup_backend, default_raw_path, ensure_parent_d
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="维护入口：CVPR 抓取 + Supabase 同步。")
+    parser = argparse.ArgumentParser(description="Maintenance entry: CVPR retrieval + Supabase sync.")
     parser.add_argument("--year-end", type=int, default=2026)
     parser.add_argument("--year-count", type=int, default=3)
     parser.add_argument("--workers", type=int, default=16)

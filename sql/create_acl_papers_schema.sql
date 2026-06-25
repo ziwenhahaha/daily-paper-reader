@@ -1,5 +1,5 @@
 -- ============================================================
--- ACL Anthology 论文表
+-- ACL Anthology paper table
 -- ============================================================
 
 create extension if not exists vector;

@@ -1,5 +1,5 @@
 -- ============================================================
--- medRxiv 独立表的检索 RPC
+-- medRxiv paper retrieval RPC
 -- ============================================================
 
 create or replace function match_medrxiv_papers_exact(

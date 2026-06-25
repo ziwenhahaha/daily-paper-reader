@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-# 基于 RRF (Reciprocal Rank Fusion) 融合 BM25 + Embedding 的召回结果：
-# 1. 读取 BM25 与 Embedding 的筛选 JSON；
-# 2. 对每个查询按排名做 RRF 融合并去重；
-# 3. 截断 Top N，并为这些论文打上 tag；
-# 4. 输出融合后的 JSON，供下一步 reranker 使用。
+# Fuse BM25 + Embedding recall results with RRF (Reciprocal Rank Fusion):
+# 1. Read BM25 and Embedding filtered JSON outputs;
+# 2. For each query, fuse rankings via RRF and deduplicate;
+# 3. Truncate to Top N and tag the selected papers;
+# 4. Write fused JSON for the next reranker step.
 
 import argparse
 import json
@@ -33,7 +33,7 @@ def group_end() -> None:
 
 def load_json(path: str) -> Dict[str, Any]:
   if not os.path.exists(path):
-    raise FileNotFoundError(f"找不到文件：{path}")
+    raise FileNotFoundError(f"File not found: {path}")
   with open(path, "r", encoding="utf-8") as f:
     return json.load(f)
 
@@ -42,13 +42,13 @@ def save_json(data: Dict[str, Any], path: str) -> None:
   os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
   with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
-  log(f"[INFO] 已写入融合结果：{path}")
+  log(f"[INFO] Wrote fused results to: {path}")
 
 
 def make_query_key(q: Dict[str, Any]) -> Tuple[str, str, str]:
   """
-  生成用于对齐 BM25 / Embedding 查询的稳定键。
-  需要同时保留 paper_tag + query_text，避免“同 tag 的多条语义 query”被覆盖。
+  Build a stable key to align BM25 / Embedding queries.
+  Keep both paper_tag and query_text so multiple semantic queries under the same tag are not overwritten.
   """
   q_type = str(q.get("type") or "")
   paper_tag = str(q.get("paper_tag") or q.get("tag") or "")
@@ -57,7 +57,7 @@ def make_query_key(q: Dict[str, Any]) -> Tuple[str, str, str]:
 
 
 def normalize_rank_list(sim_scores: Any) -> List[Tuple[str, int]]:
-  """从 sim_scores 中提取 (paper_id, rank) 列表。"""
+  """Extract a (paper_id, rank) list from sim_scores."""
   if not isinstance(sim_scores, dict) or not sim_scores:
     return []
 
@@ -73,7 +73,7 @@ def normalize_rank_list(sim_scores: Any) -> List[Tuple[str, int]]:
 
   has_rank = all(r is not None for _, _, r in items)
   if has_rank:
-    items_sorted = sorted(items, key=lambda x: x[2])
+    items_sorted = sorted(items, key=lambda x: x[2] if x[2] is not None else 0)
   else:
     items_sorted = sorted(items, key=lambda x: (x[1] is None, -(x[1] or 0.0)))
 
@@ -117,7 +117,7 @@ def merge_paper_maps(
   base: Dict[str, Dict[str, Any]],
   incoming: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Dict[str, Any]]:
-  """合并两份 paper map，tags 取并集，其它字段优先保留已有值。"""
+  """Merge two paper maps; tags are unioned, other fields prefer existing values."""
   for pid, paper in incoming.items():
     if pid not in base:
       base[pid] = paper
@@ -139,38 +139,38 @@ def merge_paper_maps(
 
 def main() -> None:
   parser = argparse.ArgumentParser(
-    description="步骤 2.3：使用 RRF 融合 BM25 + Embedding 的召回结果并打 tag。",
+    description="Step 2.3: fuse BM25 + Embedding recall results with RRF and tag papers.",
   )
 
   parser.add_argument(
     "--bm25-input",
     type=str,
     default=os.path.join(FILTERED_DIR, f"arxiv_papers_{TODAY_STR}.bm25.json"),
-    help="BM25 召回结果 JSON（默认 archive/YYYYMMDD/filtered/arxiv_papers_YYYYMMDD.bm25.json）。",
+    help="BM25 recall JSON (default archive/YYYYMMDD/filtered/arxiv_papers_YYYYMMDD.bm25.json).",
   )
   parser.add_argument(
     "--embedding-input",
     type=str,
     default=os.path.join(FILTERED_DIR, f"arxiv_papers_{TODAY_STR}.embedding.json"),
-    help="Embedding 召回结果 JSON（默认 archive/YYYYMMDD/filtered/arxiv_papers_YYYYMMDD.embedding.json）。",
+    help="Embedding recall JSON (default archive/YYYYMMDD/filtered/arxiv_papers_YYYYMMDD.embedding.json).",
   )
   parser.add_argument(
     "--output",
     type=str,
     default=os.path.join(FILTERED_DIR, f"arxiv_papers_{TODAY_STR}.json"),
-    help="融合后的输出 JSON（默认 archive/YYYYMMDD/filtered/arxiv_papers_YYYYMMDD.json）。",
+    help="Fused output JSON (default archive/YYYYMMDD/filtered/arxiv_papers_YYYYMMDD.json).",
   )
   parser.add_argument(
     "--top-n",
     type=int,
     default=200,
-    help="RRF 融合后保留的 Top N（默认 200）。",
+    help="Top N papers to keep after RRF fusion (default 200).",
   )
   parser.add_argument(
     "--rrf-k",
     type=int,
     default=60,
-    help="RRF 的 k 参数（默认 60）。",
+    help="RRF k parameter (default 60).",
   )
 
   args = parser.parse_args()
@@ -187,17 +187,17 @@ def main() -> None:
   if not os.path.isabs(out_path):
     out_path = os.path.abspath(os.path.join(ROOT_DIR, out_path))
 
-  # 检查输入文件是否存在，如果不存在说明今天没有新论文，优雅退出
+  # If input files are missing, there are no new papers today; exit gracefully
   if not os.path.exists(bm25_path) and not os.path.exists(emb_path):
-    log("[INFO] BM25 和 Embedding 结果文件都不存在（今天没有新论文，将跳过 RRF 融合）")
+    log("[INFO] Neither BM25 nor Embedding result file exists (no new papers today; skipping RRF fusion)")
     return
 
   if not os.path.exists(bm25_path):
-    log(f"[INFO] BM25 结果文件不存在：{bm25_path}（将跳过 RRF 融合）")
+    log(f"[INFO] BM25 result file not found: {bm25_path} (skipping RRF fusion)")
     return
 
   if not os.path.exists(emb_path):
-    log(f"[INFO] Embedding 结果文件不存在：{emb_path}（将跳过 RRF 融合）")
+    log(f"[INFO] Embedding result file not found: {emb_path} (skipping RRF fusion)")
     return
 
   group_start("Step 2.3 - load inputs")

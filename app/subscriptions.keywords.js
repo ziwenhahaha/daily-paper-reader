@@ -1,5 +1,5 @@
-// 订阅关键词管理模块
-// 负责：渲染关键词列表、增加/删除关键词
+// Subscription keyword management module
+// Responsibilities: render the keyword list, add/remove keywords
 
 window.SubscriptionsKeywords = (function () {
   let keywordsListEl = null;
@@ -9,7 +9,7 @@ window.SubscriptionsKeywords = (function () {
   let msgEl = null;
   let reloadAll = null;
 
-  // 简单的 HTML 转义，避免 XSS
+  // Simple HTML escaping to prevent XSS
   const escapeHtml = (str) => {
     if (!str) return '';
     return String(str)
@@ -20,11 +20,11 @@ window.SubscriptionsKeywords = (function () {
       .replace(/'/g, '&#39;');
   };
 
-  // 校验关键词语法，避免生成无法被 YAML 正常解析的配置
+  // Validate keyword syntax to avoid producing config that YAML cannot parse
   const validateKeywordSyntax = (keyword) => {
     const raw = (keyword || '').trim();
     if (!raw) {
-      return { valid: false, message: '关键词不能为空' };
+      return { valid: false, message: 'The keyword cannot be empty' };
     }
     return { valid: true, message: '' };
   };
@@ -33,7 +33,7 @@ window.SubscriptionsKeywords = (function () {
     if (!keywordsListEl) return;
     if (!items || !items.length) {
       keywordsListEl.innerHTML =
-        '<div style="color:#999;">暂无关键词订阅，可在下方新增。</div>';
+        '<div style="color:#999;">No keyword subscriptions yet; add one below.</div>';
       return;
     }
     keywordsListEl.innerHTML = '';
@@ -54,7 +54,7 @@ window.SubscriptionsKeywords = (function () {
         }${escapeHtml(item.keyword || '')}</span>
         <button data-id="${
           item.id
-        }" class="arxiv-keyword-del" style="border:none;background:none;color:#c00;font-size:11px;cursor:pointer;">删除</button>
+        }" class="arxiv-keyword-del" style="border:none;background:none;color:#c00;font-size:11px;cursor:pointer;">Delete</button>
       `;
       keywordsListEl.appendChild(row);
     });
@@ -72,7 +72,7 @@ window.SubscriptionsKeywords = (function () {
             !window.SubscriptionsManager ||
             !window.SubscriptionsManager.updateDraftConfig
           ) {
-            throw new Error('缺少本地草稿更新能力');
+            throw new Error('Missing local draft update capability');
           }
           window.SubscriptionsManager.updateDraftConfig((cfg) => {
             const next = cfg || {};
@@ -92,7 +92,7 @@ window.SubscriptionsKeywords = (function () {
         } catch (err) {
           console.error(err);
           if (msgEl) {
-            msgEl.textContent = '删除关键词失败，请稍后重试';
+            msgEl.textContent = 'Failed to delete the keyword, please try again later';
             msgEl.style.color = '#c00';
           }
         }
@@ -106,17 +106,17 @@ window.SubscriptionsKeywords = (function () {
     const tag = (keywordAliasInput.value || '').trim();
     if (!keyword) {
       if (msgEl) {
-        msgEl.textContent = '关键词不能为空';
+        msgEl.textContent = 'The keyword cannot be empty';
         msgEl.style.color = '#c00';
       }
       return;
     }
 
-    // 关键词语法校验
+    // Keyword syntax validation
     const { valid, message } = validateKeywordSyntax(keyword);
     if (!valid) {
       if (msgEl) {
-        msgEl.textContent = message || '关键词格式不合法';
+        msgEl.textContent = message || 'Invalid keyword format';
         msgEl.style.color = '#c00';
       }
       return;
@@ -124,7 +124,7 @@ window.SubscriptionsKeywords = (function () {
 
     if (!tag) {
       if (msgEl) {
-        msgEl.textContent = '标签为必填项';
+        msgEl.textContent = 'A tag is required';
         msgEl.style.color = '#c00';
       }
       return;
@@ -135,7 +135,7 @@ window.SubscriptionsKeywords = (function () {
         !window.SubscriptionsManager ||
         !window.SubscriptionsManager.updateDraftConfig
       ) {
-        throw new Error('缺少本地草稿更新能力');
+        throw new Error('Missing local draft update capability');
       }
       window.SubscriptionsManager.updateDraftConfig((cfg) => {
         const next = cfg || {};
@@ -149,7 +149,7 @@ window.SubscriptionsKeywords = (function () {
       });
 
       if (msgEl) {
-        msgEl.textContent = '关键词已添加到本地草稿，点击「保存」后才会同步到云端。';
+        msgEl.textContent = 'The keyword was added to the local draft; click Save to sync it to the cloud.';
         msgEl.style.color = '#666';
       }
       keywordInput.value = '';
@@ -158,7 +158,7 @@ window.SubscriptionsKeywords = (function () {
     } catch (e) {
       console.error(e);
       if (msgEl) {
-        msgEl.textContent = '新增关键词失败，请稍后重试';
+        msgEl.textContent = 'Failed to add the keyword, please try again later';
         msgEl.style.color = '#c00';
       }
     }
@@ -172,7 +172,7 @@ window.SubscriptionsKeywords = (function () {
     msgEl = context.msgEl || null;
     reloadAll = context.reloadAll || null;
 
-    // 首次挂载时渲染占位提示，避免面板初次打开时列表区域为空白
+    // Render a placeholder on first mount so the list area is not blank when the panel first opens
     if (keywordsListEl && !keywordsListEl._initialized) {
       keywordsListEl._initialized = true;
       render([]);
@@ -180,7 +180,7 @@ window.SubscriptionsKeywords = (function () {
 
     if (keywordInput && !keywordInput._advancedPlaceholderSet) {
       keywordInput._advancedPlaceholderSet = true;
-      keywordInput.placeholder = '输入关键词';
+      keywordInput.placeholder = 'Enter a keyword';
     }
 
     if (addBtn && !addBtn._bound) {

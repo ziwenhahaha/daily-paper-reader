@@ -1,5 +1,5 @@
 -- ============================================================
--- 通用论文检索 RPC（适用于 papers 表）
+-- Generic paper retrieval RPC (for papers table)
 -- ============================================================
 
 create or replace function match_papers_exact(

@@ -1,5 +1,5 @@
-// 智能订阅管理模块（原 Zotero）
-// 负责：渲染智能订阅列表（query + 标签）、增加/删除订阅
+// Smart subscription management module (formerly Zotero)
+// Responsibilities: render the smart subscription list (query + tags), add/remove subscriptions
 
 window.SubscriptionsZotero = (function () {
   let zoteroListEl = null;
@@ -23,7 +23,7 @@ window.SubscriptionsZotero = (function () {
     if (!zoteroListEl) return;
     if (!items || !items.length) {
       zoteroListEl.innerHTML =
-        '<div style="color:#999;">暂无智能订阅，可在下方新增。</div>';
+        '<div style="color:#999;">No smart subscriptions yet; add one below.</div>';
       return;
     }
     zoteroListEl.innerHTML = '';
@@ -44,7 +44,7 @@ window.SubscriptionsZotero = (function () {
         }${escapeHtml(item.zotero_id || '')}</span>
         <button data-id="${
           item.id
-        }" class="zotero-del-btn" style="border:none;background:none;color:#c00;font-size:11px;cursor:pointer;">删除</button>
+        }" class="zotero-del-btn" style="border:none;background:none;color:#c00;font-size:11px;cursor:pointer;">Delete</button>
       `;
       zoteroListEl.appendChild(row);
     });
@@ -62,7 +62,7 @@ window.SubscriptionsZotero = (function () {
             !window.SubscriptionsManager ||
             !window.SubscriptionsManager.updateDraftConfig
           ) {
-            throw new Error('缺少本地草稿更新能力');
+            throw new Error('Missing local draft update capability');
           }
           window.SubscriptionsManager.updateDraftConfig((cfg) => {
             const next = cfg || {};
@@ -93,14 +93,14 @@ window.SubscriptionsZotero = (function () {
     const tag = (zoteroAliasInput.value || '').trim();
     if (!query) {
       if (msgEl) {
-        msgEl.textContent = '查询语句不能为空';
+        msgEl.textContent = 'The query cannot be empty';
         msgEl.style.color = '#c00';
       }
       return;
     }
     if (!tag) {
       if (msgEl) {
-        msgEl.textContent = '标签为必填项';
+        msgEl.textContent = 'A tag is required';
         msgEl.style.color = '#c00';
       }
       return;
@@ -110,7 +110,7 @@ window.SubscriptionsZotero = (function () {
         !window.SubscriptionsManager ||
         !window.SubscriptionsManager.updateDraftConfig
       ) {
-        throw new Error('缺少本地草稿更新能力');
+        throw new Error('Missing local draft update capability');
       }
       window.SubscriptionsManager.updateDraftConfig((cfg) => {
         const next = cfg || {};
@@ -129,7 +129,7 @@ window.SubscriptionsZotero = (function () {
       });
 
       if (msgEl) {
-        msgEl.textContent = '智能订阅已添加到本地草稿，点击「保存」后才会同步到云端。';
+        msgEl.textContent = 'The smart subscription was added to the local draft; click Save to sync it to the cloud.';
         msgEl.style.color = '#666';
       }
       zoteroIdInput.value = '';
@@ -138,7 +138,7 @@ window.SubscriptionsZotero = (function () {
     } catch (e) {
       console.error(e);
       if (msgEl) {
-        msgEl.textContent = '新增智能订阅失败，请稍后重试';
+        msgEl.textContent = 'Failed to add the smart subscription, please try again later';
         msgEl.style.color = '#c00';
       }
     }
@@ -152,7 +152,7 @@ window.SubscriptionsZotero = (function () {
     msgEl = context.msgEl || null;
     reloadAll = context.reloadAll || null;
 
-    // 首次挂载时渲染占位提示，避免面板初次打开时列表区域为空白
+    // Render a placeholder on first mount so the list area is not blank when the panel first opens
     if (zoteroListEl && !zoteroListEl._initialized) {
       zoteroListEl._initialized = true;
       render([]);

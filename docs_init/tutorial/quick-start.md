@@ -1,8 +1,8 @@
-# 从零开始配置
+# Set up from scratch
 
-当前为占位页，后续可以放：
+This is a placeholder page for now. It can later cover:
 
-- GitHub Token 如何配置
-- 密钥面板如何解锁
-- 首次触发工作流的步骤
-- 首页各入口的用途
+- How to configure a GitHub Token
+- How to unlock the secrets panel
+- Steps to trigger a workflow for the first time
+- What each entry point on the home page is for

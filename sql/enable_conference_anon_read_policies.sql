@@ -1,16 +1,16 @@
 -- ============================================================
--- 会议论文表 anon/authenticated 只读访问策略
+-- Conference paper table anon/authenticated read-only access policies
 -- ============================================================
 --
--- 用途：
--- - 让前端使用 config.yaml 中的 Supabase anon key 读取 ICML / NeurIPS 会议论文。
--- - 修复 REST 查询返回 200 [] 的问题：RLS 开启后，没有 SELECT policy 时 anon 看不到行。
+-- Purpose:
+-- - Allow frontend to read ICML / NeurIPS conference papers using Supabase anon key from config.yaml.
+-- - Fix REST query returning 200 [] issue: with RLS enabled, rows are not visible to anon without SELECT policy.
 --
--- 安全边界：
--- - 仅开放 SELECT，不开放 INSERT / UPDATE / DELETE。
--- - 仅允许 source 符合公开会议论文格式的行可见。
--- - 当前向量 RPC 是 invoker 权限函数，会读取 embedding 列；因此这里对整表授予 SELECT。
---   如果未来不希望 anon 直接读取 embedding 列，需要把 RPC 迁到更受控的设计后再收紧列权限。
+-- Security boundaries:
+-- - Only allow SELECT, not INSERT / UPDATE / DELETE.
+-- - Only allow rows with source matching public conference paper format to be visible.
+-- - The current vector RPC is invoker-permission function, which reads the embedding column; therefore, we grant SELECT to the entire table.
+-- - If in the future we do not want anon to directly read the embedding column, we need to move the RPC to a more controlled design and tighten column permissions.
 
 begin;
 
@@ -55,10 +55,10 @@ to anon, authenticated;
 commit;
 
 -- ============================================================
--- 验证 SQL
+-- Verify SQL
 -- ============================================================
 --
--- 在 Supabase SQL Editor 执行上面的事务后，可以用 anon key 验证 REST 可见性：
+-- After executing the above transaction in the Supabase SQL Editor, you can verify the REST visibility using the anon key:
 --
 -- curl "$SUPABASE_URL/rest/v1/icml_openreview_papers?select=id,title,source&source=like.ICML-2025*&limit=1" \
 --   -H "apikey: $SUPABASE_ANON_KEY" \

@@ -1,18 +1,16 @@
 -- ============================================================
--- Supabase RPC 函数定义（含日期过滤参数）
+-- Supabase RPC function definitions (with date filtering parameters)
 -- ============================================================
--- 背景：
---   match_arxiv_papers_exact 使用精确向量距离（无索引），在大表上易触发
---   PostgreSQL statement_timeout（错误码 57014）。
---   添加 filter_published_start / filter_published_end 参数后，数据库先
---   按 published 时间窗口过滤，再做向量计算，大幅缩小扫描范围。
+-- Background:
+--   match_arxiv_papers_exact uses exact vector distance (no index), which is prone to triggering PostgreSQL statement_timeout (error code 57014) on large tables.
+--   After adding filter_published_start / filter_published_end parameters, the database first filters by published date window, then performs vector calculation, significantly reducing the scan range.
 --
--- 使用方式：
---   在 Supabase SQL Editor 中执行以下语句。
---   新增参数均带 DEFAULT NULL，旧客户端调用（不传日期）不受影响。
+-- Usage:
+--   Execute the following statements in the Supabase SQL Editor.
+--   All new parameters are DEFAULT NULL, old clients (without date) are not affected.
 -- ============================================================
 
--- 1. 精确向量检索（无索引，全表扫描 → 加日期过滤后仅扫窗口内行）
+-- 1. Exact vector retrieval (no index, full table scan → after adding date filtering, only scan within the window)
 CREATE OR REPLACE FUNCTION match_arxiv_papers_exact(
   query_embedding vector,
   match_count     int,
@@ -54,7 +52,7 @@ AS $$
   LIMIT match_count;
 $$;
 
--- 2. ANN 向量检索（使用 HNSW / IVFFlat 索引）
+-- 2. ANN vector retrieval (using HNSW / IVFFlat index)
 CREATE OR REPLACE FUNCTION match_arxiv_papers(
   query_embedding vector,
   match_count     int,
@@ -96,7 +94,7 @@ AS $$
   LIMIT match_count;
 $$;
 
--- 3. BM25 全文检索
+-- 3. BM25 full-text retrieval
 CREATE OR REPLACE FUNCTION match_arxiv_papers_bm25(
   query_text      text,
   match_count     int,

@@ -26,14 +26,11 @@ class LlmRefineRecoveryTest(unittest.TestCase):
             "id": paper_id,
             "matched_requirement_index": 1,
             "evidence_en": "relevant method",
-            "evidence_cn": "相关方法",
-            "tldr_en": "This paper is relevant because it studies a method that matches the requested research direction and provides useful technical evidence.",
-            "tldr_cn": "这篇论文围绕用户关注的研究方向展开，提出了与需求高度相关的方法框架。它不仅说明了核心问题和技术路线，也给出了可用于判断相关性的实验或理论依据。整体上，该论文可以作为后续精读和方法比较的重要候选，并帮助用户快速判断是否值得继续阅读原文，同时为相近主题的论文筛选提供稳定参考。",
-            "title_zh": "中文标题",
-            "motivation_cn": "论文动机直接对应用户检索需求，关注当前方法在目标任务中仍然存在的关键不足。",
-            "method_cn": "论文方法围绕需求中的技术核心展开，给出了较明确的建模思路、算法流程或实现策略。",
-            "result_cn": "论文结果显示该方法在相关任务或实验设置中取得了有效提升，具备进一步参考价值。",
-            "conclusion_cn": "论文结论表明该方向具有继续探索价值，并能为用户关注的问题提供可复用思路。",
+            "tldr_en": "This paper is relevant because it studies a method that matches the requested research direction and provides useful technical evidence. It explains the core problem and technical approach, and offers experimental or theoretical grounds for judging relevance.",
+            "motivation_en": "The motivation directly addresses the user's search requirement and the key shortcomings of current methods on the target task.",
+            "method_en": "The method centers on the technical core of the requirement, with a clear modeling idea, algorithm flow, or implementation strategy.",
+            "result_en": "The results show the method achieves effective improvements on related tasks or experimental settings, with further reference value.",
+            "conclusion_en": "The conclusion indicates the direction is worth further exploration and provides reusable ideas for the user's problem.",
             "score": score,
         }
 
@@ -119,18 +116,18 @@ class LlmRefineRecoveryTest(unittest.TestCase):
             return [
                 {
                     **self.relevant_result("p-1", score=8),
-                    "tldr_cn": "相关，但摘要信息有限。",
-                    "motivation_cn": "信息有限。",
-                    "method_cn": "信息有限。",
-                    "result_cn": "信息有限。",
-                    "conclusion_cn": "信息有限。",
+                    "tldr_en": "Relevant, but the abstract has limited information.",
+                    "motivation_en": "Limited information.",
+                    "method_en": "Limited information.",
+                    "result_en": "Limited information.",
+                    "conclusion_en": "Limited information.",
                 }
             ]
 
         out = self.mod.recover_filter_results(docs, runner, max_attempts=3, debug_tag="short_test")
 
         self.assertEqual(out[0]["id"], "p-1")
-        self.assertEqual(out[0]["tldr_cn"], "相关，但摘要信息有限。")
+        self.assertEqual(out[0]["tldr_en"], "Relevant, but the abstract has limited information.")
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][1], 1)
         self.assertEqual(calls[0][2], "")
@@ -151,7 +148,7 @@ class LlmRefineRecoveryTest(unittest.TestCase):
                 return {
                     "content": (
                         '{"results":[{"id":"p-1","matched_requirement_index":1,'
-                        '"evidence_en":"ok","evidence_cn":"相关","tldr_en":"ok","tldr_cn":"相关","score":8}]}'
+                        '"evidence_en":"ok","tldr_en":"ok","score":8}]}'
                     ),
                     "parsed": {
                         "results": [test_case.relevant_result("p-1")]
@@ -178,8 +175,7 @@ class LlmRefineRecoveryTest(unittest.TestCase):
         )
 
         self.assertEqual(out[0]["id"], "p-1")
-        self.assertEqual(out[0]["title_zh"], "中文标题")
-        self.assertIn("论文方法围绕需求", out[0]["method_cn"])
+        self.assertIn("The method centers on", out[0]["method_en"])
         user_content = captured["messages"][1]["content"]
         self.assertEqual(captured["schema_name"], "rerank_batch")
         self.assertTrue(captured["strict"])
@@ -187,13 +183,13 @@ class LlmRefineRecoveryTest(unittest.TestCase):
         self.assertIn("Let me repeat that:", user_content)
         self.assertEqual(user_content.count("User requirements list:"), 2)
         self.assertEqual(user_content.count("Papers:"), 2)
-        self.assertIn("method_cn", user_content)
-        self.assertIn("title_zh", user_content)
-        self.assertIn("150-220 Chinese characters", user_content)
-        self.assertIn("30-70 Chinese characters", user_content)
+        self.assertIn("method_en", user_content)
+        self.assertNotIn("title_zh", user_content)
+        self.assertIn("60-90 words", user_content)
+        self.assertIn("15-35 words", user_content)
         self.assertIn("length targets are guidance", user_content)
         self.assertIn("same style as a paper-page TLDR abstract", user_content)
-        self.assertNotIn("<= 60 Chinese characters", user_content)
+        self.assertNotIn("Chinese characters", user_content)
         self.assertTrue(user_content.rstrip().endswith("Output must be strict JSON only, no markdown, no fences, no extra text."))
 
 

@@ -84,7 +84,7 @@ class QueryTagFlowTest(unittest.TestCase):
                 "intent_profiles": [
                     {
                         "tag": "SCI",
-                        "description": "科学发现",
+                        "description": "Scientific discovery",
                         "enabled": True,
                         "keywords": [
                             {"keyword": "model discovery", "query": "llm based model discovery", "enabled": True},
@@ -112,8 +112,8 @@ class QueryTagFlowTest(unittest.TestCase):
             {
                 "paper_id": "p-1",
                 "score": 8.8,
-                "evidence_cn": "相关",
-                "tldr_cn": "摘要",
+                "evidence_en": "relevant",
+                "tldr_en": "summary",
                 "tags": [],
                 "matched_query_tag": "query:sr-rl",
                 "matched_query_text": "symbolic regression with reinforcement learning",

@@ -1,5 +1,5 @@
-"""维护专用入口。
+"""This directory is only for maintenance purposes.
 
-这里的脚本只服务于抓取、清理、同步 Supabase 的维护链路。
-用户侧推荐主链不应直接依赖本目录。
+This directory is only for maintenance purposes.
+The user-side main chain should not directly depend on this directory.
 """

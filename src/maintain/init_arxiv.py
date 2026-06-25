@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-# 初始化 Supabase 公共论文库：
-# 1) 使用 maintain/fetchers/fetch_arxiv.py 进行长时间窗口分片抓取
-# 2) 使用 maintain/sync.py 生成 embedding 并 upsert 到 Supabase
+# Initialize Supabase public paper library:
+# 1) Use maintain/fetchers/fetch_arxiv.py to fetch long-term window chunked papers
+# 2) Use maintain/sync.py to generate embedding and upsert to Supabase
 
 from __future__ import annotations
 
@@ -87,56 +87,56 @@ def count_raw_rows(path: str) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="抓取近 N 天 arXiv 并初始化同步到 Supabase（含 embedding）。",
+        description="Fetch recent N days arXiv and initialize sync to Supabase (including embedding).",
     )
-    parser.add_argument("--days", type=int, default=DEFAULT_FETCH_DAYS, help="回溯抓取天数，默认 9。")
-    parser.add_argument("--chunk-days", type=int, default=7, help="抓取分片窗口天数，默认 7。")
+    parser.add_argument("--days", type=int, default=DEFAULT_FETCH_DAYS, help="backtrack fetch days, default 9.")
+    parser.add_argument("--chunk-days", type=int, default=7, help="fetch chunk window days, default 7.")
     parser.add_argument(
         "--ignore-seen",
         action="store_true",
         default=True,
-        help="抓取时忽略 seen/crawl_state，严格按 days 回溯（默认开启）。",
+        help="Ignore seen/crawl_state during fetch, strictly backtrack by days (default enabled).",
     )
     parser.add_argument(
         "--use-seen",
         dest="ignore_seen",
         action="store_false",
-        help="抓取时使用 seen/crawl_state 增量状态（关闭 ignore-seen）。",
+        help="Use seen/crawl_state incremental state during fetch (disable ignore-seen).",
     )
     parser.add_argument(
         "--date",
         type=str,
         default="",
-        help="同步日期目录（支持 YYYYMMDD 或 YYYYMMDD-YYYYMMDD）；不填时自动按 days 推导。",
+        help="Sync date directory (supports YYYYMMDD or YYYYMMDD-YYYYMMDD); automatically derive by days if not provided.",
     )
     parser.add_argument(
         "--raw-input",
         type=str,
         default="",
-        help="可选：直接指定原始 JSON 文件路径（优先于 --date 目录推导）。",
+        help="Optional: directly specify the original JSON file path (preferred over --date directory derivation).",
     )
     parser.add_argument(
         "--skip-fetch",
         action="store_true",
-        help="跳过抓取步骤，直接复用 archive/<token>/raw/arxiv_papers_<token>.json 做同步。",
+        help="Skip fetch step, directly reuse archive/<token>/raw/arxiv_papers_<token>.json for sync.",
     )
-    parser.add_argument("--embed-model", type=str, default="", help="embedding 模型（空=按 config/default）。")
-    parser.add_argument("--embed-device", type=str, default="", help="单设备模式（如 cpu/cuda:0）。")
-    parser.add_argument("--embed-devices", type=str, default="", help="多设备列表，如 cuda:0,cuda:1。")
-    parser.add_argument("--embed-batch-size", type=int, default=DEFAULT_EMBED_BATCH_SIZE, help="embedding batch size。")
-    parser.add_argument("--embed-chunk-size", type=int, default=DEFAULT_EMBED_CHUNK_SIZE, help="流式上传时的 embedding 分片大小。")
-    parser.add_argument("--embed-max-length", type=int, default=0, help="embedding max length，<=0 表示不限制。")
-    parser.add_argument("--embed-local-only", action="store_true", help="强制使用本地 embedding，不走远程服务。")
-    parser.add_argument("--local-maintain", action="store_true", help="本地维护 Supabase 模式：本地 embedding + 流式上传。")
-    parser.add_argument("--reserve-upload-cpus", type=int, default=2, help="本地维护模式下为上传保留的 CPU 核数。")
-    parser.add_argument("--upload-workers", type=int, default=2, help="本地维护模式下上传并发数。")
-    parser.add_argument("--max-pending-upload-chunks", type=int, default=2, help="本地维护模式下最多积压的待上传分片数。")
-    parser.add_argument("--schema", type=str, default=os.getenv("SUPABASE_SCHEMA", "public"), help="Supabase schema。")
-    parser.add_argument("--upsert-batch-size", type=int, default=200, help="Supabase upsert 批大小。")
-    parser.add_argument("--upsert-timeout", type=int, default=120, help="Supabase upsert 超时（秒）。")
-    parser.add_argument("--upsert-retries", type=int, default=5, help="Supabase upsert 每批重试次数。")
-    parser.add_argument("--upsert-retry-wait", type=float, default=2.0, help="Supabase upsert 重试基准等待秒数。")
-    parser.add_argument("--no-embeddings", action="store_true", help="仅同步元数据，不生成 embedding。")
+    parser.add_argument("--embed-model", type=str, default="", help="embedding model (empty=use config/default).")
+    parser.add_argument("--embed-device", type=str, default="", help="single device mode (e.g. cpu/cuda:0).")
+    parser.add_argument("--embed-devices", type=str, default="", help="multiple device list, e.g. cuda:0,cuda:1.")
+    parser.add_argument("--embed-batch-size", type=int, default=DEFAULT_EMBED_BATCH_SIZE, help="embedding batch size.")
+    parser.add_argument("--embed-chunk-size", type=int, default=DEFAULT_EMBED_CHUNK_SIZE, help="embedding chunk size for streaming upload.")
+    parser.add_argument("--embed-max-length", type=int, default=0, help="embedding max length, <=0 means no limit.")
+    parser.add_argument("--embed-local-only", action="store_true", help="force use local embedding, not use remote service.")
+    parser.add_argument("--local-maintain", action="store_true", help="local maintain Supabase mode: local embedding + streaming upload.")
+    parser.add_argument("--reserve-upload-cpus", type=int, default=2, help="CPU cores reserved for upload in local maintain mode.")
+    parser.add_argument("--upload-workers", type=int, default=2, help="upload concurrency in local maintain mode.")
+    parser.add_argument("--max-pending-upload-chunks", type=int, default=2, help="maximum pending upload chunks in local maintain mode.")
+    parser.add_argument("--schema", type=str, default=os.getenv("SUPABASE_SCHEMA", "public"), help="Supabase schema.")
+    parser.add_argument("--upsert-batch-size", type=int, default=200, help="Supabase upsert batch size.")
+    parser.add_argument("--upsert-timeout", type=int, default=120, help="Supabase upsert timeout (seconds).")
+    parser.add_argument("--upsert-retries", type=int, default=5, help="Supabase upsert retry times per batch.")
+    parser.add_argument("--upsert-retry-wait", type=float, default=2.0, help="Supabase upsert retry wait time (seconds).")
+    parser.add_argument("--no-embeddings", action="store_true", help="only sync metadata, not generate embedding.")
     args = parser.parse_args()
 
     python = sys.executable
@@ -211,20 +211,20 @@ def main() -> None:
 
             if fallback:
                 print(
-                    f"[WARN] --skip-fetch 指定路径不存在，已自动回退到原始文件：{fallback}",
+                    f"[WARN] --skip-fetch specified path does not exist, automatically fallback to original file: {fallback}",
                     flush=True,
                 )
                 raw_path = fallback
             else:
                 raise FileNotFoundError(
-                    f"--skip-fetch 已指定，但未找到原始文件：{raw_path}"
+                    f"--skip-fetch specified, but original file not found: {raw_path}"
                 )
-        print(f"[INFO] Step 1 已跳过，复用原始文件：{raw_path}", flush=True)
+        print(f"[INFO] Step 1 skipped, reusing original file: {raw_path}", flush=True)
 
     fetch_count = count_raw_rows(raw_path)
-    print(f"[INFO] arXiv fetch 预检结果：count={fetch_count}，raw_path={raw_path}", flush=True)
+    print(f"[INFO] arXiv fetch pre-check result: count={fetch_count}, raw_path={raw_path}", flush=True)
     if fetch_count <= 0:
-        print("[INFO] 本次 arXiv 抓取无新增论文，已跳过 Supabase 同步。", flush=True)
+        print("[INFO] No new arXiv papers fetched, skipping Supabase sync.", flush=True)
         return
 
     sync_cmd = [

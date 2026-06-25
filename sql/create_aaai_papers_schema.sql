@@ -1,5 +1,5 @@
 -- ============================================================
--- AAAI 官方 proceedings 论文表
+-- AAAI official proceedings paper table
 -- ============================================================
 
 create extension if not exists vector;

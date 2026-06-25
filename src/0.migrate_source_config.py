@@ -13,7 +13,7 @@ except Exception:  # pragma: no cover
 
 try:
     from source_config import migrate_source_config_inplace, save_config
-except Exception:  # pragma: no cover - 兼容 package 导入路径
+except Exception:  # pragma: no cover - compatibility for package import path
     from src.source_config import migrate_source_config_inplace, save_config
 
 
@@ -23,18 +23,18 @@ DEFAULT_CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="迁移 config.yaml 中的多源配置并回填缺失的 paper_sources。")
-    parser.add_argument("--config", type=str, default=DEFAULT_CONFIG_FILE, help="待迁移的 config.yaml 路径。")
-    parser.add_argument("--check", action="store_true", help="仅检查，不写回文件。")
+    parser = argparse.ArgumentParser(description="Migrate multi-source configurations in config.yaml and backfill missing paper_sources.")
+    parser.add_argument("--config", type=str, default=DEFAULT_CONFIG_FILE, help="Path to config.yaml to migrate.")
+    parser.add_argument("--check", action="store_true", help="Only check, do not write back to file.")
     args = parser.parse_args()
 
     path = os.path.abspath(args.config)
     if yaml is None:
-        raise RuntimeError("未安装 PyYAML，无法迁移 config.yaml。")
+        raise RuntimeError("PyYAML not installed; cannot migrate config.yaml.")
     with open(path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
     if not isinstance(config, dict):
-        raise RuntimeError("config.yaml 顶层结构必须为对象。")
+        raise RuntimeError("config.yaml top-level structure must be an object.")
     changed, notes = migrate_source_config_inplace(config)
     if changed and not args.check:
         save_config(config, path)
@@ -43,10 +43,10 @@ def main() -> None:
         for note in notes:
             print(note, flush=True)
     else:
-        print("配置无需迁移。", flush=True)
+        print("Config does not need to be migrated.", flush=True)
     if args.check and changed:
+        print("Config needs to be migrated; run without --check to apply changes.", flush=True)
         sys.exit(10)
-
 
 if __name__ == "__main__":
     main()

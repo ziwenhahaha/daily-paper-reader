@@ -144,7 +144,7 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
                 }
             ],
         }
-        md = self.mod.build_markdown_content(paper, "quick", "", "", [])
+        md = self.mod.build_markdown_content(paper, "quick", [])
         meta = self.mod._parse_front_matter(md)
         self.assertIn("figures_json", meta)
         self.assertIn("tables_json", meta)
@@ -210,11 +210,11 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
             captured["messages"] = messages
             captured["kwargs"] = kwargs
             return {
-                "tldr": "这是一段足够长的中文速览摘要，用于覆盖研究背景、核心方法和主要贡献。",
-                "motivation": "这是一段研究动机说明。",
-                "method": "这是一段方法说明。",
-                "result": "这是一段结果说明。",
-                "conclusion": "这是一段结论说明。",
+                "tldr": "A sufficiently long English glance summary covering background, core method, and main contributions.",
+                "motivation": "A short statement of the research motivation.",
+                "method": "A short statement of the method.",
+                "result": "A short statement of the results.",
+                "conclusion": "A short statement of the conclusion.",
             }
 
         fallback_client = object()
@@ -232,10 +232,9 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
         self.assertIs(captured["client"], fallback_client)
         self.assertEqual(captured["kwargs"]["max_tokens"], 16 * 1024)
         prompt = captured["messages"][2]["content"]
-        self.assertIn("150-220个中文字符", prompt)
-        self.assertIn("30-70个中文字符", prompt)
-        self.assertIn("问题背景→核心方法→关键结果→贡献意义", prompt)
-        self.assertNotIn("每个字段一句话概括", prompt)
+        self.assertIn("60-90 words", prompt)
+        self.assertIn("15-35 words", prompt)
+        self.assertIn("problem→method→result→impact", prompt)
 
     def test_generate_glance_uses_explicit_client(self):
         explicit_client = object()
@@ -245,11 +244,11 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
         def fake_call_llm_structured_json(client, messages, **kwargs):
             captured["client"] = client
             return {
-                "tldr": "这是一段足够长的中文速览摘要，用于覆盖研究背景、核心方法和主要贡献。",
-                "motivation": "这是一段研究动机说明。",
-                "method": "这是一段方法说明。",
-                "result": "这是一段结果说明。",
-                "conclusion": "这是一段结论说明。",
+                "tldr": "A sufficiently long English glance summary covering background, core method, and main contributions.",
+                "motivation": "A short statement of the research motivation.",
+                "method": "A short statement of the method.",
+                "result": "A short statement of the results.",
+                "conclusion": "A short statement of the conclusion.",
             }
 
         original_client = self.mod.LLM_CLIENT
@@ -264,35 +263,6 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
 
         self.assertIn("**TLDR**", out)
         self.assertIs(captured["client"], explicit_client)
-
-    def test_translate_uses_16k_and_explicit_client(self):
-        explicit_client = object()
-        global_client = object()
-        captured = {}
-
-        def fake_call_llm_structured_json(client, messages, **kwargs):
-            captured["client"] = client
-            captured["kwargs"] = kwargs
-            return {"title_zh": "中文标题", "abstract_zh": "中文摘要"}
-
-        original_client = self.mod.LLM_CLIENT
-        original_call = self.mod.call_llm_structured_json
-        self.mod.LLM_CLIENT = global_client
-        self.mod.call_llm_structured_json = fake_call_llm_structured_json
-        try:
-            title_zh, abstract_zh = self.mod.translate_title_and_abstract_to_zh(
-                "Title",
-                "Abstract",
-                client=explicit_client,
-            )
-        finally:
-            self.mod.LLM_CLIENT = original_client
-            self.mod.call_llm_structured_json = original_call
-
-        self.assertEqual(title_zh, "中文标题")
-        self.assertEqual(abstract_zh, "中文摘要")
-        self.assertIs(captured["client"], explicit_client)
-        self.assertEqual(captured["kwargs"]["max_tokens"], 16 * 1024)
 
 
 if __name__ == "__main__":

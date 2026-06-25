@@ -17,7 +17,7 @@ if SRC_DIR not in sys.path:
 
 try:
     from source_config import get_source_backend, load_config_with_source_migration
-except Exception:  # pragma: no cover - 兼容 package 导入路径
+except Exception:  # pragma: no cover - compatible package import path
     from src.source_config import get_source_backend, load_config_with_source_migration
 
 
@@ -42,7 +42,7 @@ def load_config() -> Dict[str, Any]:
     try:
         return load_config_with_source_migration(CONFIG_FILE, write_back=False)
     except Exception as exc:
-        log(f"[WARN] 读取 config.yaml 失败：{exc}")
+        log(f"[WARN] Failed to read config.yaml: {exc}")
         return {}
 
 
@@ -104,10 +104,10 @@ def fetch_old_paper_ids(
         timeout=max(int(timeout or DEFAULT_TIMEOUT), 1),
     )
     if resp.status_code >= 300:
-        raise RuntimeError(f"查询待清理论文失败：HTTP {resp.status_code} {resp.text[:200]}")
+        raise RuntimeError(f"Failed to query old papers: HTTP {resp.status_code} {resp.text[:200]}")
     rows = resp.json() or []
     if not isinstance(rows, list):
-        raise RuntimeError("查询待清理论文失败：返回结果不是 list")
+        raise RuntimeError("Failed to query old papers: return result is not a list")
     out: List[str] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -138,7 +138,7 @@ def delete_papers_by_ids(
         timeout=max(int(timeout or DEFAULT_TIMEOUT), 1),
     )
     if resp.status_code >= 300:
-        raise RuntimeError(f"删除旧论文失败：HTTP {resp.status_code} {resp.text[:200]}")
+        raise RuntimeError(f"Failed to delete old papers: HTTP {resp.status_code} {resp.text[:200]}")
     return len(safe_ids)
 
 
@@ -198,7 +198,7 @@ def cleanup_old_papers(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="清理 Supabase 中超过保留天数的历史论文。")
+    parser = argparse.ArgumentParser(description="Cleanup old papers in Supabase that exceed the retention days.")
     parser.add_argument("--backend-key", type=str, default=os.getenv("SUPABASE_BACKEND_KEY", "arxiv"))
     parser.add_argument("--url", type=str, default=os.getenv("SUPABASE_URL", ""))
     parser.add_argument("--service-key", type=str, default=os.getenv("SUPABASE_SERVICE_KEY", ""))
@@ -219,7 +219,7 @@ def main() -> None:
     )
     service_key = _norm(args.service_key)
     if not config["url"] or not service_key:
-        raise RuntimeError("缺少 Supabase 连接信息（url 或 service key），无法执行清理。")
+        raise RuntimeError("Missing Supabase connection information (url or service key), cannot perform cleanup.")
 
     log(
         f"[Cleanup] backend={backend_key} table={config['papers_table']} schema={config['schema']} "

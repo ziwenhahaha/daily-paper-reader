@@ -179,9 +179,9 @@ class SiliconFlowReranker:
     query_text = str(query or "").strip()
     docs = [str(doc or "") for doc in documents]
     if not query_text:
-      raise ValueError("rerank query 不能为空")
+      raise ValueError("rerank query must not be empty")
     if not docs:
-      raise ValueError("rerank documents 不能为空")
+      raise ValueError("rerank documents must not be empty")
 
     payload: Dict[str, Any] = {
       "model": str(model or SILICONFLOW_QWEN3_RERANKER_MODELS[0]),

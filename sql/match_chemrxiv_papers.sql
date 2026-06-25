@@ -1,5 +1,5 @@
 -- ============================================================
--- ChemRxiv 独立表的检索 RPC
+-- ChemRxiv paper retrieval RPC
 -- ============================================================
 
 create or replace function match_chemrxiv_papers_exact(

@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Tuple
 
 try:
     from local_env import load_local_env
-except Exception:  # pragma: no cover - 兼容 package 导入路径
+except Exception:  # pragma: no cover - compatibility with the package import path
     try:
         from src.local_env import load_local_env
     except Exception:  # pragma: no cover
@@ -287,7 +287,7 @@ def _normalize_backend_entry(
         "schema": _norm(entry.get("schema") or "public") or "public",
         "papers_table": _norm(entry.get("papers_table") or default_papers_table) or default_papers_table,
         "use_vector_rpc": bool(entry.get("use_vector_rpc", False)),
-        # exact-only：优先使用显式 exact RPC；若缺失则兼容旧字段 vector_rpc
+        # exact-only: prefer the explicit exact RPC; if missing, fall back to the legacy vector_rpc field
         "vector_rpc": vector_rpc_exact or vector_rpc or "match_papers_exact",
         "vector_rpc_exact": vector_rpc_exact or vector_rpc or "match_papers_exact",
         "use_bm25_rpc": bool(entry.get("use_bm25_rpc", False)),
@@ -378,12 +378,12 @@ def validate_profile_paper_sources(
     normalized = normalize_source_list(profile.get("paper_sources"))
     if not normalized:
         tag = _norm(profile.get("tag") or "<unknown>")
-        raise ValueError(f"词条「{tag}」的 paper_sources 不能为空。")
+        raise ValueError(f"paper_sources for entry \"{tag}\" must not be empty.")
 
     unknown = [item for item in normalized if item not in known_sources]
     if unknown:
         tag = _norm(profile.get("tag") or "<unknown>")
-        raise ValueError(f"词条「{tag}」包含未知论文源：{', '.join(unknown)}")
+        raise ValueError(f"Entry \"{tag}\" contains unknown paper sources: {', '.join(unknown)}")
 
     return (normalized, False)
 
@@ -399,13 +399,13 @@ def migrate_source_config_inplace(config: Dict[str, Any]) -> tuple[bool, List[st
         if raw_backends != backends:
             cfg["source_backends"] = copy.deepcopy(backends)
             changed = True
-            notes.append("已同步 source_backends。")
+            notes.append("Synced source_backends.")
 
     subs = cfg.get("subscriptions")
     if subs is None:
         return changed, notes
     if not isinstance(subs, dict):
-        raise ValueError("subscriptions 顶层结构必须为对象。")
+        raise ValueError("The top-level subscriptions structure must be an object.")
 
     profiles = subs.get("intent_profiles")
     if not isinstance(profiles, list):
@@ -421,16 +421,16 @@ def migrate_source_config_inplace(config: Dict[str, Any]) -> tuple[bool, List[st
             changed = True
             tag = _norm(profile.get("tag") or "<unknown>")
             if filled:
-                notes.append(f"词条「{tag}」缺少 paper_sources，已回填 [arxiv]。")
+                notes.append(f"Entry \"{tag}\" was missing paper_sources; backfilled with [arxiv].")
             else:
-                notes.append(f"词条「{tag}」的 paper_sources 已规范化。")
+                notes.append(f"paper_sources for entry \"{tag}\" were normalized.")
 
     return changed, notes
 
 
 def save_config(config: Dict[str, Any], path: str) -> None:
     if yaml is None:
-        raise RuntimeError("未安装 PyYAML，无法写回 config.yaml。")
+        raise RuntimeError("PyYAML is not installed; cannot write back config.yaml.")
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False, width=10**9)
 

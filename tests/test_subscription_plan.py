@@ -25,7 +25,7 @@ class SubscriptionPlanTest(unittest.TestCase):
                             {
                                 'keyword': 'A AND B',
                                 'query': 'find papers about A and B',
-                                'logic_cn': '语义补充',
+                                'logic_cn': 'semantic supplement',
                                 'enabled': True,
                             },
                         ],

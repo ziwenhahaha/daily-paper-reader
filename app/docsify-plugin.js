@@ -1,21 +1,21 @@
-// Docsify 配置与公共插件（评论区 + Zotero 元数据）
+// Docsify configuration and shared plugins (discussion area + Zotero metadata)
 window.$docsify = {
   name: 'Daily Paper Reader',
   repo: '',
-  // 文档内容与侧边栏都存放在 docs/ 下
-  basePath: 'docs/', // 所有 Markdown 路由以 docs/ 为前缀
-  loadSidebar: '_sidebar.md', // 在 basePath 下加载 _sidebar.md
-  // 始终使用根目录的 _sidebar.md，避免每个子目录都要放一份
+  // Document content and the sidebar both live under docs/
+  basePath: 'docs/', // All Markdown routes are prefixed with docs/
+  loadSidebar: '_sidebar.md', // Load _sidebar.md under basePath
+  // Always use the root _sidebar.md so each subdirectory does not need its own copy
   alias: {
     '/.*/_sidebar.md': '/_sidebar.md',
   },
-  // 只在侧边栏展示论文列表标题，不展示文内小节（例如 Abstract）
+  // Only show paper list titles in the sidebar, not in-page sections (e.g. Abstract)
   subMaxLevel: 0,
 
-  // --- 核心：注册自定义插件 ---
+  // --- Core: register custom plugins ---
   plugins: [
     function (hook, vm) {
-      // 确保 marked 开启 GFM 表格支持，并允许内联 HTML（用于聊天区 Markdown 渲染）
+      // Ensure marked enables GFM table support and allows inline HTML (used for chat-area Markdown rendering)
       if (window.marked && window.marked.setOptions) {
         const baseOptions =
           (window.marked.getDefaults && window.marked.getDefaults()) || {};
@@ -24,7 +24,7 @@ window.$docsify = {
             gfm: true,
             breaks: false,
             tables: true,
-            // 允许 <sup> 等内联 HTML 直接渲染，而不是被转义
+            // Allow inline HTML such as <sup> to render directly instead of being escaped
             sanitize: false,
             mangle: false,
             headerIds: false,
@@ -32,7 +32,7 @@ window.$docsify = {
         );
       }
 
-      // 1. 解析当前文章 ID (简单用文件名作为 ID)
+      // 1. Resolve the current article ID (simply use the filename as the ID)
       const getPaperId = () => {
         return vm.route.file.replace('.md', '');
       };
@@ -47,15 +47,15 @@ window.$docsify = {
 
       const defaultAuthors = ['Daily Paper Reader Team', 'Docsify Renderer'];
 
-      // Zotero 摘要结构标记：方便后续在 Zotero 插件中重新解析
+      // Zotero abstract structure markers: make later re-parsing easy inside the Zotero plugin
       const START_MARKER = '【🤖 AI Summary】';
       const CHAT_MARKER = '【💬 Chat History】';
       const ORIG_MARKER = '【📄 Original Abstract】';
       const TLDR_MARKER = '【📝 TLDR】';
-      const GLANCE_MARKER = '【🧭 速览区】';
-      const GLANCE_MARKER_LEGACY = '【🧭 Glance】';
-      const DETAIL_MARKER = '【🧩 论文详细总结区】';
-      const DETAIL_MARKER_LEGACY = '【🧩 论文详细总结】';
+      const GLANCE_MARKER = '【🧭 Glance】';
+      const GLANCE_MARKER_LEGACY = '【🧭 速览区】';
+      const DETAIL_MARKER = '【🧩 Detailed Summary】';
+      const DETAIL_MARKER_LEGACY = '【🧩 论文详细总结区】';
       let latestPaperRawMarkdown = '';
 
       const extractSectionByTitle = (rawContent, matchFn) => {
@@ -137,7 +137,7 @@ window.$docsify = {
           '',
         );
         text = text.replace(/^Tags:\s*.*$/gim, '');
-        text = text.replace(/^>?\s*由\s*daily-paper-reader\s*自动生成\s*$/gim, '');
+        text = text.replace(/^>?\s*(?:由\s*)?daily-paper-reader\s*(?:自动生成|auto-generated)\s*$/gim, '');
         return text.trim();
       };
 
@@ -249,6 +249,7 @@ window.$docsify = {
             (title) => {
               const t = normalizeTextForMeta(title).replace(/^\s*#{1,6}\s*/, '').trim().toLowerCase();
               return (
+                t.includes('detailed summary') ||
                 t.includes('论文详细总结') ||
                 t.includes('论文详细总结（自动生成）') ||
                 t.includes('ai summary') ||
@@ -294,10 +295,11 @@ window.$docsify = {
             'paper-title-row',
             'paper-meta-row',
             'paper-glance-section',
-            '互动区',
-            '页面导航与交互层',
-            '原文摘要',
+            'interaction area',
+            'page navigation and interaction layer',
             'original abstract',
+            '原文摘要',
+            'detailed summary',
             '论文详细总结',
             'ai summary',
             'chat history',
@@ -316,7 +318,7 @@ window.$docsify = {
               node.classList.contains('paper-title-en'))
           );
         const sections = [];
-        let currentTitle = '📝 论文正文';
+        let currentTitle = '📝 Paper Body';
         let currentContent = [];
         let seenHeading = false;
         let skipCurrentSection = false;
@@ -388,14 +390,14 @@ window.$docsify = {
         return sections;
       };
 
-      // Zotero 元数据更新函数：可被 Docsify 生命周期和聊天模块重复调用
+      // Zotero metadata update function: can be called repeatedly by the Docsify lifecycle and the chat module
       const updateZoteroMetaFromPage = async (
         paperId,
         vmRouteFile,
         rawPaperContent = '',
       ) => {
         try {
-          // 优先使用自定义标题条（避免 h1 被隐藏/改造后 innerText 不稳定）
+          // Prefer the custom title bar (avoids unstable innerText after the h1 is hidden/modified)
           const dprEn = document.querySelector('.dpr-title-en');
           const dprCn = document.querySelector('.dpr-title-cn');
           let title = '';
@@ -408,7 +410,7 @@ window.$docsify = {
             title = titleEl ? (titleEl.textContent || '').trim() : document.title;
           }
           if (title) {
-            // 清理标题中的多余空白与插件注入内容
+            // Clean up extra whitespace and plugin-injected content in the title
             title = title.replace(/\s+/g, ' ').trim();
           }
 
@@ -470,7 +472,7 @@ window.$docsify = {
           document.querySelectorAll('.markdown-section p').forEach((p) => {
             if (p.innerText.includes('Authors:')) {
               let text = p.innerText.replace('Authors:', '').trim();
-              // 清理可能被其它扩展注入的换行和尾部信息，以及尾部日期
+              // Clean up line breaks and trailing info that other extensions may inject, plus the trailing date
               text = text.replace(/\s+/g, ' ').trim();
               text = text
                 .replace(/Date\s*:\s*\d{4}-\d{2}-\d{2}.*/i, '')
@@ -497,10 +499,10 @@ window.$docsify = {
           } =
             getRawPaperSections(rawPaperContent || '');
 
-          // 每次路由刷新先清理上一个页面注入的摘要 meta，避免重复残留
+          // On each route refresh, first clear the previous page's injected abstract meta to avoid duplicates
           clearSummaryMetaFields();
 
-          // 构造给 Zotero 用的“摘要”元信息：按「AI 总结 / 对话历史 / 原始摘要」分段组织
+          // Build the Zotero "abstract" metadata: organized into AI summary / chat history / original abstract sections
           let abstractText = '';
           let abstractTextForMetaRaw = '';
           const sectionEl = document.querySelector('.markdown-section');
@@ -510,7 +512,7 @@ window.$docsify = {
             aiSummaryText = cleanSectionText(aiSummaryText);
             origAbstractText = cleanSectionText(origAbstractText);
 
-            // 3) 解析聊天历史，优先读取本地原始聊天记录，避免从 DOM innerText 读公式时被拆碎
+            // 3) Parse chat history, preferring the local raw chat records to avoid formulas being broken when read from DOM innerText
             let chatSection = '';
             const buildChatLinesFromMessages =
               window.DPRZoteroChatUtils &&
@@ -533,11 +535,11 @@ window.$docsify = {
                   typeof window.DPRZoteroChatUtils.inferSpeaker === 'function'
                     ? window.DPRZoteroChatUtils.inferSpeaker
                     : ({ roleText = '', className = '' } = {}) => {
-                        const role = String(roleText || '').trim();
+                        const role = String(roleText || '').trim().toLowerCase();
                         const cls = String(className || '').trim();
-                        if (role.includes('思考过程')) return '';
-                        if (role.includes('你')) return 'User';
-                        if (role.includes('助手')) return 'AI';
+                        if (role.includes('thinking')) return '';
+                        if (role.includes('user') || role.includes('you')) return 'User';
+                        if (role.includes('assistant') || role.includes('ai')) return 'AI';
                         if (/\bmsg-content-user\b/.test(cls)) return 'User';
                         if (/\bmsg-content-ai\b/.test(cls)) return 'AI';
                         return '';
@@ -597,8 +599,8 @@ window.$docsify = {
               if (raw === CHAT_MARKER) return "💬 Chat History";
               if (raw === ORIG_MARKER) return "📄 Original Abstract";
               if (raw === TLDR_MARKER) return "📝 TLDR";
-              if (raw === GLANCE_MARKER || raw === GLANCE_MARKER_LEGACY) return "🧭 速览区";
-              if (raw === DETAIL_MARKER || raw === DETAIL_MARKER_LEGACY) return "🧩 论文详细总结区";
+              if (raw === GLANCE_MARKER || raw === GLANCE_MARKER_LEGACY) return "🧭 Glance";
+              if (raw === DETAIL_MARKER || raw === DETAIL_MARKER_LEGACY) return "🧩 Detailed Summary";
               return raw.replace(/^#{1,6}\s*/, '');
             };
             const addRawMetaBlock = (label, content) => {
@@ -702,13 +704,13 @@ window.$docsify = {
                 col.querySelector('.paper-glance-content'),
               );
               if (!label && !content) return '';
-              return `- **${label || '项'}**: ${content || '-'}`;
+              return `- **${label || 'item'}**: ${content || '-'}`;
             });
             const fallbackArray = (value, label = '') =>
               value ? [`- **${label}**: ${Array.isArray(value) ? value.join(' / ') : String(value)}`] : [];
 
             const titleRowText = [
-              `- **中英文标题**: ${titleZhText || frontmatterPaperMeta.title_zh || '-'} / ${titleEnText || frontmatterPaperMeta.title || '-'}`,
+              `- **Title (ZH/EN)**: ${titleZhText || frontmatterPaperMeta.title_zh || '-'} / ${titleEnText || frontmatterPaperMeta.title || '-'}`,
             ].filter(Boolean);
 
             const metaPairs = collectLabeledPairs([...metaLeftRows, ...metaRightRows]);
@@ -754,21 +756,21 @@ window.$docsify = {
             const chatContainerEl = document.getElementById('paper-chat-container');
             const chatHistoryEl = document.getElementById('chat-history');
             const uiRows = [
-              `- **dpr-title-bar**: ${titleBarEl ? '已挂载' : '未检测到'}`,
-              `- **dpr-page-content**: ${pageContentEl ? '已挂载' : '未检测到'}`,
-              `- **paper-title-row**: ${document.querySelector('.paper-title-row') ? '已挂载' : '未检测到'}`,
-              `- **paper-meta-row**: ${document.querySelector('.paper-meta-row') ? '已挂载' : '未检测到'}`,
-              `- **paper-glance-section**: ${document.querySelector('.paper-glance-section') ? '已挂载' : '未检测到'}`,
-              `- **#paper-chat-container**: ${chatContainerEl ? '已挂载' : '未检测到'}`,
-              `- **#chat-history**: ${chatHistoryEl ? '已挂载' : '未检测到'}`,
+              `- **dpr-title-bar**: ${titleBarEl ? 'mounted' : 'not found'}`,
+              `- **dpr-page-content**: ${pageContentEl ? 'mounted' : 'not found'}`,
+              `- **paper-title-row**: ${document.querySelector('.paper-title-row') ? 'mounted' : 'not found'}`,
+              `- **paper-meta-row**: ${document.querySelector('.paper-meta-row') ? 'mounted' : 'not found'}`,
+              `- **paper-glance-section**: ${document.querySelector('.paper-glance-section') ? 'mounted' : 'not found'}`,
+              `- **#paper-chat-container**: ${chatContainerEl ? 'mounted' : 'not found'}`,
+              `- **#chat-history**: ${chatHistoryEl ? 'mounted' : 'not found'}`,
             ];
 
             addMetaSectionBlock(
-              'paper-title-row（双语标题区域）',
+              'paper-title-row (bilingual title area)',
               titleRowText.join('\n'),
             );
             addMetaSectionBlock(
-              'paper-meta-row（中间信息区）',
+              'paper-meta-row (middle info area)',
               cleanText(
                 buildLabeledText(
                   metaPairs,
@@ -801,11 +803,11 @@ window.$docsify = {
               addRawMetaBlock(GLANCE_MARKER, glanceText);
             }
             addMetaSectionBlock(
-              '页面导航与交互层',
+              'Page navigation and interaction layer',
               cleanText(uiRows.join('\n')),
             );
 
-            // 1) 全文段落：按页面 heading 自动切块，保持顺序写入
+            // 1) Full-text paragraphs: auto-split by page heading, written in order
             const paperBodySections = collectPaperBodySections(sectionEl);
             paperBodySections.forEach((section) => {
               if (section && section.text) {
@@ -814,7 +816,7 @@ window.$docsify = {
             });
 
             if (aiSummaryText) {
-              // AI Summary 区块：仅保留 AI 摘要正文，不再自动拼入 Tags
+              // AI Summary block: keep only the AI summary body, no longer auto-appending Tags
               let aiBlock = `${START_MARKER}\n`;
               if (aiSummaryText) {
                 aiBlock += aiSummaryText;
@@ -836,8 +838,8 @@ window.$docsify = {
               addRawMetaBlock(ORIG_MARKER, rawOriginal);
             }
 
-            // 兜底 raw 聚合：确保保留 AI Summary / Original Abstract 原始 Markdown
-            // （避免经过 DOM 文本化路径后公式被改写）
+            // Fallback raw aggregation: ensure the AI Summary / Original Abstract raw Markdown is preserved
+            // (avoids formulas being rewritten after going through the DOM text path)
             abstractText = parts.join('\n\n\n').trim();
             abstractTextForMetaRaw = rawParts.join('\n\n\n').trim();
           }
@@ -846,8 +848,8 @@ window.$docsify = {
             const abstractTextForMeta =
               abstractTextForMetaRaw || abstractText;
             if (abstractTextForMeta) {
-              // 用 Zotero Connector 常识别的字段名：citation_abstract
-              // 用占位符编码换行，避免 Connector 导入时丢失段落边界
+              // Use the field name Zotero Connector commonly recognizes: citation_abstract
+              // Encode line breaks with a placeholder so the Connector does not lose paragraph boundaries on import
               const metaText = encodeCitationAbstractForMeta(abstractTextForMeta);
               updateMetaTag('citation_abstract', metaText, {
                 useFallback: false,
@@ -877,7 +879,7 @@ window.$docsify = {
         }
       };
 
-      // 导出给其它前端模块（例如聊天模块）主动刷新 Zotero 元数据
+      // Exported so other frontend modules (e.g. the chat module) can actively refresh Zotero metadata
       window.DPRZoteroMeta = window.DPRZoteroMeta || {};
       window.DPRZoteroMeta.updateFromPage = (paperId, vmRouteFile) =>
         Promise.resolve(
@@ -886,23 +888,23 @@ window.$docsify = {
           console.error('Zotero meta update failed:', e);
         });
 
-      // 公共工具：保护 LaTeX 公式不被 marked 破坏
-      // 在 beforeEach 阶段调用，将公式包裹成 HTML 标签（marked 不解析 HTML）
+      // Shared utility: protect LaTeX formulas from being broken by marked
+      // Called in the beforeEach phase to wrap formulas in HTML tags (marked does not parse HTML)
       const protectLatex = (text) => {
         if (!text) return text;
-        // 1) 将 \[...\] 转为 $$...$$，\(...\) 转为 $...$
-        //    注意：\[ 可能在行首也可能在行内
+        // 1) Convert \[...\] to $$...$$ and \(...\) to $...$
+        //    Note: \[ may appear at line start or inline
         text = text.replace(/\\\[([\s\S]*?)\\\]/g, (_, inner) => `$$${inner}$$`);
         text = text.replace(/\\\((.*?)\\\)/g, (_, inner) => `$${inner}$`);
-        // 2) 保护块级公式 $$...$$ → <div class="dpr-math" data-display="true">
+        // 2) Protect block formulas $$...$$ → <div class="dpr-math" data-display="true">
         text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, inner) => {
           const escaped = inner.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
           return `<div class="dpr-math" data-display="true">${escaped}</div>`;
         });
-        // 3) 保护行内公式 $...$ → <span class="dpr-math" data-display="false">
-        //    不跨行，排除 $ 后紧跟空格或 $ 前紧跟空格的情况（减少误匹配）
+        // 3) Protect inline formulas $...$ → <span class="dpr-math" data-display="false">
+        //    No line spanning; exclude cases where a space follows or precedes $ (reduces false matches)
         text = text.replace(/\$([^\$\n]+?)\$/g, (match, inner) => {
-          // 排除明显不是公式的情况（如 $10 这种价格）
+          // Exclude obvious non-formula cases (e.g. prices like $10)
           if (/^\d+$/.test(inner.trim())) return match;
           const escaped = inner.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
           return `<span class="dpr-math" data-display="false">${escaped}</span>`;
@@ -910,10 +912,10 @@ window.$docsify = {
         return text;
       };
 
-      // 公共工具：在指定元素上渲染公式
+      // Shared utility: render formulas on a given element
       const renderMathInEl = (el) => {
         if (!el) return;
-        // 优先渲染 protectLatex 产生的 .dpr-math 标签
+        // Prefer rendering the .dpr-math tags produced by protectLatex
         if (window.katex) {
           el.querySelectorAll('.dpr-math').forEach((node) => {
             const latex = node.textContent;
@@ -924,11 +926,11 @@ window.$docsify = {
                 throwOnError: false,
               });
             } catch (e) {
-              // 渲染失败保留原文
+              // Keep the original text if rendering fails
             }
           });
         }
-        // 兜底：对纯文本中残留的 $...$ / $$...$$ 用 auto-render 处理
+        // Fallback: handle leftover $...$ / $$...$$ in plain text with auto-render
         if (window.renderMathInElement) {
           window.renderMathInElement(el, {
             delimiters: [
@@ -942,12 +944,12 @@ window.$docsify = {
         }
       };
 
-      // 公共工具：简单表格 + 标记修正：
-      // 1）移除协议标记 [ANS]/[THINK]
-      // 2）移除表格行之间多余空行，避免把同一张表拆成两块
+      // Shared utility: simple table + marker fixes:
+      // 1) Remove protocol markers [ANS]/[THINK]
+      // 2) Remove extra blank lines between table rows so one table is not split in two
       const normalizeTables = (markdown) => {
         if (!markdown) return '';
-        // 清理历史遗留的协议标记
+        // Clean up legacy protocol markers
         let text = markdown
           .replace(/\[ANS\]/g, '')
           .replace(/\[THINK\]/g, '');
@@ -964,7 +966,7 @@ window.$docsify = {
             isTableLine(prev || '') &&
             isTableLine(next || '')
           ) {
-            // 跳过表格行之间的空行
+            // Skip blank lines between table rows
             continue;
           }
           result.push(line);
@@ -981,39 +983,39 @@ window.$docsify = {
           .replace(/'/g, '&#39;');
       };
 
-      // 自定义表格渲染：检测 Markdown 表格块并手写生成 <table>，
-      // 其他内容仍交给 marked 渲染。
-      // 同时保护 LaTeX 公式块，避免被 marked 误解析。
+      // Custom table rendering: detect Markdown table blocks and emit <table> by hand,
+      // other content is still rendered by marked.
+      // Also protect LaTeX formula blocks from being misparsed by marked.
       const renderMarkdownWithTables = (markdown) => {
         const text = normalizeTables(markdown || '');
 
-        // 保护 LaTeX 公式：先用占位符替换，渲染后再恢复
+        // Protect LaTeX formulas: replace with placeholders first, restore after rendering
         const latexBlocks = [];
         let protectedText = text;
 
-        // 先将 \[...\] → $$...$$ 和 \(...\) → $...$
+        // First convert \[...\] → $$...$$ and \(...\) → $...$
         protectedText = protectedText.replace(/\\\[([\s\S]*?)\\\]/g, (_, inner) => `$$${inner}$$`);
         protectedText = protectedText.replace(/\\\((.*?)\\\)/g, (_, inner) => `$${inner}$`);
 
-        // 保护块级公式 $$...$$
+        // Protect block formulas $$...$$
         protectedText = protectedText.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
           const idx = latexBlocks.length;
           latexBlocks.push(match);
           return `%%LATEX_BLOCK_${idx}%%`;
         });
 
-        // 保护行内公式 $...$（不跨行）
+        // Protect inline formulas $...$ (no line spanning)
         protectedText = protectedText.replace(/\$([^\$\n]+?)\$/g, (match) => {
           const idx = latexBlocks.length;
           latexBlocks.push(match);
           return `%%LATEX_INLINE_${idx}%%`;
         });
 
-        // 预处理：手动将 **...** 和 *...* 转换为 HTML 标签
-        // 解决 marked 对中文字符旁的粗体/斜体识别问题
-        // 注意：只匹配同一行内、且内容不超过 100 字符的情况，避免误匹配
+        // Preprocess: manually convert **...** and *...* into HTML tags
+        // Works around marked failing to detect bold/italic next to CJK characters
+        // Note: only match within a single line and under 100 characters, to avoid false matches
         protectedText = protectedText.replace(/\*\*([^*\n]{1,100}?)\*\*/g, '<strong>$1</strong>');
-        // 斜体：要求前后有空格或中文字符边界，避免误匹配乘号等
+        // Italic: require surrounding spaces or CJK boundaries to avoid matching multiplication signs, etc.
         protectedText = protectedText.replace(/(?<=[^\*]|^)\*([^*\n]{1,50}?)\*(?=[^\*]|$)/g, '<em>$1</em>');
 
         const lines = protectedText.split('\n');
@@ -1050,14 +1052,14 @@ window.$docsify = {
         while (i < lines.length) {
           const line = lines[i];
 
-          // 检测表格块：当前行是表格行，下一行是对齐行
+          // Detect a table block: current line is a table row, next line is the alignment row
           if (
             isTableLine(line) &&
             i + 1 < lines.length &&
             isAlignLine(lines[i + 1])
           ) {
             const headerLine = lines[i];
-            i += 2; // 跳过对齐行
+            i += 2; // Skip the alignment row
 
             const bodyLines = [];
             while (i < lines.length && isTableLine(lines[i])) {
@@ -1084,7 +1086,7 @@ window.$docsify = {
 
             blocks.push(html);
           } else {
-            // 非表格块：收集到下一个表格或结尾
+            // Non-table block: collect until the next table or the end
             const paraLines = [];
             while (
               i < lines.length &&
@@ -1103,7 +1105,7 @@ window.$docsify = {
 
         let result = blocks.join('');
 
-        // 恢复 LaTeX 公式
+        // Restore LaTeX formulas
         result = result.replace(/%%LATEX_BLOCK_(\d+)%%/g, (_, idx) => latexBlocks[parseInt(idx, 10)]);
         result = result.replace(/%%LATEX_INLINE_(\d+)%%/g, (_, idx) => latexBlocks[parseInt(idx, 10)]);
 
@@ -1133,14 +1135,14 @@ window.$docsify = {
         });
       };
 
-      // 导出给外部模块（例如聊天模块）复用
+      // Exported for reuse by external modules (e.g. the chat module)
       window.DPRMarkdown = {
         normalizeTables,
         renderMarkdownWithTables,
         renderMathInEl,
       };
 
-      // 3. 小屏下：点击侧边栏条目后自动收起侧边栏（全屏列表 → 正文）
+      // 3. On small screens: auto-collapse the sidebar after clicking an entry (full-screen list → body)
       const setupMobileSidebarAutoCloseOnItemClick = () => {
         const nav = document.querySelector('.sidebar-nav');
         if (!nav) return;
@@ -1152,25 +1154,25 @@ window.$docsify = {
           if (!link) return;
 
           const href = link.getAttribute('href') || '';
-          // 只处理 Docsify 内部路由（#/ 开头），避免影响外链
+          // Only handle internal Docsify routes (starting with #/), to avoid affecting external links
           if (!href.includes('#/')) return;
 
           const width =
             window.innerWidth || document.documentElement.clientWidth || 0;
-          // 统一“微宽屏 + 窄屏”为同一套逻辑：<1024 时点击条目后自动收起 sidebar（全屏列表 → 正文）
+          // Treat "narrowish + narrow" screens uniformly: at <1024, auto-collapse the sidebar after clicking an entry (full-screen list → body)
           if (width >= 1024) return;
 
-          // 让 Docsify 先完成路由跳转，再收起侧边栏
+          // Let Docsify finish the route change first, then collapse the sidebar
           setTimeout(() => {
             const body = document.body;
             if (!body) return;
-            // 适配 Docsify 移动端原生语义：小屏收起侧边栏时不保留 close 类
+            // Match Docsify mobile semantics: do not keep the close class when collapsing the sidebar on small screens
             body.classList.remove('close');
           }, 0);
         });
       };
 
-      // 4. 侧边栏按“日期”折叠的辅助函数
+      // 4. Helper functions for collapsing the sidebar by date
       const setupCollapsibleSidebarByDay = () => {
         const nav = document.querySelector('.sidebar-nav');
         if (!nav) return;
@@ -1439,7 +1441,7 @@ window.$docsify = {
           state = {};
           hiddenDays = new Set();
         }
-        // 先扫描一遍，找出所有日期和最新一天
+        // First scan to find all dates and the latest day
         const items = nav.querySelectorAll('li');
         const dayItems = [];
         let latestDay = '';
@@ -1449,9 +1451,9 @@ window.$docsify = {
           const directLink = li.querySelector(':scope > a');
           if (!childUl || directLink) return;
 
-          // 取日期文本：
-          // - 初次：li 的第一个文本节点
-          // - 已初始化过：wrapper 内的 label
+          // Get the date text:
+          // - First time: the li's first text node
+          // - Already initialized: the label inside the wrapper
           let rawText = '';
           let firstTextNode = null;
           const first = li.firstChild;
@@ -1471,7 +1473,7 @@ window.$docsify = {
           const isSingleDay = /^\d{4}-\d{2}-\d{2}$/.test(rawText);
           if (!isSingleDay && !rangeMatch) return;
 
-          const dayKey = rangeMatch ? rangeMatch[2] : rawText; // 用区间“结束日”参与最新日判断
+          const dayKey = rangeMatch ? rangeMatch[2] : rawText; // Use the range end-day to determine the latest day
           if (hiddenDays.has(dayKey)) return;
 
           dayItems.push({ li, text: rawText, firstTextNode, dayKey });
@@ -1482,14 +1484,14 @@ window.$docsify = {
 
         if (!dayItems.length) return;
 
-        // 判断是否出现了“更新后的新一天”
+        // Determine whether an updated new day has appeared
         const prevLatest =
           typeof state.__latestDay === 'string' ? state.__latestDay : null;
         const isNewDay =
           latestDay &&
           (!prevLatest || (typeof prevLatest === 'string' && latestDay > prevLatest));
 
-        // 如果出现了新的一天：清空历史状态，只保留最新一天的信息
+        // If a new day appears: clear historical state and keep only the latest day's info
         if (isNewDay) {
           const prevHidden = hiddenDays;
           state = { __latestDay: latestDay };
@@ -1497,7 +1499,7 @@ window.$docsify = {
             state[HIDDEN_DAYS_KEY] = Array.from(prevHidden);
           }
         } else if (!prevLatest && latestDay) {
-          // 第一次使用，没有历史记录但也不算“新一天触发重置”的场景：记录当前最新日期
+          // First use, with no history and not a new-day-reset case: record the current latest date
           state.__latestDay = latestDay;
         }
 
@@ -1534,13 +1536,13 @@ window.$docsify = {
           const oldText = menuDownload ? menuDownload.textContent : null;
           if (menuDownload) {
             menuDownload.disabled = true;
-            menuDownload.textContent = '下载中...';
+            menuDownload.textContent = 'Downloading...';
           }
           try {
             if (!dayPaperItems.length) {
               payload.errors.push({
                 paper_id: '',
-                error: '本日分组下未找到可导出的论文',
+                error: 'No exportable papers found under this day group',
               });
             } else {
               const baseHref = window.location.href.split('#')[0];
@@ -1594,24 +1596,24 @@ window.$docsify = {
             if (rowLi) {
               const trigger = rowLi.querySelector('.sidebar-day-menu-trigger');
               if (trigger) {
-                trigger.title = `已下载：${payload.count || 0} 篇`;
+                trigger.title = `Downloaded: ${payload.count || 0}`;
               }
             }
           } catch (err) {
             if (rowLi) {
               const trigger = rowLi.querySelector('.sidebar-day-menu-trigger');
               if (trigger) {
-                trigger.title = `下载失败（见控制台）：${String(
+                trigger.title = `Download failed (see console): ${String(
                   err && err.message ? err.message : err,
                 )}`;
               }
             }
-            console.warn('[DPR Export] 下载失败：', err);
+            console.warn('[DPR Export] Download failed:', err);
             throw err;
           } finally {
             if (menuDownload) {
               menuDownload.disabled = false;
-              menuDownload.textContent = oldText || '下载 JSON';
+              menuDownload.textContent = oldText || 'Download JSON';
             }
           }
         };
@@ -1672,13 +1674,13 @@ window.$docsify = {
           }, DAY_ANIM_MS + 30);
         };
 
-        // 第二遍：真正安装折叠行为
+        // Second pass: actually install the collapse behavior
         dayItems.forEach(({ li, text: rawText, firstTextNode, dayKey }) => {
           const childUl = li.querySelector(':scope > ul');
           if (childUl) childUl.classList.add('sidebar-day-content');
           const key = dayKey || rawText;
 
-          // 复用或创建 wrapper（包含日期文字和小箭头）
+          // Reuse or create the wrapper (containing the date text and a small arrow)
           let wrapper = li.querySelector(':scope > .sidebar-day-toggle');
           if (!wrapper) {
             wrapper = document.createElement('div');
@@ -1691,8 +1693,8 @@ window.$docsify = {
             const menuTrigger = document.createElement('button');
             menuTrigger.type = 'button';
             menuTrigger.className = 'sidebar-day-menu-trigger';
-            menuTrigger.title = '更多操作';
-            menuTrigger.setAttribute('aria-label', '更多操作');
+            menuTrigger.title = 'More actions';
+            menuTrigger.setAttribute('aria-label', 'More actions');
             menuTrigger.textContent = '⋮';
 
             const menu = document.createElement('span');
@@ -1701,8 +1703,8 @@ window.$docsify = {
             const downloadBtn = document.createElement('button');
             downloadBtn.type = 'button';
             downloadBtn.className = 'sidebar-day-menu-item sidebar-day-menu-item-download';
-            downloadBtn.textContent = '下载 JSON';
-            downloadBtn.setAttribute('aria-label', '下载论文元数据 JSON');
+            downloadBtn.textContent = 'Download JSON';
+            downloadBtn.setAttribute('aria-label', 'Download paper metadata JSON');
 
             const arrowSpan = document.createElement('span');
             arrowSpan.className = 'sidebar-day-toggle-arrow';
@@ -1718,7 +1720,7 @@ window.$docsify = {
             wrapper.appendChild(labelSpan);
             wrapper.appendChild(actions);
 
-            // 用 wrapper 替换原始文本节点
+            // Replace the original text node with the wrapper
             if (firstTextNode && firstTextNode.parentNode === li) {
               li.replaceChild(wrapper, firstTextNode);
             }
@@ -1770,10 +1772,10 @@ window.$docsify = {
             });
           }
 
-          // 决定默认展开 / 收起：
-          // - 如果本次是“出现了新的一天”：清空历史，只展开最新一天；
-          // - 否则若已有用户偏好（state），按偏好来；
-          // - 否则（首次使用且没有历史）：仅“最新一天”展开，其余收起。
+          // Decide the default expanded / collapsed state:
+          // - If this is a "new day appeared" case: clear history and expand only the latest day;
+          // - Otherwise, if a user preference (state) exists, follow it;
+          // - Otherwise (first use with no history): expand only the latest day, collapse the rest.
           let collapsed;
           if (isNewDay) {
             collapsed = key === latestDay ? false : true;
@@ -1784,7 +1786,7 @@ window.$docsify = {
             } else if (saved === 'closed') {
               collapsed = true;
             } else {
-              // 新出现的日期：默认跟最新一天策略走
+              // Newly appeared date: follow the latest-day strategy by default
               collapsed = key === latestDay ? false : true;
             }
           } else {
@@ -1799,14 +1801,14 @@ window.$docsify = {
             if (arrowSpan) arrowSpan.textContent = '▾';
           }
 
-          // 初始化一次高度（不做动画，避免首次渲染闪动）
+          // Initialize the height once (no animation, to avoid first-render flicker)
           setDayCollapsed(li, collapsed, { animate: false });
 
-          // 绑定点击：使用 capture 阶段，确保即使旧版本已有 handler 也能覆盖
+          // Bind click in the capture phase so it overrides any handler from older versions
           if (!wrapper.dataset.dprDayToggleBound) {
             wrapper.dataset.dprDayToggleBound = '1';
 
-            // --- 拖拽检测：记录 pointerdown 起始位置，click 时判断是否为拖拽 ---
+            // --- Drag detection: record the pointerdown start position, decide on click whether it was a drag ---
             let _dayTogglePtrStart = null;
             wrapper.addEventListener('pointerdown', (pe) => {
               _dayTogglePtrStart = { x: pe.clientX, y: pe.clientY };
@@ -1815,16 +1817,16 @@ window.$docsify = {
             wrapper.addEventListener(
               'click',
               (e) => {
-                // badge 正在拖拽中，吞掉 click
+                // badge is being dragged; swallow the click
                 if (wrapper._dprBadgeDragging) return;
-                // 拖拽距离超过阈值时，视为拖拽操作，不触发折叠
+                // When the drag distance exceeds the threshold, treat it as a drag and do not toggle collapse
                 if (_dayTogglePtrStart) {
                   const dx = e.clientX - _dayTogglePtrStart.x;
                   const dy = e.clientY - _dayTogglePtrStart.y;
                   _dayTogglePtrStart = null;
                   if (Math.abs(dx) > 5 || Math.abs(dy) > 5) return;
                 }
-                // 点击菜单控件或未读 badge 时，不触发日期折叠
+                // Do not trigger date collapse when clicking menu controls or the unread badge
                 try {
                   const target = e && e.target && e.target.closest
                     ? e.target.closest(
@@ -1845,8 +1847,8 @@ window.$docsify = {
                 state[rawText] = collapsed ? 'closed' : 'open';
                 state.__latestDay = latestDay;
                 ensureStateSaved();
-                // 先做一次即时同步（保证交互反馈），再在动画结束后做一次终态校准，
-                // 否则列表在 max-height 过渡中继续位移，会让高亮条”越开越往上偏”。
+                // Do an immediate sync first (for interaction feedback), then a final calibration after the animation,
+                // otherwise the list keeps shifting during the max-height transition, making the highlight bar drift upward.
                 requestAnimationFrame(() => {
                   syncSidebarActiveIndicator({ animate: false });
                 });
@@ -1861,14 +1863,14 @@ window.$docsify = {
           li.dataset.dayToggleApplied = '2';
         });
 
-        // 每次 doneEach 触发时都刷新一次“已展开分组”的 max-height：
-        // 避免 active 项显示评价按钮等导致内容高度变化后被截断，从而出现“只有灰色高亮但看不到文字”的错觉。
+        // On each doneEach, refresh the max-height of the expanded group:
+        // Avoids the active item being clipped after its height changes (e.g. rating buttons), which looks like "highlight but no text".
         requestAnimationFrame(() => {
           try {
             nav
               .querySelectorAll('li:not(.sidebar-day-collapsed) > ul.sidebar-day-content')
               .forEach((ul) => {
-                // 仅做“静默修正”，避免因为 max-height 变化触发过渡，导致侧边栏看起来“滚动/刷新”一下
+                // Only a silent correction, to avoid the max-height change triggering a transition that makes the sidebar appear to scroll/refresh
                 const prevTransition = ul.style.transition;
                 ul.style.transition = 'none';
                 ul.style.maxHeight = `${ul.scrollHeight}px`;
@@ -2090,16 +2092,16 @@ window.$docsify = {
           if (!wrapper.dataset.dprConferenceToggleBound) {
             wrapper.dataset.dprConferenceToggleBound = '1';
 
-            // --- 拖拽检测：记录 pointerdown 起始位置，click 时判断是否为拖拽 ---
+            // --- Drag detection: record the pointerdown start position, decide on click whether it was a drag ---
             let _confTogglePtrStart = null;
             wrapper.addEventListener('pointerdown', (pe) => {
               _confTogglePtrStart = { x: pe.clientX, y: pe.clientY };
             }, true);
 
             const toggle = (event) => {
-              // badge 正在拖拽中，吞掉 click
+              // badge is being dragged; swallow the click
               if (wrapper._dprBadgeDragging) return;
-              // 拖拽距离超过阈值时，视为拖拽操作，不触发折叠
+              // When the drag distance exceeds the threshold, treat it as a drag and do not toggle collapse
               if (event && event.type === 'click' && _confTogglePtrStart) {
                 const dx = event.clientX - _confTogglePtrStart.x;
                 const dy = event.clientY - _confTogglePtrStart.y;
@@ -2187,11 +2189,11 @@ window.$docsify = {
         });
       };
 
-      // 4. 论文“已阅读”状态管理（存储在 localStorage）
+      // 4. Paper "read" state management (stored in localStorage)
       const READ_STORAGE_KEY = 'dpr_read_papers_v1';
 
       const loadReadState = () => {
-        // 认证用户优先从 Supabase 缓存读取
+        // Authenticated users read from the Supabase cache first
         if (window.DPRReadStateSync && window.DPRReadStateSync.isActive()) {
           return window.DPRReadStateSync.getAll();
         }
@@ -2202,7 +2204,7 @@ window.$docsify = {
           const obj = JSON.parse(raw);
           if (!obj || typeof obj !== 'object') return {};
 
-          // 兼容旧版本（值为 true 的情况）
+          // Backward compatibility (when the value is true)
           const normalized = {};
           Object.keys(obj).forEach((k) => {
             const v = obj[k];
@@ -2219,7 +2221,7 @@ window.$docsify = {
       };
 
       const saveReadState = (state) => {
-        // localStorage 始终保存（离线回退）
+        // Always persist to localStorage (offline fallback)
         try {
           if (window.localStorage) {
             window.localStorage.setItem(READ_STORAGE_KEY, JSON.stringify(state));
@@ -2232,11 +2234,11 @@ window.$docsify = {
       const markPaperRead = (paperId, status) => {
         if (!paperId) return;
         const st = status || 'read';
-        // 写 localStorage
+        // Write localStorage
         const state = loadReadState();
         state[paperId] = st;
         saveReadState(state);
-        // 同步到 Supabase
+        // Sync to Supabase
         if (window.DPRReadStateSync && window.DPRReadStateSync.isActive()) {
           window.DPRReadStateSync.markRead(paperId, st);
         }
@@ -2306,13 +2308,13 @@ window.$docsify = {
         const rel = joinUrlPath(getDocsifyBasePath(), `${paperId}.md`);
         const url = buildDocsUrl(rel);
         const res = await fetch(url, { cache: 'no-store' });
-        if (!res.ok) throw new Error(`无法读取文章 Markdown（HTTP ${res.status}）`);
+        if (!res.ok) throw new Error(`Could not read the article Markdown (HTTP ${res.status})`);
         return await res.text();
       };
 
       const loadChatHistoryForPaper = async (paperId) => {
         if (!paperId) return [];
-        // IndexedDB 优先：dpr_chat_db_v1 / paper_chats
+        // IndexedDB first: dpr_chat_db_v1 / paper_chats
         if (typeof indexedDB !== 'undefined') {
           try {
             const db = await new Promise((resolve) => {
@@ -2346,7 +2348,7 @@ window.$docsify = {
             // ignore
           }
         }
-        // 兜底：旧版 localStorage
+        // Fallback: legacy localStorage
         try {
           if (!window.localStorage) return [];
           const raw = window.localStorage.getItem('dpr_chat_history_v1');
@@ -2401,8 +2403,8 @@ window.$docsify = {
         if (tags.length) parts.push(`- **Tags**: ${tags.join(', ')}`);
         if (safeMeta.evidence) parts.push(`- **Evidence**: ${String(safeMeta.evidence).trim()}`);
         if (safeMeta.tldr) parts.push(`- **TLDR**: ${String(safeMeta.tldr).trim()}`);
-        parts.push(`- **原始页面**: ${pageUrl}`);
-        parts.push(`- **生成时间**: ${new Date().toISOString()}`);
+        parts.push(`- **Source page**: ${pageUrl}`);
+        parts.push(`- **Generated at**: ${new Date().toISOString()}`);
         parts.push('');
         parts.push('---');
         parts.push('');
@@ -2410,10 +2412,10 @@ window.$docsify = {
         parts.push('');
         parts.push('---');
         parts.push('');
-        parts.push('## 💬 Chat History（本机记录）');
+        parts.push('## 💬 Chat History (local records)');
         parts.push('');
         if (!chatMessages || !chatMessages.length) {
-          parts.push('暂无对话。');
+          parts.push('No conversation yet.');
           return parts.join('\n');
         }
         chatMessages.forEach((m) => {
@@ -2422,7 +2424,7 @@ window.$docsify = {
           const content = m && m.content ? String(m.content) : '';
           if (role === 'thinking') {
             parts.push('<details>');
-            parts.push(`<summary>🧠 思考过程 ${time ? `(${time})` : ''}</summary>`);
+            parts.push(`<summary>🧠 Thinking ${time ? `(${time})` : ''}</summary>`);
             parts.push('');
             parts.push('```');
             parts.push(content);
@@ -2431,7 +2433,7 @@ window.$docsify = {
             parts.push('');
             return;
           }
-          const label = role === 'ai' ? '🤖 AI' : role === 'user' ? '👤 你' : role;
+          const label = role === 'ai' ? '🤖 AI' : role === 'user' ? '👤 You' : role;
           parts.push(`### ${label}${time ? ` (${time})` : ''}`);
           parts.push(content);
           parts.push('');
@@ -2446,16 +2448,16 @@ window.$docsify = {
         overlay.id = 'dpr-gist-share-overlay';
         overlay.innerHTML = `
           <div class="dpr-gist-share-modal" role="dialog" aria-modal="true">
-            <div class="dpr-gist-share-title">分享链接</div>
+            <div class="dpr-gist-share-title">Share link</div>
             <div class="dpr-gist-share-row">
               <input class="dpr-gist-share-input" type="text" readonly />
-              <button class="dpr-gist-share-copy" type="button">复制</button>
+              <button class="dpr-gist-share-copy" type="button">Copy</button>
             </div>
             <div class="dpr-gist-share-hint"></div>
           </div>
         `;
         overlay.addEventListener('pointerdown', (e) => {
-          // 点空白处关闭
+          // Click outside to close
           if (e && e.target === overlay) {
             overlay.classList.remove('show');
           }
@@ -2480,10 +2482,10 @@ window.$docsify = {
                 document.execCommand('copy');
               }
               const hint = overlay.querySelector('.dpr-gist-share-hint');
-              if (hint) hint.textContent = '已复制';
+              if (hint) hint.textContent = 'Copied';
             } catch {
               const hint = overlay.querySelector('.dpr-gist-share-hint');
-              if (hint) hint.textContent = '复制失败，请手动复制';
+              if (hint) hint.textContent = 'Copy failed, please copy manually';
             }
           });
         }
@@ -2508,7 +2510,7 @@ window.$docsify = {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            description: '论文分享（Daily Paper Reader）',
+            description: 'Paper share (Daily Paper Reader)',
             public: false,
             files: {
               [filename]: { content },
@@ -2518,18 +2520,18 @@ window.$docsify = {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           const msg = data && data.message ? String(data.message) : '';
-          // GitHub 对不支持/无权限的 token（尤其是 fine-grained PAT 不支持 Gist）经常返回 404 Not Found
+          // GitHub often returns 404 Not Found for unsupported/unauthorized tokens (especially fine-grained PATs, which do not support Gist)
           if (res.status === 404) {
             throw new Error(
-              'Not Found（常见原因：你用的是 Fine-grained PAT，GitHub Gist API 不支持；请改用 Classic PAT 并勾选 gist 权限）',
+              'Not Found (common cause: you are using a Fine-grained PAT, which the GitHub Gist API does not support; please use a Classic PAT with the gist scope enabled)',
             );
           }
           if (res.status === 401) {
-            throw new Error('未授权（Token 无效或已过期）');
+            throw new Error('Unauthorized (token is invalid or expired)');
           }
           if (res.status === 403) {
             throw new Error(
-              `权限不足（需要 Classic PAT 勾选 gist 权限）。${msg ? `详情：${msg}` : ''}`.trim(),
+              `Insufficient permissions (a Classic PAT with the gist scope is required).${msg ? ` Details: ${msg}` : ''}`.trim(),
             );
           }
           throw new Error(msg || `HTTP ${res.status}`);
@@ -2540,23 +2542,23 @@ window.$docsify = {
       const sharePaperToGist = async (paperId) => {
         const token = loadGithubTokenForGist();
         if (!token) {
-          showShareModal('', '未检测到 GitHub Token，请先在首页配置 GitHub Token。');
+          showShareModal('', 'No GitHub Token detected. Please configure a GitHub Token on the home page first.');
           return;
         }
         const pageMd = await fetchPaperMarkdownById(paperId);
         const chat = await loadChatHistoryForPaper(paperId);
         const content = buildShareMarkdown(paperId, pageMd, chat);
 
-        // 文件名：paperId 最后一段 + .md
+        // Filename: last segment of paperId + .md
         const slug = String(paperId || 'paper').split('/').slice(-1)[0] || 'paper';
         const filename = `${slug}.md`;
         const data = await createGist(token, filename, content);
         const url = data && data.html_url ? String(data.html_url) : '';
         const preview = data && data.id ? `https://gist.io/${data.id}` : '';
-        showShareModal(url, preview ? `精美预览：${preview}` : '');
+        showShareModal(url, preview ? `Rich preview: ${preview}` : '');
       };
 
-      // --- Sidebar 未读 badge 更新 ---
+      // --- Sidebar unread badge update ---
       const updateSidebarUnreadBadges = () => {
         const nav = document.querySelector('.sidebar-nav');
         if (!nav) return;
@@ -2564,13 +2566,13 @@ window.$docsify = {
 
         let badgeCount = 0;
 
-        // 找到所有一级和二级分组（Conference/Daily 下的日期或会议名）
+        // Find all first- and second-level groups (dates or conference names under Conference/Daily)
         nav.querySelectorAll('li').forEach((li) => {
-          // 跳过叶子节点（论文条目本身）
+          // Skip leaf nodes (the paper entries themselves)
           const childUl = li.querySelector('ul');
           if (!childUl) return;
 
-          // 收集该 li 下所有论文链接（递归所有后代）
+          // Collect all paper links under this li (recursively across all descendants)
           const paperLinks = li.querySelectorAll('a.dpr-sidebar-item-link[href*="#/"]');
           if (!paperLinks.length) return;
 
@@ -2587,17 +2589,17 @@ window.$docsify = {
 
           const unread = total - readCount;
 
-          // 找到该 li 的标题元素：尝试多种选择器
+          // Find this li's heading element: try several selectors
           let titleEl = li.querySelector(':scope > p')
             || li.querySelector(':scope > a')
             || li.querySelector(':scope > div')
             || li.querySelector(':scope > strong')
             || li.querySelector(':scope > span');
 
-          // docsify 可能把分组头渲染为直接文本节点，没有包裹标签
-          // 这种情况需要创建一个包裹 span
+          // docsify may render a group header as a bare text node with no wrapping tag
+          // In that case we need to create a wrapping span
           if (!titleEl) {
-            // 检查 li 的第一个子节点是否是文本
+            // Check whether the li's first child node is text
             const firstNode = li.childNodes[0];
             if (firstNode && firstNode.nodeType === 3 && firstNode.textContent.trim()) {
               const wrapper = document.createElement('span');
@@ -2610,13 +2612,13 @@ window.$docsify = {
 
           if (!titleEl) return;
 
-          // 找到或创建 badge — 放在 actions 按钮组的左边
+          // Find or create the badge — placed to the left of the actions button group
           let badge = li.querySelector(':scope > .sidebar-day-toggle > .dpr-unread-badge')
             || titleEl.querySelector('.dpr-unread-badge');
           if (!badge) {
             badge = document.createElement('span');
             badge.className = 'dpr-unread-badge';
-            // 如果存在 sidebar-day-toggle-actions，插到它前面
+            // If sidebar-day-toggle-actions exists, insert before it
             const actions = titleEl.querySelector('.sidebar-day-toggle-actions');
             if (actions) {
               titleEl.insertBefore(badge, actions);
@@ -2631,12 +2633,12 @@ window.$docsify = {
             if (!badge._dprDragBound) {
               badge._dprDragBound = true;
               badge.addEventListener('mousedown', (e) => {
-                if (e.button !== 0) return; // 只处理左键
+                if (e.button !== 0) return; // Only handle left click
                 e.preventDefault();
                 e.stopPropagation();
                 console.log('[DPR-badge] mousedown fired on badge', badge.textContent);
 
-                // 标记 badge 拖拽进行中 —— wrapper 的 click handler 检查此标志
+                // Mark the badge as dragging — the wrapper's click handler checks this flag
                 const parentToggle = badge.closest('.sidebar-day-toggle,.sidebar-conference-toggle');
                 if (parentToggle) parentToggle._dprBadgeDragging = true;
 
@@ -2661,7 +2663,7 @@ window.$docsify = {
                   }, 80);
                 };
 
-                // --- 用 document 级别的 mousemove/mouseup，最可靠的拖拽模式 ---
+                // --- Use document-level mousemove/mouseup, the most reliable drag pattern ---
                 const onMouseMove = (ev) => {
                   ghost.style.left = (ev.clientX - rect.width / 2) + 'px';
                   ghost.style.top = (ev.clientY - rect.height / 2) + 'px';
@@ -2676,7 +2678,7 @@ window.$docsify = {
                   console.log('[DPR-badge] mouseup: dist=' + dist.toFixed(1) + ' (threshold=60)');
 
                   if (dist > 60) {
-                    // ── 拖远：标记已读并消失 ──
+                    // ── Drag far: mark as read and disappear ──
                     console.log('[DPR-badge] distance > 60, marking as read...');
                     const groupLi = badge.closest('li');
                     const links = groupLi ? groupLi.querySelectorAll('a.dpr-sidebar-item-link[href*="#/"]') : [];
@@ -2695,7 +2697,7 @@ window.$docsify = {
                     clearDragFlag();
                     if (ghost.parentNode) ghost.remove();
                   } else {
-                    // ── 拖近：弹回原位 ──
+                    // ── Drag near: snap back into place ──
                     console.log('[DPR-badge] distance < 60, returning to origin');
                     badge.style.opacity = '';
                     clearDragFlag();
@@ -2758,10 +2760,10 @@ window.$docsify = {
 	          const paperIdFromHref = m[1].replace(/\/$/, '');
 	          const li = a.closest('li');
 	          if (!li) return;
-	          // 标记这是一个具体论文条目，方便样式细化（避免整天标题一起高亮）
+	          // Mark this as a specific paper entry to allow style refinement (avoids highlighting the whole day's title together)
 	          li.classList.add('sidebar-paper-item');
 
-          // 为侧边栏条目追加"书签标记"按钮（绿/蓝/橙/红）
+          // Append "bookmark" buttons to the sidebar entry (green/blue/orange/red)
 	          let actionWrapper = li.querySelector('.sidebar-paper-rating-icons');
 	          let goodIcon = actionWrapper
 	            ? actionWrapper.querySelector('.sidebar-paper-rating-icon.good')
@@ -2776,7 +2778,7 @@ window.$docsify = {
 	            ? actionWrapper.querySelector('.sidebar-paper-rating-icon.bad')
 	            : null;
 
-          // 左侧按钮容器（分享 + 收藏）
+          // Left button container (share + favorite)
           let leftActions = li.querySelector('.sidebar-paper-left-actions');
 	          if (!actionWrapper) {
 	            actionWrapper = document.createElement('span');
@@ -2784,49 +2786,49 @@ window.$docsify = {
 
 	            goodIcon = document.createElement('button');
 	            goodIcon.className = 'sidebar-paper-rating-icon good';
-	            goodIcon.title = '标记为「绿色书签」';
-	            goodIcon.setAttribute('aria-label', '绿色书签');
+	            goodIcon.title = 'Mark as green bookmark';
+	            goodIcon.setAttribute('aria-label', 'Green bookmark');
 	            goodIcon.innerHTML = '';
 
               blueIcon = document.createElement('button');
               blueIcon.className = 'sidebar-paper-rating-icon blue';
-              blueIcon.title = '标记为「蓝色书签」';
-              blueIcon.setAttribute('aria-label', '蓝色书签');
+              blueIcon.title = 'Mark as blue bookmark';
+              blueIcon.setAttribute('aria-label', 'Blue bookmark');
               blueIcon.innerHTML = '';
 
               orangeIcon = document.createElement('button');
               orangeIcon.className = 'sidebar-paper-rating-icon orange';
-              orangeIcon.title = '标记为「橙色书签」';
-              orangeIcon.setAttribute('aria-label', '橙色书签');
+              orangeIcon.title = 'Mark as orange bookmark';
+              orangeIcon.setAttribute('aria-label', 'Orange bookmark');
               orangeIcon.innerHTML = '';
 
 	            badIcon = document.createElement('button');
 	            badIcon.className = 'sidebar-paper-rating-icon bad';
-	            badIcon.title = '标记为「红色书签」';
-	            badIcon.setAttribute('aria-label', '红色书签');
+	            badIcon.title = 'Mark as red bookmark';
+	            badIcon.setAttribute('aria-label', 'Red bookmark');
 	            badIcon.innerHTML = '';
 
-              // 创建左侧按钮容器
+              // Create the left button container
               leftActions = document.createElement('span');
               leftActions.className = 'sidebar-paper-left-actions';
 
               const favoriteIcon = document.createElement('button');
               favoriteIcon.className = 'sidebar-paper-favorite-icon';
-              favoriteIcon.title = '收藏';
-              favoriteIcon.setAttribute('aria-label', '收藏');
+              favoriteIcon.title = 'Favorite';
+              favoriteIcon.setAttribute('aria-label', 'Favorite');
               favoriteIcon.textContent = '☆';
               favoriteIcon.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                // 切换收藏状态（功能待实现）
+                // Toggle favorite state (feature to be implemented)
                 const isActive = favoriteIcon.classList.toggle('active');
                 favoriteIcon.textContent = isActive ? '★' : '☆';
               });
 
               const shareIcon = document.createElement('button');
               shareIcon.className = 'sidebar-paper-share-icon';
-              shareIcon.title = '分享（生成 GitHub Gist 链接）';
-              shareIcon.setAttribute('aria-label', '分享');
+              shareIcon.title = 'Share (generate a GitHub Gist link)';
+              shareIcon.setAttribute('aria-label', 'Share');
               shareIcon.textContent = '⤴';
 
               const setStateAndRefresh = (value) => {
@@ -2873,7 +2875,7 @@ window.$docsify = {
                   await sharePaperToGist(paperIdFromHref);
                 } catch (err) {
                   const msg = String(err && err.message ? err.message : err);
-                  showShareModal('', `上传失败：${msg}`);
+                  showShareModal('', `Upload failed: ${msg}`);
                 } finally {
                   shareIcon.disabled = false;
                   shareIcon.textContent = old || '⤴';
@@ -2886,12 +2888,12 @@ window.$docsify = {
 	              setStateAndRefresh('bad');
 	            });
 
-              // 左侧容器添加收藏和分享按钮
+              // Add favorite and share buttons to the left container
               leftActions.appendChild(favoriteIcon);
               leftActions.appendChild(shareIcon);
               a.parentNode.insertBefore(leftActions, a);
 
-              // 右侧容器添加书签按钮
+              // Add bookmark buttons to the right container
 	            actionWrapper.appendChild(goodIcon);
               actionWrapper.appendChild(blueIcon);
               actionWrapper.appendChild(orangeIcon);
@@ -2899,7 +2901,7 @@ window.$docsify = {
 	            a.parentNode.insertBefore(actionWrapper, a.nextSibling);
 	          }
 
-	          // 无论按钮是否刚创建，都要基于“最新 state”刷新激活态（支持空格键切换）
+	          // Whether or not the button was just created, refresh the active state from the latest state (supports space-key toggle)
 	          try {
 	            const s = state[paperIdFromHref];
 	            if (goodIcon) goodIcon.classList.toggle('active', s === 'good');
@@ -2913,7 +2915,7 @@ window.$docsify = {
 	          applyLiState(li, paperIdFromHref);
 	        });
 
-          // 更新分组未读 badge
+          // Update the group's unread badge
           updateSidebarUnreadBadges();
 	      };
 
@@ -2929,8 +2931,8 @@ window.$docsify = {
         const scoreNum = Number(scoreValue);
         const scoreText = Number.isFinite(scoreNum) ? scoreNum.toFixed(1) : '';
         const title = scoreText
-          ? `评分：${scoreText}/10（${rating.toFixed(1)}/5）`
-          : '评分：无';
+          ? `Score: ${scoreText}/10 (${rating.toFixed(1)}/5)`
+          : 'Score: N/A';
         const pct = Math.max(0, Math.min(100, (rating / 5) * 100));
         return (
           `<span class="dpr-stars" title="${escapeHtml(title)}" aria-label="${rating.toFixed(1)} out of 5">` +
@@ -2966,7 +2968,7 @@ window.$docsify = {
             }
           }
 
-          // 兼容历史 sidebar：从旧 DOM（title/tags/score）回填结构化数据
+          // Backward compatibility for legacy sidebars: backfill structured data from the old DOM (title/tags/score)
           if (!payload || typeof payload !== 'object') {
             const legacyTitle = String(
               (a.querySelector('.dpr-sidebar-title') && a.querySelector('.dpr-sidebar-title').textContent) ||
@@ -2977,7 +2979,7 @@ window.$docsify = {
             const legacyScoreTitle = String(
               (legacyScoreNode && legacyScoreNode.getAttribute('title')) || '',
             );
-            const scoreMatch = legacyScoreTitle.match(/评分：\s*([0-9]+(?:\.[0-9]+)?)\s*\/10/);
+            const scoreMatch = legacyScoreTitle.match(/(?:评分：|Score:)\s*([0-9]+(?:\.[0-9]+)?)\s*\/10/);
             const legacyScore = scoreMatch ? scoreMatch[1] : '-';
             const legacyTags = [];
             const tagNodes = a.querySelectorAll('.dpr-sidebar-tag');
@@ -3072,7 +3074,7 @@ window.$docsify = {
         });
       };
 
-      // 侧边栏/正文的论文页标题条：英文右侧，中文左侧，中间竖线
+      // Paper-page title bar in sidebar/body: English on the right, Chinese on the left, vertical bar in between
       const isPaperRouteFile = (file) => {
         const f = String(file || '');
         return (
@@ -3090,15 +3092,15 @@ window.$docsify = {
         if (!el) return;
         let size = maxPx;
         el.style.fontSize = `${size}px`;
-        // 逐步缩小直到不溢出或达到最小值
-        // 注意：scrollHeight > clientHeight 表示溢出（包含被 line-clamp 截断的情况）
+        // Shrink step by step until it no longer overflows or reaches the minimum
+        // Note: scrollHeight > clientHeight indicates overflow (including line-clamp truncation)
         while (size > minPx && el.scrollHeight > el.clientHeight + 1) {
           size -= 1;
           el.style.fontSize = `${size}px`;
         }
       };
 
-      // 为切页动效准备一个“正文包装层”，避免把聊天浮层/白色遮罩一起做淡入淡出（否则会闪烁）
+      // Prepare a "body wrapper" for the page-transition animation, to avoid fading the chat overlay/white mask along with it (which would flicker)
       const DPR_PAGE_CONTENT_CLASS = 'dpr-page-content';
 
       const ensurePageContentRoot = () => {
@@ -3111,7 +3113,7 @@ window.$docsify = {
 
         const root = document.createElement('div');
         root.className = DPR_PAGE_CONTENT_CLASS;
-        // 将当前渲染出来的正文内容整体移入 root（此时 chat 模块尚未插入，避免把输入框一起移入）
+        // Move the currently rendered body content into root as a whole (the chat module is not inserted yet, so the input box is not moved in)
         while (section.firstChild) {
           root.appendChild(section.firstChild);
         }
@@ -3151,13 +3153,13 @@ window.$docsify = {
         const root =
           section.querySelector(`:scope > .${DPR_PAGE_CONTENT_CLASS}`) || section;
 
-        // 防止重复插入
+        // Prevent duplicate insertion
         const existing = root.querySelector('.dpr-title-bar');
         if (existing) existing.remove();
         const h1s = Array.from(root.querySelectorAll('h1'));
         if (!h1s.length) return;
 
-        // 优先从带有 paper-title-zh / paper-title-en 类名的 h1 中获取标题（frontmatter 渲染）
+        // Prefer reading the title from the h1 with the paper-title-zh / paper-title-en class (frontmatter rendering)
         const paperTitleZh = root.querySelector('h1.paper-title-zh');
         const paperTitleEn = root.querySelector('h1.paper-title-en');
 
@@ -3165,12 +3167,12 @@ window.$docsify = {
         let enTitle = '';
 
         if (paperTitleZh || paperTitleEn) {
-          // 新格式：从 frontmatter 渲染的带类名 h1 中获取
+          // New format: read from the class-named h1 rendered by frontmatter
           cnTitle = paperTitleZh ? (paperTitleZh.textContent || '').trim() : '';
           enTitle = paperTitleEn ? (paperTitleEn.textContent || '').trim() : '';
         } else {
-          // 旧格式兼容：如果有两个 h1，则第一个为英文、第二个为中文；
-          // 如果只有一个 h1，则认为是"单标题"，放在左侧（cn 区）
+          // Legacy format: if there are two h1s, the first is English and the second is Chinese;
+          // if there is only one h1, treat it as a single title placed on the left (cn area)
           enTitle = (h1s[0].textContent || '').trim();
           cnTitle = (h1s[1] ? (h1s[1].textContent || '').trim() : '').trim();
           if (h1s.length === 1) {
@@ -3179,14 +3181,14 @@ window.$docsify = {
           }
         }
 
-        // 兜底：若只有英文标题（缺少 title_zh），将英文挪到左侧显示，
-        // 避免 dpr-title-single 样式把右侧英文区域隐藏后出现“无标题”。
+        // Fallback: if only an English title exists (no title_zh), move the English to the left,
+        // to avoid a "no title" state after the dpr-title-single style hides the right-side English area.
         if (!cnTitle && enTitle) {
           cnTitle = enTitle;
           enTitle = '';
         }
 
-        // 隐藏原始 h1，但保留在 DOM 里供复制/SEO/元信息提取兜底
+        // Hide the original h1 but keep it in the DOM for copy/SEO/metadata-extraction fallback
         h1s.forEach((h) => h.classList.add('dpr-title-hidden'));
 
         const bar = document.createElement('div');
@@ -3202,7 +3204,7 @@ window.$docsify = {
 
         root.insertBefore(bar, root.firstChild);
 
-        // 字体自适应：让标题条高度稳定，长标题自动缩小
+        // Adaptive font sizing: keep the title bar height stable; long titles shrink automatically
         requestAnimationFrame(() => {
           const cnEl = bar.querySelector('.dpr-title-cn');
           const enEl = bar.querySelector('.dpr-title-en');
@@ -3211,7 +3213,7 @@ window.$docsify = {
         });
       };
 
-      // 论文页导航：左右滑动 / 键盘方向键切换论文
+      // Paper-page navigation: swipe left/right or use arrow keys to switch papers
       const DPR_NAV_STATE = {
         paperHrefs: [],
         reportHrefs: [],
@@ -3263,7 +3265,7 @@ window.$docsify = {
           return { el: DPR_SIDEBAR_ACTIVE_INDICATOR.el, newlyCreated: false };
         }
 
-        // 清理旧的（例如热更新/重复初始化场景）
+        // Clean up the old one (e.g. hot-reload/duplicate-init scenarios)
         try {
           if (DPR_SIDEBAR_ACTIVE_INDICATOR.el && DPR_SIDEBAR_ACTIVE_INDICATOR.el.remove) {
             DPR_SIDEBAR_ACTIVE_INDICATOR.el.remove();
@@ -3275,9 +3277,9 @@ window.$docsify = {
         const indicator = document.createElement('div');
         indicator.className = 'dpr-sidebar-active-indicator';
         indicator.setAttribute('aria-hidden', 'true');
-        // 刚创建时先禁用 transition，避免出现“从 sidebar 顶部滑下来”的二次动效
+        // Disable transition on creation to avoid a secondary "slide down from the sidebar top" animation
         indicator.style.transition = 'none';
-        // 放在最前面，确保在所有 li 下面
+        // Put it first so it sits beneath all li elements
         nav.insertBefore(indicator, nav.firstChild);
         DPR_SIDEBAR_ACTIVE_INDICATOR.el = indicator;
         DPR_SIDEBAR_ACTIVE_INDICATOR.parent = nav;
@@ -3288,7 +3290,7 @@ window.$docsify = {
         const ensured = ensureSidebarActiveIndicator();
         if (!ensured || !ensured.el) return;
         const indicator = ensured.el;
-        // 避免后续复用时残留 good/bad 配色
+        // Avoid leftover good/bad colors on later reuse
         indicator.classList.remove('is-good', 'is-bad', 'is-blue', 'is-orange');
         indicator.style.opacity = '0';
         indicator.style.width = '0';
@@ -3304,7 +3306,7 @@ window.$docsify = {
       const isSidebarItemVisible = (el) => {
         try {
           if (!el) return false;
-          // display:none / 被折叠时 offsetParent 会是 null
+          // offsetParent is null when display:none / collapsed
           if (el.offsetParent === null) return false;
           const rect = el.getBoundingClientRect();
           return rect && rect.width > 0 && rect.height > 0;
@@ -3321,16 +3323,16 @@ window.$docsify = {
         const indicator = ensured.el;
         const newlyCreated = ensured.newlyCreated;
 
-        // 先清空上一条目的配色状态，避免出现“取消勾选/叉选后仍残留底色”
+        // Clear the previous entry color state first to avoid a leftover background after unchecking/uncrossing
         try {
           indicator.classList.remove('is-good', 'is-bad', 'is-blue', 'is-orange');
         } catch {
           // ignore
         }
 
-        // 只对论文条目启用（避免日期分组标题等）
+        // Enable only for paper entries (not date-group headers, etc.)
         if (!li.classList || !li.classList.contains('sidebar-paper-item')) return;
-        // 若该条目在折叠分组之下：隐藏高亮层，避免折叠后仍残留选中背景
+        // If this entry is under a collapsed group: hide the highlight layer to avoid a leftover selection background
         try {
           if (
             li.closest &&
@@ -3350,7 +3352,7 @@ window.$docsify = {
 
         showSidebarActiveIndicator();
 
-        // 选中高亮层配色：根据 good/bad 状态切换（用于“已打勾/打叉”的选中底色）
+        // Highlight-layer color: switches by good/bad state (the selection background for checked/crossed)
         try {
           const isGood =
             li.classList && li.classList.contains('sidebar-paper-good');
@@ -3360,7 +3362,7 @@ window.$docsify = {
           const isOrange =
             li.classList && li.classList.contains('sidebar-paper-orange');
 
-          // 单选：如果同时存在（理论上不应发生），按优先级取第一个
+          // Single select: if both exist (should not happen in theory), take the first by priority
           const any = isGood || isBad || isBlue || isOrange;
           indicator.classList.toggle('is-good', !!isGood && any && !isBad && !isBlue && !isOrange);
           indicator.classList.toggle('is-bad', !!isBad && any && !isGood && !isBlue && !isOrange);
@@ -3370,9 +3372,9 @@ window.$docsify = {
           // ignore
         }
 
-        // 不能用 offsetTop/offsetLeft：
-        // 侧边栏是多层嵌套 li/ul，offset* 参照系会落在中间层，导致越往下选中偏移越明显。
-        // 统一使用相对 .sidebar-nav 的几何坐标，保证展开多天后仍准确对齐。
+        // Cannot use offsetTop/offsetLeft:
+        // The sidebar is deeply nested li/ul, so offset* references land on a middle layer, making the selection drift worse further down.
+        // Use geometry relative to .sidebar-nav consistently so alignment stays accurate after expanding many days.
         const nav = ensured.parent || (li.closest && li.closest('.sidebar-nav'));
         const navRect = nav ? nav.getBoundingClientRect() : null;
         const liRect = li.getBoundingClientRect();
@@ -3381,7 +3383,7 @@ window.$docsify = {
         const w = liRect.width || li.offsetWidth;
         const h = liRect.height || li.offsetHeight;
 
-        // 新建/或要求不动画时：先关 transition，直接定位到最终位置，再恢复 transition
+        // On creation / when animation is not wanted: turn off transition, jump to the final position, then restore transition
         if (newlyCreated || !animate) {
           indicator.style.transition = 'none';
         }
@@ -3413,7 +3415,7 @@ window.$docsify = {
         const nav = document.querySelector('.sidebar-nav');
         if (!nav) return;
 
-        // 1) 优先按“当前路由 href”精确匹配，避免 Docsify 多个 active 时命中错误项
+        // 1) Match precisely by the current route href first, to avoid hitting the wrong item when Docsify has multiple actives
         const routeHref = DPR_NAV_STATE.currentHref || '';
         if (routeHref) {
           const links = Array.from(nav.querySelectorAll('a[href]'));
@@ -3429,7 +3431,7 @@ window.$docsify = {
           }
         }
 
-        // 2) 兜底：如果存在多个 active，取最后一个（通常是更深层、当前真正选中项）
+        // 2) Fallback: if multiple actives exist, take the last one (usually the deeper, truly selected item)
         const activeLis = Array.from(
           nav.querySelectorAll('li.active.sidebar-paper-item'),
         );
@@ -3443,7 +3445,7 @@ window.$docsify = {
         hideSidebarActiveIndicator();
       };
 
-      // 暴露到全局，供 sidebar resize 时调用
+      // Expose globally so it can be called on sidebar resize
       window.syncSidebarActiveIndicator = syncSidebarActiveIndicator;
 
       const DPR_TRANSITION = {
@@ -3454,7 +3456,7 @@ window.$docsify = {
       const decodeLegacyIdHash = (rawHash) => {
         const raw = String(rawHash || '').trim();
         if (!raw) return '';
-        // 兼容 Docsify 旧式 hash：#/?id=%2f202602%2f06%2fxxx 或 #?id=/202602/06/xxx
+        // Backward compatibility for Docsify legacy hashes: #/?id=%2f202602%2f06%2fxxx or #?id=/202602/06/xxx
         const m = raw.match(/^#\/?\?id=([^&]+)(?:&.*)?$/i);
         if (!m) return '';
         let decoded = '';
@@ -3465,7 +3467,7 @@ window.$docsify = {
         }
         decoded = String(decoded || '').trim();
         if (!decoded) return '';
-        // 统一为无 .md 的路由形式
+        // Normalize to the route form without .md
         decoded = decoded.replace(/\.md$/i, '');
         if (!decoded.startsWith('/')) decoded = '/' + decoded;
         return '#'+ decoded;
@@ -3476,7 +3478,7 @@ window.$docsify = {
         if (!raw) return '';
         const legacy = decodeLegacyIdHash(raw);
         if (legacy) return legacy;
-        // 统一成 "#/xxxx" 形式
+        // Normalize to the "#/xxxx" form
         if (raw.startsWith('#/')) return raw;
         if (raw.startsWith('#')) return '#/' + raw.slice(1).replace(/^\//, '');
         return '#/' + raw.replace(/^\//, '');
@@ -3484,10 +3486,10 @@ window.$docsify = {
 
       const isPaperHref = (href) => {
         const h = normalizeHref(href);
-        // 匹配论文页：
-        // - 传统路径：#/YYYYMM/DD/slug
-        // - 区间路径：#/YYYYMMDD-YYYYMMDD/slug
-        // - 会议路径：#/conference/<conference-year>/slug
+        // Match paper pages:
+        // - Traditional path: #/YYYYMM/DD/slug
+        // - Range path: #/YYYYMMDD-YYYYMMDD/slug
+        // - Conference path: #/conference/<conference-year>/slug
         return (
           /^#\/(?:\d{6}\/\d{2}|\d{8}-\d{8})\/(?!README$).+/i.test(h) ||
           /^#\/conference\/[^/]+\/(?!README$).+/i.test(h)
@@ -3496,9 +3498,9 @@ window.$docsify = {
 
       const isReportHref = (href) => {
         const h = normalizeHref(href);
-        // 匹配日报页：
-        // - 传统路径：#/YYYYMM/DD/README
-        // - 区间路径：#/YYYYMMDD-YYYYMMDD/README
+        // Match daily-report pages:
+        // - Traditional path: #/YYYYMM/DD/README
+        // - Range path: #/YYYYMMDD-YYYYMMDD/README
         return /^#\/(?:\d{6}\/\d{2}|\d{8}-\d{8})\/README$/i.test(h);
       };
 
@@ -3598,13 +3600,13 @@ window.$docsify = {
         DPR_SIDEBAR_CENTER_STATE.lastTs = Date.now();
         DPR_SIDEBAR_CENTER_STATE.lastHref = targetHref;
 
-        // 居中时只需要“滚动”动画，不做额外高亮动画
+        // When centering, only a scroll animation is needed; no extra highlight animation
         const duration = prefersReducedMotion() ? 0 : DPR_TRANSITION_MS;
         animateScrollTop(scrollEl, clamped, duration);
       };
 
       const centerSidebarOnCurrent = () => {
-        // 优先跟随 Docsify 的“active”状态（这才是你看到的选中项）
+        // Prefer following the Docsify active state (that is the item you actually see selected)
         const nav = document.querySelector('.sidebar-nav');
         if (nav) {
           const activeLi = nav.querySelector('li.active');
@@ -3612,7 +3614,7 @@ window.$docsify = {
           const el = activeLi || activeLink;
           if (el) {
             const href = (activeLink && activeLink.getAttribute('href')) || '';
-            // 如果拿得到 href，就走 href 去重；否则用一个稳定的占位 key
+            // If an href is available, dedupe by href; otherwise use a stable placeholder key
             const key = href ? normalizeHref(href) : '__active__';
             if (key && key === DPR_SIDEBAR_CENTER_STATE.lastHref) return;
 
@@ -3643,7 +3645,7 @@ window.$docsify = {
           }
         }
 
-        // 兜底：按当前路由 href 匹配
+        // Fallback: match by the current route href
         const href = DPR_NAV_STATE.currentHref || '';
         if (!href) return;
         centerSidebarOnHref(href);
@@ -3675,7 +3677,7 @@ window.$docsify = {
         const list = reportMode ? reportList : paperList;
         if (!list.length) return;
 
-        // 首页：右键/左滑（delta=+1）跳到最新一天第一篇
+        // Home: right-key/left-swipe (delta=+1) jumps to the first paper of the latest day
         if (isHome) {
           if (delta > 0) {
             triggerPageNav(list[0], 'forward');
@@ -3702,7 +3704,7 @@ window.$docsify = {
         }
       };
 
-      // 统一“sidebar 居中滚动”和“页面切换”的动画时长，确保观感一致
+      // Unify the animation duration of sidebar-center-scroll and page-switch for a consistent feel
       const DPR_TRANSITION_MS = 320;
       try {
         document.documentElement.style.setProperty(
@@ -3764,16 +3766,16 @@ window.$docsify = {
         const target = normalizeHref(href);
         if (!target) return;
 
-        // 先把 sidebar 的“选中高亮层”滑动到目标条目，和页面切换同步
+        // First slide the sidebar highlight layer to the target entry, in sync with the page switch
         moveSidebarActiveIndicatorToHref(target, { animate: true });
         DPR_SIDEBAR_ACTIVE_INDICATOR.justMoved = true;
 
-        // 通过左右键/滑动切换时：提前把 sidebar 滚到目标项附近，提升“跟手”观感
+        // When switching via arrow keys/swipe: pre-scroll the sidebar near the target for a more responsive feel
         if (DPR_NAV_STATE.lastNavSource !== 'click') {
           centerSidebarOnHref(target);
         }
 
-        // 决定入场方向：forward => 新页从右进；backward => 新页从左进
+        // Decide entry direction: forward => new page enters from the right; backward => from the left
         DPR_TRANSITION.pendingEnter =
           direction === 'backward' ? 'enter-from-left' : 'enter-from-right';
 
@@ -3792,7 +3794,7 @@ window.$docsify = {
           direction === 'backward' ? 'dpr-page-exit-right' : 'dpr-page-exit-left';
 
         animEl.classList.add('dpr-page-exit', exitClass);
-        // 等退场动画结束后再切换路由
+        // Switch the route only after the exit animation finishes
         setTimeout(() => {
           window.location.hash = target;
         }, DPR_TRANSITION_MS);
@@ -3816,11 +3818,11 @@ window.$docsify = {
         const key = url;
         const now = Date.now();
         const prev = PREFETCH_STATE.cache.get(key);
-        if (prev && now - prev.ts < 5 * 60 * 1000) return; // 5 分钟内不重复拉取
+        if (prev && now - prev.ts < 5 * 60 * 1000) return; // Do not refetch within 5 minutes
         try {
           const res = await fetch(url, { cache: 'force-cache' });
           if (!res.ok) return;
-          // 读一下 body，确保写入浏览器缓存（同时做内存缓存兜底）
+          // Read the body to ensure it is written to the browser cache (with an in-memory cache fallback)
           const text = await res.text();
           PREFETCH_STATE.cache.set(key, { ts: now, len: text.length });
         } catch {
@@ -3833,7 +3835,7 @@ window.$docsify = {
         if (!list.length) return;
         const current = DPR_NAV_STATE.currentHref;
         if (!current) {
-          // 首页：预取最新一天第一篇
+          // Home: prefetch the first paper of the latest day
           prefetchHref(list[0]);
           return;
         }
@@ -3849,18 +3851,18 @@ window.$docsify = {
         if (window.__dprNavBound) return;
         window.__dprNavBound = true;
 
-        // 禁用 Docsify 原生的标题锚点点击功能
+        // Disable the native Docsify heading-anchor click behavior
         document.addEventListener('click', (e) => {
           try {
             if (!e || e.defaultPrevented) return;
             const target = e.target;
-            // 检测是否点击了标题或标题内的锚点
+            // Detect whether a heading or an anchor inside a heading was clicked
             if (target && target.closest) {
               const heading = target.closest('h1, h2, h3, h4, h5, h6');
               if (heading && heading.closest('.markdown-section')) {
                 const link = target.closest('a');
                 if (link && link.hash && link.hash.startsWith('#') && !link.hash.startsWith('#/')) {
-                  // 阻止标题锚点的默认跳转行为
+                  // Prevent the default jump behavior of heading anchors
                   e.preventDefault();
                   e.stopPropagation();
                   return false;
@@ -3870,7 +3872,7 @@ window.$docsify = {
           } catch {
             // ignore
           }
-        }, true); // 使用捕获阶段，确保在 Docsify 之前拦截
+        }, true); // Use the capture phase to intercept before Docsify
 
         const toggleGoodForCurrent = () => {
           const current = DPR_NAV_STATE.currentHref || '';
@@ -3881,7 +3883,7 @@ window.$docsify = {
 
           const state = loadReadState();
           const cur = state[paperId];
-          // 空格：在 good 与 read 之间切换
+          // Space: toggle between good and read
           if (cur === 'good') {
             state[paperId] = 'read';
           } else {
@@ -3889,13 +3891,13 @@ window.$docsify = {
           }
 	          saveReadState(state);
 	          markSidebarReadState(null);
-	          // 同步选中高亮层颜色（good <-> read 切换时避免残留绿色底）
+	          // Sync the highlight-layer color (avoid a leftover green background when toggling good <-> read)
 	          requestAnimationFrame(() => {
 	            syncSidebarActiveIndicator({ animate: false });
 	          });
 	        };
 
-        // 通用书签切换函数：数字键 1234 对应 绿蓝紫红
+        // Generic bookmark toggle: number keys 1234 map to green/blue/purple/red
         const toggleBookmarkForCurrent = (bookmarkType) => {
           const current = DPR_NAV_STATE.currentHref || '';
           if (!current) return;
@@ -3905,7 +3907,7 @@ window.$docsify = {
 
           const state = loadReadState();
           const cur = state[paperId];
-          // 切换：如果当前已是该状态则取消（变为 read），否则设置为该状态
+          // Toggle: if already in this state, clear it (back to read); otherwise set this state
           if (cur === bookmarkType) {
             state[paperId] = 'read';
           } else {
@@ -3916,57 +3918,57 @@ window.$docsify = {
           requestAnimationFrame(() => {
             syncSidebarActiveIndicator({ animate: false });
           });
-          // 移除所有按钮焦点，避免数字键触发按钮
+          // Remove focus from all buttons so number keys do not trigger them
           if (document.activeElement && document.activeElement.blur) {
             document.activeElement.blur();
           }
         };
 
-        // 键盘：左右方向键 + 数字键 1234
+        // Keyboard: left/right arrow keys + number keys 1234
         window.addEventListener('keydown', (e) => {
           const key = e.key || '';
           if (shouldIgnoreKeyNav(e)) return;
 
-          // 数字键 1234：绿蓝紫红书签
+          // Number keys 1234: green/blue/purple/red bookmarks
           if (key === '1') {
             e.preventDefault();
-            toggleBookmarkForCurrent('good');   // 绿色
+            toggleBookmarkForCurrent('good');   // green
             return;
           }
           if (key === '2') {
             e.preventDefault();
-            toggleBookmarkForCurrent('blue');   // 蓝色
+            toggleBookmarkForCurrent('blue');   // blue
             return;
           }
           if (key === '3') {
             e.preventDefault();
-            toggleBookmarkForCurrent('orange'); // 紫色（橙色）
+            toggleBookmarkForCurrent('orange'); // purple (orange)
             return;
           }
           if (key === '4') {
             e.preventDefault();
-            toggleBookmarkForCurrent('bad');    // 红色
+            toggleBookmarkForCurrent('bad');    // red
             return;
           }
 
           if (key === ' ') {
-            // 空格键：切换"不错（绿色勾）"
+            // Space key: toggle "good (green check)"
             e.preventDefault();
             toggleGoodForCurrent();
             return;
           }
           if (key !== 'ArrowLeft' && key !== 'ArrowRight') return;
-          // 只在当前页面聚焦时工作：浏览器已聚焦窗口即可
+          // Only works while the current page is focused: the browser window being focused is enough
           e.preventDefault();
           DPR_NAV_STATE.lastNavSource = 'key';
           navigateByDelta(key === 'ArrowRight' ? +1 : -1);
         });
 
-        // 点击论文链接也走同一套“整页切换”动效（避免只有滑动/方向键有动画）
+        // Clicking a paper link also uses the same full-page-switch animation (so it is not limited to swipe/arrow keys)
         document.addEventListener('click', (e) => {
           try {
             if (!e || e.defaultPrevented) return;
-            // 仅拦截普通左键点击，避免影响新标签页/复制链接等行为
+            // Only intercept plain left clicks, to avoid affecting open-in-new-tab/copy-link behavior
             if (typeof e.button === 'number' && e.button !== 0) return;
             if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
 
@@ -3976,7 +3978,7 @@ window.$docsify = {
             if (link.classList && link.classList.contains('dpr-sidebar-export-link')) return;
             const rawHref = String(link.getAttribute('href') || '').trim();
             if (rawHref.startsWith('blob:')) return;
-            // 跳过外部链接（如 PDF 地址），让浏览器直接打开
+            // Skip external links (e.g. PDF URLs) and let the browser open them directly
             if (/^https?:\/\//i.test(rawHref)) return;
             const href = link.getAttribute('href') || '';
             const target = normalizeHref(href);
@@ -3986,10 +3988,10 @@ window.$docsify = {
             if (!target) return;
             if (target === (DPR_NAV_STATE.currentHref || '')) return;
 
-            // 鼠标点击 sidebar：不触发“居中”逻辑
+            // Mouse click on the sidebar: do not trigger the centering logic
             DPR_NAV_STATE.lastNavSource = 'click';
 
-            // 推断方向：按侧边栏顺序判断“前进/后退”
+            // Infer direction: determine forward/backward by sidebar order
             let direction = 'forward';
             const list = DPR_NAV_STATE.paperHrefs || [];
             const cur = DPR_NAV_STATE.currentHref || '';
@@ -4001,7 +4003,7 @@ window.$docsify = {
               }
             }
 
-            // 只在论文页启用动效拦截，避免首页点击出现“无动画但有延迟”的体验
+            // Enable animation interception only on paper pages, to avoid a no-animation-but-delayed feel on the home page
             if (document.body && document.body.classList.contains('dpr-paper-page') && !prefersReducedMotion()) {
               e.preventDefault();
               triggerPageNav(target, direction);
@@ -4011,7 +4013,7 @@ window.$docsify = {
           }
         });
 
-        // 鼠标/触控板横向滚动：切换论文，并阻止浏览器的“整页滑动/回退动效”
+        // Mouse/trackpad horizontal scroll: switch papers and block the browser full-page-swipe/back animation
         document.addEventListener(
           'wheel',
           (e) => {
@@ -4021,15 +4023,15 @@ window.$docsify = {
             if (Math.abs(dx) < 28) return;
             if (Math.abs(dx) < Math.abs(dy) * 1.2) return;
             e.preventDefault();
-            // dx < 0：向左滑 => 下一篇
-            // dx > 0：向右滑 => 上一篇
+            // dx < 0: swipe left => next paper
+            // dx > 0: swipe right => previous paper
             DPR_NAV_STATE.lastNavSource = 'wheel';
             navigateByDelta(dx < 0 ? +1 : -1);
           },
           { passive: false },
         );
 
-        // 触摸滑动：左右切换
+        // Touch swipe: switch left/right
         let startX = 0;
         let startY = 0;
         let startAt = 0;
@@ -4055,7 +4057,7 @@ window.$docsify = {
             lockHorizontal = true;
           }
           if (lockHorizontal) {
-            // 阻止浏览器的横向滑动/回退动效，让切换更“丝滑”
+            // Block the browser horizontal-swipe/back animation for a smoother switch
             if (e.cancelable) {
               e.preventDefault();
             }
@@ -4068,12 +4070,12 @@ window.$docsify = {
           const dx = t.clientX - startX;
           const dy = t.clientY - startY;
           const dt = Date.now() - startAt;
-          // 排除长按、轻微滑动、明显上下滚动
+          // Exclude long press, slight swipes, and clear vertical scrolling
           if (dt > 900) return;
           if (Math.abs(dx) < threshold) return;
           if (Math.abs(dx) < Math.abs(dy) * 1.2) return;
-          // dx < 0：向左滑 => 下一篇（相当于 ArrowRight）
-          // dx > 0：向右滑 => 上一篇（相当于 ArrowLeft）
+          // dx < 0: swipe left => next paper (equivalent to ArrowRight)
+          // dx > 0: swipe right => previous paper (equivalent to ArrowLeft)
           DPR_NAV_STATE.lastNavSource = 'swipe';
           navigateByDelta(dx < 0 ? +1 : -1);
         };
@@ -4083,7 +4085,7 @@ window.$docsify = {
         document.addEventListener('touchend', onTouchEnd, { passive: true });
       };
 
-      // --- 解析 YAML front matter 并转换为 HTML ---
+      // --- Parse YAML front matter and convert to HTML ---
       const parseFrontMatter = (content) => {
         if (!content || !content.startsWith('---')) {
           return { meta: null, body: content };
@@ -4095,7 +4097,7 @@ window.$docsify = {
         const yamlStr = content.slice(4, endIdx).trim();
         const body = content.slice(endIdx + 4).trim();
 
-        // 简单解析 YAML（不依赖外部库）
+        // Simple YAML parsing (no external library)
         const meta = {};
         const lines = yamlStr.split('\n');
         for (const line of lines) {
@@ -4104,10 +4106,10 @@ window.$docsify = {
           const key = line.slice(0, colonIdx).trim();
           let value = line.slice(colonIdx + 1).trim();
 
-          // 处理数组格式 [a, b, c]
+          // Handle array format [a, b, c]
           if (value.startsWith('[') && value.endsWith(']')) {
             const inner = value.slice(1, -1);
-            // 简单分割，处理引号内的逗号
+            // Simple split, handling commas inside quotes
             const items = [];
             let current = '';
             let inQuote = false;
@@ -4127,10 +4129,10 @@ window.$docsify = {
               current += c;
             }
             if (current.trim()) items.push(current.trim());
-            // 去除引号
+            // Strip quotes
             meta[key] = items.map(s => s.replace(/^["']|["']$/g, ''));
           } else {
-            // 去除引号
+            // Strip quotes
             meta[key] = value.replace(/^["']|["']$/g, '').replace(/\\n/g, '\n').replace(/\\"/g, '"');
           }
         }
@@ -4186,9 +4188,9 @@ window.$docsify = {
         const kind = options.kind || 'figure';
         const title = options.title || 'Figures';
         const label = options.label || 'Figure';
-        const labelCn = options.labelCn || '插图';
+        const labelCn = options.labelCn || 'figure';
         const slides = items.map((item, index) => {
-          const pageText = item.page ? `PDF 第 ${item.page} 页` : '';
+          const pageText = item.page ? `PDF page ${item.page}` : '';
           const caption = item.caption ? `<div class="paper-figure-caption">${escapePaperHtml(item.caption)}</div>` : '';
           return [
             `<div class="paper-figure-slide${index === 0 ? ' is-active' : ''}" data-figure-slide="${index}">`,
@@ -4204,9 +4206,9 @@ window.$docsify = {
         }).join('');
 
         const thumbs = items.map((item, index) => {
-          const thumbPageText = item.page ? ` · PDF 第 ${item.page} 页` : '';
+          const thumbPageText = item.page ? ` · PDF page ${item.page}` : '';
           return [
-            `<button class="paper-figure-thumb${index === 0 ? ' is-active' : ''}" type="button" data-figure-thumb="${index}" aria-label="切换到第 ${index + 1} 张${labelCn}">`,
+            `<button class="paper-figure-thumb${index === 0 ? ' is-active' : ''}" type="button" data-figure-thumb="${index}" aria-label="Switch to ${labelCn} ${index + 1}">`,
             `<img class="paper-figure-thumb-image" src="${escapePaperHtml(resolveDocsAssetUrl(item.url))}" alt="${label} Thumbnail ${index + 1}" loading="lazy">`,
             `<span class="paper-figure-thumb-label">${label} ${index + 1}${thumbPageText ? escapePaperHtml(thumbPageText) : ''}</span>`,
             '</button>',
@@ -4221,15 +4223,15 @@ window.$docsify = {
           '</div>',
           '<div class="paper-figure-stage">',
           '<div class="paper-figure-main">',
-          items.length > 1 ? '<button class="paper-figure-nav paper-figure-nav-prev" type="button" data-figure-prev aria-label="上一张">‹</button>' : '',
+          items.length > 1 ? '<button class="paper-figure-nav paper-figure-nav-prev" type="button" data-figure-prev aria-label="Previous">‹</button>' : '',
           `<div class="paper-figure-viewport">${slides}</div>`,
-          items.length > 1 ? '<button class="paper-figure-nav paper-figure-nav-next" type="button" data-figure-next aria-label="下一张">›</button>' : '',
+          items.length > 1 ? '<button class="paper-figure-nav paper-figure-nav-next" type="button" data-figure-next aria-label="Next">›</button>' : '',
           '</div>',
           items.length > 1 ? [
             '<div class="paper-figure-thumbs-wrap">',
-            '<button class="paper-figure-thumb-nav paper-figure-thumb-nav-prev" type="button" data-figure-thumb-prev aria-label="上一张缩略图">‹</button>',
+            '<button class="paper-figure-thumb-nav paper-figure-thumb-nav-prev" type="button" data-figure-thumb-prev aria-label="Previous thumbnail">‹</button>',
             `<div class="paper-figure-thumbs">${thumbs}</div>`,
-            '<button class="paper-figure-thumb-nav paper-figure-thumb-nav-next" type="button" data-figure-thumb-next aria-label="下一张缩略图">›</button>',
+            '<button class="paper-figure-thumb-nav paper-figure-thumb-nav-next" type="button" data-figure-thumb-next aria-label="Next thumbnail">›</button>',
             '</div>',
           ].join('') : '',
           '</div>',
@@ -4242,14 +4244,14 @@ window.$docsify = {
         kind: 'figure',
         title: 'Figures',
         label: 'Figure',
-        labelCn: '插图',
+        labelCn: 'figure',
       });
 
       const renderTableCarousel = (tables) => renderMediaCarousel(tables, {
         kind: 'table',
         title: 'Tables',
         label: 'Table',
-        labelCn: '表格',
+        labelCn: 'table',
       });
 
       const renderPaperMediaCarousels = (figures, tables) => {
@@ -4260,15 +4262,15 @@ window.$docsify = {
         const figureButton = hasFigures ? [
           `<button class="paper-media-card${defaultTab === 'figures' ? ' is-primary' : ''}" type="button" data-paper-media-open="figures">`,
           '<span class="paper-media-card-kicker">Figures</span>',
-          `<span class="paper-media-card-title">${figures.length} 张论文插图</span>`,
-          '<span class="paper-media-card-action">打开轮播</span>',
+          `<span class="paper-media-card-title">${figures.length} paper figures</span>`,
+          '<span class="paper-media-card-action">Open carousel</span>',
           '</button>',
         ].join('') : '';
         const tableButton = hasTables ? [
           `<button class="paper-media-card${defaultTab === 'tables' ? ' is-primary' : ''}" type="button" data-paper-media-open="tables">`,
           '<span class="paper-media-card-kicker">Tables</span>',
-          `<span class="paper-media-card-title">${tables.length} 张论文表格</span>`,
-          '<span class="paper-media-card-action">打开轮播</span>',
+          `<span class="paper-media-card-title">${tables.length} paper tables</span>`,
+          '<span class="paper-media-card-action">Open carousel</span>',
           '</button>',
         ].join('') : '';
         const tabButtons = [
@@ -4290,7 +4292,7 @@ window.$docsify = {
           '<div class="paper-media-summary">',
           '<div>',
           '<div class="paper-media-summary-kicker">Paper Media</div>',
-          '<div class="paper-media-summary-title">图表附件</div>',
+          '<div class="paper-media-summary-title">Figure & table attachments</div>',
           '</div>',
           '<div class="paper-media-summary-cards">',
           figureButton,
@@ -4299,15 +4301,15 @@ window.$docsify = {
           '</div>',
           '<div class="paper-media-modal" data-paper-media-modal aria-hidden="true">',
           '<div class="paper-media-backdrop" data-paper-media-close></div>',
-          '<div class="paper-media-dialog" role="dialog" aria-modal="true" aria-label="论文图表附件" tabindex="-1">',
+          '<div class="paper-media-dialog" role="dialog" aria-modal="true" aria-label="Paper figure & table attachments" tabindex="-1">',
           '<div class="paper-media-dialog-head">',
           '<div>',
           '<div class="paper-media-dialog-kicker">Paper Media</div>',
-          '<div class="paper-media-dialog-title">论文图表附件</div>',
+          '<div class="paper-media-dialog-title">Paper figure & table attachments</div>',
           '</div>',
           '<div class="paper-media-dialog-actions">',
-          '<button class="paper-media-fullscreen" type="button" data-paper-media-fullscreen aria-pressed="false" aria-label="全屏查看">全屏</button>',
-          '<button class="paper-media-close" type="button" data-paper-media-close aria-label="关闭">×</button>',
+          '<button class="paper-media-fullscreen" type="button" data-paper-media-fullscreen aria-pressed="false" aria-label="View fullscreen">Fullscreen</button>',
+          '<button class="paper-media-close" type="button" data-paper-media-close aria-label="Close">×</button>',
           '</div>',
           '</div>',
           `<div class="paper-media-tabs">${tabButtons}</div>`,
@@ -4344,8 +4346,8 @@ window.$docsify = {
             modal.classList.toggle('is-fullscreen', !!enabled);
             if (fullscreenButton) {
               fullscreenButton.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-              fullscreenButton.textContent = enabled ? '退出全屏' : '全屏';
-              fullscreenButton.setAttribute('aria-label', enabled ? '退出全屏查看' : '全屏查看');
+              fullscreenButton.textContent = enabled ? 'Exit fullscreen' : 'Fullscreen';
+              fullscreenButton.setAttribute('aria-label', enabled ? 'Exit fullscreen view' : 'View fullscreen');
             }
           };
           const activate = (name) => {
@@ -4519,7 +4521,7 @@ window.$docsify = {
         document.body.classList.remove('dpr-pdf-preview-open');
         document.querySelectorAll('[data-pdf-preview-toggle]').forEach((btn) => {
           btn.setAttribute('aria-expanded', 'false');
-          btn.textContent = '预览 PDF';
+          btn.textContent = 'Preview PDF';
         });
       };
 
@@ -4543,16 +4545,16 @@ window.$docsify = {
         panel = document.createElement('aside');
         panel.id = 'dpr-pdf-preview-panel';
         panel.className = 'dpr-pdf-preview-panel';
-        panel.setAttribute('aria-label', 'PDF 预览');
+        panel.setAttribute('aria-label', 'PDF preview');
         panel.innerHTML = [
           '<div class="dpr-pdf-preview-header">',
-          '<div class="dpr-pdf-preview-title">PDF 预览</div>',
+          '<div class="dpr-pdf-preview-title">PDF preview</div>',
           '<div class="dpr-pdf-preview-actions">',
-          '<a class="dpr-pdf-preview-open-link" href="#" target="_blank" rel="noopener">新窗口打开</a>',
-          '<button class="dpr-pdf-preview-close" type="button" aria-label="关闭 PDF 预览">×</button>',
+          '<a class="dpr-pdf-preview-open-link" href="#" target="_blank" rel="noopener">Open in new window</a>',
+          '<button class="dpr-pdf-preview-close" type="button" aria-label="Close PDF preview">×</button>',
           '</div>',
           '</div>',
-          '<iframe class="dpr-pdf-preview-frame" title="PDF 预览"></iframe>',
+          '<iframe class="dpr-pdf-preview-frame" title="PDF preview"></iframe>',
         ].join('');
         document.body.appendChild(panel);
         panel.querySelector('.dpr-pdf-preview-close')?.addEventListener('click', closePdfPreview);
@@ -4579,16 +4581,16 @@ window.$docsify = {
             const nextOpen = !document.body.classList.contains('dpr-pdf-preview-open');
             document.body.classList.toggle('dpr-pdf-preview-open', nextOpen);
             btn.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
-            btn.textContent = nextOpen ? '关闭预览' : '预览 PDF';
+            btn.textContent = nextOpen ? 'Close preview' : 'Preview PDF';
           });
         });
       };
 
-      // 根据 front matter 生成论文页面 HTML
+      // Generate the paper-page HTML from front matter
       const renderPaperFromMeta = (meta) => {
         if (!meta) return '';
 
-        // 解析标签，生成带颜色的 HTML
+        // Parse tags and generate colored HTML
         const renderTags = (tags) => {
           if (!tags || !tags.length) return '';
           return tags.map(tag => {
@@ -4624,7 +4626,7 @@ window.$docsify = {
 
         const lines = [];
 
-        // 标题区域
+        // Title area
         lines.push('<div class="paper-title-row">');
         if (meta.title_zh) {
           lines.push(`<h1 class="paper-title-zh">${escapeHtml(meta.title_zh)}</h1>`);
@@ -4635,10 +4637,10 @@ window.$docsify = {
         lines.push('</div>');
         lines.push('');
 
-        // 中间区域
+        // Middle area
         lines.push('<div class="paper-meta-row">');
 
-        // 左侧：Evidence 和 TLDR
+        // Left: Evidence and TLDR
         lines.push('<div class="paper-meta-left">');
         if (meta.evidence) {
           lines.push(`<p><strong>Evidence</strong>: ${escapeHtml(meta.evidence)}</p>`);
@@ -4648,7 +4650,7 @@ window.$docsify = {
         }
         lines.push('</div>');
 
-        // 右侧：基本信息
+        // Right: basic info
         lines.push('<div class="paper-meta-right">');
         lines.push(`<p><strong>Authors</strong>: ${escapeHtml(meta.authors || 'Unknown')}</p>`);
         if (meta.source) {
@@ -4671,7 +4673,7 @@ window.$docsify = {
         lines.push('</div>');
         lines.push('');
 
-        // 速览区域
+        // Glance area
         if (meta.motivation || meta.method || meta.result || meta.conclusion) {
           lines.push('<div class="paper-glance-section">');
           lines.push('<div class="paper-glance-row">');
@@ -4707,8 +4709,8 @@ window.$docsify = {
           lines.push(renderPaperMediaCarousels(figures, tables));
         }
 
-        // 注意：在 Markdown 中插入 HTML block（如 <hr>）后，需要一个“空行”才能让后续的 `##` 等 Markdown 正常解析。
-        // 这里通过追加两个空行，确保最终输出以 `<hr>\n\n` 结尾。
+        // Note: after inserting an HTML block (e.g. <hr>) in Markdown, a blank line is needed for subsequent Markdown (such as `##`) to parse correctly.
+        // We append two blank lines so the final output ends with `<hr>\n\n`.
         lines.push('<hr>');
         lines.push('');
         lines.push('');
@@ -4716,10 +4718,10 @@ window.$docsify = {
         return lines.join('\n');
       };
 
-      // --- Docsify beforeEach 钩子：解析 front matter ---
+      // --- Docsify beforeEach hook: parse front matter ---
       hook.beforeEach(function (content) {
         const file = vm && vm.route ? vm.route.file : '';
-        // 只对论文页面处理
+        // Only process paper pages
         if (!isPaperRouteFile(file)) {
           latestPaperRawMarkdown = '';
           return content;
@@ -4731,8 +4733,8 @@ window.$docsify = {
           return content;
         }
 
-        // 生成论文页面 HTML + 正文
-        // ★ 保护正文中的 LaTeX 公式不被 marked 破坏
+        // Generate the paper-page HTML + body
+        // * Protect LaTeX formulas in the body from being broken by marked
         const paperHtml = renderPaperFromMeta(meta);
         return paperHtml + protectLatex(body);
       });
@@ -4767,8 +4769,8 @@ window.$docsify = {
         refreshDeferredPageEnhancements,
       );
 
-      // --- 阅读状态同步初始化 ---
-      // 用户解锁密钥后（mode=full），用 GitHub Token 获取用户名，初始化 Supabase 同步
+      // --- Read-state sync initialization ---
+      // After the user unlocks the key (mode=full), get the username via the GitHub Token and initialize Supabase sync
       const initReadStateSync = async () => {
         try {
           if (window.DPR_ACCESS_MODE !== 'full') return;
@@ -4776,7 +4778,7 @@ window.$docsify = {
           const secret = window.decoded_secret_private || {};
           const token = (secret.github && secret.github.token) || '';
           if (!token) return;
-          // 获取 GitHub 用户名
+          // Get the GitHub username
           const resp = await fetch('https://api.github.com/user', {
             headers: { Authorization: 'Bearer ' + token },
           });
@@ -4784,13 +4786,13 @@ window.$docsify = {
           const user = await resp.json();
           const username = (user && user.login) || '';
           if (!username) return;
-          // 读取 Supabase 配置
+          // Read the Supabase configuration
           const supabaseUrl = (window.$docsify && window.$docsify.supabaseUrl)
             || (window.jsyaml ? '' : '')
             || 'https://lyucdwgefyfbmaiopjbk.supabase.co';
           const anonKey = 'sb_publishable_lX-oi64Uxyd7SIVv3_w2Uw_MTOojeKq';
           await window.DPRReadStateSync.init(supabaseUrl, anonKey, username);
-          // 迁移 localStorage 已有数据
+          // Migrate existing localStorage data
           const localState = (() => {
             try {
               const raw = window.localStorage.getItem(READ_STORAGE_KEY);
@@ -4800,7 +4802,7 @@ window.$docsify = {
           if (localState && Object.keys(localState).length) {
             window.DPRReadStateSync.migrateFromLocalStorage(localState);
           }
-          // 重新渲染 sidebar 状态
+          // Re-render the sidebar state
           updateSidebarUnreadBadges();
           markSidebarReadState(null);
         } catch (e) {
@@ -4812,7 +4814,7 @@ window.$docsify = {
         if (mode === 'full') initReadStateSync();
       });
 
-      // --- Docsify 生命周期钩子 ---
+      // --- Docsify lifecycle hooks ---
       hook.doneEach(function () {
         try {
           if (typeof window.DPRHideInitialSplash === 'function') {
@@ -4823,7 +4825,7 @@ window.$docsify = {
           // ignore
         }
 
-        // 路由统一：将 #/?id=%2f... 自动规整为 #/...
+        // Route normalization: automatically reshape #/?id=%2f... into #/...
         try {
           const canonical = decodeLegacyIdHash(window.location.hash || '');
           if (canonical && canonical !== window.location.hash) {
@@ -4834,12 +4836,12 @@ window.$docsify = {
           // ignore
         }
 
-        // 当前路由对应的“论文 ID”（简单用文件名去掉 .md）
+        // The paper ID for the current route (simply the filename without .md)
         const paperId = getPaperId();
         const routePath = vm.route && vm.route.path ? vm.route.path : '';
         const lowerId = (paperId || '').toLowerCase();
 
-        // 首页（如 README.md 或根路径）不展示研讨区，只做数学渲染和 Zotero 元数据更新
+        // The home page (e.g. README.md or the root path) does not show the discussion area; it only does math rendering and Zotero metadata updates
         const isHomePage =
           !paperId ||
           lowerId === 'readme' ||
@@ -4856,28 +4858,28 @@ window.$docsify = {
           modal.setAttribute('aria-hidden', 'true');
         });
 
-        // A. 对正文区域进行一次全局公式渲染（支持 $...$ / $$...$$）
+        // A. Run a global formula render over the body area (supports $...$ / $$...$$)
         const mainContent = document.querySelector('.markdown-section');
         if (mainContent) {
-          // 先创建正文包装层，避免后续切页动画影响聊天浮层
+          // Create the body wrapper first, so later page-switch animations do not affect the chat overlay
           const root = isPaperPage ? ensurePageContentRoot() : null;
           renderMathInEl(root || mainContent);
         }
 
-        // 论文页标题条排版（只对 docs/YYYYMM/DD/*.md 生效）
+        // Paper-page title bar layout (only applies to docs/YYYYMM/DD/*.md)
         applyPaperTitleBar();
         bindPdfPreviewToggle();
 
-        // 论文页左右切换：更新导航列表并绑定事件（只绑定一次）
+        // Paper-page left/right switching: update the nav list and bind events (bind only once)
         updateNavState();
         ensureNavHandlers();
-        // 预取相邻论文的 Markdown（利用浏览器 cache，让切换更丝滑）
+        // Prefetch adjacent papers' Markdown (using the browser cache for smoother switching)
         prefetchAdjacent();
 
-        // 页面入场动画：根据上一跳的方向做滑入
+        // Page entry animation: slide in based on the previous navigation direction
         const animEl = getPageAnimEl();
         if (animEl) {
-          // 清理上一次退场残留（防止极端情况下没清掉）
+          // Clean up leftovers from the previous exit (in case they were not cleared in edge cases)
           animEl.classList.remove(
             'dpr-page-exit',
             'dpr-page-exit-left',
@@ -4888,7 +4890,7 @@ window.$docsify = {
           if (enter && !prefersReducedMotion()) {
             animEl.classList.add('dpr-page-enter', enter);
             requestAnimationFrame(() => {
-              // 触发 transition 到“静止态”
+              // Trigger the transition to the resting state
               animEl.classList.add('dpr-page-enter-active');
               setTimeout(() => {
                 animEl.classList.remove(
@@ -4910,12 +4912,12 @@ window.$docsify = {
         bindPaperMediaModals();
 
         // ----------------------------------------------------
-        // E. 小屏点击侧边栏条目后自动收起
+        // E. On small screens, auto-collapse after clicking a sidebar entry
         // ----------------------------------------------------
         setupMobileSidebarAutoCloseOnItemClick();
 
         // ----------------------------------------------------
-        // F. 侧边栏按日期折叠
+        // F. Collapse the sidebar by date
         // ----------------------------------------------------
         setupCollapsibleSidebarByDay();
         setupCollapsibleConferenceSidebar();
@@ -4924,25 +4926,25 @@ window.$docsify = {
         neutralizeSidebarNoactiveLinks();
 
         // ----------------------------------------------------
-        // G. 侧边栏已阅读论文状态高亮
+        // G. Highlight read-paper state in the sidebar
         // ----------------------------------------------------
         if (!isLandingLikePage && paperId) {
           markSidebarReadState(paperId);
         } else {
-          // 首页也需要应用已有的“已读高亮”，但不新增记录
+          // The home page also applies existing read highlights, but does not add new records
           markSidebarReadState(null);
         }
 
-        // 让滑动高亮层跟随当前 active 项（点击、路由变化后会更新 active 类）
+        // Make the sliding highlight layer follow the current active item (the active class updates after clicks/route changes)
         try {
           const movedByNavAnim = !!DPR_SIDEBAR_ACTIVE_INDICATOR.justMoved;
           if (!movedByNavAnim) {
-            // 非“点击触发的预先滑动”场景：先立即贴齐一次
+            // Not a "click-triggered pre-slide" case: snap into place immediately first
             syncSidebarActiveIndicator({ animate: false });
           }
-          // 统一做一次延迟终态校准：
-          // - 点击切页时避免“先对齐 -> 上跳 -> 再回位”的双重抖动
-          // - 分组展开/收起有 max-height 过渡，布局稳定后再校准一次
+          // Do a single delayed final calibration:
+          // - Avoid the double jitter of "align -> jump up -> return" when switching pages by click
+          // - Groups have a max-height transition on expand/collapse; calibrate again after the layout settles
           setTimeout(() => {
             try {
               requestAnimationFrame(() => {
@@ -4957,7 +4959,7 @@ window.$docsify = {
           DPR_SIDEBAR_ACTIVE_INDICATOR.justMoved = false;
         }
 
-        // 自动把当前论文在 sidebar 中滚动到居中位置，便于连续阅读
+        // Automatically scroll the current paper to the center of the sidebar for continuous reading
         if (DPR_NAV_STATE.lastNavSource !== 'click') {
           requestAnimationFrame(() => {
             requestAnimationFrame(() => {
@@ -4966,11 +4968,11 @@ window.$docsify = {
           });
         }
 
-        // 本次 doneEach 的来源只用于控制“是否居中”，用完即清理
+        // This doneEach source only controls whether to center; clear it after use
         DPR_NAV_STATE.lastNavSource = '';
 
         // ----------------------------------------------------
-        // H. Zotero 元数据注入逻辑 (带延时和唤醒)
+        // H. Zotero metadata injection logic (with delay and wake-up)
         // ----------------------------------------------------
         setTimeout(() => {
           updateZoteroMetaFromPage(
@@ -4978,10 +4980,10 @@ window.$docsify = {
             vm.route.file,
             latestPaperRawMarkdown,
           );
-        }, 1); // 延迟执行，等待 DOM 渲染完毕
+        }, 1); // Delay execution until the DOM finishes rendering
       });
       // ----------------------------------------------------
-      // I. 响应式侧边栏：窄屏首次加载时确保收起（仅移除 close 类）
+      // I. Responsive sidebar: ensure it is collapsed on first load on narrow screens (only remove the close class)
       // ----------------------------------------------------
       const SIDEBAR_AUTO_COLLAPSE_WIDTH = 1024;
 
@@ -4992,11 +4994,11 @@ window.$docsify = {
 
         const body = document.body;
         if (!body.classList) return;
-        // 进入窄屏时使用 "默认不带 close" 的收起态，兼容 Docsify 的移动端语义
+        // On entering narrow screens, use the "collapsed without close" state, compatible with Docsify mobile semantics
         body.classList.remove('close');
       };
 
-      // 初始化时执行一次
+      // Run once on initialization
       ensureCollapsedOnNarrowScreen();
     },
   ],

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# 通用向量检索工具：封装 sentence-transformers 的向量计算与粗筛逻辑
+# General-purpose vector retrieval utility: wraps sentence-transformers for embedding computation and coarse filtering
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from model_loader import is_remote_embedding_enabled, load_sentence_transformer
 if TYPE_CHECKING:
   from sentence_transformers import SentenceTransformer
 
-# E5 系列推荐使用 query/passsage 前缀来区分检索侧与文档侧
+# E5-family models recommend query/passage prefixes to distinguish the query side from the document side
 E5_QUERY_PREFIX = "query: "
 
 
@@ -26,8 +26,8 @@ def log(message: str) -> None:
 
 def debug_hf_runtime(prefix: str) -> None:
   """
-  打印 Hugging Face 相关的运行时信息，用于排查 CI 环境下的缓存路径/符号链接问题。
-  - 默认仅在 GitHub Actions 或 DPR_DEBUG_HF=1 时输出，避免本地运行过于冗长。
+  Print Hugging Face runtime information to diagnose cache path / symlink issues in CI.
+  Output is suppressed by default unless running on GitHub Actions or DPR_DEBUG_HF=1.
   """
   enable = (os.getenv("DPR_DEBUG_HF") == "1") or (os.getenv("GITHUB_ACTIONS") == "true")
   if not enable:
@@ -62,7 +62,7 @@ def debug_hf_runtime(prefix: str) -> None:
   except Exception as e:
     log(f"[DEBUG][HF] import huggingface_hub failed: {e}")
 
-  # 目录快速探测（不递归，避免刷屏）
+  # Quick directory probe (non-recursive to avoid flooding the log)
   def ls_dir(path: str) -> None:
     try:
       items = os.listdir(path)
@@ -78,7 +78,7 @@ def debug_hf_runtime(prefix: str) -> None:
 
 
 def _set_max_seq_length(model: Any, max_length: int | None) -> None:
-  """尽量通过 SentenceTransformer 的 max_seq_length 控制截断长度。"""
+  """Best-effort: set the SentenceTransformer's max_seq_length to control truncation."""
   if max_length is None or max_length <= 0:
     return
   if hasattr(model, "max_seq_length"):
@@ -103,10 +103,10 @@ def encode_queries(
   max_length: int | None = None,
 ) -> np.ndarray:
   """
-  编码查询文本向量。
+  Encode query texts into embeddings.
 
-  这里为 E5 系列显式添加 query 前缀：
-  query: <用户查询>
+  Explicitly prepends the E5 query prefix:
+  query: <user query>
   """
   decorated: List[str] = []
   for t in texts:
@@ -139,9 +139,9 @@ def compute_embeddings(
   log_every: int = 20,
 ) -> np.ndarray:
   """
-  为给定列表计算向量表示。
-  约定：每个元素需提供 text_for_embedding 属性，返回「用于向量化的文本」。
-  返回形状为 (N, D) 的 numpy 数组，并做归一化，便于用点积近似余弦相似度。
+  Compute embeddings for a list of items.
+  Convention: each item must expose a `text_for_embedding` attribute returning the text to embed.
+  Returns a normalized (N, D) numpy array — dot product approximates cosine similarity.
   """
   texts = []
   for it in items:
@@ -159,7 +159,7 @@ def compute_embeddings(
     return np.zeros((0, 0), dtype=np.float32)
 
   total = len(texts)
-  log(f"[INFO] 正在为 {total} 条记录计算向量表示...")
+  log(f"[INFO] Computing embeddings for {total} records...")
   encode_kwargs: Dict[str, Any] = {
     "convert_to_numpy": True,
     "normalize_embeddings": True,
@@ -179,22 +179,22 @@ def compute_embeddings(
       while processed >= next_log_at and next_log_at <= total:
         elapsed = time.time() - start_time
         rate = processed / elapsed if elapsed > 0 else 0.0
-        log(f"[INFO] Embedding 进度: {processed}/{total} (~{rate:.2f} paper/s)")
+        log(f"[INFO] Embedding progress: {processed}/{total} (~{rate:.2f} paper/s)")
         next_log_at += log_every
     elif processed == total:
       elapsed = time.time() - start_time
       rate = processed / elapsed if elapsed > 0 else 0.0
-      log(f"[INFO] Embedding 进度: {processed}/{total} (~{rate:.2f} paper/s)")
+      log(f"[INFO] Embedding progress: {processed}/{total} (~{rate:.2f} paper/s)")
 
   return np.vstack(embeddings_list)
 
 
 class EmbeddingCoarseFilter:
   """
-  基于 sentence-transformers 的粗筛类：
-  - 内部持有一个向量模型；
-  - 对论文池按多个查询做相似度排序；
-  - 只关注「召回 + 相似度排序」，具体 tag 等逻辑由调用方处理。
+  Coarse-filter class backed by sentence-transformers:
+  - Holds an embedding model internally.
+  - Ranks a paper pool by similarity across multiple queries.
+  - Handles only retrieval + similarity ranking; tag logic is the caller's responsibility.
   """
 
   def __init__(
@@ -224,9 +224,9 @@ class EmbeddingCoarseFilter:
       self.device = device if not remote_mode else "remote"
 
     if remote_mode:
-      print(f"[INFO] 正在初始化远程向量服务：{self.model_name}，device={self.device}")
+      print(f"[INFO] Initializing remote embedding service: {self.model_name}, device={self.device}")
     else:
-      print(f"[INFO] 正在加载本地向量模型：{self.model_name}，device={self.device}")
+      print(f"[INFO] Loading local embedding model: {self.model_name}, device={self.device}")
       debug_hf_runtime("before SentenceTransformer()")
     self.model = load_sentence_transformer(self.model_name, device=self.device)
     if not remote_mode:
@@ -235,22 +235,22 @@ class EmbeddingCoarseFilter:
 
   def filter(self, items: List[Any], queries: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    使用内部向量模型，对给定对象列表按 queries 做粗筛。
+    Coarse-filter the given item list against queries using the internal embedding model.
 
-    约定：
-    - items：需要提供 text_for_embedding，用于构造向量；
-    - queries：每个元素至少包含 query_text 字段，其余字段原样透传。
-    返回结构：
+    Conventions:
+    - items: must expose `text_for_embedding` for vector construction.
+    - queries: each entry must contain at least `query_text`; all other fields are passed through.
+    Return structure:
     {
-      "queries": [ { ... 原 query 字段 ..., "top_indices": [int, ...] }, ... ],
-      "embeddings": np.ndarray  # items 对应的向量
+      "queries": [ { ... original query fields ..., "top_indices": [int, ...] }, ... ],
+      "embeddings": np.ndarray  # embeddings corresponding to items
     }
     """
     if not items:
-      print("[WARN] items 为空，跳过粗筛。")
+      print("[WARN] items list is empty, skipping coarse filter.")
       return {"queries": [], "embeddings": None}
     if not queries:
-      print("[WARN] 查询列表为空，跳过粗筛。")
+      print("[WARN] Query list is empty, skipping coarse filter.")
       return {"queries": [], "embeddings": None}
 
     item_embeddings = compute_embeddings(
@@ -267,9 +267,9 @@ class EmbeddingCoarseFilter:
       if not q_text:
         continue
 
-      print(f"[INFO] Embedding 粗筛：query_text={q_text[:40]}...")
+      print(f"[INFO] Embedding coarse filter: query_text={q_text[:40]}...")
 
-      # 查询侧使用 E5 的 query 前缀
+      # Apply E5 query prefix on the query side
       q_emb = encode_queries(
         self.model,
         [q_text],

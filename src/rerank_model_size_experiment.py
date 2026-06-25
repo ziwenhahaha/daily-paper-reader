@@ -36,7 +36,7 @@ def log(message: str) -> None:
 def load_module(name: str, path: Path):
   spec = importlib.util.spec_from_file_location(name, path)
   if not spec or not spec.loader:
-    raise RuntimeError(f"无法加载模块：{path}")
+    raise RuntimeError(f"Could not load module: {path}")
   module = importlib.util.module_from_spec(spec)
   sys.modules[name] = module
   spec.loader.exec_module(module)
@@ -72,7 +72,7 @@ def top_overlap(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
 def parse_model(raw: str) -> Tuple[str, str]:
   text = str(raw or "").strip()
   if not text:
-    raise ValueError("model 不能为空")
+    raise ValueError("model must not be empty")
   if "=" in text:
     name, model = text.split("=", 1)
     return safe_name(name), model.strip()
@@ -81,16 +81,16 @@ def parse_model(raw: str) -> Tuple[str, str]:
 
 def main() -> None:
   parser = argparse.ArgumentParser(
-    description="用 SiliconFlow Qwen3 Reranker API 三个尺寸做推荐链路对比，DeepSeek 结果为最终评判。",
+    description="Compare the recommendation pipeline across three SiliconFlow Qwen3 Reranker API sizes, with DeepSeek results as the final judge.",
   )
-  parser.add_argument("--input", required=True, help="RRF 输入 JSON。")
-  parser.add_argument("--output-dir", required=True, help="实验输出目录。")
+  parser.add_argument("--input", required=True, help="RRF input JSON.")
+  parser.add_argument("--output-dir", required=True, help="Experiment output directory.")
   parser.add_argument("--config", default=str(ROOT_DIR / "config.yaml"))
   parser.add_argument(
     "--model",
     action="append",
     default=[],
-    help="模型名或别名，格式 alias=Qwen/Qwen3-Reranker-8B；可重复传入。",
+    help="Model name or alias, format alias=Qwen/Qwen3-Reranker-8B; may be passed multiple times.",
   )
   parser.add_argument("--top-n", type=int, default=80)
   parser.add_argument("--global-limit", type=int, default=120)
@@ -104,9 +104,9 @@ def main() -> None:
   parser.add_argument("--api-base-url", default=os.getenv("SILICONFLOW_RERANK_URL") or os.getenv("RERANK_API_BASE_URL") or "")
   parser.add_argument("--api-timeout", type=int, default=120)
   parser.add_argument("--rerank-instruction", default=DEFAULT_QWEN3_RERANK_INSTRUCTION)
-  parser.add_argument("--seed", type=int, default=20260503, help="固定 Step 3/Step 4 随机分批顺序，便于模型横评。")
+  parser.add_argument("--seed", type=int, default=20260503, help="Fix the random batching order of Step 3/Step 4 for cross-model comparison.")
   parser.add_argument("--skip-existing", action="store_true")
-  parser.add_argument("--fail-fast", action="store_true", help="某个模型失败时立即退出；默认记录失败并继续。")
+  parser.add_argument("--fail-fast", action="store_true", help="Exit immediately if a model fails; by default failures are logged and execution continues.")
   args = parser.parse_args()
 
   os.environ.setdefault("MKL_THREADING_LAYER", "GNU")

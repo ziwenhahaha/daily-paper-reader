@@ -1,5 +1,5 @@
 -- ============================================================
--- NeurIPS OpenReview 会议投稿表
+-- NeurIPS OpenReview conference submission table
 -- ============================================================
 
 create extension if not exists vector;

@@ -1,5 +1,5 @@
-// 订阅论文新引用（跟踪论文）模块
-// 负责：渲染已跟踪论文列表、删除跟踪
+// Subscribed-paper new-citation (tracked papers) module
+// Responsibilities: render the tracked-paper list and remove tracking
 
 window.SubscriptionsTrackedPapers = (function () {
   let trackedListEl = null;
@@ -20,7 +20,7 @@ window.SubscriptionsTrackedPapers = (function () {
     if (!trackedListEl) return;
     if (!items || !items.length) {
       trackedListEl.innerHTML =
-        '<div style="color:#999;">暂无订阅论文，可通过下方搜索添加。</div>';
+        '<div style="color:#999;">No subscribed papers yet; add them via the search below.</div>';
       return;
     }
     trackedListEl.innerHTML = '';
@@ -47,7 +47,7 @@ window.SubscriptionsTrackedPapers = (function () {
           <div style="font-size:12px;color:#666;">
             ${
               item.published
-                ? '发表于：' + escapeHtml(item.published)
+                ? 'Published: ' + escapeHtml(item.published)
                 : ''
             }
             ${
@@ -61,7 +61,7 @@ window.SubscriptionsTrackedPapers = (function () {
         </div>
         <button data-id="${
           item.id
-        }" class="arxiv-tracked-del" style="flex-shrink:0;border:none;background:none;color:#c00;font-size:11px;cursor:pointer;padding:2px 4px;">取消订阅</button>
+        }" class="arxiv-tracked-del" style="flex-shrink:0;border:none;background:none;color:#c00;font-size:11px;cursor:pointer;padding:2px 4px;">Unsubscribe</button>
       `;
       trackedListEl.appendChild(row);
     });
@@ -79,7 +79,7 @@ window.SubscriptionsTrackedPapers = (function () {
             !window.SubscriptionsManager ||
             !window.SubscriptionsManager.updateDraftConfig
           ) {
-            throw new Error('缺少本地草稿更新能力');
+            throw new Error('Missing local draft update capability');
           }
           window.SubscriptionsManager.updateDraftConfig((cfg) => {
             const next = cfg || {};
@@ -99,7 +99,7 @@ window.SubscriptionsTrackedPapers = (function () {
         } catch (err) {
           console.error(err);
           if (msgEl) {
-            msgEl.textContent = '取消订阅失败，请稍后重试';
+            msgEl.textContent = 'Failed to unsubscribe, please try again later';
             msgEl.style.color = '#c00';
           }
         }
@@ -112,7 +112,7 @@ window.SubscriptionsTrackedPapers = (function () {
     msgEl = context.msgEl || null;
     reloadAll = context.reloadAll || null;
 
-    // 首次挂载时渲染占位提示，避免面板初次打开时列表区域为空白
+    // Render a placeholder on first mount so the list area is not blank when the panel first opens
     if (trackedListEl && !trackedListEl._initialized) {
       trackedListEl._initialized = true;
       render([]);

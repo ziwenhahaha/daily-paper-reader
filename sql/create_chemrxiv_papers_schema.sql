@@ -1,5 +1,5 @@
 -- ============================================================
--- 在同一个 Supabase project 中创建 ChemRxiv 独立表
+-- ChemRxiv paper table schema
 -- ============================================================
 
 create extension if not exists vector;

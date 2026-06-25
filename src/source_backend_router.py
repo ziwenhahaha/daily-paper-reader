@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Tuple
 
 try:
     from source_config import ARXIV_SOURCE_KEY, normalize_source_list
-except Exception:  # pragma: no cover - 兼容 package 导入路径
+except Exception:  # pragma: no cover - compatibility with the package import path
     from src.source_config import ARXIV_SOURCE_KEY, normalize_source_list
 
 

@@ -228,11 +228,11 @@ def fetch_anthology_conference(
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(all_papers, f, ensure_ascii=False, indent=2)
-    log(f"[OK] Anthology 结果已写入：{out_path} count={len(all_papers)}")
+    log(f"[OK] Anthology results written to: {out_path} count={len(all_papers)}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="抓取 ACL Anthology accepted 论文。")
+    parser = argparse.ArgumentParser(description="Fetch ACL Anthology accepted papers.")
     parser.add_argument("--conference", type=str, choices=["ACL", "EMNLP"], default="ACL")
     parser.add_argument("--year-end", type=int, default=datetime.now(timezone.utc).year)
     parser.add_argument("--year-count", type=int, default=3)

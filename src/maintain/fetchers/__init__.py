@@ -1,1 +1,1 @@
-"""维护链路内部抓取实现。"""
+"""Internal fetch implementations for maintain pipeline."""

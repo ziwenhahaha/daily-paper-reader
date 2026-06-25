@@ -64,13 +64,16 @@ def write_manifest(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    log(f"[INFO] 已写入会议检索 manifest：{path}")
+    log(f"[INFO] Wrote conference retrieval manifest: {path}")
 
 
 def _score_from_item(item: Dict[str, Any]) -> float:
     for key in ("score", "star_rating"):
+        raw = item.get(key)
+        if raw is None:
+            continue
         try:
-            return float(item.get(key))
+            return float(raw)
         except Exception:
             continue
     return 0.0
@@ -84,18 +87,21 @@ def prune_llm_result(path: Path, min_score: float) -> Dict[str, int]:
     if not isinstance(data, dict):
         return {"kept": 0, "dropped": 0}
 
-    ranked = data.get("llm_ranked") if isinstance(data.get("llm_ranked"), list) else []
+    llm_ranked = data.get("llm_ranked")
+    ranked = llm_ranked if isinstance(llm_ranked, list) else []
     kept_ranked = [item for item in ranked if isinstance(item, dict) and _score_from_item(item) >= min_score]
     kept_ids = {str(item.get("paper_id") or "").strip() for item in kept_ranked if str(item.get("paper_id") or "").strip()}
 
-    papers = data.get("papers") if isinstance(data.get("papers"), list) else []
+    papers_raw = data.get("papers")
+    papers = papers_raw if isinstance(papers_raw, list) else []
     data["papers"] = [
         item for item in papers
         if isinstance(item, dict) and str(item.get("id") or "").strip() in kept_ids
     ]
     data["llm_ranked"] = kept_ranked
 
-    queries = data.get("queries") if isinstance(data.get("queries"), list) else []
+    queries_raw = data.get("queries")
+    queries = queries_raw if isinstance(queries_raw, list) else []
     for query in queries:
         if not isinstance(query, dict):
             continue
@@ -115,31 +121,31 @@ def prune_llm_result(path: Path, min_score: float) -> Dict[str, int]:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
     dropped = max(len(ranked) - len(kept_ranked), 0)
-    log(f"[INFO] 会议 LLM 结果已按 score >= {min_score:g} 裁剪：kept={len(kept_ranked)} dropped={dropped}")
+    log(f"[INFO] Conference LLM results clipped at score >= {min_score:g}: kept={len(kept_ranked)} dropped={dropped}")
     return {"kept": len(kept_ranked), "dropped": dropped}
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="会议论文检索闭环：Supabase 召回 + RRF + 可选 rerank。")
+    parser = argparse.ArgumentParser(description="Conference paper retrieval loop: Supabase recall + RRF + optional rerank.")
     parser.add_argument("--config", type=str, default=str(ROOT_DIR / "config.yaml"))
     parser.add_argument("--conferences", "--conference", dest="conferences", type=str, required=True)
     parser.add_argument("--years", type=str, required=True)
-    parser.add_argument("--top-k", type=int, default=50, help="BM25 / embedding 每个查询保留候选数。")
-    parser.add_argument("--rrf-top-n", type=int, default=200, help="RRF 每个查询保留候选数。")
+    parser.add_argument("--top-k", type=int, default=50, help="Number of candidates to keep per query for BM25 / embedding.")
+    parser.add_argument("--rrf-top-n", type=int, default=200, help="Number of candidates to keep per query after RRF.")
     parser.add_argument("--output-dir", type=str, default=str(ROOT_DIR / "archive" / TODAY_STR / "filtered"))
     parser.add_argument("--embedding-model", type=str, default="BAAI/bge-small-en-v1.5")
     parser.add_argument("--embedding-device", type=str, default="cpu")
     parser.add_argument("--embedding-batch-size", type=int, default=8)
     parser.add_argument("--embedding-max-length", type=int, default=512)
-    parser.add_argument("--run-rerank", action="store_true", help="继续运行 Qwen3 reranker。")
+    parser.add_argument("--run-rerank", action="store_true", help="Continue by running the Qwen3 reranker.")
     parser.add_argument("--rerank-top-n", type=int, default=80)
     parser.add_argument("--rerank-device", type=str, default=os.getenv("LOCAL_RERANK_DEVICE", "cpu"))
     parser.add_argument("--rerank-batch-size", type=int, default=int(os.getenv("LOCAL_RERANK_BATCH_SIZE") or "4"))
-    parser.add_argument("--run-llm-refine", action="store_true", help="继续运行 DeepSeek 相关性打分。")
+    parser.add_argument("--run-llm-refine", action="store_true", help="Continue by running DeepSeek relevance scoring.")
     parser.add_argument("--llm-min-star", type=int, default=4)
     parser.add_argument("--llm-batch-size", type=int, default=10)
     parser.add_argument("--llm-filter-concurrency", type=int, default=2)
-    parser.add_argument("--display-min-score", type=float, default=4.0, help="会议论文进入最终展示与本地落盘结果的最低 LLM 分数。")
+    parser.add_argument("--display-min-score", type=float, default=4.0, help="Minimum LLM score for a conference paper to enter the final display and the locally saved results.")
     args = parser.parse_args()
 
     conferences = parse_conferences(args.conferences)
@@ -220,7 +226,7 @@ def main() -> None:
     llm_path = None
     if args.run_llm_refine:
         if rerank_path is None:
-            raise RuntimeError("DeepSeek 打分需要先生成 rerank 结果。")
+            raise RuntimeError("DeepSeek scoring requires rerank results to be generated first.")
         rank_dir = rerank_path.parent
         llm_path = rank_dir / f"conference-{conf_token}-{year_token}.supabase.llm.json"
         llm_cmd = [
@@ -266,7 +272,7 @@ def main() -> None:
         },
     }
     write_manifest(manifest_path, manifest)
-    log("[INFO] 会议论文检索闭环完成。")
+    log("[INFO] Conference paper retrieval loop complete.")
 
 
 if __name__ == "__main__":

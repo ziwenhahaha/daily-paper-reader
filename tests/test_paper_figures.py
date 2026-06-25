@@ -101,7 +101,7 @@ class PaperFiguresTest(unittest.TestCase):
 
             self.assertEqual(figures, [])
             self.assertEqual(tables, [])
-            self.assertIn("PaperCropper 表格/图表提取降级", output.getvalue())
+            self.assertIn("PaperCropper table/figure extraction degraded", output.getvalue())
             self.assertIn("No module named 'scipy'", output.getvalue())
 
     def test_papercropper_empty_output_is_reported(self):
@@ -139,7 +139,7 @@ class PaperFiguresTest(unittest.TestCase):
 
             self.assertEqual(figures, [])
             self.assertEqual(tables, [])
-            self.assertIn("执行完成但未产出 figure/table", output.getvalue())
+            self.assertIn("Execution finished but produced no figure/table", output.getvalue())
 
 
 if __name__ == "__main__":

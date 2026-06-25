@@ -1,129 +1,129 @@
-# 📖 Daily Paper Reader：3 分钟搭建你的智能论文推荐站
+# 📖 Daily Paper Reader: Build Your Smart Paper Recommendation Site in 3 Minutes
 
-一个开箱即用的学术论文推荐系统，通过关键词或自然语言描述你的研究兴趣，每天自动从 arXiv 筛选、重排、精读相关论文，并生成精美的在线阅读站点。
+An out-of-the-box academic paper recommendation system. Describe your research interests with keywords or natural language, and it automatically filters, reranks, and deep-reads relevant papers from arXiv each day—then publishes a polished online reading site.
 
-- **零成本部署**：基于 GitHub Actions + Pages，无需服务器，Fork 即用
-- **智能推荐**：BM25 + Embedding 双路召回 + Reranker 重排 + LLM 评分，精准匹配你的研究方向
-- **沉浸式阅读**：双语标题、论文速览、AI 精读总结、私人研讨区，一站式学术体验
-- **实时交互**：站内订阅管理、工作流触发、论文分享、本地聊天记忆，所有操作都在浏览器完成
-
----
-
-## ✨ 核心功能
-
-### 📊 智能推荐流水线
-- **多路召回**：BM25（词法匹配）+ Qwen3-Embedding（语义理解）双引擎检索，RRF 融合扩大覆盖
-- **精准重排**：本地 Qwen3-Reranker-0.6B 对候选集重排序，提升推荐准确度
-- **LLM 评分**：自动生成双语证据（Evidence）、一句话总结（TLDR）及 0-10 分评分
-- **Carryover 机制**：高分论文跨日保留，避免遗漏重要成果
-
-### 🎨 现代化阅读界面
-- **双语标题栏**：中英文标题智能布局，响应式适配
-- **论文速览卡片**：Motivation / Method / Result / Conclusion 四维快速浏览
-- **AI 精读总结**：自动生成结构化深度总结（需配置 DeepSeek API）
-- **私人研讨区**：基于 Gemini 的论文问答，支持上下文对话，本地 IndexedDB 存储记忆
-
-### 🔧 站内后台管理
-- **订阅关键词**：支持高级搜索语法（`||` / `&&` / `author:`）
-- **智能订阅（LLM Query）**：用自然语言描述研究兴趣，自动扩展查询
-- **论文引用追踪**：通过 Semantic Scholar ID 订阅论文的新引用
-- **工作流触发**：站内一键刷新推荐结果，实时查看运行状态
-- **密钥配置**：本地加密存储 DeepSeek API Key
-
-### 🎯 辅助功能
-- **Zotero 集成**：一键导入论文元数据，包含 AI 总结和聊天历史
-- **GitHub Gist 分享**：生成论文分享链接，方便团队协作
-- **最近提问**：记录并快速复用常用问题（仅本地存储）
+- **Zero-cost deployment**: Runs on GitHub Actions + Pages—no server required, fork and go
+- **Smart recommendations**: BM25 + embedding dual-path recall + reranker + LLM scoring, precisely matched to your research directions
+- **Immersive reading**: Bilingual titles, paper quick skims, AI deep-read summaries, and a private discussion area—all in one academic workflow
+- **Real-time interaction**: In-site subscription management, workflow triggers, paper sharing, and local chat memory—everything happens in the browser
 
 ---
 
-## 🚀 快速开始（Fork 即用，3 步出站）
+## ✨ Core Features
 
-### 1) Fork 本仓库
-点击右上角 `Fork`，复制到你的账号下。
+### 📊 Smart Recommendation Pipeline
+- **Multi-path recall**: BM25 (lexical matching) + Qwen3-Embedding (semantic understanding) dual-engine retrieval, fused with RRF for broader coverage
+- **Precise reranking**: Local Qwen3-Reranker-0.6B reranks the candidate set to improve recommendation accuracy
+- **LLM scoring**: Automatically generates bilingual evidence, one-line TLDR summaries, and 0–10 relevance scores
+- **Carryover mechanism**: High-scoring papers carry over across days so you don't miss important work
 
-### 2) 启用 Actions 并首次运行（只需一次）
-Fork 后 Actions 默认暂停，需要手动激活：
+### 🎨 Modern Reading Interface
+- **Bilingual title bar**: Smart Chinese/English title layout with responsive design
+- **Quick skim cards**: Four dimensions—Motivation / Method / Result / Conclusion—for fast browsing
+- **AI deep-read summaries**: Automatically generates structured in-depth summaries (requires DeepSeek API configuration)
+- **Private discussion area**: Gemini-based paper Q&A with contextual conversation; memories stored locally in IndexedDB
 
-1. 进入你 Fork 后的仓库 → 顶部 **Actions**
-2. 点击 **I understand my workflows, go ahead and enable them**
-3. 左侧选择 **daily-paper-reader**
-4. 点击 **Run workflow** → 再点绿色 **Run workflow** 确认
+### 🔧 In-Site Admin Panel
+- **Subscription keywords**: Advanced search syntax supported (`||` / `&&` / `author:`)
+- **Smart subscription (LLM Query)**: Describe research interests in natural language; queries are expanded automatically
+- **Citation tracking**: Subscribe to new citations of a paper via Semantic Scholar ID
+- **Workflow triggers**: One-click refresh of recommendations from the site, with live run status
+- **Secret configuration**: DeepSeek API key stored locally with encryption
 
-> 这一步会生成 `docs/` 与 `archive/*/recommend` 并自动提交回 `main` 分支。首次一般需要 3–8 分钟。
-
-### 3) 开启 GitHub Pages
-1. 仓库顶部 **Settings** → 左侧 **Pages**
-2. **Source** 选择 `Deploy from a branch`
-3. **Branch** 选择 `main`，目录选择 `/docs`
-4. 点击 **Save**
-
-等待约 30 秒后，你会看到站点地址，例如：`https://你的ID.github.io/项目名/`。
-
----
-
-## 🔑 必须：配置 DeepSeek（用于评分/总结）
-
-本项目默认工作流会调用 DeepSeek 来完成核心能力，Step 3 重排改为本地模型：
-- Step 3 本地重排（Qwen/Qwen3-Reranker-0.6B）
-- Step 4 LLM 精炼评分（双语证据 + 双语 TLDR）
-- Step 6 翻译/总结（可选能力，默认实现依赖 DeepSeek）
-
-### 1) 注册 / 充值 / 创建 API Key
-- 注册：https://platform.deepseek.com/
-- 充值：右上角头像 → 立即充值（建议先充 5 元体验）
-- 创建令牌：左侧 **令牌** → **新建令牌**（名称随意，默认即可）
-
-> 工作流默认会使用 `LOCAL_RERANK_MODEL=Qwen/Qwen3-Reranker-0.6B` 与 DeepSeek chat 模型（见 `/.github/workflows/daily-paper-reader.yml`）。
+### 🎯 Additional Features
+- **Zotero integration**: One-click import of paper metadata, including AI summaries and chat history
+- **GitHub Gist sharing**: Generate paper share links for team collaboration
+- **Recent questions**: Record and quickly reuse common prompts (local storage only)
 
 ---
 
-## 🪪 必须：GitHub Token 申请（用于站内面板与 Gist 分享）
+## 🚀 Quick Start (Fork and Go — 3 Steps to Launch)
 
-站点前端会调用 GitHub API 来完成这些能力，因此需要 GitHub Token：
-- **一键写入仓库 Secrets**（保存 `DEEPSEEK_API_KEY` 等）
-- **站内触发 Actions 工作流**（立即刷新 / 同步上游）
-- **生成 GitHub Gist 分享链接**（论文页面“分享”按钮）
+### 1) Fork this repository
+Click **Fork** in the top-right corner and copy the repo to your account.
 
-### 推荐：Classic PAT（最省心）
-1. 打开创建页面（已预填权限）：  
+### 2) Enable Actions and run once (one-time setup)
+Actions are paused by default after forking—you need to activate them manually:
+
+1. Open your forked repository → **Actions** at the top
+2. Click **I understand my workflows, go ahead and enable them**
+3. Select **daily-paper-reader** on the left
+4. Click **Run workflow** → confirm with the green **Run workflow** button
+
+> This step generates `docs/` and `archive/*/recommend` and auto-commits back to `main`. The first run usually takes 3–8 minutes.
+
+### 3) Enable GitHub Pages
+1. **Settings** at the top of the repo → **Pages** on the left
+2. **Source**: `Deploy from a branch`
+3. **Branch**: `main`, folder: `/docs`
+4. Click **Save**
+
+After about 30 seconds you'll see your site URL, e.g. `https://<your-id>.github.io/<repo-name>/`.
+
+---
+
+## 🔑 Required: Configure DeepSeek (for scoring / summaries)
+
+The default workflow calls DeepSeek for core capabilities; Step 3 reranking uses a local model:
+- Step 3 local rerank (`Qwen/Qwen3-Reranker-0.6B`)
+- Step 4 LLM refine scoring (bilingual evidence + bilingual TLDR)
+- Step 6 translation / summarization (optional capability; default implementation depends on DeepSeek)
+
+### 1) Sign up / add credits / create an API key
+- Sign up: https://platform.deepseek.com/
+- Add credits: top-right avatar → add credits (¥5 is enough to try it out)
+- Create a token: left sidebar **API Keys** → **Create API Key** (name optional, defaults are fine)
+
+> The workflow defaults to `LOCAL_RERANK_MODEL=Qwen/Qwen3-Reranker-0.6B` and DeepSeek chat models (see `/.github/workflows/daily-paper-reader.yml`).
+
+---
+
+## 🪪 Required: GitHub Token (for in-site panel and Gist sharing)
+
+The site frontend calls the GitHub API for these capabilities, so a GitHub token is required:
+- **One-click write to repository Secrets** (save `DEEPSEEK_API_KEY`, etc.)
+- **Trigger Actions workflows from the site** (refresh now / sync upstream)
+- **Generate GitHub Gist share links** (paper page **Share** button)
+
+### Recommended: Classic PAT (easiest)
+1. Open the creation page (scopes pre-filled):  
    https://github.com/settings/tokens/new?description=Daily%20Paper%20Reader&scopes=repo,workflow,gist
-2. 过期时间建议选一个你能接受的（例如 30/90 天），到期可重新生成
-3. 生成后复制一次（GitHub 不会再次展示）
+2. Pick an expiration you're comfortable with (e.g. 30/90 days); regenerate when it expires
+3. Copy the token once after generation (GitHub won't show it again)
 
-**所需最小权限：**
-- `repo`：用于写入仓库 Secrets
-- `workflow`：用于触发 GitHub Actions 工作流
-- `gist`：用于“分享（生成 GitHub Gist 链接）”功能
-
----
-
----
-## 🔧 目录与更新规则（避免踩坑）
-
-### 用户区（你可自由改）
-- `config.yaml`：你的订阅与偏好配置（上游不会覆盖）
-
-### 每日产出区（每天会更新）
-- `docs/`：网页内容（GitHub Pages 的发布目录）
-- `archive/*/recommend`：推荐结果（按日期存档）
-- `archive/carryover.json`、`archive/arxiv_seen.json`、`archive/crawl_state.json`：运行状态（用于增量抓取与跨日保留）
-
-### 代码区（上游可能更新）
-除 `archive/` 和 `docs/` 外，其它都视为代码区（建议不要在 Fork 里大改核心代码，以免将来同步上游冲突）。
+**Minimum required scopes:**
+- `repo`: write repository Secrets
+- `workflow`: trigger GitHub Actions workflows
+- `gist`: **Share** feature (generate GitHub Gist links)
 
 ---
 
-## ❓常见问题（FAQ）
+---
+## 🔧 Directory Layout and Update Rules (avoid common pitfalls)
 
-- **为什么今天没有更新？**  
-  先看仓库 Actions 里 `daily-paper-reader` 是否成功；也可能当天窗口内确实无新论文或被过滤后为空。
+### User zone (free to edit)
+- `config.yaml`: your subscriptions and preferences (upstream won't overwrite this)
 
-- **站点能打开但没有内容？**  
-  通常是首次 Actions 没跑成功，或 Pages 没指向 `/docs`。按“快速开始”第 2/3 步检查。
+### Daily output zone (updated each day)
+- `docs/`: web content (GitHub Pages publish directory)
+- `archive/*/recommend`: recommendation results (archived by date)
+- `archive/carryover.json`, `archive/arxiv_seen.json`, `archive/crawl_state.json`: runtime state (incremental fetch and cross-day carryover)
 
-- **我想立刻刷新一次，而不是等定时任务**  
-  进入仓库 Actions → `daily-paper-reader` → `Run workflow`；或在站点里使用“工作流触发面板”（需要 GitHub Token）。
+### Code zone (may be updated by upstream)
+Everything except `archive/` and `docs/` is treated as code (avoid large edits to core code in your fork to reduce upstream sync conflicts).
+
+---
+
+## ❓ FAQ
+
+- **Why didn't it update today?**  
+  Check whether `daily-paper-reader` succeeded in repository Actions; it's also possible there were no new papers in the window, or everything was filtered out.
+
+- **Site loads but has no content?**  
+  Usually the first Actions run didn't succeed, or Pages isn't pointed at `/docs`. Re-check Quick Start steps 2 and 3.
+
+- **I want to refresh now instead of waiting for the schedule**  
+  Go to repository Actions → `daily-paper-reader` → `Run workflow`; or use the **workflow trigger panel** on the site (requires a GitHub token).
 
 ---
 

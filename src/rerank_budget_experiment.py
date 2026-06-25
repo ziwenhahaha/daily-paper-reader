@@ -25,7 +25,7 @@ def log(message: str) -> None:
 def load_module(name: str, path: Path):
   spec = importlib.util.spec_from_file_location(name, path)
   if not spec or not spec.loader:
-    raise RuntimeError(f"无法加载模块：{path}")
+    raise RuntimeError(f"Could not load module: {path}")
   module = importlib.util.module_from_spec(spec)
   sys.modules[name] = module
   spec.loader.exec_module(module)
@@ -43,7 +43,7 @@ class BudgetProfile:
 def parse_profile(raw: str) -> BudgetProfile:
   text = str(raw or "").strip()
   if not text:
-    raise ValueError("profile 不能为空")
+    raise ValueError("profile must not be empty")
   if "=" in text:
     name, body = text.split("=", 1)
   else:
@@ -51,7 +51,7 @@ def parse_profile(raw: str) -> BudgetProfile:
     name = body.replace(":", "-")
   parts = [item.strip() for item in body.split(":")]
   if len(parts) not in (2, 3):
-    raise ValueError("profile 格式应为 name=global_limit:guaranteed_per_lane[:lane_top_k]")
+    raise ValueError("profile format should be name=global_limit:guaranteed_per_lane[:lane_top_k]")
   global_limit = int(parts[0])
   guaranteed = int(parts[1])
   lane_top_k = int(parts[2]) if len(parts) == 3 and parts[2] else None
@@ -119,14 +119,14 @@ def score_summary(path: Path) -> Dict[str, Any]:
 
 
 def main() -> None:
-  parser = argparse.ArgumentParser(description="用 DeepSeek 结果评估 rerank 候选池预算。")
-  parser.add_argument("--input", required=True, help="RRF 输入 JSON。")
-  parser.add_argument("--output-dir", required=True, help="实验输出目录。")
+  parser = argparse.ArgumentParser(description="Evaluate rerank candidate-pool budgets using DeepSeek results.")
+  parser.add_argument("--input", required=True, help="RRF input JSON.")
+  parser.add_argument("--output-dir", required=True, help="Experiment output directory.")
   parser.add_argument(
     "--profile",
     action="append",
     default=[],
-    help="预算配置，格式 name=global_limit:guaranteed_per_lane[:lane_top_k]。",
+    help="Budget config, format name=global_limit:guaranteed_per_lane[:lane_top_k].",
   )
   parser.add_argument("--config", default=str(ROOT_DIR / "config.yaml"))
   parser.add_argument("--top-n", type=int, default=80)
@@ -138,7 +138,7 @@ def main() -> None:
   parser.add_argument("--rerank-model", default=os.getenv("LOCAL_RERANK_MODEL") or "Qwen/Qwen3-Reranker-0.6B")
   parser.add_argument("--rerank-device", default=os.getenv("LOCAL_RERANK_DEVICE", "cpu"))
   parser.add_argument("--rerank-batch-size", type=int, default=int(os.getenv("LOCAL_RERANK_BATCH_SIZE") or "4"))
-  parser.add_argument("--seed", type=int, default=20260503, help="固定 Step 3/Step 4 随机分批顺序，便于预算/模型对比。")
+  parser.add_argument("--seed", type=int, default=20260503, help="Fix the random batching order of Step 3/Step 4 for budget/model comparison.")
   parser.add_argument("--skip-existing", action="store_true")
   args = parser.parse_args()
 
@@ -164,7 +164,7 @@ def main() -> None:
   llm_mod = load_module("rank_budget_experiment_llm", SCRIPT_DIR / "4.llm_refine_papers.py")
 
   log(
-    f"[experiment] 加载 reranker model={args.rerank_model} "
+    f"[experiment] Loaded reranker model={args.rerank_model} "
     f"device={args.rerank_device or 'auto'} batch_size={args.rerank_batch_size}"
   )
   reranker = rank_mod.LocalQwenReranker(

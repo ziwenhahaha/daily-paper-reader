@@ -1,5 +1,5 @@
 -- ============================================================
--- bioRxiv 独立表的检索 RPC
+-- bioRxiv paper retrieval RPC
 -- ============================================================
 
 create or replace function match_biorxiv_papers_exact(

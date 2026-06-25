@@ -25,7 +25,7 @@ def run_step(label: str, args: list[str]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="抓取近三年 ICLR OpenReview 投稿并同步到 Supabase。")
+    parser = argparse.ArgumentParser(description="Fetch ICLR OpenReview papers and sync to Supabase.")
     parser.add_argument("--year-end", type=int, default=datetime.now(timezone.utc).year)
     parser.add_argument("--year-count", type=int, default=3)
     parser.add_argument("--date", type=str, default=TODAY_STR)
@@ -105,7 +105,7 @@ def main() -> None:
             fetch_cmd += ["--password", str(args.password)]
         run_step("Step 1 - fetch ICLR OpenReview", fetch_cmd)
     else:
-        print(f"[INFO] Step 1 已跳过，复用原始文件：{raw_path}", flush=True)
+        print(f"[INFO] Step 1 skipped, reusing original file: {raw_path}", flush=True)
 
     sync_cmd = [
         python,

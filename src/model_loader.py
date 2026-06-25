@@ -1,4 +1,4 @@
-"""统一模型加载器：按顺序尝试下载源，按重试次数回退。"""
+"""Unified model loader: tries download sources in order, backing off on retries."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ _DEFAULT_RETRIES = 3
 _DEFAULT_HF_BACKOFF_RETRIES = 1
 _DEFAULT_REMOTE_TIMEOUT_SECONDS = 60
 _DEFAULT_REMOTE_EMBED_ENDPOINT = os.getenv("DPR_EMBED_API_URL") or "https://zwwen.online/embed"
-# 当前服务使用固定 API key 接入。
+# The current service uses a fixed API key for access.
 _DEFAULT_REMOTE_EMBED_API_KEY = os.getenv("DPR_EMBED_API_KEY") or "26932a86d772001af60cbd9d2c162bfda3a90e094f797f3d6806f6077478b27a"
 
 
@@ -38,7 +38,7 @@ def is_local_embedding_fallback_enabled() -> bool:
 
 
 class RemoteSentenceTransformer:
-  """兼容 SentenceTransformer.encode 接口的远程 embedding 包装器。"""
+  """Remote embedding wrapper compatible with the SentenceTransformer.encode interface."""
 
   is_remote = True
 
@@ -63,7 +63,7 @@ class RemoteSentenceTransformer:
     self.api_key = str(api_key or "").strip()
     self.timeout = max(int(timeout or _DEFAULT_REMOTE_TIMEOUT_SECONDS), 1)
     self.default_batch_size = max(int(default_batch_size or 1), 1)
-    self.max_seq_length = None
+    self.max_seq_length: int | None = None
     self.local_device = str(local_device or "cpu")
     self.local_retries = local_retries
     self.local_providers = local_providers
@@ -77,7 +77,7 @@ class RemoteSentenceTransformer:
   def _normalize_endpoint(endpoint: str) -> str:
     text = str(endpoint or "").strip().rstrip("/")
     if not text:
-      raise ValueError("远程 embedding 服务地址不能为空（DPR_EMBED_API_URL）")
+      raise ValueError("Remote embedding service URL cannot be empty (DPR_EMBED_API_URL)")
     if text.endswith("/embed"):
       return text
     return f"{text}/embed"
@@ -92,15 +92,15 @@ class RemoteSentenceTransformer:
 
   def _get_local_model(self):
     if not self.allow_local_fallback:
-      reason = self._remote_disabled_reason or "远程 embedding 请求失败"
+      reason = self._remote_disabled_reason or "Remote embedding request failed"
       raise RuntimeError(
-        f"{reason}；当前默认不安装/加载本地 embedding 模型。"
-        "请先检查 zwwen embedding 服务，或设置 DPR_EMBED_ALLOW_LOCAL_FALLBACK=1 "
-        "并安装 requirements-local-models.txt 后再启用本地 fallback。"
+        f"{reason}; local embedding model is not installed/loaded by default."
+        "Please check the zwwen embedding service, or set DPR_EMBED_ALLOW_LOCAL_FALLBACK=1 "
+        "and install requirements-local-models.txt to enable local fallback."
       )
     if self._local_model is None:
       self._log(
-        f"[WARN] 远程 embedding 不可用，回退本地模型：{self.model_name} "
+        f"[WARN] Remote embedding unavailable, falling back to local model: {self.model_name} "
         f"(device={self.local_device})"
       )
       self._local_model = _load_local_sentence_transformer(
@@ -179,7 +179,7 @@ class RemoteSentenceTransformer:
       outputs: list[np.ndarray] = []
 
       self._log(
-        f"[INFO] 远程 embedding：model={self.model_name} "
+        f"[INFO] Remote embedding: model={self.model_name} "
         f"endpoint={self.endpoint} total={len(texts)} batch={safe_batch_size}"
       )
 
@@ -192,7 +192,7 @@ class RemoteSentenceTransformer:
           timeout=self.timeout,
         )
         if response.status_code == 401 and headers.get("Authorization"):
-          self._log("[WARN] 远程 embedding 鉴权失败，自动回退为无鉴权请求重试一次。")
+          self._log("[WARN] Remote embedding authentication failed, retrying once without auth header.")
           headers = {
             "Content-Type": "application/json",
           }
@@ -206,24 +206,24 @@ class RemoteSentenceTransformer:
         data = response.json()
         embeddings = data.get("embeddings")
         if not isinstance(embeddings, list):
-          raise RuntimeError("远程 embedding 服务返回缺少 embeddings 字段")
+          raise RuntimeError("Remote embedding service response is missing the embeddings field")
         try:
           arr = np.asarray(embeddings, dtype=np.float32)
         except Exception as exc:
-          raise RuntimeError(f"远程 embedding 返回无法转换为 float32：{exc}") from exc
+          raise RuntimeError(f"Remote embedding response could not be converted to float32: {exc}") from exc
 
         if arr.ndim != 2:
-          raise RuntimeError(f"远程 embedding 返回维度异常：shape={getattr(arr, 'shape', None)}")
+          raise RuntimeError(f"Remote embedding response has unexpected ndim: shape={getattr(arr, 'shape', None)}")
         if arr.shape[0] != len(chunk):
           raise RuntimeError(
-            f"远程 embedding 返回条数异常：expected={len(chunk)} actual={arr.shape[0]}"
+            f"Remote embedding response count mismatch: expected={len(chunk)} actual={arr.shape[0]}"
           )
         if normalize_embeddings:
           norms = np.linalg.norm(arr, axis=1, keepdims=True)
           arr = arr / np.clip(norms, 1e-12, None)
         outputs.append(arr)
         self._log(
-          f"[INFO] 远程 embedding 批次完成：{chunk_index}/{len(chunks)} "
+          f"[INFO] Remote embedding batch complete: {chunk_index}/{len(chunks)} "
           f"count={len(chunk)} dim={arr.shape[1]}"
         )
 
@@ -232,11 +232,11 @@ class RemoteSentenceTransformer:
     except Exception as exc:
       if not self.allow_local_fallback:
         raise RuntimeError(
-          f"远程 embedding 请求失败：{exc}。当前默认依赖 zwwen 远程 embedding，"
-          "不会自动安装/加载本地 Torch 模型；如需本地 fallback，请设置 "
-          "DPR_EMBED_ALLOW_LOCAL_FALLBACK=1 并安装 requirements-local-models.txt。"
+          f"Remote embedding request failed: {exc}. The pipeline relies on the zwwen remote embedding service by default."
+          "Local Torch models are not installed/loaded automatically; to enable local fallback, set "
+          "DPR_EMBED_ALLOW_LOCAL_FALLBACK=1 and install requirements-local-models.txt."
         ) from exc
-      self._log(f"[WARN] 远程 embedding 请求失败，将自动回退本地模型：{exc}")
+      self._log(f"[WARN] Remote embedding request failed, automatically falling back to local model: {exc}")
       self._disable_remote(exc)
       return self._encode_via_local(
         texts,
@@ -275,9 +275,9 @@ class RemoteSentenceTransformer:
 
 @contextmanager
 def _hf_http_backoff(max_retries: int):
-  """临时覆盖 huggingface_hub 的 http_backoff 重试次数。
+  """Temporarily override the http_backoff retry count in huggingface_hub.
 
-  仅用于抑制单次请求内置重试次数（日志中通常体现为 `Retry x/5`）。
+  Used to suppress the built-in per-request retry count (typically shown as `Retry x/5` in logs).
   """
   if max_retries <= 0:
     yield
@@ -356,12 +356,12 @@ def load_sentence_transformer(
       remote_timeout = int(remote_timeout_text)
     except ValueError:
       log(
-        f"[WARN] 环境变量 DPR_EMBED_API_TIMEOUT 无效：{remote_timeout_text}，"
-        f"回退默认 {_DEFAULT_REMOTE_TIMEOUT_SECONDS}"
+        f"[WARN] Invalid value for DPR_EMBED_API_TIMEOUT: {remote_timeout_text},"
+        f"falling back to default {_DEFAULT_REMOTE_TIMEOUT_SECONDS}"
       )
       remote_timeout = _DEFAULT_REMOTE_TIMEOUT_SECONDS
     log(
-      f"[INFO] 使用远程 embedding 服务：model={model_name} "
+      f"[INFO] Using remote embedding service: model={model_name} "
       f"endpoint={str(remote_endpoint).strip()} timeout={remote_timeout}s device={device}"
     )
     return RemoteSentenceTransformer(
@@ -377,7 +377,7 @@ def load_sentence_transformer(
     )
 
   if remote_endpoint and not allow_remote:
-    log(f"[INFO] 已禁用远程 embedding，强制使用本地模型：{model_name} (device={device})")
+    log(f"[INFO] Remote embedding disabled, forcing local model: {model_name} (device={device})")
 
   return _load_local_sentence_transformer(
     model_name,
@@ -407,7 +407,7 @@ def _load_local_sentence_transformer(
       try:
         retries = int(env_retries)
       except ValueError:
-        print(f"[WARN] 环境变量 LLM_EMBED_MODEL_RETRIES 无效：{env_retries}，回退默认 {_DEFAULT_RETRIES}")
+        print(f"[WARN] Invalid value for LLM_EMBED_MODEL_RETRIES: {env_retries}, falling back to default {_DEFAULT_RETRIES}")
         retries = _DEFAULT_RETRIES
   hf_backoff_retries = _DEFAULT_HF_BACKOFF_RETRIES
   env_hf_backoff_retries = os.getenv("HF_HUB_HTTP_BACKOFF_RETRIES")
@@ -416,8 +416,8 @@ def _load_local_sentence_transformer(
       hf_backoff_retries = int(env_hf_backoff_retries)
     except ValueError:
       print(
-        f"[WARN] 环境变量 HF_HUB_HTTP_BACKOFF_RETRIES 无效：{env_hf_backoff_retries}，"
-        f"回退默认 {_DEFAULT_HF_BACKOFF_RETRIES}"
+        f"[WARN] Invalid value for HF_HUB_HTTP_BACKOFF_RETRIES: {env_hf_backoff_retries},"
+        f"falling back to default {_DEFAULT_HF_BACKOFF_RETRIES}"
       )
       hf_backoff_retries = _DEFAULT_HF_BACKOFF_RETRIES
     if hf_backoff_retries < 0:
@@ -430,27 +430,27 @@ def _load_local_sentence_transformer(
     for provider_name, endpoint in providers:
       try:
         log(
-          f"[INFO] 尝试加载模型（第 {round_idx}/{attempts} 轮）：{model_name}"
-          f"（provider={provider_name}，device={device}）"
+          f"[INFO] Attempting to load model (round {round_idx}/{attempts}): {model_name}"
+          f"(provider={provider_name}, device={device})"
         )
         with _hf_endpoint(endpoint), _hf_http_backoff(max_retries=hf_backoff_retries):
           from sentence_transformers import SentenceTransformer
           return SentenceTransformer(model_name, device=device)
-      except Exception as e:  # pragma: no cover - 仅异常路径
+      except Exception as e:  # pragma: no cover - error path only
         last_err = e
         msg = str(e)
         if len(msg) > 260:
           msg = msg[:260]
         log(
-          f"[WARN] 模型加载失败（provider={provider_name}，round={round_idx}/{attempts}）："
+          f"[WARN] Model load failed (provider={provider_name}, round={round_idx}/{attempts}):"
           f"{msg}"
         )
 
     if round_idx < attempts:
       wait_seconds = 1
-      log(f"[INFO] 重试间隔：{wait_seconds}s")
+      log(f"[INFO] Retry interval: {wait_seconds}s")
       time.sleep(wait_seconds)
 
   if last_err is not None:
     raise last_err
-  raise RuntimeError(f"加载模型失败：{model_name}")
+  raise RuntimeError(f"Failed to load model: {model_name}")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# 使用本地 Qwen3 Reranker 对候选论文做重排序（简化版）。
+# Rerank candidate papers with a local Qwen3 Reranker (simplified).
 
 import argparse
 import json
@@ -148,7 +148,7 @@ def group_end() -> None:
 
 
 class LocalQwenReranker:
-  """本地 Qwen3 reranker，按 yes/no token 概率为 query-document 打分。"""
+  """Local Qwen3 reranker; scores query-document pairs via yes/no token probabilities."""
 
   def __init__(
     self,
@@ -166,7 +166,7 @@ class LocalQwenReranker:
       from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
     except Exception as exc:
       raise RuntimeError(
-        "本地 reranker 需要 torch 与 transformers，请先安装 requirements.txt。"
+        "Local reranker requires torch and transformers; install requirements.txt first."
       ) from exc
 
     self.torch = torch
@@ -181,20 +181,22 @@ class LocalQwenReranker:
     if self.device == "cpu":
       model_kwargs["dtype"] = torch.float32
     try:
-      self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
+      hf_model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
     except TypeError:
       if "dtype" in model_kwargs:
         model_kwargs["torch_dtype"] = model_kwargs.pop("dtype")
       else:
         model_kwargs.pop("torch_dtype", None)
-      self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
-    self.model.to(self.device)
+      hf_model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
+    target_device = torch.device(self.device)
+    torch.nn.Module.to(hf_model, target_device)
+    self.model = hf_model
     self.model.eval()
 
     self.token_false_id = self.tokenizer.convert_tokens_to_ids("no")
     self.token_true_id = self.tokenizer.convert_tokens_to_ids("yes")
     if self.token_false_id is None or self.token_true_id is None:
-      raise RuntimeError("Qwen3 reranker tokenizer 缺少 yes/no token，无法计算相关性。")
+      raise RuntimeError("Qwen3 reranker tokenizer is missing yes/no tokens; cannot score relevance.")
 
     self.prefix = (
       "<|im_start|>system\n"
@@ -253,9 +255,9 @@ class LocalQwenReranker:
   ) -> Dict[str, Any]:
     query_text = str(query or "").strip()
     if not query_text:
-      raise ValueError("rerank: query 不能为空")
+      raise ValueError("rerank: query must not be empty")
     if not documents:
-      raise ValueError("rerank: documents 不能为空")
+      raise ValueError("rerank: documents must not be empty")
 
     results: List[Dict[str, Any]] = []
     for start in range(0, len(documents), self.batch_size):
@@ -297,7 +299,7 @@ def score_to_stars(score: float) -> int:
 
 def load_json(path: str) -> Dict[str, Any]:
   if not os.path.exists(path):
-    raise FileNotFoundError(f"找不到文件：{path}")
+    raise FileNotFoundError(f"File not found: {path}")
   with open(path, "r", encoding="utf-8") as f:
     return json.load(f)
 
@@ -306,7 +308,7 @@ def save_json(data: Dict[str, Any], path: str) -> None:
   os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
   with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
-  log(f"[INFO] 已将打分结果写入：{path}")
+  log(f"[INFO] Wrote ranking results to: {path}")
 
 
 def format_doc(title: str, abstract: str) -> str:
@@ -365,10 +367,10 @@ def resolve_global_pool_budget(
   global_limit_override: Optional[int] = None,
 ) -> Tuple[int, int, int]:
   """
-  统一候选池预算：
-  - lane_top_k 随论文总数递增：1000 篇内 30，每增加 1000 篇 +10，上限 120；
-  - guaranteed_per_lane = lane_top_k 的 25%，限制在 [5, 20]；
-  - global_rrf_top = lane_top_k * intent_query_count，限制在 [60, 300]。
+  Unified candidate-pool budget:
+  - lane_top_k grows with total papers: 30 within 1000 papers, +10 per extra 1000, cap 120;
+  - guaranteed_per_lane = 25% of lane_top_k, clamped to [5, 20];
+  - global_rrf_top = lane_top_k * intent_query_count, clamped to [60, 300].
   """
   total = max(int(total_papers or 0), 0)
   intent_count = max(int(intent_query_count or 0), 1)
@@ -405,12 +407,12 @@ def build_global_candidate_ids(
   global_limit: int,
 ) -> List[str]:
   """
-  将所有 query lane 的候选论文合并成统一候选池。
-  - 不区分 keyword / intent_query 来源；
-  - 使用 rank-based RRF 做全局聚合，避免不同分数量纲直接混用；
-  - 每条 lane 的前 guaranteed_per_lane 固定保留；
-  - 再加入全局 RRF 前 global_limit 篇；
-  - 最终按“固定保留 + 全局排序”去重合并。
+  Merge candidate papers from all query lanes into one unified pool.
+  - Does not distinguish keyword vs intent_query sources;
+  - Uses rank-based RRF for global aggregation to avoid mixing incompatible score scales;
+  - Keeps the top guaranteed_per_lane from each lane;
+  - Adds the top global_limit papers from global RRF;
+  - Deduplicates by "guaranteed slots + global ranking".
   """
   score_map: Dict[str, float] = {}
   hit_count: Dict[str, int] = {}
@@ -504,18 +506,18 @@ def process_file(
   papers_list = data.get("papers") or []
   all_queries = data.get("queries") or []
   if not papers_list or not all_queries:
-    log(f"[WARN] 文件 {os.path.basename(input_path)} 中缺少 papers 或 queries，跳过。")
+    log(f"[WARN] File {os.path.basename(input_path)} is missing papers or queries; skipping.")
     return
 
-  # 仅使用语义查询（intent_query 或兼容旧的 llm_query）进行 rerank。
+  # Rerank only semantic queries (intent_query, or legacy llm_query).
   def _is_intent_rerank_query(q: Dict[str, Any]) -> bool:
     q_type = str(q.get("type") or "").strip().lower()
     return q_type in {"intent_query", "llm_query"}
 
   queries = [q for q in all_queries if _is_intent_rerank_query(q)]
   if not queries:
-    log("[WARN] 当前输入中没有可用于 rerank 的意图查询，跳过 rerank。")
-    # 保持输出结构一致，避免后续步骤读不到文件
+    log("[WARN] No intent queries available for rerank in this input; skipping rerank.")
+    # Keep output shape consistent so downstream steps can still read the file
     meta_generated_at = data.get("generated_at") or ""
     data["reranked_at"] = datetime.now(timezone.utc).isoformat()
     data["generated_at"] = meta_generated_at
@@ -541,7 +543,7 @@ def process_file(
   data["global_pool_guaranteed_per_lane"] = guaranteed_per_lane
   data["global_pool_effective_size"] = len(global_candidate_ids)
   if not global_candidate_ids:
-    log("[WARN] 未能从任意 query 中构建统一候选池，跳过 rerank。")
+    log("[WARN] Could not build a unified candidate pool from any query; skipping rerank.")
     meta_generated_at = data.get("generated_at") or ""
     data["reranked_at"] = datetime.now(timezone.utc).isoformat()
     data["generated_at"] = meta_generated_at
@@ -551,11 +553,11 @@ def process_file(
   effective_batch_size = resolve_effective_rerank_batch_size(reranker)
   group_start(f"Step 3 - rerank {os.path.basename(input_path)}")
   log(
-    f"[INFO] 开始 rerank：queries={len(queries)}（仅 intent/语义查询），papers={len(papers_list)}，"
-    f"global_pool={len(global_candidate_ids)}（lane_top_k={lane_top_k}, "
-    f"guaranteed_per_lane={guaranteed_per_lane}, global_top={global_rrf_top}），"
-    f"batch_size={effective_batch_size}，"
-    f"max_chars={MAX_CHARS_PER_DOC}，token_safety={TOKEN_SAFETY}"
+    f"[INFO] Starting rerank: queries={len(queries)} (intent/semantic only), papers={len(papers_list)}, "
+    f"global_pool={len(global_candidate_ids)} (lane_top_k={lane_top_k}, "
+    f"guaranteed_per_lane={guaranteed_per_lane}, global_top={global_rrf_top}), "
+    f"batch_size={effective_batch_size}, "
+    f"max_chars={MAX_CHARS_PER_DOC}, token_safety={TOKEN_SAFETY}"
   )
 
   for q_idx, q in enumerate(queries, start=1):
@@ -586,7 +588,7 @@ def process_file(
     try:
       for batch_idx, (batch_indices, batch_docs) in enumerate(batches, 1):
         log(
-          f"[INFO] 发送批次 {batch_idx}/{len(batches)} | docs={len(batch_docs)}"
+          f"[INFO] Sending batch {batch_idx}/{len(batches)} | docs={len(batch_docs)}"
         )
         response = reranker.rerank(
           query=q_text,
@@ -612,7 +614,7 @@ def process_file(
           rrf_merge(rrf_scores, rank_idx, orig_idx)
 
       if not rrf_scores:
-        log("[WARN] 本次 query 未得到有效 rerank 结果，跳过。")
+        log("[WARN] No valid rerank results for this query; skipping.")
         continue
     finally:
       group_end()
@@ -654,79 +656,79 @@ def process_file(
 
 def main() -> None:
   parser = argparse.ArgumentParser(
-    description="步骤 3：使用本地 Qwen3 Reranker 对候选论文做重排序（简化版）。",
+    description="Step 3: rerank candidate papers with a local Qwen3 Reranker (simplified).",
   )
   parser.add_argument(
     "--input",
     type=str,
     default=os.path.join(FILTERED_DIR, f"arxiv_papers_{TODAY_STR}.json"),
-    help="筛选结果 JSON 路径。",
+    help="Filtered results JSON path.",
   )
   parser.add_argument(
     "--output",
     type=str,
     default=os.path.join(RANKED_DIR, f"arxiv_papers_{TODAY_STR}.json"),
-    help="打分后的输出 JSON 路径。",
+    help="Ranked output JSON path.",
   )
   parser.add_argument(
     "--top-n",
     type=int,
     default=None,
-    help="最终保留的 Top N（默认保留全部候选）。",
+    help="Final Top N to keep (default: keep all candidates).",
   )
   parser.add_argument(
     "--rerank-profile",
     type=str,
     default=os.getenv("RERANK_PROFILE", ""),
-    help="Rerank 预设：public-zwwen-rerank / local-qwen3-0.6b / siliconflow-qwen3-0.6b。",
+    help="Rerank preset: public-zwwen-rerank / local-qwen3-0.6b / siliconflow-qwen3-0.6b.",
   )
   parser.add_argument(
     "--rerank-provider",
     type=str,
     default=os.getenv("RERANK_PROVIDER", ""),
-    help="Rerank provider：public_zwwen / local / siliconflow；默认由 --rerank-profile 推断。",
+    help="Rerank provider: public_zwwen / local / siliconflow; inferred from --rerank-profile by default.",
   )
   parser.add_argument(
     "--rerank-model",
     type=str,
     default=os.getenv("RERANK_MODEL", ""),
-    help=f"Rerank 模型名称（默认 {DEFAULT_LOCAL_RERANK_MODEL}）。",
+    help=f"Rerank model name (default {DEFAULT_LOCAL_RERANK_MODEL}).",
   )
   parser.add_argument(
     "--rerank-api-base-url",
     type=str,
     default=os.getenv("RERANK_API_BASE_URL", ""),
-    help="远端 rerank API 地址；本地 reranker 会忽略。",
+    help="Remote rerank API base URL; ignored by the local reranker.",
   )
   parser.add_argument(
     "--rerank-device",
     type=str,
     default=os.getenv("LOCAL_RERANK_DEVICE", ""),
-    help="本地 Rerank 运行设备，例如 cpu/cuda；默认交给 sentence-transformers 自动判断。",
+    help="Local rerank device, e.g. cpu/cuda; default lets the runtime auto-detect.",
   )
   parser.add_argument(
     "--rerank-batch-size",
     type=int,
     default=int(os.getenv("LOCAL_RERANK_BATCH_SIZE") or DEFAULT_LOCAL_RERANK_BATCH_SIZE),
-    help=f"本地 Rerank 推理 batch size（默认 {DEFAULT_LOCAL_RERANK_BATCH_SIZE}）。",
+    help=f"Local rerank inference batch size (default {DEFAULT_LOCAL_RERANK_BATCH_SIZE}).",
   )
   parser.add_argument(
     "--rerank-lane-top-k",
     type=int,
     default=_env_int("DPR_RERANK_LANE_TOP_K"),
-    help="覆盖候选池 lane_top_k；默认按论文总量自动估算。",
+    help="Override candidate-pool lane_top_k; default is estimated from total paper count.",
   )
   parser.add_argument(
     "--rerank-guaranteed-per-lane",
     type=int,
     default=_env_int("DPR_RERANK_GUARANTEED_PER_LANE"),
-    help="每条召回 lane 固定保留的候选数；可设 1 加速。",
+    help="Fixed candidates kept per recall lane; set to 1 to speed up.",
   )
   parser.add_argument(
     "--rerank-global-pool-limit",
     type=int,
     default=_env_int("DPR_RERANK_GLOBAL_POOL_LIMIT"),
-    help="全局 RRF 候选池上限；可设 80 加速。",
+    help="Global RRF candidate-pool cap; set to 80 to speed up.",
   )
 
   args = parser.parse_args()
@@ -740,7 +742,7 @@ def main() -> None:
     output_path = os.path.abspath(os.path.join(ROOT_DIR, output_path))
 
   if not os.path.exists(input_path):
-    log(f"[WARN] 输入文件不存在（今天可能没有新论文）：{input_path}，将跳过 Step 3。")
+    log(f"[WARN] Input file not found (no new papers today may be expected): {input_path}; skipping Step 3.")
     return
 
   profile_config = _resolve_rerank_profile_config(args.rerank_profile)
@@ -758,14 +760,14 @@ def main() -> None:
     or DEFAULT_LOCAL_RERANK_MODEL
   )
   log(
-    f"[INFO] reranker 配置：profile={args.rerank_profile or 'custom'}，provider={provider}，"
+    f"[INFO] Reranker config: profile={args.rerank_profile or 'custom'}, provider={provider}, "
     f"model={rerank_model}，global_pool_limit={args.rerank_global_pool_limit or 'auto'}，"
     f"guaranteed_per_lane={args.rerank_guaranteed_per_lane if args.rerank_guaranteed_per_lane is not None else 'auto'}"
   )
 
   if provider == "local":
     log(
-      f"[INFO] 加载本地 reranker：device={args.rerank_device or 'auto'}，"
+      f"[INFO] Loading local reranker: device={args.rerank_device or 'auto'}, "
       f"batch_size={args.rerank_batch_size}"
     )
     reranker = LocalQwenReranker(
@@ -777,21 +779,21 @@ def main() -> None:
     try:
       from reranker_api import SiliconFlowReranker  # type: ignore
     except Exception as exc:
-      raise RuntimeError("远端 reranker 需要 src/reranker_api.py 可导入。") from exc
+      raise RuntimeError("Remote reranker requires src/reranker_api.py to be importable.") from exc
 
     api_key = _resolve_remote_api_key(provider)
     base_url = _resolve_remote_base_url(provider, profile_config, args.rerank_api_base_url)
     if not api_key:
-      raise RuntimeError("远端 reranker 缺少 SILICONFLOW_API_KEY、PUBLIC_RERANK_API_KEY 或 RERANK_API_KEY。")
+      raise RuntimeError("Remote reranker is missing SILICONFLOW_API_KEY, PUBLIC_RERANK_API_KEY, or RERANK_API_KEY.")
     if not base_url:
-      raise RuntimeError("远端 reranker 缺少 API Base URL。")
-    log(f"[INFO] 使用远端 reranker：provider={provider} base_url={base_url}")
+      raise RuntimeError("Remote reranker is missing API base URL.")
+    log(f"[INFO] Using remote reranker: provider={provider} base_url={base_url}")
     reranker = SiliconFlowReranker(
       api_key=api_key,
       base_url=base_url,
     )
   else:
-    raise RuntimeError(f"不支持的 reranker provider：{provider}")
+    raise RuntimeError(f"Unsupported reranker provider: {provider}")
   process_file(
     reranker=reranker,
     input_path=input_path,

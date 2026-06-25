@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Step 6：根据推荐结果生成 Docs（精读区 / 速读区），并更新侧边栏。
+# Step 6: generate docs (deep dive + quick skim) from recommendations and update the sidebar.
 
 import argparse
 import html
@@ -34,7 +34,7 @@ CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 TODAY_STR = str(os.getenv("DPR_RUN_DATE") or "").strip() or datetime.now(timezone.utc).strftime("%Y%m%d")
 RANGE_DATE_RE = re.compile(r"^(\d{8})-(\d{8})$")
 
-# LLM 配置（使用 llm.py 内的 DeepSeek 客户端）
+# LLM config (DeepSeek client from llm.py)
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or os.getenv("SUMMARY_API_KEY")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL") or os.getenv("SUMMARY_BASE_URL") or "https://api.deepseek.com"
 DEEPSEEK_MODEL = os.getenv("SUMMARY_MODEL") or os.getenv("DEEPSEEK_MODEL") or "deepseek-v4-flash"
@@ -98,10 +98,10 @@ def call_llm_structured_json(
         log(f"[WARN] Structured output refusal: {resp.get('refusal')}")
         return None
     if resp.get("finish_reason") not in (None, "stop"):
-        log(f"[WARN] Structured output 未完成：finish_reason={resp.get('finish_reason')}")
+        log(f"[WARN] Structured output incomplete: finish_reason={resp.get('finish_reason')}")
         return None
     if resp.get("parse_error") is not None:
-        raise ValueError(f"模型未返回合法 JSON：{resp.get('content')}")
+        raise ValueError(f"Model did not return valid JSON: {resp.get('content')}")
 
     parsed = resp.get("parsed")
     if not isinstance(parsed, dict):
@@ -115,8 +115,8 @@ def log(message: str) -> None:
 
 def log_substep(code: str, name: str, phase: str) -> None:
     """
-    用于前端解析的子步骤标记。
-    格式： [SUBSTEP] 6.1 - xxx START/END
+    Sub-step markers for frontend parsing.
+    Format: [SUBSTEP] 6.1 - xxx START/END
     """
     phase = str(phase or "").strip().upper()
     if phase not in ("START", "END"):
@@ -130,14 +130,14 @@ def load_config() -> dict:
     try:
         import yaml  # type: ignore
     except Exception:
-        log("[WARN] 未安装 PyYAML，无法解析 config.yaml。")
+        log("[WARN] PyYAML not installed; cannot parse config.yaml.")
         return {}
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
             return data if isinstance(data, dict) else {}
     except Exception as e:
-        log(f"[WARN] 读取 config.yaml 失败：{e}")
+        log(f"[WARN] Failed to read config.yaml: {e}")
         return {}
 
 
@@ -182,26 +182,26 @@ def fetch_paper_markdown_via_jina(pdf_url: str, max_retries: int = 3) -> str | N
     full_url = base + pdf_url
     for attempt in range(1, max_retries + 1):
         try:
-            log(f"[JINA] 第 {attempt} 次请求：{full_url}")
+            log(f"[JINA] Request attempt {attempt}: {full_url}")
             resp = requests.get(full_url, timeout=60)
             if resp.status_code != 200:
-                log(f"[JINA][WARN] 状态码 {resp.status_code}，响应前 100 字符：{(resp.text or '')[:100]}")
+                log(f"[JINA][WARN] status {resp.status_code}, first 100 chars: {(resp.text or '')[:100]}")
             else:
                 text = (resp.text or "").strip()
                 if text:
-                    log("[JINA] 获取到结构化 Markdown 文本，将直接用作 .txt 内容。")
+                    log("[JINA] Received structured Markdown text; using it directly as .txt content.")
                     return text
         except Exception as e:
-            log(f"[JINA][WARN] 请求失败（第 {attempt} 次）：{e}")
+            log(f"[JINA][WARN] Request failed (attempt {attempt}): {e}")
         time.sleep(2 * attempt)
-    log("[JINA][ERROR] 多次请求失败，将回退到 PyMuPDF 抽取。")
+    log("[JINA][ERROR] All retries failed; falling back to PyMuPDF extraction.")
     return None
 
 
 def normalize_arxiv_id(value: str) -> str:
     """
-    统一将可能携带 URL 的 arXiv 输入转换为 id。
-    兼容：
+    Normalize arXiv input that may be a URL into an id.
+    Supports:
     - 1706.03762
     - 1706.03762v1
     - https://arxiv.org/abs/1706.03762v1
@@ -221,13 +221,13 @@ def normalize_arxiv_id(value: str) -> str:
 
 def parse_arxiv_xml_feed(xml_text: str) -> Dict[str, Any]:
     """
-    从 arXiv API XML feed 中解析第一条 paper 元数据，返回内部统一字典。
+    Parse the first paper entry from an arXiv API XML feed into the internal dict.
     """
     root = ET.fromstring(xml_text)
     ns = {"atom": "http://www.w3.org/2005/Atom"}
     entry = root.find("atom:entry", ns)
     if entry is None:
-        raise RuntimeError("未从 arXiv 返回中解析到论文条目")
+        raise RuntimeError("No paper entry parsed from arXiv response")
 
     def _text(tag: str) -> str:
         elem = entry.find(tag, ns)
@@ -276,88 +276,23 @@ def parse_arxiv_xml_feed(xml_text: str) -> Dict[str, Any]:
 
 def fetch_arxiv_paper_meta(arxiv_id: str) -> Dict[str, Any]:
     """
-    通过 arXiv API 拉取单篇论文元数据，用于单篇补生成。
+    Fetch single-paper metadata from the arXiv API for one-off generation.
     """
     pid = normalize_arxiv_id(arxiv_id)
     if not pid:
-        raise ValueError("paper id 不能为空")
+        raise ValueError("paper id must not be empty")
     url = f"https://export.arxiv.org/api/query?id_list={quote_plus(pid)}"
-    log(f"[INFO] 拉取 arXiv 元数据：{url}")
+    log(f"[INFO] Fetching arXiv metadata: {url}")
     resp = requests.get(url, timeout=30)
     if resp.status_code != 200:
-        raise RuntimeError(f"arXiv API 请求失败，status={resp.status_code}")
+        raise RuntimeError(f"arXiv API request failed, status={resp.status_code}")
     return parse_arxiv_xml_feed(resp.text)
-
-
-def translate_title_and_abstract_to_zh(
-    title: str,
-    abstract: str,
-    client: DeepSeekClient | None = None,
-) -> Tuple[str, str]:
-    active_client = client or LLM_CLIENT
-    if active_client is None:
-        return "", ""
-    title = title.strip() if title else ""
-    abstract = abstract.strip() if abstract else ""
-    if not title and not abstract:
-        return "", ""
-
-    system_prompt = (
-        "你是一名熟悉机器学习与自然科学论文的专业翻译，请将英文标题和摘要翻译为自然、准确的中文。"
-        "保持学术风格，尽量保留专有名词，不要额外添加评论。"
-    )
-    payload = {"title": title, "abstract": abstract}
-    user_text = json.dumps(payload, ensure_ascii=False)
-
-    user_prompt = (
-        "请将上面的 JSON 中的 title 与 abstract 翻译成中文，并严格输出 JSON：\n"
-        "{\"title_zh\": \"...\", \"abstract_zh\": \"...\"}\n"
-        "要求：只输出 JSON，不要输出任何其它说明文字。\n"
-        "Output must be strict JSON only, no markdown, no fences, no extra text."
-    )
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_text},
-        {"role": "user", "content": user_prompt},
-    ]
-    try:
-        schema = {
-            "type": "object",
-            "properties": {
-                "title_zh": {"type": "string"},
-                "abstract_zh": {"type": "string"},
-            },
-            "required": ["title_zh", "abstract_zh"],
-            "additionalProperties": False,
-        }
-        parsed = call_llm_structured_json(
-            active_client,
-            messages,
-            schema_name="translate_zh",
-            schema=schema,
-            temperature=0.2,
-            max_tokens=STEP6_STRUCTURED_MAX_TOKENS,
-        )
-    except Exception:
-        return "", ""
-
-    try:
-        if not isinstance(parsed, dict):
-            return "", ""
-        obj = parsed
-        if not isinstance(obj, dict):
-            return "", ""
-        zh_title = str(obj.get("title_zh") or "").strip()
-        zh_abstract = str(obj.get("abstract_zh") or "").strip()
-    except Exception:
-        return "", ""
-    return zh_title, zh_abstract
 
 
 def extract_section_tail(md_text: str, heading: str) -> str:
     """
-    从 md 中提取某个自动生成段落（heading）后的尾部内容。
-    返回不含 heading 的文本（strip 后）。
+    Extract trailing content after an auto-generated heading in md.
+    Returns text without the heading (stripped).
     """
     if not md_text:
         return ""
@@ -370,13 +305,13 @@ def extract_section_tail(md_text: str, heading: str) -> str:
 
 def strip_auto_sections(md_text: str) -> str:
     """
-    发送给 LLM 的“论文 Markdown 元数据”只保留正文前半段，避免把旧的自动总结/速览再喂回模型。
+    Keep only the first half of paper Markdown metadata sent to the LLM, avoiding re-feeding old auto summaries/glance blocks.
     """
     if not md_text:
         return ""
     markers = [
-        "\n\n---\n\n## 论文详细总结（自动生成）",
-        "\n\n---\n\n## 速览摘要（自动生成）",
+        "\n\n---\n\n## Detailed Summary (auto-generated)",
+        "\n\n---\n\n## At a Glance (auto-generated)",
     ]
     cut_points = [md_text.find(m) for m in markers if md_text.find(m) != -1]
     if not cut_points:
@@ -387,9 +322,9 @@ def strip_auto_sections(md_text: str) -> str:
 
 def normalize_meta_tldr_line(md_text: str) -> Tuple[str, bool]:
     """
-    兼容历史版本：元信息区 TLDR 行曾被写成 '**TLDR**: xxx \\'。
-    这里把“元信息区”的 TLDR 行末尾反斜杠去掉。
-    注意：`## 速览` 区块中会使用 `\\` 表达强制换行，不能误伤。
+    Legacy fix: meta TLDR lines were written as '**TLDR**: xxx \\'.
+    Strip trailing backslashes from meta-area TLDR lines only.
+    Note: the `## At a Glance` block uses `\\` for forced line breaks; do not touch those.
     """
     if not md_text:
         return md_text, False
@@ -397,7 +332,7 @@ def normalize_meta_tldr_line(md_text: str) -> Tuple[str, bool]:
     lines = md_text.splitlines()
     out: List[str] = []
     for line in lines:
-        # 只处理元信息区 TLDR（使用英文冒号 `:` 的格式）
+        # Meta-area TLDR only (English colon `:` format)
         if line.startswith("**TLDR**:"):
             new_line = line.rstrip()
             if new_line.endswith("\\"):
@@ -412,9 +347,9 @@ def normalize_meta_tldr_line(md_text: str) -> Tuple[str, bool]:
 
 def normalize_glance_block_format(md_text: str) -> Tuple[str, bool]:
     """
-    规范 `## 速览` 区块的换行符号：
-    - TLDR/Motivation/Method/Result 行末尾应带 ` \\`（强制换行）
-    - Conclusion 行末尾不应带 `\\`
+    Normalize line-break markers in the `## At a Glance` block:
+    - TLDR/Motivation/Method/Result lines should end with ` \\` (forced break)
+    - Conclusion lines should not end with `\\`
     """
     if not md_text:
         return md_text, False
@@ -438,13 +373,13 @@ def normalize_glance_block_format(md_text: str) -> Tuple[str, bool]:
 
     for line in lines:
         stripped = line.strip()
-        if stripped == "## 速览":
+        if stripped == "## At a Glance":
             in_glance = True
             out.append(line)
             continue
 
         if in_glance:
-            # 速览块结束条件：分隔线或下一个二级标题
+            # End glance block at separator or next level-2 heading
             if stripped == "---" or stripped.startswith("## "):
                 in_glance = False
                 out.append(line)
@@ -475,20 +410,20 @@ def normalize_glance_block_format(md_text: str) -> Tuple[str, bool]:
 
 def ensure_single_sentence_end(text: str) -> str:
     """
-    给 TLDR/短句补一个句末标点（避免重复 '。。'）。
+    Ensure TLDR/short sentences end with punctuation (avoid duplicate '..').
     """
     s = (text or "").strip()
     if not s:
         return s
     s = s.rstrip("。.!?！？")
-    return s + "。"
+    return s + "."
 
 
 def upsert_auto_block(md_path: str, heading: str, content: str) -> None:
     """
-    将自动生成内容写入 md：
-    - 若已存在同名 heading，则替换从该块开始到文件末尾
-    - 否则追加到文件末尾
+    Write auto-generated content into md:
+    - If the heading exists, replace from that block to EOF
+    - Otherwise append at EOF
     """
     key = f"## {heading}"
     block = f"\n\n---\n\n{key}\n\n{content}".rstrip() + "\n"
@@ -511,26 +446,26 @@ def upsert_auto_block(md_path: str, heading: str, content: str) -> None:
 
 def upsert_glance_block_in_text(md_text: str, glance: str) -> str:
     """
-    在 Markdown 文本中插入/替换 `## 速览` 区块：
-    - 若已存在 `## 速览`，则替换其内容直到下一个分隔线 `---` 或下一个二级标题 `## `
-    - 否则在 `## Abstract` 之前插入；若找不到则追加到末尾
+    Insert/replace the `## At a Glance` block in Markdown:
+    - If `## At a Glance` exists, replace until the next `---` or `## ` heading
+    - Otherwise insert before `## Abstract`, or append at EOF
     """
     if not glance:
         return md_text
 
     txt = md_text or ""
-    key = "## 速览"
+    key = "## At a Glance"
     if key in txt:
-        # 替换现有速览块
-        pattern = re.compile(r"(^## 速览\\s*\\n)(.*?)(?=\\n---\\n|\\n##\\s|\\Z)", re.S | re.M)
+        # Replace existing glance block
+        pattern = re.compile(r"(^## At a Glance\\s*\\n)(.*?)(?=\\n---\\n|\\n##\\s|\\Z)", re.S | re.M)
         return pattern.sub(rf"\\1{glance}\n", txt, count=1)
 
     abstract_idx = txt.find("## Abstract")
     if abstract_idx != -1:
         before = txt[:abstract_idx].rstrip()
         after = txt[abstract_idx:]
-        return f"{before}\n\n## 速览\n{glance}\n\n---\n\n{after}"
-    return (txt.rstrip() + f"\n\n## 速览\n{glance}\n").rstrip() + "\n"
+        return f"{before}\n\n## At a Glance\n{glance}\n\n---\n\n{after}"
+    return (txt.rstrip() + f"\n\n## At a Glance\n{glance}\n").rstrip() + "\n"
 
 
 def generate_deep_summary(
@@ -541,7 +476,7 @@ def generate_deep_summary(
 ) -> str | None:
     active_client = client or LLM_CLIENT
     if active_client is None:
-        log("[WARN] 未配置 DEEPSEEK_API_KEY 或 SUMMARY_API_KEY，跳过精读总结。")
+        log("[WARN] DEEPSEEK_API_KEY or SUMMARY_API_KEY not set; skipping deep-dive summary.")
         return None
     if not os.path.exists(md_file_path):
         return None
@@ -555,27 +490,26 @@ def generate_deep_summary(
             paper_txt_content = f.read()
 
     system_prompt = (
-        "你是一名资深学术论文分析助手，请使用中文、以 Markdown 形式，"
-        "对给定论文做结构化、深入、客观的总结。"
+        "You are a senior academic paper analyst. Write a structured, in-depth, objective summary in English Markdown."
     )
     user_prompt = (
-        "请基于下面提供的论文内容，生成一段详细的中文总结，要求按照如下要点依次展开：\n"
-        "1. 论文的核心问题与整体含义（研究动机和背景）。\n"
-        "2. 论文提出的方法论：核心思想、关键技术细节、公式或算法流程（用文字说明即可）。\n"
-        "3. 实验设计：使用了哪些数据集 / 场景，它的 benchmark 是什么，对比了哪些方法。\n"
-        "4. 资源与算力：如果文中有提到，请总结使用了多少算力（GPU 型号、数量、训练时长等）。若未明确说明，也请指出这一点。\n"
-        "5. 实验数量与充分性：大概做了多少组实验（如不同数据集、消融实验等），这些实验是否充分、是否客观、公平。\n"
-        "6. 论文的主要结论与发现。\n"
-        "7. 优点：方法或实验设计上有哪些亮点。\n"
-        "8. 不足与局限：包括实验覆盖、偏差风险、应用限制等。\n\n"
-        "请用分层标题和项目符号（Markdown 格式）组织上述内容，语言尽量简洁但信息要尽量完整。\n"
-        "要求：最后单独输出一行“（完）”作为结束标记。"
+        "Based on the paper content below, write a detailed English summary covering these points in order:\n"
+        "1. Core problem and overall meaning (motivation and background).\n"
+        "2. Methodology: core idea, key technical details, formulas or algorithm flow (text only).\n"
+        "3. Experiments: datasets/scenarios, benchmarks, baselines compared.\n"
+        "4. Compute/resources: GPUs, counts, training time if mentioned; note if absent.\n"
+        "5. Experiment breadth: number of runs, ablations, whether coverage is sufficient and fair.\n"
+        "6. Main conclusions and findings.\n"
+        "7. Strengths: highlights of method or experimental design.\n"
+        "8. Limitations: coverage gaps, bias risks, application limits.\n\n"
+        "Use headings and bullets in Markdown. Be concise but complete.\n"
+        "End with a single line containing only “(End)” as the completion marker."
     )
 
     messages = [{"role": "system", "content": system_prompt}]
     if paper_txt_content:
-        messages.append({"role": "user", "content": f"### 论文 PDF 提取文本 ###\n{paper_txt_content}"})
-    messages.append({"role": "user", "content": f"### 论文 Markdown 元数据 ###\n{paper_md_content}"})
+        messages.append({"role": "user", "content": f"### Extracted PDF text ###\n{paper_txt_content}"})
+    messages.append({"role": "user", "content": f"### Paper Markdown metadata ###\n{paper_md_content}"})
     messages.append({"role": "user", "content": user_prompt})
 
     last = ""
@@ -588,23 +522,23 @@ def generate_deep_summary(
             last = summary
             if os.getenv("DPR_DEBUG_STEP6") == "1":
                 log(f"[DEBUG][STEP6] deep_summary attempt={attempt} len={len(summary)} tail={summary[-20:]!r}")
-            if "（完）" in summary:
+            if "(End)" in summary:
                 return summary
-            # 续写一次：避免输出被截断
+            # Continue once if output was truncated
             cont_messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "你上一次的总结可能被截断了，请从中断处继续补全，不要重复已输出内容。"},
-                {"role": "user", "content": f"上一次输出如下：\n\n{summary}\n\n请继续补全，最后以一行“（完）”结束。"},
+                {"role": "user", "content": "Your previous summary may have been truncated. Continue from where you stopped without repeating prior content."},
+                {"role": "user", "content": f"Previous output:\n\n{summary}\n\nContinue and end with a single line “(End)”."},
             ]
             cont = call_llm_text(active_client, cont_messages, temperature=0.3, max_tokens=2048)
             cont = (cont or "").strip()
             merged = f"{summary}\n\n{cont}".strip()
             if os.getenv("DPR_DEBUG_STEP6") == "1":
                 log(f"[DEBUG][STEP6] deep_summary_cont attempt={attempt} len={len(cont)} merged_tail={merged[-20:]!r}")
-            if "（完）" in merged:
+            if "(End)" in merged:
                 return merged
         except Exception as e:
-            log(f"[WARN] 精读总结失败（第 {attempt} 次）：{e}")
+            log(f"[WARN] Deep-dive summary failed (attempt {attempt}): {e}")
             time.sleep(2 * attempt)
     return last or None
 
@@ -616,24 +550,24 @@ def generate_glance_overview(
     client: DeepSeekClient | None = None,
 ) -> str | None:
     """
-    生成论文速览（包含 TLDR、Motivation、Method、Result、Conclusion）。
-    使用 JSON 结构化输出，确保返回完整的五个字段。
+    Generate paper glance (TLDR, Motivation, Method, Result, Conclusion).
+    Uses structured JSON output with all five fields.
     """
     active_client = client or LLM_CLIENT
     if active_client is None:
-        log("[WARN] 未配置 LLM_CLIENT，跳过速览生成。")
+        log("[WARN] LLM_CLIENT not configured; skipping glance generation.")
         return None
 
-    system_prompt = "你是论文速览助手，请用中文生成信息密度高、但不冗长的论文速览。"
+    system_prompt = "You are a paper glance assistant. Produce dense but concise English glance summaries."
     payload = {"title": title, "abstract": abstract}
     user_text = json.dumps(payload, ensure_ascii=False)
     user_prompt = (
-        "请基于上面的 JSON 中的 title 和 abstract，输出一个中文速览摘要，严格返回 JSON（不要输出任何其它文字）：\n"
+        "From the title and abstract in the JSON above, output an English glance summary as strict JSON only:\n"
         "{\"tldr\":\"...\",\"motivation\":\"...\",\"method\":\"...\",\"result\":\"...\",\"conclusion\":\"...\"}\n"
-        "要求：\n"
-        "- tldr：150-220个中文字符，不是一句话口号；通常写成3-4个短句，按“问题背景→核心方法→关键结果→贡献意义”的顺序组织\n"
-        "- motivation/method/result/conclusion：每个字段30-70个中文字符，通常一句话；对标论文页速览卡片，简洁但必须包含具体信息\n"
-        "- 不要把英文句子放进中文字段；可保留必要英文术语或模型名\n"
+        "Requirements:\n"
+        "- tldr: 60-90 words, 3-4 short sentences in problem→method→result→impact order\n"
+        "- motivation/method/result/conclusion: 15-35 words each, one concrete sentence\n"
+        "- Keep proper nouns, technical terms, and model names intact\n"
         "Output must be strict JSON only, no markdown, no fences, no extra text."
     )
 
@@ -678,38 +612,38 @@ def generate_glance_overview(
                 continue
             return "\n".join(
                 [
-                    f"**TLDR**：{ensure_single_sentence_end(tldr)} \\",
-                    f"**Motivation**：{ensure_single_sentence_end(motivation)} \\",
-                    f"**Method**：{ensure_single_sentence_end(method)} \\",
-                    f"**Result**：{ensure_single_sentence_end(result)} \\",
-                    f"**Conclusion**：{ensure_single_sentence_end(conclusion)}",
+                    f"**TLDR**: {ensure_single_sentence_end(tldr)} \\",
+                    f"**Motivation**: {ensure_single_sentence_end(motivation)} \\",
+                    f"**Method**: {ensure_single_sentence_end(method)} \\",
+                    f"**Result**: {ensure_single_sentence_end(result)} \\",
+                    f"**Conclusion**: {ensure_single_sentence_end(conclusion)}",
                 ]
             )
         except Exception as e:
-            # 额度不足等“硬失败”不必重试，直接降级
+            # Hard failures like quota exhaustion: do not retry, fall back
             msg = str(e)
             if (
                 "insufficient_user_quota" in msg
-                or "额度不足" in msg
+                or "quota" in msg.lower() or "额度不足" in msg
                 or "insufficient quota" in msg
                 or ("403" in msg and "Forbidden" in msg)
             ):
-                log(f"[WARN] 速览生成失败（额度不足，停止重试）：{e}")
+                log(f"[WARN] Glance generation failed (quota exhausted, stop retrying): {e}")
                 break
-            log(f"[WARN] 速览生成失败（第 {attempt} 次）：{e}")
+            log(f"[WARN] Glance generation failed (attempt {attempt}): {e}")
             time.sleep(2 * attempt)
     return None
 
 
 def build_glance_fallback(paper: Dict[str, Any]) -> str:
     """
-    当 LLM 额度不足/不可用时的降级速览：
-    - TLDR 优先用 llm_tldr_cn/llm_tldr；否则用摘要首句；
-    - 其余字段用“基于摘要的启发式”生成，保证 5 段齐全。
+    Fallback glance when LLM quota is unavailable:
+    - TLDR prefers llm_tldr_en/llm_tldr, else first abstract sentence;
+    - Other fields use abstract heuristics so all five sections exist.
     """
     abstract = str(paper.get("abstract") or "").strip()
     tldr = (
-        str(paper.get("llm_tldr_cn") or paper.get("llm_tldr") or paper.get("llm_tldr_en") or "").strip()
+        str(paper.get("llm_tldr_en") or paper.get("llm_tldr") or "").strip()
     )
     evidence = str(paper.get("canonical_evidence") or "").strip()
 
@@ -724,10 +658,10 @@ def build_glance_fallback(paper: Dict[str, Any]) -> str:
         tldr = first_sentence(abstract)
     if not tldr and evidence:
         tldr = evidence
-    tldr = ensure_single_sentence_end(tldr or "基于摘要生成的速览信息。")
+    tldr = ensure_single_sentence_end(tldr or "Quick-read summary generated from the abstract.")
 
     motivation = ensure_single_sentence_end(
-        first_sentence(evidence) or "本文关注一个具有代表性的研究问题，并尝试提升现有方法的效果或可解释性。"
+        first_sentence(evidence) or "This paper addresses a representative research problem and aims to improve the effectiveness or interpretability of existing methods."
     )
 
     method_hint = ""
@@ -735,31 +669,31 @@ def build_glance_fallback(paper: Dict[str, Any]) -> str:
         m = re.search(r"(we (?:propose|present|introduce|develop)[^\\.]{0,200})\\.", abstract, re.I)
         if m:
             method_hint = m.group(1).strip()
-    method = ensure_single_sentence_end(method_hint or "方法与实现细节请参考摘要与正文。")
+    method = ensure_single_sentence_end(method_hint or "See the abstract and full text for methodology and implementation details.")
 
     result_hint = ""
     if abstract:
         m = re.search(r"(experiments? (?:show|demonstrate)[^\\.]{0,200})\\.", abstract, re.I)
         if m:
             result_hint = m.group(1).strip()
-    result = ensure_single_sentence_end(result_hint or "结果与对比结论请参考摘要与正文。")
+    result = ensure_single_sentence_end(result_hint or "See the abstract and full text for results and comparative conclusions.")
 
-    conclusion = ensure_single_sentence_end("总体而言，该工作在所述任务上展示了有效性，并提供了可复用的思路或工具。")
+    conclusion = ensure_single_sentence_end("Overall, this work demonstrates effectiveness on the stated task and offers reusable ideas or tooling.")
 
     return "\n".join(
         [
-            f"**TLDR**：{tldr} \\",
-            f"**Motivation**：{motivation} \\",
-            f"**Method**：{method} \\",
-            f"**Result**：{result} \\",
-            f"**Conclusion**：{conclusion}",
+            f"**TLDR**: {tldr} \\",
+            f"**Motivation**: {motivation} \\",
+            f"**Method**: {method} \\",
+            f"**Result**: {result} \\",
+            f"**Conclusion**: {conclusion}",
         ]
     )
 
 
 def build_tags_html(section: str, llm_tags: List[str]) -> str:
     tags_html: List[str] = []
-    # 新链路按 query 标签展示；历史 keyword:* 统一折叠为 query:*，避免重复。
+    # New pipeline shows query tags; fold legacy keyword:* into query:* to avoid duplicates.
     seen = set()
     for tag in llm_tags:
         raw = str(tag).strip()
@@ -776,7 +710,7 @@ def build_tags_html(section: str, llm_tags: List[str]) -> str:
             continue
         seen.add(dedup_key)
 
-        # 前台主标签统一使用 query（蓝色），paper 为预留类型。
+        # Frontend primary tags use query (blue); paper is reserved.
         css = {
             "query": "tag-blue",
             "paper": "tag-pink",
@@ -789,13 +723,13 @@ def build_tags_html(section: str, llm_tags: List[str]) -> str:
 
 def normalize_meta_tags_line(content: str) -> Tuple[str, bool]:
     """
-    兼容历史格式：文章页 `**Tags**` 不再展示“精读区/速读区”标签。
-    只删除标签内容严格为“精读区/速读区”的 span，避免误伤关键词标签。
+    Legacy fix: article `**Tags**` no longer shows deep/quick section labels.
+    Remove only spans whose text is exactly deep/quick section labels.
     """
     if not content:
         return content, False
     pattern = re.compile(
-        r'<span\s+class="tag-label\s+tag-(?:blue|green)">\s*(?:精读区|速读区)\s*</span>\s*',
+        r'<span\s+class="tag-label\s+tag-(?:blue|green)">\s*(?:精读区|速读区|Deep Read|Quick Skim)\s*</span>\s*',
         re.IGNORECASE,
     )
     fixed = pattern.sub("", content)
@@ -804,9 +738,9 @@ def normalize_meta_tags_line(content: str) -> Tuple[str, bool]:
 
 def replace_meta_line(md_text: str, label: str, value: str, add_slash: bool = True) -> Tuple[str, bool]:
     """
-    替换形如 `**Label**: xxx \\` 的元数据行。
-    - 仅替换第一处匹配
-    - 若不存在则不插入（避免意外改写用户自定义元信息结构）
+    Replace metadata lines like `**Label**: xxx \\`.
+    - Replace only the first match
+    - Do not insert if missing (avoid rewriting custom meta layout)
     """
     txt = md_text or ""
     v = (value or "").strip()
@@ -816,7 +750,7 @@ def replace_meta_line(md_text: str, label: str, value: str, add_slash: bool = Tr
     if add_slash:
         line += " " + "\\"
     pattern = re.compile(f"^\\*\\*{re.escape(label)}\\*\\*:\\s*.*$", re.M)
-    # 使用函数替换，避免 replacement string 中的反斜杠被当作转义序列解析
+    # Use callable replace so backslashes in replacement are not escape sequences
     new_txt, n = pattern.subn(lambda _m: line, txt, count=1)
     return new_txt, n > 0 and new_txt != txt
 
@@ -870,14 +804,14 @@ def ensure_home_module_files(docs_dir: str) -> Tuple[str, str]:
     if not os.path.exists(notice_path):
         with open(notice_path, "w", encoding="utf-8") as f:
             f.write("────────────────────────────────────────\n")
-            f.write("（公告占位）欢迎使用 Daily Paper Reader。\n")
-            f.write("（公告占位）可在此放置本周更新、维护通知等。\n")
+            f.write("(Notice placeholder) Welcome to Daily Paper Reader.\n")
+            f.write("(Notice placeholder) Put weekly updates and maintenance notices here.\n")
             f.write("────────────────────────────────────────\n")
     if not os.path.exists(promo_path):
         with open(promo_path, "w", encoding="utf-8") as f:
             f.write("════════════════════════════════════════\n")
-            f.write("（宣传占位）欢迎 Star / Fork 本项目。\n")
-            f.write("（宣传占位）欢迎提交 Issue 与 PR。\n")
+            f.write("(Promo placeholder) Star / Fork this project.\n")
+            f.write("(Promo placeholder) Issues and PRs welcome.\n")
             f.write("════════════════════════════════════════\n")
     return notice_path, promo_path
 
@@ -900,9 +834,9 @@ def _format_entry_tags(tags: List[Tuple[str, str]]) -> str:
         if k == "score":
             try:
                 score_num = float(v)
-                labels.append(f"评分：{score_num:.1f}/10")
+                labels.append(f"Score: {score_num:.1f}/10")
             except Exception:
-                labels.append(f"评分：{v}")
+                labels.append(f"Score: {v}")
             continue
         if not v:
             continue
@@ -910,7 +844,7 @@ def _format_entry_tags(tags: List[Tuple[str, str]]) -> str:
             labels.append(f"{k}:{v}")
         else:
             labels.append(v)
-    return "、".join(labels) if labels else "无标签"
+    return ", ".join(labels) if labels else "No tags"
 
 
 def _entry_score_text(tags: List[Tuple[str, str]]) -> str:
@@ -934,52 +868,52 @@ def build_daily_brief_summary(
     run_status: str,
 ) -> str:
     if total_count == 0:
-        return "> 今日无新推荐，系统未产出可展示论文。"
+        return "> No new recommendations today; the system produced no papers to display."
 
     def _format_preview_item(paper_id: str, title: str, tags: List[Tuple[str, str]]) -> str:
         name = ((title or "").strip() or paper_id)
         score = _entry_score_text(tags)
-        return f"《{name}》（{score}）" if score else f"《{name}》"
+        return f"“{name}” ({score})" if score else f"“{name}”"
 
     deep_preview = [_format_preview_item(paper_id, title, tags) for paper_id, title, tags in deep_entries[:2] if (title or paper_id)]
     quick_preview = [_format_preview_item(paper_id, title, tags) for paper_id, title, tags in quick_entries[:3] if (title or paper_id)]
     highlight = []
     if deep_preview:
-        highlight.append(f"- 精读：{', '.join(deep_preview)}")
+        highlight.append(f"- Deep Read: {', '.join(deep_preview)}")
     if quick_preview:
-        highlight.append(f"- 速读：{', '.join(quick_preview)}")
+        highlight.append(f"- Quick Skim: {', '.join(quick_preview)}")
     if not highlight:
         return (
-            f"- 状态：{run_status}。\n"
-            f"- 已完成今日生成，共收录 {total_count} 篇（精读 {len(deep_entries)} 篇，速读 {len(quick_entries)} 篇）。"
+            f"- Status: {run_status}.\n"
+            f"- Today's generation is complete: {total_count} paper(s) total ({len(deep_entries)} deep-read, {len(quick_entries)} quick-skim)."
         )
 
     fallback = (
-        f"- 今日共生成 {total_count} 篇推荐（精读 {len(deep_entries)} 篇，速读 {len(quick_entries)} 篇）\n"
+        f"- Generated {total_count} recommendation(s) today ({len(deep_entries)} deep-read, {len(quick_entries)} quick-skim)\n"
         + "\n".join(highlight)
-        + "\n- 这些结果覆盖了当下较热的方向，建议先看精读区论文的关键问题与方法。"
+        + "\n- These results cover currently active directions; start with the key problems and methods of the deep-read papers."
     )
 
     if LLM_CLIENT is None:
         return fallback
 
     system_prompt = (
-        "你是日报编辑，请输出 3 句以内、吸引人、简洁但具体的中文总结。"
-        "内容必须基于给定的推荐数据，不要编造论文信息。"
+        "You are a daily-report editor. Write up to 3 concise, specific English sentences."
+        "Base content only on the provided recommendation data; do not invent papers."
     )
     user_prompt = (
-        f"日报日期：{date_label}\n"
-        f"状态：{run_status}\n"
-        f"总数：{total_count} 篇\n"
-        f"精读：{len(deep_entries)} 篇\n"
-        f"速读：{len(quick_entries)} 篇\n"
-        f"精读列表（含分数）：{json.dumps(deep_preview, ensure_ascii=False)}\n"
-        f"速读列表（含分数）：{json.dumps(quick_preview, ensure_ascii=False)}\n\n"
-        "请按以下格式输出：\n"
-        "1) 一句概括今天做了什么，适合标题感官。\n"
-        "2) 一句给出最值得看的 1~2 个方向/结论。\n"
-        "3) 一句给出下步建议（面向普通读者）。\n"
-        "直接输出 1-3 行文本，不要 Markdown 标题，也不要 JSON。"
+        f"Report date: {date_label}\n"
+        f"Status: {run_status}\n"
+        f"Total: {total_count} papers\n"
+        f"Deep dive: {len(deep_entries)} papers\n"
+        f"Quick skim: {len(quick_entries)} papers\n"
+        f"Deep list (with scores): {json.dumps(deep_preview, ensure_ascii=False)}\n"
+        f"Quick list (with scores): {json.dumps(quick_preview, ensure_ascii=False)}\n\n"
+        "Output format:\n"
+        "1) One sentence on what today covers (headline tone).\n"
+        "2) One sentence on the top 1-2 directions/findings.\n"
+        "3) One sentence of next-step advice for general readers.\n"
+        "Output 1-3 plain lines only; no Markdown headings or JSON."
     )
     try:
         content = call_llm_text(
@@ -995,15 +929,15 @@ def build_daily_brief_summary(
         if content:
             return content
     except Exception as e:
-        log(f"[WARN] 生成日报简报失败：{e}")
+        log(f"[WARN] Failed to generate daily brief: {e}")
 
     return fallback
 
 
 def build_docsify_id_href(path_no_ext: str) -> str:
     """
-    统一生成 Docsify Markdown 内链格式：`/...`。
-    注意：在 Markdown 中使用 `(#/...)` 会被 Docsify 当作页内锚点，触发 querySelector 报错。
+    Build Docsify Markdown links as `/...`.
+    Note: `(#/...)` in Markdown is treated as in-page anchors and can break querySelector.
     """
     p = str(path_no_ext or "").strip()
     p = p.replace("\\", "/").strip()
@@ -1024,7 +958,7 @@ def build_latest_report_section(
     paper_evidence_by_id: Dict[str, str],
 ) -> str:
     effective_label = (date_label or "").strip() or format_date_str(date_str)
-    run_status = "成功" if recommend_exists else "未产出 recommend 文件（视为无结果）"
+    run_status = "success" if recommend_exists else "no recommend file (treated as empty)"
     total = len(deep_entries) + len(quick_entries)
     summary = build_daily_brief_summary(
         date_label=effective_label,
@@ -1035,15 +969,15 @@ def build_latest_report_section(
     )
 
     lines: List[str] = []
-    lines.append(f"- 最新运行日期：{effective_label}")
-    lines.append(f"- 运行时间：{generated_at}")
-    lines.append(f"- 运行状态：{run_status}")
-    lines.append(f"- 本次总论文数：{total}")
-    lines.append(f"- 精读区：{len(deep_entries)}")
-    lines.append(f"- 速读区：{len(quick_entries)}")
+    lines.append(f"- Latest run date: {effective_label}")
+    lines.append(f"- Run time: {generated_at}")
+    lines.append(f"- Run status: {run_status}")
+    lines.append(f"- Total papers this run: {total}")
+    lines.append(f"- Deep Read: {len(deep_entries)}")
+    lines.append(f"- Quick Skim: {len(quick_entries)}")
     if summary:
         lines.append("")
-        lines.append("### 今日简报（AI）")
+        lines.append("### Today's Brief (AI)")
         lines.append(summary)
     if RANGE_DATE_RE.match(date_str):
         report_href = build_docsify_id_href(f"{date_str}/README")
@@ -1051,31 +985,31 @@ def build_latest_report_section(
         ym = date_str[:6]
         day = date_str[6:]
         report_href = build_docsify_id_href(f"{ym}/{day}/README")
-    lines.append(f"- 详情：[{report_href}]({report_href})")
+    lines.append(f"- Details: [{report_href}]({report_href})")
     lines.append("")
-    lines.append("### 精读区论文标签")
+    lines.append("### Deep Read — paper tags")
     if deep_entries:
         for idx, (paper_id, title, tags) in enumerate(deep_entries, start=1):
             safe_title = (title or "").strip() or paper_id
             evidence = (paper_evidence_by_id.get(str(paper_id).strip(), "") or "").strip()
             lines.append(f"{idx}. [{safe_title}]({build_docsify_id_href(paper_id)})  ")
-            lines.append(f"   标签：{_format_entry_tags(tags)}")
+            lines.append(f"   Tags: {_format_entry_tags(tags)}")
             if evidence:
-                lines.append(f"   evidence：{evidence}")
+                lines.append(f"   evidence: {evidence}")
     else:
-        lines.append("- 本次无精读推荐。")
+        lines.append("- No deep-read recommendations this run.")
     lines.append("")
-    lines.append("### 速读区论文标签")
+    lines.append("### Quick Skim — paper tags")
     if quick_entries:
         for idx, (paper_id, title, tags) in enumerate(quick_entries, start=1):
             safe_title = (title or "").strip() or paper_id
             evidence = (paper_evidence_by_id.get(str(paper_id).strip(), "") or "").strip()
             lines.append(f"{idx}. [{safe_title}]({build_docsify_id_href(paper_id)})  ")
-            lines.append(f"   标签：{_format_entry_tags(tags)}")
+            lines.append(f"   Tags: {_format_entry_tags(tags)}")
             if evidence:
-                lines.append(f"   evidence：{evidence}")
+                lines.append(f"   evidence: {evidence}")
     else:
-        lines.append("- 本次无速读推荐。")
+        lines.append("- No quick-skim recommendations this run.")
     lines.append("")
     return "\n".join(lines)
 
@@ -1092,11 +1026,11 @@ def normalize_sidebar_tag(tag: str) -> str:
 
 def split_sidebar_tag(tag: str) -> Tuple[str, str]:
     """
-    将 tag 解析为 (kind, label)：
+    Parse tag into (kind, label):
     - keyword:xxx -> ("keyword", "xxx")
     - query:xxx   -> ("query", "xxx")
-    - paper/ref/cite:xxx -> ("paper", "xxx")  # 预留：论文引用/跟踪标签
-    - 其它 -> ("other", 原文本)
+    - paper/ref/cite:xxx -> ("paper", "xxx")  # reserved citation/tracking tag
+    - otherwise -> ("other", raw text)
     """
     raw = (tag or "").strip()
     if not raw:
@@ -1110,7 +1044,7 @@ def split_sidebar_tag(tag: str) -> Tuple[str, str]:
     ):
         if raw.startswith(prefix):
             label = raw[len(prefix) :].strip()
-            # composite 是 llm refine 的内部 requirement 后缀，不对前端展示。
+            # composite is an internal llm-refine requirement suffix; hide from frontend.
             if kind == "query" and label.endswith(":composite"):
                 label = label[: -len(":composite")].strip()
             return (kind, label)
@@ -1123,8 +1057,8 @@ def round_half_up(x: float) -> int:
 
 def score_to_star_rating(score: Any) -> float:
     """
-    将 10 分制评分映射为 5 星制，并四舍五入到 0.5 星。
-    例：10->5，9->4.5，8->4，7->3.5
+    Map 0-10 score to 0-5 stars, rounded to 0.5.
+    e.g. 10->5, 9->4.5, 8->4, 7->3.5
     """
     try:
         s = float(score)
@@ -1144,14 +1078,14 @@ def build_sidebar_stars_html(score: Any) -> str:
         score_str = ""
 
     if score_str:
-        title = f"评分：{score_str}/10（{rating:.1f}/5）"
+        title = f"Score: {score_str}/10 ({rating:.1f}/5)"
     else:
-        title = "评分：无"
+        title = "Score: N/A"
 
     pct = max(0.0, min(100.0, (rating / 5.0) * 100.0))
     pct_str = f"{pct:.0f}%"
 
-    # 使用“背景星 + 填充星”的方式支持半星/小数显示
+    # Background + fill stars for half-star display
     return (
         f'<span class="dpr-stars" title="{html.escape(title)}" '
         f'aria-label="{rating:.1f} out of 5">'
@@ -1163,15 +1097,15 @@ def build_sidebar_stars_html(score: Any) -> str:
 
 def extract_sidebar_tags(paper: Dict[str, Any], max_tags: int = 6) -> List[Tuple[str, str]]:
     """
-    侧边栏展示的标签：
-    - 只使用 llm_tags（与文章页 `**Tags**` 保持一致），避免出现“侧边栏与正文不对应”
-    - 去重 + 限制数量，避免侧边栏过长
+    Sidebar tags:
+    - Use llm_tags only (match article `**Tags**`) so sidebar and body stay aligned
+    - Dedupe and cap count to keep sidebar short
     """
     raw: List[str] = []
     if isinstance(paper.get("llm_tags"), list):
         raw.extend([str(t) for t in (paper.get("llm_tags") or [])])
 
-    # 历史 keyword:* 统一折叠到 query:*，避免同名重复。
+    # Fold legacy keyword:* into query:* to avoid duplicate labels.
     seen_labels = set()
     q: List[Tuple[str, str]] = []
     paper_tags: List[Tuple[str, str]] = []
@@ -1198,7 +1132,7 @@ def extract_sidebar_tags(paper: Dict[str, Any], max_tags: int = 6) -> List[Tuple
         if max_tags > 0 and len(seen_labels) >= max_tags:
             break
 
-    # 展示顺序：评分 -> query -> 论文引用(paper) -> 其它
+    # Display order: score -> query -> paper citation -> other
     tags = q + paper_tags + other
     score = paper.get("llm_score")
     score_tag = []
@@ -1274,7 +1208,7 @@ def maybe_generate_paper_media(
             asset_key=asset_key,
         )
     except Exception as e:
-        log(f"[WARN] 论文图表提取失败：{asset_key}: {e}")
+        log(f"[WARN] Paper figure extraction failed: {asset_key}: {e}")
         return [], []
 
 
@@ -1306,13 +1240,11 @@ def upsert_front_matter_field(md_text: str, key: str, value: str) -> Tuple[str, 
 def build_markdown_content(
     paper: Dict[str, Any],
     section: str,
-    zh_title: str,
-    zh_abstract: str,
     tags_list: List[str],
 ) -> str:
     """
-    生成论文 Markdown 内容，使用 YAML front matter 存储元数据。
-    前端通过解析 front matter 渲染页面布局。
+    Build paper Markdown with YAML front matter metadata.
+    Frontend renders layout by parsing front matter.
     """
     title = (paper.get("title") or "").strip()
     authors = paper.get("authors") or []
@@ -1323,9 +1255,8 @@ def build_markdown_content(
     score = paper.get("llm_score")
     evidence = str(paper.get("canonical_evidence") or "").strip()
     tldr = (
-        paper.get("llm_tldr_cn")
+        paper.get("llm_tldr_en")
         or paper.get("llm_tldr")
-        or paper.get("llm_tldr_en")
         or ""
     ).strip()
     abstract_en = (paper.get("abstract") or "").strip()
@@ -1336,7 +1267,7 @@ def build_markdown_content(
     figure_assets = paper.get("_figure_assets") if isinstance(paper.get("_figure_assets"), list) else []
     table_assets = paper.get("_table_assets") if isinstance(paper.get("_table_assets"), list) else []
 
-    # 解析速览内容
+    # Parse glance content
     glance = paper.get("_glance_overview", "").strip()
     glance_tldr = ""
     glance_motivation = ""
@@ -1358,21 +1289,19 @@ def build_markdown_content(
             elif line.startswith("**Conclusion**：") or line.startswith("**Conclusion**:"):
                 glance_conclusion = line.split("：", 1)[-1].split(":", 1)[-1].strip()
 
-    # 优先使用速览生成的 TLDR（100字左右），否则使用原来的 TLDR
+    # Prefer glance TLDR (~100 chars), else legacy TLDR
     display_tldr = glance_tldr if glance_tldr else tldr
 
-    # 辅助函数：转义 YAML 字符串中的特殊字符
-    # 构建 YAML front matter
+    # Escape special characters in YAML string values
+    # Build YAML front matter
     lines = ["---"]
     lines.append(f"title: {yaml_escape_value(title)}")
-    if zh_title:
-        lines.append(f"title_zh: {yaml_escape_value(zh_title)}")
     lines.append(f"authors: {yaml_escape_value(', '.join(authors) if authors else 'Unknown')}")
     lines.append(f"date: {yaml_escape_value(published or 'Unknown')}")
     if pdf_url:
         lines.append(f"pdf: {yaml_escape_value(pdf_url)}")
     if tags_list:
-        # 保留完整的 kind:label 格式，前端渲染时再处理
+        # Keep full kind:label; frontend handles display
         lines.append(f"tags: [{', '.join(yaml_escape_value(t) for t in tags_list)}]")
     if score is not None:
         lines.append(f"score: {score}")
@@ -1389,7 +1318,7 @@ def build_markdown_content(
     if table_assets:
         lines.append(f"tables_json: {yaml_escape_value(json.dumps(table_assets, ensure_ascii=False))}")
 
-    # 速览字段
+    # Glance fields
     if glance_motivation:
         lines.append(f"motivation: {yaml_escape_value(glance_motivation)}")
     if glance_method:
@@ -1402,12 +1331,7 @@ def build_markdown_content(
     lines.append("---")
     lines.append("")
 
-    # 正文部分：摘要
-    if zh_abstract:
-        lines.append("## 摘要")
-        lines.append(zh_abstract)
-        lines.append("")
-
+    # Body: abstract section
     lines.append("## Abstract")
     lines.append(abstract_en)
 
@@ -1416,7 +1340,7 @@ def build_markdown_content(
 
 def build_tags_list(section: str, llm_tags: List[str]) -> List[str]:
     """
-    构建标签列表，保留 kind:label 格式。
+    Build tag list, keeping kind:label format.
     """
     tags: List[str] = []
     seen = set()
@@ -1456,12 +1380,12 @@ def process_paper(
     glance = ""
 
     if os.path.exists(md_path):
-        # 即使是 glance-only，也要确保生成/补齐 .txt（用于前端聊天上下文等）
+        # Even in glance-only mode, ensure .txt exists for chat context etc.
         if glance_only and pdf_url:
             try:
                 ensure_text_content(pdf_url, txt_path)
             except Exception:
-                # 不阻塞文档生成流程：txt 拉取失败时继续（避免因为网络/源站问题导致整批中断）
+                # Non-blocking: continue if txt fetch fails
                 pass
 
         try:
@@ -1503,77 +1427,14 @@ def process_paper(
                         f.write(updated + ("\n" if not updated.endswith("\n") else ""))
                     existing = updated
 
-        # 修复模式：若自动总结/速览存在“被截断”的迹象，则仅重生成该段落，不改动前面正文
-        # 若已存在 Markdown，但缺少中文标题/中文摘要，则在“重新跑 Step6”时自动补齐
-        # （历史上 --glance-only 或部分修复流程不会写入中文标题/摘要）
-        if not glance_only and existing:
-            try:
-                lines = existing.splitlines()
-                # 判断顶部是否已有两行 H1（英文+中文）
-                h1_count = 0
-                for line in lines[:6]:
-                    if line.startswith("# "):
-                        h1_count += 1
-                    elif line.strip() == "":
-                        # 允许空行，但一旦遇到非 H1 非空行就停止
-                        continue
-                    else:
-                        break
-
-                has_zh_title = h1_count >= 2
-                has_zh_abstract = "## 摘要" in existing
-                need_zh = (not has_zh_title) or (not has_zh_abstract)
-
-                if need_zh:
-                    zh_title, zh_abstract = translate_title_and_abstract_to_zh(
-                        title, abstract_en, client=paper_llm_client
-                    )
-                    updated = existing
-
-                    if (not has_zh_title) and zh_title:
-                        # 插入到第一行英文标题之后
-                        out_lines: List[str] = []
-                        inserted = False
-                        for i, line in enumerate(lines):
-                            out_lines.append(line)
-                            if i == 0 and line.startswith("# "):
-                                out_lines.append(f"# {zh_title}")
-                                inserted = True
-                        if inserted:
-                            updated = "\n".join(out_lines)
-
-                    if (not has_zh_abstract) and zh_abstract:
-                        # 插入到 `## Abstract` 之前（若不存在则追加在末尾）
-                        if "## Abstract" in updated:
-                            updated = updated.replace(
-                                "## Abstract",
-                                "## 摘要\n" + zh_abstract.strip() + "\n\n## Abstract",
-                                1,
-                            )
-                        else:
-                            updated = (
-                                updated.rstrip()
-                                + "\n\n## 摘要\n"
-                                + zh_abstract.strip()
-                                + "\n"
-                            )
-
-                    if updated != existing:
-                        with open(md_path, "w", encoding="utf-8") as f:
-                            f.write(updated + ("\n" if not updated.endswith("\n") else ""))
-                        existing = updated
-            except Exception:
-                # 补齐中文标题/摘要失败时不影响其它生成逻辑
-                pass
-
-        # 已存在速览则默认不重复生成（避免重复 LLM 调用），除非 force_glance=true
-        has_glance = "## 速览" in existing
+        # Skip glance if present unless force_glance=true
+        has_glance = "## At a Glance" in existing
         if force_glance or not has_glance:
             glance = generate_glance_overview(title, abstract_en, client=paper_llm_client) or build_glance_fallback(paper)
             if glance:
                 paper["_glance_overview"] = glance
 
-        # 修复历史格式：TLDR 行末尾不应带反斜杠
+        # Legacy fix: meta TLDR lines should not end with backslash
         fixed, changed = normalize_meta_tldr_line(existing)
         if changed:
             with open(md_path, "w", encoding="utf-8") as f:
@@ -1582,7 +1443,7 @@ def process_paper(
             if os.getenv("DPR_DEBUG_STEP6") == "1":
                 log(f"[DEBUG][STEP6] fixed TLDR trailing slash: {os.path.basename(md_path)}")
 
-        # 修复历史格式：文章页 Tags 不再显示“精读区/速读区”
+        # Legacy fix: remove deep/quick section labels from article Tags
         fixed, changed = normalize_meta_tags_line(existing)
         if changed:
             with open(md_path, "w", encoding="utf-8") as f:
@@ -1591,7 +1452,7 @@ def process_paper(
             if os.getenv("DPR_DEBUG_STEP6") == "1":
                 log(f"[DEBUG][STEP6] removed section tag from Tags: {os.path.basename(md_path)}")
 
-        # 同步 Tags 行（例如 keyword:SR 与 query:SR 同名时也要都展示）
+        # Sync Tags line (show both keyword:SR and query:SR when both exist)
         tags_html = build_tags_html(section, paper.get("llm_tags") or [])
         if tags_html:
             updated, changed = replace_meta_line(existing, "Tags", tags_html, add_slash=True)
@@ -1600,15 +1461,15 @@ def process_paper(
                     f.write(updated + ("\n" if not updated.endswith("\n") else ""))
                 existing = updated
 
-        # 规范速览块格式：TLDR/Motivation/Method/Result 末尾应带 `\\`
+        # Normalize glance block line breaks
         updated, changed = normalize_glance_block_format(existing)
         if changed:
             with open(md_path, "w", encoding="utf-8") as f:
                 f.write(updated + ("\n" if not updated.endswith("\n") else ""))
             existing = updated
 
-        # 插入/替换速览内容
-        if glance and (force_glance or "## 速览" not in existing):
+        # Insert/replace glance content
+        if glance and (force_glance or "## At a Glance" not in existing):
             updated = upsert_glance_block_in_text(existing, glance)
             if updated != existing:
                 with open(md_path, "w", encoding="utf-8") as f:
@@ -1616,29 +1477,29 @@ def process_paper(
                 existing = updated
 
         if glance_only:
-            # 只生成速览：不拉取 PDF、不做精读总结
+            # Glance-only: no PDF fetch or deep summary
             return paper_id, title
 
         if section == "deep":
-            # 精读区：检查是否已有详细总结
-            tail = extract_section_tail(existing, "论文详细总结（自动生成）")
+            # Deep section: skip if detailed summary exists
+            tail = extract_section_tail(existing, "Detailed Summary (auto-generated)")
             if tail:
                 return paper_id, title
 
-            # 生成详细总结
+            # Generate detailed summary
             pdf_url = str(paper.get("pdf_url") or paper.get("link") or "").strip()
             ensure_text_content(pdf_url, txt_path)
             summary = generate_deep_summary(md_path, txt_path, client=paper_llm_client)
             if summary:
-                upsert_auto_block(md_path, "论文详细总结（自动生成）", summary)
+                upsert_auto_block(md_path, "Detailed Summary (auto-generated)", summary)
             return paper_id, title
         else:
-            # 速读区：不生成详细总结，只保留速览和摘要
+            # Quick section: no detailed summary, glance + abstract only
             return paper_id, title
 
-    # 新文件：如果只需要速览，则不拉取 PDF/Jina 文本，直接用元数据生成页面
+    # New file, glance-only: skip PDF/Jina, build page from metadata
     if glance_only:
-        # 速览模式也需要生成/补齐全文 txt（优先 jina，失败则 pymupdf 兜底）
+        # Glance mode still ensures full .txt (jina first, pymupdf fallback)
         if pdf_url:
             try:
                 ensure_text_content(pdf_url, txt_path)
@@ -1658,13 +1519,13 @@ def process_paper(
         if glance:
             paper["_glance_overview"] = glance
         tags_list = build_tags_list(section, paper.get("llm_tags") or [])
-        content = build_markdown_content(paper, section, "", "", tags_list)
+        content = build_markdown_content(paper, section, tags_list)
         os.makedirs(os.path.dirname(md_path), exist_ok=True)
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(content)
         return paper_id, title
 
-    # 新文件：生成完整内容
+    # New file: full content generation
     pdf_url = str(paper.get("pdf_url") or paper.get("link") or "").strip()
     ensure_text_content(pdf_url, txt_path)
     figures, tables = maybe_generate_paper_media(
@@ -1678,23 +1539,22 @@ def process_paper(
     if tables:
         paper["_table_assets"] = tables
 
-    zh_title, zh_abstract = translate_title_and_abstract_to_zh(title, abstract_en, client=paper_llm_client)
     tags_list = build_tags_list(section, paper.get("llm_tags") or [])
     glance = generate_glance_overview(title, abstract_en, client=paper_llm_client) or build_glance_fallback(paper)
     if glance:
         paper["_glance_overview"] = glance
-    content = build_markdown_content(paper, section, zh_title, zh_abstract, tags_list)
+    content = build_markdown_content(paper, section, tags_list)
 
     os.makedirs(os.path.dirname(md_path), exist_ok=True)
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(content)
 
-    # 精读区：生成详细总结
+    # Deep section: generate detailed summary
     if section == "deep":
         summary = generate_deep_summary(md_path, txt_path, client=paper_llm_client)
         if summary:
-            upsert_auto_block(md_path, "论文详细总结（自动生成）", summary)
-    # 速读区：不生成额外的总结，只保留速览和摘要
+            upsert_auto_block(md_path, "Detailed Summary (auto-generated)", summary)
+    # Quick section: no extra summary beyond glance and abstract
 
     return paper_id, title
 
@@ -1713,10 +1573,10 @@ def _extract_day_block_papers(block_lines: List[str]) -> Tuple[List[str], List[s
     quick_lines: List[str] = []
     current = "deep"
     for line in block_lines:
-        if "精读区" in line:
+        if "Deep Read" in line or "精读区" in line:
             current = "deep"
             continue
-        if "速读区" in line:
+        if "Quick Skim" in line or "速读区" in line:
             current = "quick"
             continue
         if 'href="#/' in line and line.strip().startswith("*"):
@@ -1771,7 +1631,7 @@ def update_sidebar(
         return html.escape(json.dumps(payload, ensure_ascii=False), quote=True)
 
     effective_label = (date_label or "").strip() or format_date_str(date_str)
-    # 用隐藏 marker 做稳定定位，避免“展示标题”变更导致无法覆盖更新
+    # Hidden marker for stable day-block updates when display label changes
     marker = f"<!--dpr-date:{date_str}-->"
     day_heading = f"  * {effective_label} {marker}\n"
     legacy_day_heading = f"  * {format_date_str(date_str)}\n"
@@ -1787,8 +1647,8 @@ def update_sidebar(
             daily_idx = i
             break
     if daily_idx == -1:
-        if not any("[首页]" in line for line in lines):
-            lines.append("* [首页](/)\n")
+        if not any(("[Home]" in line or "[首页]" in line) for line in lines):
+            lines.append("* [Home](/)\n")
         lines.append("* Daily Papers\n")
         daily_idx = len(lines) - 1
 
@@ -1797,11 +1657,11 @@ def update_sidebar(
         line = lines[i]
         if line.startswith("* "):
             break
-        # 优先按 marker 精准匹配
+        # Prefer exact marker match
         if marker in line:
             day_idx = i
             break
-        # 兼容历史格式（没有 marker）
+        # Legacy format without marker
         if line == legacy_day_heading:
             day_idx = i
             break
@@ -1833,7 +1693,7 @@ def update_sidebar(
 
     block: List[str] = [day_heading]
     if deep_entries or extra_deep:
-        block.append("    * 精读区\n")
+        block.append("    * Deep Read\n")
         for paper_id, title, tags in deep_entries:
             safe_title = html.escape((title or "").strip() or paper_id)
             href = f"#/{paper_id}"
@@ -1845,7 +1705,7 @@ def update_sidebar(
             )
         block.extend(extra_deep)
     if quick_entries or extra_quick:
-        block.append("    * 速读区\n")
+        block.append("    * Quick Skim\n")
         for paper_id, title, tags in quick_entries:
             safe_title = html.escape((title or "").strip() or paper_id)
             href = f"#/{paper_id}"
@@ -1860,13 +1720,13 @@ def update_sidebar(
     insert_idx = daily_idx + 1
     lines[insert_idx:insert_idx] = block
 
-    # 清理历史 Sidebar 中遗留的“日报”入口
+    # Remove legacy sidebar daily-report links
     i = daily_idx + 1
     while i < len(lines):
         line = lines[i]
         if line.startswith("* "):
             break
-        if lines[i].startswith("    * [日报]("):
+        if lines[i].startswith("    * [Daily Report]("):
             del lines[i]
             continue
         i += 1
@@ -1885,7 +1745,7 @@ def build_day_report_markdown(
     effective_label = (date_label or "").strip() or format_date_str(date_str)
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     total = len(deep_entries) + len(quick_entries)
-    run_status = "成功" if recommend_exists else "未产出 recommend 文件（视为无结果）"
+    run_status = "success" if recommend_exists else "no recommend file (treated as empty)"
     summary = build_daily_brief_summary(
         date_label=effective_label,
         deep_entries=deep_entries,
@@ -1895,49 +1755,49 @@ def build_day_report_markdown(
     )
 
     lines: List[str] = []
-    lines.append(f"# 日报 · {effective_label}")
+    lines.append(f"# Daily Report · {effective_label}")
     lines.append("")
-    lines.append(f"- 生成时间：{generated_at}")
-    lines.append(f"- 当次推荐总数：{total}")
-    lines.append(f"- 精读区：{len(deep_entries)}")
-    lines.append(f"- 速读区：{len(quick_entries)}")
+    lines.append(f"- Generated at: {generated_at}")
+    lines.append(f"- Total recommendations this run: {total}")
+    lines.append(f"- Deep Read: {len(deep_entries)}")
+    lines.append(f"- Quick Skim: {len(quick_entries)}")
     if summary:
         lines.append("")
-        lines.append("## 今日简报（AI）")
+        lines.append("## Today's Brief (AI)")
         lines.append(summary)
     lines.append("")
 
     if not recommend_exists:
-        lines.append("> 本次未找到 recommend 结果文件。")
+        lines.append("> No recommend result file was found for this run.")
         lines.append("")
     elif total == 0:
-        lines.append("> 本次触发没有产出可推荐论文。")
+        lines.append("> This run produced no recommendable papers.")
         lines.append("")
 
-    lines.append("## 精读区")
+    lines.append("## Deep Read")
     if deep_entries:
         for idx, (paper_id, title, _tags) in enumerate(deep_entries, start=1):
             safe_title = (title or "").strip() or paper_id
             score = _entry_score_text(_tags)
-            suffix = f"（{score}）" if score else ""
+            suffix = f"({score})" if score else ""
             lines.append(f"{idx}. [{safe_title}]({build_docsify_id_href(paper_id)}) {suffix}")
     else:
-        lines.append("- 本次无精读推荐。")
+        lines.append("- No deep-read recommendations this run.")
     lines.append("")
 
-    lines.append("## 速读区")
+    lines.append("## Quick Skim")
     if quick_entries:
         for idx, (paper_id, title, _tags) in enumerate(quick_entries, start=1):
             safe_title = (title or "").strip() or paper_id
             score = _entry_score_text(_tags)
-            suffix = f"（{score}）" if score else ""
+            suffix = f"({score})" if score else ""
             lines.append(f"{idx}. [{safe_title}]({build_docsify_id_href(paper_id)}) {suffix}")
     else:
-        lines.append("- 本次无速读推荐。")
+        lines.append("- No quick-skim recommendations this run.")
     lines.append("")
 
     lines.append("---")
-    lines.append("使用键盘方向键可在日报/论文之间快速切换。")
+    lines.append("Use the keyboard arrow keys to move quickly between the daily report and papers.")
     lines.append("")
     return "\n".join(lines)
 
@@ -1968,7 +1828,7 @@ def list_day_report_links(docs_dir: str) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     if not os.path.isdir(docs_dir):
         return out
-    # 1) 区间目录：YYYYMMDD-YYYYMMDD
+    # 1) Range dirs: YYYYMMDD-YYYYMMDD
     range_dirs = sorted(
         [d for d in os.listdir(docs_dir) if RANGE_DATE_RE.fullmatch(d)],
         reverse=True,
@@ -1979,7 +1839,7 @@ def list_day_report_links(docs_dir: str) -> List[Tuple[str, str]]:
             continue
         out.append((format_date_str(rd), build_docsify_id_href(f"{rd}/README")))
 
-    # 2) 单日目录：docs/YYYYMM/DD
+    # 2) Single-day dirs: docs/YYYYMM/DD
     ym_dirs = sorted([d for d in os.listdir(docs_dir) if re.fullmatch(r"\d{6}", d)], reverse=True)
     for ym in ym_dirs:
         ym_path = os.path.join(docs_dir, ym)
@@ -2021,12 +1881,12 @@ def build_home_readme_content(
     )
 
     lines: List[str] = []
-    lines.append(notice_md or "（公告模块为空）")
+    lines.append(notice_md or "(Notice module empty)")
     lines.append("")
-    lines.append("## 每次日报")
+    lines.append("## Daily Reports")
     lines.append(latest_report_md)
     lines.append("")
-    lines.append(promo_md or "（宣传模块为空）")
+    lines.append(promo_md or "(Promo module empty)")
     lines.append("")
     return "\n".join(lines)
 
@@ -2042,7 +1902,7 @@ def sync_home_readme_from_day_report(
     paper_evidence_by_id: Dict[str, str],
 ) -> str:
     home_readme = os.path.join(docs_dir, "README.md")
-    # 首页由三段模块拼接：公告栏（独立 md）+ 本次日报 + 宣传栏（独立 md）
+    # Home README = notice md + latest report + promo md
     content = build_home_readme_content(
         docs_dir=docs_dir,
         date_str=date_str,
@@ -2095,8 +1955,8 @@ def write_run_daily_log(
 
 def backfill_history_day_reports(docs_dir: str) -> int:
     """
-    为历史日期目录补齐 README.md（若不存在），便于首页左右切换日报。
-    该补齐不依赖 LLM，只基于已存在的论文 markdown 文件生成简版日报。
+    Backfill README.md for historical date dirs when missing (home prev/next navigation).
+    No LLM; builds a simple report from existing paper markdown files.
     """
     if not os.path.isdir(docs_dir):
         return 0
@@ -2134,20 +1994,20 @@ def backfill_history_day_reports(docs_dir: str) -> int:
 
             date8 = f"{ym}{day}"
             date_label = format_date_str(date8)
-            lines = [f"# 日报 · {date_label}", ""]
-            lines.append("- 该日报为历史补齐版本（由已有文档自动生成）。")
-            lines.append(f"- 论文数量：{len(paper_files)}")
+            lines = [f"# Daily Report · {date_label}", ""]
+            lines.append("- This report is a backfilled historical version (auto-generated from existing documents).")
+            lines.append(f"- Paper count: {len(paper_files)}")
             lines.append("")
-            lines.append("## 论文列表")
+            lines.append("## Paper List")
             if paper_files:
                 for idx, fn in enumerate(paper_files, start=1):
                     base = fn[:-3]
-                    # 尽量从文件名恢复标题（保留 slug，可点击）
+                    # Recover title from filename slug for clickable links
                     title_guess = re.sub(r"^[0-9]{4}\.[0-9]{5}v[0-9]-", "", base).replace("-", " ").strip()
                     title_guess = title_guess or base
                     lines.append(f"{idx}. [{title_guess}]({build_docsify_id_href(f'{ym}/{day}/{base}')})")
             else:
-                lines.append("- 当天目录暂无论文文档。")
+                lines.append("- No paper documents found in this day's directory.")
             lines.append("")
 
             with open(readme_path, "w", encoding="utf-8") as f:
@@ -2159,7 +2019,7 @@ def backfill_history_day_reports(docs_dir: str) -> int:
 
 def _extract_md_section(md_text: str, heading: str) -> str:
     """
-    从 Markdown 文本中提取 `## {heading}` 小节内容（直到下一个二级标题）。
+    Extract `## {heading}` section from Markdown until the next level-2 heading.
     """
     if not md_text:
         return ""
@@ -2168,7 +2028,7 @@ def _extract_md_section(md_text: str, heading: str) -> str:
     if start == -1:
         return ""
     after = md_text[start + len(marker) :]
-    # 下一个二级标题
+    # Next level-2 heading
     m = re.search(r"\n##\s+", after)
     return (after if not m else after[: m.start()]).strip()
 
@@ -2217,7 +2077,7 @@ def _parse_simple_yaml_list(raw: str) -> List[str]:
 
 def _parse_front_matter(md_text: str) -> Dict[str, Any]:
     """
-    简易解析 Markdown 文件中的 YAML front matter，优先提取 metadata。
+    Lightweight YAML front matter parser; prefer metadata fields.
     """
     text = (md_text or "").lstrip()
     if not text.startswith("---"):
@@ -2273,7 +2133,7 @@ def _parse_generated_md_to_meta(
     paper_abstract: str = "",
 ) -> Dict[str, Any]:
     """
-    从 Step6 已生成的论文 Markdown 中提取可导出的元信息（不引入额外 LLM 调用）。
+    Extract exportable metadata from Step6 paper Markdown without extra LLM calls.
     """
     try:
         with open(md_path, "r", encoding="utf-8") as f:
@@ -2292,7 +2152,7 @@ def _parse_generated_md_to_meta(
         k = (m.group(1) or "").strip().lower()
         legacy_meta[k] = (m.group(2) or "").strip()
 
-    # 标题：优先 front matter title，次选正文 H1，其次旧式 meta 行
+    # Title: front matter > H1 > legacy meta line
     title_en = (str(fm_meta.get("title") or "").strip() if fm_meta else "")
     if not title_en:
         h1s: List[str] = []
@@ -2308,7 +2168,7 @@ def _parse_generated_md_to_meta(
     if not title_en:
         title_en = legacy_meta.get("title", "")
 
-    # tags：优先 front matter tags，次选旧式 HTML
+    # Tags: front matter > legacy HTML
     tags_typed: List[Dict[str, str]] = []
     raw_tags = fm_meta.get("tags") if "tags" in fm_meta else fm_meta.get("Tags")
     if isinstance(raw_tags, list):
@@ -2330,7 +2190,7 @@ def _parse_generated_md_to_meta(
             else:
                 tags_typed.append({"kind": "paper", "label": t})
     else:
-        # 兼容旧式 markdown 的 HTML tag span
+        # Legacy markdown HTML tag spans
         tags_html = str(fm_meta.get("tags") or legacy_meta.get("tags") or "")
         for m in re.finditer(
             r'<span\s+class="tag-label\s+([^"]+)"[^>]*>(.*?)</span>',
@@ -2353,12 +2213,12 @@ def _parse_generated_md_to_meta(
     if not abstract_en:
         abstract_en = parsed_abstract_en
     if not abstract_en and "## Abstract" in text:
-        # 兜底：md 有 Abstract 标题但抽取文本为空
+        # Fallback when Abstract heading exists but extracted text is empty
         abstract_en = parsed_abstract_en
     if not abstract_en:
         abstract_en = "arXiv did not provide an abstract for this paper."
 
-    # 作者：front matter authors 优先，次选旧式 meta 行
+    # Authors: front matter > legacy meta line
     raw_authors = fm_meta.get("authors") if "authors" in fm_meta else fm_meta.get("Authors")
     if isinstance(raw_authors, list):
         authors_line = ", ".join(str(i).strip() for i in raw_authors if str(i).strip())
@@ -2367,7 +2227,7 @@ def _parse_generated_md_to_meta(
     else:
         authors_line = legacy_meta.get("authors", "")
 
-    # 日期、PDF、分数、Evidence、TLDR：front matter 优先，次选旧式 meta
+    # Date/PDF/score/evidence/TLDR: front matter > legacy meta
     def _fallback_meta(*names: str) -> str:
         for name in names:
             if name in fm_meta and fm_meta[name] is not None:
@@ -2387,7 +2247,7 @@ def _parse_generated_md_to_meta(
     if not src_value and "selection_source" in fm_meta:
         src_value = str(fm_meta.get("selection_source") or "").strip()
 
-    # tags：输出为更“短”的一行形式（字符串），避免 JSON pretty-print 时每个 tag 独占一行
+    # Tags: compact one-line string for JSON export
     tags_compact: List[str] = []
     for t in tags_typed:
         kind = (t.get("kind") or "").strip() or "paper"
@@ -2421,7 +2281,7 @@ def write_day_meta_index_json(
     quick_list: List[Dict[str, Any]],
 ) -> str:
     """
-    在对应的 docs 日期目录下生成索引 JSON 文件，供前端一键下载。
+    Write index JSON under the docs date dir for frontend one-click download.
     """
     if RANGE_DATE_RE.match(date_str):
         target_dir = os.path.join(docs_dir, date_str)
@@ -2468,7 +2328,7 @@ def write_day_meta_index_json(
     }
 
     with open(out_path, "w", encoding="utf-8") as f:
-        # 索引文件用于下载：保持可读的 JSON pretty 格式（每个 paper 一个对象块）
+        # Download index: readable JSON pretty format
         json.dump(payload, f, ensure_ascii=False, indent=2)
         f.write("\n")
     return out_path
@@ -2483,57 +2343,57 @@ def main() -> None:
         "--sidebar-date-label",
         type=str,
         default=None,
-        help="侧边栏日期标题展示文本（例如：2026-01-01 ~ 2026-01-27）。不填则使用单日日期。",
+        help="Sidebar date label (e.g. 2026-01-01 ~ 2026-01-27). Defaults to single-day date.",
     )
     parser.add_argument(
         "--glance-only",
         action="store_true",
-        help="只生成/补齐 `## 速览`（基于 title+abstract），不下载 PDF/Jina 文本，不生成精读总结。",
+        help="Only generate/fill `## At a Glance` from title+abstract; skip PDF/Jina and deep summary.",
     )
     parser.add_argument(
         "--force-glance",
         action="store_true",
-        help="强制重生成 `## 速览` 并覆盖写入（即使文件里已存在该块）。",
+        help="Force regenerate `## At a Glance` and overwrite even if the block already exists.",
     )
     parser.add_argument(
         "--sidebar-only",
         action="store_true",
-        help="只更新 docs/_sidebar.md（不生成/不重写论文 Markdown，避免触发 LLM 调用）。",
+        help="Update docs/_sidebar.md only (no paper Markdown rewrite, no LLM calls).",
     )
     parser.add_argument(
         "--fix-tags-only",
         action="store_true",
-        help="仅修复已生成文章里的 `**Tags**`（移除“精读区/速读区”标签），不触发 LLM。",
+        help="Fix `**Tags**` in existing articles only (remove deep/quick section labels); no LLM.",
     )
     parser.add_argument(
         "--paper-id",
         type=str,
         default=None,
-        help="单篇模式：填写 arXiv id（如 1706.03762v1 / https://arxiv.org/abs/1706.03762v1）。",
+        help="Single-paper mode: arXiv id (e.g. 1706.03762v1 or https://arxiv.org/abs/...).",
     )
     parser.add_argument(
         "--paper-date",
         type=str,
         default="",
-        help="单篇模式：论文输出目录日期（YYYYMMDD），默认使用论文发布时间。",
+        help="Single-paper mode: output date dir (YYYYMMDD); default is published date.",
     )
     parser.add_argument(
         "--paper-section",
         type=str,
         default="quick",
-        help="单篇模式：deep 或 quick（默认 quick）。",
+        help="Single-paper mode: deep or quick (default quick).",
     )
     parser.add_argument(
         "--paper-title",
         type=str,
         default=None,
-        help="单篇模式：可选，手动覆盖论文标题。",
+        help="Single-paper mode: optional manual title override.",
     )
     parser.add_argument(
         "--docs-concurrency",
         type=int,
         default=DEFAULT_DOCS_CONCURRENCY,
-        help="step6 每篇论文并发生成数量。",
+        help="Concurrent per-paper generation workers for step 6.",
     )
     args = parser.parse_args()
 
@@ -2549,10 +2409,10 @@ def main() -> None:
     docs_dir = args.docs_dir or resolve_docs_dir()
     created_reports = backfill_history_day_reports(docs_dir)
     if created_reports > 0:
-        log(f"[INFO] 已补齐历史日报 README：{created_reports} 个")
+        log(f"[INFO] Backfilled historical daily README files: {created_reports}")
 
     if args.paper_id:
-        log_substep("6.p", "单篇论文生成", "START")
+        log_substep("6.p", "single-paper generation", "START")
         try:
             paper = fetch_arxiv_paper_meta(args.paper_id)
             if not str(paper.get("source") or "").strip():
@@ -2579,28 +2439,28 @@ def main() -> None:
                 glance_only=args.glance_only,
                 force_glance=args.force_glance,
             )
-            log(f"[OK] 单篇论文已生成：{paper_title}（{paper_id}），date={single_date}，section={section}")
-            log_substep("6.p", "单篇论文生成", "END")
+            log(f"[OK] Single paper generated: {paper_title} ({paper_id}), date={single_date}, section={section}")
+            log_substep("6.p", "single-paper generation", "END")
             return
         except Exception as e:
-            log(f"[ERROR] 单篇论文生成失败：{e}")
-            log_substep("6.p", "单篇论文生成", "END")
+            log(f"[ERROR] Single-paper generation failed: {e}")
+            log_substep("6.p", "single-paper generation", "END")
             return
 
     archive_dir = os.path.join(ROOT_DIR, "archive", date_str, "recommend")
     recommend_path = os.path.join(archive_dir, f"arxiv_papers_{date_str}.{mode}.json")
     recommend_exists = os.path.exists(recommend_path)
     if not recommend_exists:
-        log(f"[WARN] recommend 文件不存在（今天可能没有新论文）：{recommend_path}。将生成空日报并更新首页。")
+        log(f"[WARN] Recommend file missing (no new papers today may be expected): {recommend_path}. Writing empty report and updating home.")
 
-    log_substep("6.1", "读取 recommend 结果", "START")
+    log_substep("6.1", "load recommend results", "START")
     payload = {}
     try:
         if recommend_exists:
             with open(recommend_path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
     finally:
-        log_substep("6.1", "读取 recommend 结果", "END")
+        log_substep("6.1", "load recommend results", "END")
     deep_list = payload.get("deep_dive") or []
     quick_list = payload.get("quick_skim") or []
 
@@ -2613,7 +2473,7 @@ def main() -> None:
     def _paper_id(p: dict) -> str:
         return str(p.get("id") or p.get("paper_id") or "").strip()
 
-    # 侧边栏展示按分数降序（同分按 id 稳定排序），避免“高分被埋在下面”
+    # Sidebar order: score desc, then stable id tie-break
     deep_list = sorted(deep_list, key=lambda p: (-_paper_score(p), _paper_id(p)))
     quick_list = sorted(quick_list, key=lambda p: (-_paper_score(p), _paper_id(p)))
 
@@ -2677,7 +2537,7 @@ def main() -> None:
                 try:
                     pid, title = future.result()
                 except Exception as e:
-                    log(f"[WARN] 生成{section}论文失败：{e}")
+                    log(f"[WARN] Failed to generate {section} paper: {e}")
                     continue
                 paper_evidence_by_id[str((pid or "").strip())] = get_paper_sidebar_evidence(paper)
                 section_tags = extract_sidebar_tags(paper)
@@ -2689,7 +2549,7 @@ def main() -> None:
     sidebar_evidence_by_id: Dict[str, str] = {}
 
     if args.sidebar_only:
-        log_substep("6.2", "跳过生成文章（仅更新侧边栏）", "SKIP")
+        log_substep("6.2", "skip article generation (sidebar only)", "SKIP")
         for paper in deep_list:
             title = (paper.get("title") or "").strip()
             arxiv_id = str(paper.get("id") or paper.get("paper_id") or "").strip()
@@ -2703,17 +2563,17 @@ def main() -> None:
             _, _, pid = prepare_paper_paths(docs_dir, date_str, title, arxiv_id)
             sidebar_evidence_by_id[str(pid).strip()] = get_paper_sidebar_evidence(paper)
             quick_entries.append((pid, title, extract_sidebar_tags(paper)))
-        log_substep("6.3", "跳过生成文章（仅更新侧边栏）", "SKIP")
+        log_substep("6.3", "skip article generation (sidebar only)", "SKIP")
     else:
-        log_substep("6.2", "生成精读区文章", "START")
+        log_substep("6.2", "generate deep-dive articles", "START")
         deep_entries = _process_section("deep", deep_list, sidebar_evidence_by_id)
-        log_substep("6.2", "生成精读区文章", "END")
+        log_substep("6.2", "generate deep-dive articles", "END")
 
-        log_substep("6.3", "生成速读区文章", "START")
+        log_substep("6.3", "generate quick-skim articles", "START")
         quick_entries = _process_section("quick", quick_list, sidebar_evidence_by_id)
-        log_substep("6.3", "生成速读区文章", "END")
+        log_substep("6.3", "generate quick-skim articles", "END")
 
-    log_substep("6.4", "生成当日日报并同步首页 README", "START")
+    log_substep("6.4", "write daily report and sync home README", "START")
     run_generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     day_readme = write_day_report_readme(
         docs_dir=docs_dir,
@@ -2735,11 +2595,11 @@ def main() -> None:
     )
     log(f"[OK] day report saved: {day_readme}")
     log(f"[OK] home README synced: {home_readme}")
-    log_substep("6.4", "生成当日日报并同步首页 README", "END")
+    log_substep("6.4", "write daily report and sync home README", "END")
 
     sidebar_path = os.path.join(docs_dir, "_sidebar.md")
     if deep_entries or quick_entries:
-        log_substep("6.5", "更新侧边栏", "START")
+        log_substep("6.5", "update sidebar", "START")
         update_sidebar(
             sidebar_path,
             date_str,
@@ -2748,12 +2608,12 @@ def main() -> None:
             sidebar_evidence_by_id,
             date_label=args.sidebar_date_label,
         )
-        log_substep("6.5", "更新侧边栏", "END")
+        log_substep("6.5", "update sidebar", "END")
     else:
-        log_substep("6.5", "更新侧边栏", "SKIP")
-        log("[INFO] 本次无推荐论文，不写入 Sidebar 日期目录。")
+        log_substep("6.5", "update sidebar", "SKIP")
+        log("[INFO] No recommended papers; skipping sidebar date entry.")
 
-    log_substep("6.6", "生成可下载元数据索引（JSON）", "START")
+    log_substep("6.6", "write downloadable metadata index (JSON)", "START")
     try:
         out_path = write_day_meta_index_json(
             docs_dir,
@@ -2764,10 +2624,10 @@ def main() -> None:
         )
         log(f"[OK] meta index saved: {out_path}")
     except Exception as e:
-        log(f"[WARN] 生成元数据索引失败：{e}")
-    log_substep("6.6", "生成可下载元数据索引（JSON）", "END")
+        log(f"[WARN] Failed to write metadata index: {e}")
+    log_substep("6.6", "write downloadable metadata index (JSON)", "END")
 
-    log_substep("6.7", "写入运行日志（日报）", "START")
+    log_substep("6.7", "write run log (daily report)", "START")
     run_log = write_run_daily_log(
         date_str=date_str,
         mode=mode,
@@ -2779,7 +2639,7 @@ def main() -> None:
         day_readme=day_readme,
     )
     log(f"[OK] daily report log saved: {run_log}")
-    log_substep("6.7", "写入运行日志（日报）", "END")
+    log_substep("6.7", "write run log (daily report)", "END")
 
     log(f"[OK] docs updated: {docs_dir}")
 

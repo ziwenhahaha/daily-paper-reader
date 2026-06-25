@@ -53,7 +53,7 @@ function buildBaseConfig() {
       intent_profiles: [
         {
           tag: 'GENE',
-          description: '遗传学',
+          description: 'Genetics',
           enabled: true,
           paper_sources: ['biorxiv'],
           keywords: [
@@ -77,7 +77,7 @@ function testNormalizeSubscriptionsAddsBiorxivBackend() {
   const normalized = normalizeSubscriptions(buildBaseConfig());
   const backend = normalized.source_backends.biorxiv;
 
-  assert.ok(backend, '应自动补齐 biorxiv backend');
+  assert.ok(backend, 'should auto-add biorxiv backend');
   assert.equal(backend.kind, 'supabase');
   assert.equal(backend.enabled, true);
   assert.equal(backend.url, 'https://example.supabase.co');
@@ -177,7 +177,7 @@ function testConferenceDefaultYearOnlySelects2025() {
   __setRunSelectionState({ conferencePairs: [] });
   __initializeConferenceChoices();
   const pairs = __getSelectedConferenceYearPairs().sort();
-  // 不再默认勾选，由用户手动选择
+  // No longer selected by default; the user selects manually
   assert.deepEqual(pairs, []);
 }
 
@@ -191,13 +191,13 @@ function testQuickRunUnsavedMessageClearsAfterSave() {
   __setQuickRunMsgEl(msgEl);
   __setUnsavedChanges(true);
   refreshQuickRunButtons();
-  assert.equal(msgEl.textContent, '有未保存修改，请先保存。');
+  assert.equal(msgEl.textContent, 'You have unsaved changes. Please save first.');
   assert.equal(msgEl.style.color, '#c00');
 
   __setUnsavedChanges(false);
   refreshQuickRunButtons();
   clearQuickRunUnsavedMessage();
-  assert.equal(msgEl.textContent, '配置已保存，可以发起快速抓取。');
+  assert.equal(msgEl.textContent, 'Configuration saved. You can now start a quick fetch.');
   assert.equal(msgEl.style.color, '#080');
 }
 
@@ -206,9 +206,9 @@ function buildMockButton() {
   return {
     disabled: false,
     title: '',
-    textContent: '开始检索',
+    textContent: 'Start retrieval',
     getAttribute(name) {
-      if (name === 'data-default-title') return '一次性触发会议论文拉取任务';
+      if (name === 'data-default-title') return 'Trigger a one-time conference paper retrieval task';
       return '';
     },
     classList: {
@@ -237,14 +237,14 @@ function testConferenceRunDisabledWhenUnsaved() {
 
   assert.equal(btn.disabled, true);
   assert.equal(btn.classList.contains('chat-quick-run-item--disabled'), true);
-  assert.equal(btn.title, '请先保存后再检索会议论文。');
+  assert.equal(btn.title, 'Please save before retrieving conference papers.');
 
   __setUnsavedChanges(false);
   refreshQuickRunButtons();
 
   assert.equal(btn.disabled, false);
   assert.equal(btn.classList.contains('chat-quick-run-item--disabled'), false);
-  assert.equal(btn.title, '一次性触发会议论文拉取任务');
+  assert.equal(btn.title, 'Trigger a one-time conference paper retrieval task');
   __setQuickRunConferenceBtn(null);
   __setRunSelectionState({});
   delete global.window.SubscriptionsSmartQuery;

@@ -242,7 +242,7 @@ def fetch_openreview_submissions(
     try:
         import openreview  # type: ignore
     except Exception as exc:  # pragma: no cover
-        raise RuntimeError("缺少 openreview-py，请先执行 `pip install openreview-py`。") from exc
+        raise RuntimeError("Missing openreview-py, please run `pip install openreview-py`.") from exc
 
     client = openreview.api.OpenReviewClient(
         baseurl="https://api2.openreview.net",
@@ -301,21 +301,21 @@ def resolve_output_path(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="抓取 OpenReview 会议提交（支持 NeurIPS / ICLR / ICML / AAAI）。")
-    parser.add_argument("--conference", type=str, default="NeurIPS", help="会议名，例如 NeurIPS / ICLR / ICML / AAAI。")
-    parser.add_argument("--year-end", type=int, default=datetime.now(timezone.utc).year, help="结束年份，默认当前年。")
-    parser.add_argument("--year-count", type=int, default=3, help="回溯几年，默认 3。")
-    parser.add_argument("--years", type=str, default="", help="显式年份列表，例如 2024,2025；设置后优先于 year-end/year-count。")
+    parser = argparse.ArgumentParser(description="Fetch OpenReview conference submissions (supports NeurIPS / ICLR / ICML / AAAI).")
+    parser.add_argument("--conference", type=str, default="NeurIPS", help="Conference name, e.g. NeurIPS / ICLR / ICML / AAAI.")
+    parser.add_argument("--year-end", type=int, default=datetime.now(timezone.utc).year, help="End year, default to current year.")
+    parser.add_argument("--year-count", type=int, default=3, help="Backtrack years, default to 3.")
+    parser.add_argument("--years", type=str, default="", help="Explicit year list, e.g. 2024,2025; set to override year-end/year-count.")
     parser.add_argument("--username", type=str, default=os.getenv("OPENREVIEW_USERNAME", ""))
     parser.add_argument("--password", type=str, default=os.getenv("OPENREVIEW_PASSWORD", ""))
-    parser.add_argument("--output", type=str, default="", help="输出 JSON 文件路径。")
-    parser.add_argument("--include-nonpublic", action="store_true", help="是否保留非公开 submission。默认只保留公开可见稿件。")
+    parser.add_argument("--output", type=str, default="", help="Output JSON file path.")
+    parser.add_argument("--include-nonpublic", action="store_true", help="Whether to include non-public submissions. Default to only include public submissions.")
     args = parser.parse_args()
 
     username = _norm(args.username)
     password = _norm(args.password)
     if not username or not password:
-        raise RuntimeError("缺少 OpenReview 凭证，请设置 OPENREVIEW_USERNAME / OPENREVIEW_PASSWORD。")
+        raise RuntimeError("Missing OpenReview credentials, please set OPENREVIEW_USERNAME / OPENREVIEW_PASSWORD.")
 
     years = resolve_target_years(years=args.years, year_end=args.year_end, year_count=args.year_count)
     output_path = resolve_output_path(args.conference, args.year_end, args.year_count, args.output, years=years)
@@ -330,7 +330,7 @@ def main() -> None:
     )
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(papers, f, ensure_ascii=False, indent=2)
-    log(f"[OK] OpenReview 结果已写入：{output_path} count={len(papers)}")
+    log(f"[OK] OpenReview results written to: {output_path} count={len(papers)}")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
-// 统一智能 Query 模块（简化交互版）
-// 主面板：仅「输入区 + 展示区」
-// 子面板：
-// - 新增面板：展示模型返回候选，用户点选后应用
-// - 修改面板：复用会话式流程，通过对话生成/更新词条
+// Unified smart-query module (simplified interaction version)
+// Main panel: only an input area + a display area
+// Sub-panels:
+// - Add panel: show model-returned candidates; apply after the user selects them
+// - Edit panel: reuse the conversational flow to generate/update entries via dialogue
 
 window.SubscriptionsSmartQuery = (function () {
   const MAX_KEYWORDS_PER_PROFILE = 6;
@@ -28,43 +28,43 @@ window.SubscriptionsSmartQuery = (function () {
 
   const defaultPromptTemplate = [
     'You are a retrieval planning assistant.',
-    '标签 (Tag): {{TAG}}',
-    '中文描述 (Description): {{USER_DESCRIPTION}}',
+    'Tag: {{TAG}}',
+    'Description: {{USER_DESCRIPTION}}',
     'Retrieval context: {{RETRIEVAL_CONTEXT}}',
     '',
     'Return JSON only:',
     '{',
     '  "tag": "optional tag suggestion (for user convenience)",',
-    '  "description": "optional Chinese description (for user convenience)",',
+    '  "description": "optional description (for user convenience)",',
     '  "keywords": [',
     '    {',
     '      "keyword": "short keyword phrase for BM25 recall",',
     '      "query": "semantic rewrite for this keyword",',
-    '      "keyword_cn": "中文直译（可选）",',
+    '      "keyword_cn": "optional secondary label, e.g. a translation",',
     '    }',
     '  ],',
     '  "intent_queries": [',
     '    {',
     '      "query": "intent-oriented semantic query 1",',
-    '      "query_cn": "中文直译（可选）",',
+    '      "query_cn": "optional secondary label, e.g. a translation",',
     '    },',
     '    {',
       '      "query": "intent-oriented semantic query 2",',
-      '      "query_cn": "中文直译（可选）",',
+      '      "query_cn": "optional secondary label, e.g. a translation",',
     '    }',
     '  ],',
     '}',
     'Requirements:',
     '1) keywords: output 5-12 objects; each item must include keyword and query, keyword_cn optional.',
     '2) keyword and query MUST be English retrieval text only. Do not put Chinese in keyword or query.',
-    '3) keyword_cn and query_cn MUST be Chinese translations/explanations when present.',
+    '3) keyword_cn and query_cn are optional secondary labels (e.g. a translation in the user native language) when present.',
     '4) keywords are used for BM25 recall and should be meaningful atomic noun phrases, normally 2-4 English words.',
     '5) Do NOT output acronym-only or abbreviation-only keywords such as "rl", "xrl", "sr", "llm". Expand them to full phrases like "reinforcement learning" or "large language model".',
     '6) Do NOT output incomplete modifier phrases ending with generic words like "driven", "based", "related", "guided", "enhanced", "for", or "with".',
     '7) Do NOT output standalone adjective/modifier keywords like "explainable", "interpretable", "deep", or "neural"; attach the target concept, e.g. "explainable reinforcement learning".',
     '8) Keep keywords atomic and avoid packing multiple concepts into one phrase.',
     '9) Do not include concrete example topics in the prompt.',
-    '10) intent_queries: output 1-4 actionable intent queries. The query field MUST be English only; query_cn should be Chinese.',
+    '10) intent_queries: output 1-4 actionable intent queries. The query field MUST be English only; query_cn is an optional secondary label.',
     '11) intent_queries must be specific semantic search sentences, not acronym-only strings.',
     '12) Do not output extra fields like must_have / optional / exclude / rewrite_for_embedding.',
     '13) Return pure JSON only, no explanations.',
@@ -114,7 +114,7 @@ window.SubscriptionsSmartQuery = (function () {
   );
 
   const getKindLabel = (kind) => (
-    normalizeCandidateKind(kind) === 'intent' ? '意图Query' : '关键词'
+    normalizeCandidateKind(kind) === 'intent' ? 'Intent Query' : 'Keyword'
   );
 
   const countSelectedCandidates = (items) =>
@@ -144,16 +144,16 @@ window.SubscriptionsSmartQuery = (function () {
       (item) => item && !item._isDraftSlot && item._selected,
     );
     if (!selectedKeywords.length) {
-      return '请至少保留 1 条关键词。';
+      return 'Please keep at least 1 keyword.';
     }
     if (selectedKeywords.length > MAX_KEYWORDS_PER_PROFILE) {
-      return `关键词最多只能保留 ${MAX_KEYWORDS_PER_PROFILE} 条。`;
+      return `You can keep at most ${MAX_KEYWORDS_PER_PROFILE} keywords.`;
     }
     if (!selectedIntentQueries.length) {
-      return '请至少保留 1 条意图Query。';
+      return 'Please keep at least 1 intent query.';
     }
     if (selectedIntentQueries.length > MAX_INTENT_QUERIES_PER_PROFILE) {
-      return `意图Query 最多只能保留 ${MAX_INTENT_QUERIES_PER_PROFILE} 条。`;
+      return `You can keep at most ${MAX_INTENT_QUERIES_PER_PROFILE} intent queries.`;
     }
     return '';
   };
@@ -416,7 +416,7 @@ window.SubscriptionsSmartQuery = (function () {
   const getPaperSourceLabel = (source) => {
     const key = normalizeText(source).toLowerCase();
     if (key === 'all') return 'all';
-    return PAPER_SOURCE_LABELS[key] || key || '未知源';
+    return PAPER_SOURCE_LABELS[key] || key || 'Unknown source';
   };
 
   const renderPaperSourceChoices = (selectedSources) => {
@@ -732,7 +732,7 @@ window.SubscriptionsSmartQuery = (function () {
           if (parsed && typeof parsed === 'object') return parsed;
         } catch {}
       }
-      throw new Error('模型返回不是合法 JSON');
+      throw new Error('The model response is not valid JSON');
     }
   };
 
@@ -774,7 +774,6 @@ window.SubscriptionsSmartQuery = (function () {
     const data = resolvePayload(payload);
     const tag = normalizeText(
       data.tag ||
-        data.标签 ||
         data.intent_tag ||
         data.profile_tag ||
         '',
@@ -782,7 +781,6 @@ window.SubscriptionsSmartQuery = (function () {
     const cleanedTag = sanitizeAutoTag(tag);
     const description = normalizeText(
       data.description ||
-        data.中文描述 ||
         data.profile_desc ||
         data.user_description ||
         '',
@@ -865,9 +863,9 @@ window.SubscriptionsSmartQuery = (function () {
       })
       .filter(Boolean);
 
-    // 关键词召回去冗余：
-    // 若已有核心术语（如 symbolic regression），则将 "X symbolic regression" 归一为 "X"；
-    // 但不能把 "explainable reinforcement learning" 这类完整概念裁成单个泛形容词。
+    // Keyword recall de-duplication:
+    // If a core term already exists (e.g. symbolic regression), normalize "X symbolic regression" to "X";
+    // but do not trim a complete concept like "explainable reinforcement learning" down to a single generic adjective.
     const plainList = keywords.map((k) => normalizePhrase(k.keyword || ''));
     const plainSet = new Set(plainList);
     const anchorCandidates = new Set();
@@ -910,7 +908,7 @@ window.SubscriptionsSmartQuery = (function () {
       })
       .filter(Boolean);
 
-    // 归一后再去重
+    // Normalize first, then de-duplicate
     const kwSeen = new Set();
     keywords = keywords.filter((k) => {
       const key = normalizePhrase(k.keyword || '');
@@ -945,10 +943,10 @@ window.SubscriptionsSmartQuery = (function () {
   const requestCandidatesByDesc = async (tag, desc) => {
     const llm = loadLlmConfig();
     if (!llm) {
-      throw new Error('未检测到可用大模型配置，请先完成密钥配置。');
+      throw new Error('No usable LLM configuration detected. Please complete the key configuration first.');
     }
     if (!llm.apiKey) {
-      throw new Error('未检测到可用 API Key，请先在密钥配置里填写摘要/Chat Token。');
+      throw new Error('No usable API key detected. Please fill in the Summary/Chat Token in the key configuration first.');
     }
 
     const cfg = window.SubscriptionsManager.getDraftConfig ? window.SubscriptionsManager.getDraftConfig() : {};
@@ -986,7 +984,7 @@ window.SubscriptionsSmartQuery = (function () {
     };
     const endpoints = buildEndpoints();
     if (!endpoints.length) {
-      throw new Error('LLM 配置缺少 baseUrl。');
+      throw new Error('The LLM configuration is missing baseUrl.');
     }
 
     const resolveJsonResponseMode = () => {
@@ -1095,10 +1093,10 @@ window.SubscriptionsSmartQuery = (function () {
         } catch (e) {
           fetchError = textSafeFromError(e);
           if (e && e.name === 'AbortError') {
-            throw new Error('生成超时，请稍后重试。');
+            throw new Error('Generation timed out, please try again later.');
           }
           if (i < endpoints.length - 1) {
-            // 网络类错误尝试下一个端点
+            // On network errors, try the next endpoint
             continue;
           }
         }
@@ -1110,16 +1108,16 @@ window.SubscriptionsSmartQuery = (function () {
     clearTimeout(timeout);
     if (!res) {
       if (fetchError) {
-        throw new Error(`模型服务请求失败：${fetchError}`);
+        throw new Error(`Model service request failed: ${fetchError}`);
       }
-      throw new Error(errorText || '模型服务请求失败，请检查网络与密钥配置。');
+      throw new Error(errorText || 'Model service request failed. Please check the network and key configuration.');
     }
     const data = await res.json();
     const content = extractLlmJsonText(data);
     const parsed = loadJsonLenient(content);
     const candidates = normalizeGenerated(parsed);
     if (!candidates.keywords.length) {
-      throw new Error('模型未返回可用英文候选，请调整描述后重试。');
+      throw new Error('The model did not return usable English candidates. Please adjust the description and retry.');
     }
     return candidates;
   };
@@ -1283,15 +1281,15 @@ window.SubscriptionsSmartQuery = (function () {
       return {
         primary: 'query',
         secondary: 'query_cn',
-        primaryPlaceholder: '（英文 Intent）',
-        secondaryPlaceholder: '（可选中文意图）',
+        primaryPlaceholder: '(English intent)',
+        secondaryPlaceholder: '(optional secondary label)',
       };
     }
     return {
       primary: 'keyword',
       secondary: 'keyword_cn',
-      primaryPlaceholder: '（英文关键词）',
-      secondaryPlaceholder: '（可选中文直译）',
+      primaryPlaceholder: '(English keyword)',
+      secondaryPlaceholder: '(optional secondary label)',
     };
   };
 
@@ -1366,7 +1364,7 @@ window.SubscriptionsSmartQuery = (function () {
 
     const primaryValue = normalizeText(slot[meta.primary]);
     if (!primaryValue) {
-      setMessage(`请先填写${meta.primaryPlaceholder || '英文'}。`, '#c00');
+      setMessage(`Please fill in ${meta.primaryPlaceholder || 'the English text'} first.`, '#c00');
       return false;
     }
 
@@ -1388,7 +1386,7 @@ window.SubscriptionsSmartQuery = (function () {
     const created = buildDraftItemFromSlot(realKind, slot);
     if (!created) return false;
     if (!canSelectMoreCandidates(list, true, realKind)) {
-      setMessage(`${getKindLabel(realKind)} 最多只能选择 ${getSelectionLimit(realKind)} 条。`, '#c00');
+      setMessage(`You can select at most ${getSelectionLimit(realKind)} ${getKindLabel(realKind)} items.`, '#c00');
       return false;
     }
     const next = list.slice();
@@ -1594,7 +1592,7 @@ window.SubscriptionsSmartQuery = (function () {
             data-index="${idx}"
             data-candidate-edit-field="primary"
             value="${escapeHtml(draft.primary)}"
-            placeholder="${escapeHtml(fields.primaryPlaceholder || '英文检索文本')}"
+            placeholder="${escapeHtml(fields.primaryPlaceholder || 'English retrieval text')}"
           />
           <input
             type="text"
@@ -1603,12 +1601,12 @@ window.SubscriptionsSmartQuery = (function () {
             data-index="${idx}"
             data-candidate-edit-field="secondary"
             value="${escapeHtml(draft.secondary)}"
-            placeholder="${escapeHtml(fields.secondaryPlaceholder || '中文说明')}"
+            placeholder="${escapeHtml(fields.secondaryPlaceholder || 'Optional note')}"
           />
         </span>
         <span class="dpr-cloud-edit-actions">
-          <button type="button" class="arxiv-tool-btn dpr-cloud-edit-save" data-action="save-candidate-edit" data-kind="${escapeHtml(kind)}" data-index="${idx}" data-primary-field="${escapeHtml(primaryField)}" data-secondary-field="${escapeHtml(secondaryField)}" data-fallback-field="${escapeHtml(fields.fallback || '')}" title="保存修改">✓</button>
-          <button type="button" class="arxiv-tool-btn dpr-cloud-edit-cancel" data-action="cancel-candidate-edit" data-kind="${escapeHtml(kind)}" data-index="${idx}" title="取消修改">×</button>
+          <button type="button" class="arxiv-tool-btn dpr-cloud-edit-save" data-action="save-candidate-edit" data-kind="${escapeHtml(kind)}" data-index="${idx}" data-primary-field="${escapeHtml(primaryField)}" data-secondary-field="${escapeHtml(secondaryField)}" data-fallback-field="${escapeHtml(fields.fallback || '')}" title="Save changes">✓</button>
+          <button type="button" class="arxiv-tool-btn dpr-cloud-edit-cancel" data-action="cancel-candidate-edit" data-kind="${escapeHtml(kind)}" data-index="${idx}" title="Cancel changes">×</button>
         </span>
       </div>
     `;
@@ -1650,7 +1648,7 @@ window.SubscriptionsSmartQuery = (function () {
           data-action="append-draft-slot"
           data-kind="${kind}"
           data-index="${idx}"
-          title="新增"
+          title="Add"
         >
           +
         </button>
@@ -1677,7 +1675,7 @@ window.SubscriptionsSmartQuery = (function () {
           data-action="append-draft-slot"
           data-kind="${kind}"
           data-index="${idx}"
-          title="新增"
+          title="Add"
         >
           +
         </button>
@@ -1807,8 +1805,8 @@ window.SubscriptionsSmartQuery = (function () {
           primary: textField,
           secondary: descField,
           fallback: descFallbackField,
-          primaryPlaceholder: options.defaultPrimaryPlaceholder || '英文检索文本',
-          secondaryPlaceholder: defaultDesc || '中文说明',
+          primaryPlaceholder: options.defaultPrimaryPlaceholder || 'English retrieval text',
+          secondaryPlaceholder: defaultDesc || 'Optional note',
         };
         if (item._editing) {
           return renderCandidateEditCard(realKind, idx, item, fieldMeta, selected, disabled);
@@ -1824,8 +1822,8 @@ window.SubscriptionsSmartQuery = (function () {
             ${disabled ? 'disabled' : ''}
           />
           <span class="dpr-cloud-item-body">
-            ${renderChoiceField(text, options.defaultPrimaryPlaceholder || '（英文）', true)}
-            ${renderChoiceField(desc || item[descFallbackField] || item.source || '', defaultDesc || '（无说明）', false)}
+            ${renderChoiceField(text, options.defaultPrimaryPlaceholder || '(English)', true)}
+            ${renderChoiceField(desc || item[descFallbackField] || item.source || '', defaultDesc || '(no note)', false)}
           </span>
           <button
             type="button"
@@ -1836,7 +1834,7 @@ window.SubscriptionsSmartQuery = (function () {
             data-primary-field="${escapeHtml(textField)}"
             data-secondary-field="${escapeHtml(descField)}"
             data-fallback-field="${escapeHtml(descFallbackField)}"
-            title="修改英文与中文说明"
+            title="Edit the English text and the note"
           >✎</button>
         </div>
       `;
@@ -1856,8 +1854,8 @@ window.SubscriptionsSmartQuery = (function () {
 
   const getChatActionMeta = (state = modalState) =>
     isChatAppendRound(state)
-      ? { label: '追加生成', className: 'dpr-chat-send-btn--append' }
-      : { label: '生成候选', className: 'dpr-chat-send-btn--initial' };
+      ? { label: 'Generate more', className: 'dpr-chat-send-btn--append' }
+      : { label: 'Generate candidates', className: 'dpr-chat-send-btn--initial' };
 
   const setSendBtnLoading = (loading) => {
     const btn = modalPanel?.querySelector('[data-action="chat-send"]');
@@ -1867,7 +1865,7 @@ window.SubscriptionsSmartQuery = (function () {
       btn.disabled = true;
       btn.classList.add('dpr-btn-loading');
       const label = btn.querySelector('.dpr-chat-send-label');
-      if (label) label.textContent = '生成中';
+      if (label) label.textContent = 'Generating';
       return;
     }
     btn.disabled = false;
@@ -1891,7 +1889,7 @@ window.SubscriptionsSmartQuery = (function () {
     }
     const selected = typeof nextSelected === 'boolean' ? nextSelected : !list[index]._selected;
     if (!canSelectMoreCandidates(list, selected, realKind)) {
-      setMessage(`${getKindLabel(realKind)} 最多只能选择 ${getSelectionLimit(realKind)} 条。`, '#c00');
+      setMessage(`You can select at most ${getSelectionLimit(realKind)} ${getKindLabel(realKind)} items.`, '#c00');
       return;
     }
     list[index]._selected = selected;
@@ -1938,7 +1936,7 @@ window.SubscriptionsSmartQuery = (function () {
   const renderMain = () => {
     if (!displayListEl) return;
     if (!currentProfiles.length) {
-      displayListEl.innerHTML = '<div class="dpr-entry-empty">暂无词条，先点「新增」打开对话生成。</div>';
+      displayListEl.innerHTML = '<div class="dpr-entry-empty">No entries yet. Click Add to open the dialogue and generate some.</div>';
       notifySelectionChange();
       return;
     }
@@ -1949,7 +1947,7 @@ window.SubscriptionsSmartQuery = (function () {
         const isTemporary = isConferenceOnlyProfile(p);
         const selectable = canSelectProfileForRunMode(p);
         const selected = selectedProfileKeys.has(getProfileKey(p));
-        const pauseLabel = isPaused ? '启用日常' : '停用日常';
+        const pauseLabel = isPaused ? 'Enable daily' : 'Pause daily';
         const pauseBtnClass = isPaused ? 'dpr-entry-resume-btn' : 'dpr-entry-pause-btn';
         const profileId = escapeHtml(getProfileKey(p) || '');
         const pauseButton = isTemporary
@@ -1966,8 +1964,8 @@ window.SubscriptionsSmartQuery = (function () {
         ].filter(Boolean).join(' ');
         const isDailyEnabled = !isTemporary && !isPaused;
         const dailyBadge = isDailyEnabled
-          ? '<span class="dpr-entry-daily-badge dpr-entry-daily-badge--active">日常</span>'
-          : '<span class="dpr-entry-daily-badge dpr-entry-daily-badge--off">停用日常</span>';
+          ? '<span class="dpr-entry-daily-badge dpr-entry-daily-badge--active">Daily</span>'
+          : '<span class="dpr-entry-daily-badge dpr-entry-daily-badge--off">Daily paused</span>';
         const selectionControl = `<span class="dpr-entry-select-dot" aria-hidden="true">${selected ? '✓' : ''}</span>`;
         return `
           <div class="${cardClass}" data-profile-id="${profileId}">
@@ -1976,13 +1974,13 @@ window.SubscriptionsSmartQuery = (function () {
                 ${selectionControl}
                 <span class="dpr-entry-title">${escapeHtml(p.tag || '')}</span>
                 ${dailyBadge}
-                <span class="dpr-entry-desc-inline">${escapeHtml(p.description || '（无描述）')}</span>
+                <span class="dpr-entry-desc-inline">${escapeHtml(p.description || '(no description)')}</span>
                 <span class="dpr-entry-source-inline">${renderProfileSourceChips(p.paper_sources)}</span>
               </div>
               <div class="dpr-entry-actions">
                 ${pauseButton}
-                <button class="arxiv-tool-btn dpr-entry-edit-btn" data-action="edit-profile" data-profile-id="${profileId}">修改</button>
-                <button class="arxiv-tool-btn dpr-entry-delete-btn" data-action="delete-profile" data-profile-id="${profileId}">删除</button>
+                <button class="arxiv-tool-btn dpr-entry-edit-btn" data-action="edit-profile" data-profile-id="${profileId}">Edit</button>
+                <button class="arxiv-tool-btn dpr-entry-delete-btn" data-action="delete-profile" data-profile-id="${profileId}">Delete</button>
               </div>
             </div>
           </div>
@@ -2052,13 +2050,13 @@ window.SubscriptionsSmartQuery = (function () {
     const hasIntentQueries = (modalState.intent_queries || []).length > 0;
     const keywordBlock =
       `<div class="dpr-combo-block">
-        <div class="dpr-modal-group-title">${buildSelectionTitle('keyword', '用于召回')}</div>
-        <div class="dpr-pick-grid">${kwHtml || '<div style="color:#999;">无关键词候选</div>'}</div>
+        <div class="dpr-modal-group-title">${buildSelectionTitle('keyword', 'used for recall')}</div>
+        <div class="dpr-pick-grid">${kwHtml || '<div style="color:#999;">No keyword candidates</div>'}</div>
       </div>`;
     const intentBlock =
       `<div class="dpr-combo-block">
-        <div class="dpr-modal-group-title">${buildSelectionTitle('intent', '用于意图召回与最终打分')}</div>
-        <div class="dpr-pick-grid">${intentHtml || '<div style="color:#999;">无意图查询候选</div>'}</div>
+        <div class="dpr-modal-group-title">${buildSelectionTitle('intent', 'used for intent recall and final scoring')}</div>
+        <div class="dpr-pick-grid">${intentHtml || '<div style="color:#999;">No intent query candidates</div>'}</div>
       </div>`;
     const divider = `<div class="dpr-modal-divider"></div>`;
     const candidateBlocks = `${hasKeywords ? keywordBlock : ''}${hasKeywords && hasIntentQueries ? divider : ''}${
@@ -2068,38 +2066,38 @@ window.SubscriptionsSmartQuery = (function () {
 
     modalPanel.innerHTML = `
       <div class="dpr-modal-head">
-        <div class="dpr-modal-title">${modalState && modalState.editProfileId ? '修改词条' : '新增词条候选'}</div>
-        <button class="arxiv-tool-btn" data-action="close">关闭</button>
+        <div class="dpr-modal-title">${modalState && modalState.editProfileId ? 'Edit entry' : 'Add entry candidates'}</div>
+        <button class="arxiv-tool-btn" data-action="close">Close</button>
       </div>
       <div class="dpr-modal-group-title">
-        请先在下方输入你的检索想法
+        Enter your retrieval idea below first
       </div>
       <div class="dpr-help-examples">
-        <div class="dpr-help-example">ex: 强化学习 符号回归</div>
-        <div class="dpr-help-example">ex: 请帮我去查找强化学习和符号回归相关的论文</div>
-        <div class="dpr-help-example">ex: 请帮我查找可解释的强化学习驱动符号回归方程发现论文</div>
+        <div class="dpr-help-example">ex: reinforcement learning symbolic regression</div>
+        <div class="dpr-help-example">ex: please help me find papers related to reinforcement learning and symbolic regression</div>
+        <div class="dpr-help-example">ex: please help me find papers on explainable reinforcement-learning-driven symbolic regression for equation discovery</div>
       </div>
       <div class="dpr-modal-list dpr-combo-list">${candidateBlocks || '<div class="dpr-cloud-empty"></div>'}</div>
       <div class="dpr-modal-actions-inline dpr-modal-add-inline">
-        <input id="dpr-add-kw-text" type="text" placeholder="手动新增关键词（召回词）" value="${escapeHtml(modalState.customKeyword || '')}" />
-        <input id="dpr-add-kw-query" type="text" placeholder="对应语义 Query 改写" value="${escapeHtml(modalState.customQuery || '')}" />
-        <input id="dpr-add-kw-logic" type="text" placeholder="中文直译（可选）" value="${escapeHtml(modalState.customKeywordLogic || '')}" />
-        <button class="arxiv-tool-btn" data-action="add-custom-kw">加入候选</button>
+        <input id="dpr-add-kw-text" type="text" placeholder="Manually add a keyword (recall term)" value="${escapeHtml(modalState.customKeyword || '')}" />
+        <input id="dpr-add-kw-query" type="text" placeholder="Corresponding semantic query rewrite" value="${escapeHtml(modalState.customQuery || '')}" />
+        <input id="dpr-add-kw-logic" type="text" placeholder="Optional secondary label" value="${escapeHtml(modalState.customKeywordLogic || '')}" />
+        <button class="arxiv-tool-btn" data-action="add-custom-kw">Add to candidates</button>
       </div>
       <div class="dpr-modal-actions dpr-modal-add-footer">
         <label class="dpr-modal-field">
-          <span class="dpr-modal-field-label">标签</span>
-          <input id="dpr-add-profile-tag" type="text" value="${escapeHtml(modalState.tag || '')}" placeholder="请填写标签" />
+          <span class="dpr-modal-field-label">Tag</span>
+          <input id="dpr-add-profile-tag" type="text" value="${escapeHtml(modalState.tag || '')}" placeholder="Enter a tag" />
         </label>
         <label class="dpr-modal-field">
-          <span class="dpr-modal-field-label">中文描述</span>
-          <input id="dpr-add-profile-desc" type="text" value="${escapeHtml(modalState.description || '')}" placeholder="请填写中文描述" />
+          <span class="dpr-modal-field-label">Description</span>
+          <input id="dpr-add-profile-desc" type="text" value="${escapeHtml(modalState.description || '')}" placeholder="Enter a description" />
         </label>
         <div class="dpr-modal-field dpr-modal-field-sources">
-          <span class="dpr-modal-field-label">论文源</span>
+          <span class="dpr-modal-field-label">Paper source</span>
           <div class="dpr-paper-source-row">${sourceChoices}</div>
         </div>
-        <button class="arxiv-tool-btn" data-action="apply-add" style="background:#2e7d32;color:#fff;">保存查询</button>
+        <button class="arxiv-tool-btn" data-action="apply-add" style="background:#2e7d32;color:#fff;">Save query</button>
       </div>
     `;
   };
@@ -2111,7 +2109,7 @@ window.SubscriptionsSmartQuery = (function () {
     const nextDesc = normalizeText(document.getElementById('dpr-add-profile-desc')?.value || '');
 
     if (!nextTag || !nextDesc) {
-      setMessage('标签必须是英文、英文缩写或英文连字符短语，且描述不能为空。', '#c00');
+      setMessage('The tag must be English, an English abbreviation, or an English hyphenated phrase, and the description cannot be empty.', '#c00');
       return;
     }
 
@@ -2119,7 +2117,7 @@ window.SubscriptionsSmartQuery = (function () {
     modalState.description = nextDesc;
     const nextPaperSources = normalizePaperSources(modalState.paper_sources, { fallbackToArxiv: false });
     if (!nextPaperSources.length) {
-      setMessage('请至少勾选 1 个论文源。', '#c00');
+      setMessage('Please select at least 1 paper source.', '#c00');
       return;
     }
 
@@ -2150,12 +2148,12 @@ window.SubscriptionsSmartQuery = (function () {
         });
 
     if (!ok) {
-      setMessage('请至少选择 1 条关键词和 1 条意图Query。', '#c00');
+      setMessage('Please select at least 1 keyword and 1 intent query.', '#c00');
       return;
     }
 
     if (typeof reloadAll === 'function') reloadAll();
-    setMessage(isEditMode ? '词条修改已应用，请点击「保存」。' : '新增词条已应用，请点击「保存」。', '#666');
+    setMessage(isEditMode ? 'Entry changes applied. Please click Save.' : 'New entry applied. Please click Save.', '#666');
     closeModal();
   };
 
@@ -2165,13 +2163,13 @@ window.SubscriptionsSmartQuery = (function () {
     const kwHtml = renderCloudCards(modalState.keywords || [], 'kw', {
       textField: 'keyword',
       descField: 'keyword_cn',
-      defaultDesc: '（待补充中文直译）',
+      defaultDesc: '(optional secondary label to be filled in)',
     });
     const intentHtml = renderCloudCards(modalState.intent_queries || [], 'intent', {
       textField: 'query',
       descField: 'query_cn',
       descFallbackField: 'note',
-      defaultDesc: '（待补充中文直译）',
+      defaultDesc: '(optional secondary label to be filled in)',
     });
     const hasKeywordSection = Array.isArray(modalState.keywords) && modalState.keywords.length > 0;
     const hasIntentSection = Array.isArray(modalState.intent_queries) && modalState.intent_queries.length > 0;
@@ -2183,7 +2181,7 @@ window.SubscriptionsSmartQuery = (function () {
     const actionMeta = getChatActionMeta(modalState);
     const kwSection = hasKeywordSection
       ? `<div class="dpr-chat-result-block">
-           <div class="dpr-modal-group-title">${buildSelectionTitle('keyword', '用于召回')}</div>
+           <div class="dpr-modal-group-title">${buildSelectionTitle('keyword', 'used for recall')}</div>
            <div class="dpr-chat-slot-area ${hasKeywords ? 'has-candidates' : 'draft-only'}">
              <div class="dpr-chat-slot-scroll">
                <div class="dpr-cloud-grid dpr-cloud-grid-keywords">${kwHtml}</div>
@@ -2193,7 +2191,7 @@ window.SubscriptionsSmartQuery = (function () {
       : '';
     const intentSection = hasIntentSection
       ? `<div class="dpr-chat-result-block">
-           <div class="dpr-modal-group-title">${buildSelectionTitle('intent', '用于意图召回与最终打分')}</div>
+           <div class="dpr-modal-group-title">${buildSelectionTitle('intent', 'used for intent recall and final scoring')}</div>
            <div class="dpr-chat-slot-area ${hasIntentQueries ? 'has-candidates' : 'draft-only'}">
              <div class="dpr-chat-slot-scroll">
                <div class="dpr-cloud-grid dpr-cloud-grid-intent">${intentHtml}</div>
@@ -2207,17 +2205,17 @@ window.SubscriptionsSmartQuery = (function () {
     modalPanel.innerHTML = `
       <div class="dpr-modal-head">
         <div class="dpr-modal-title">
-          ${modalState && modalState.editProfileId ? '修改查询' : (modalState.temporaryProfile ? '新增仅会议查询' : '新增查询')}
-          ${modalState.temporaryProfile ? '<span class="dpr-entry-temp-badge">仅会议</span>' : ''}
+          ${modalState && modalState.editProfileId ? 'Edit query' : (modalState.temporaryProfile ? 'Add conference-only query' : 'Add query')}
+          ${modalState.temporaryProfile ? '<span class="dpr-entry-temp-badge">Conference only</span>' : ''}
         </div>
-        <button class="arxiv-tool-btn" data-action="close">关闭</button>
+        <button class="arxiv-tool-btn" data-action="close">Close</button>
       </div>
       <div class="dpr-modal-actions dpr-chat-action-area">
         <div class="dpr-chat-row dpr-chat-main-row">
           <div class="dpr-chat-composer">
             <label class="dpr-chat-label dpr-chat-inline-desc">
-              <span class="dpr-chat-label-text">检索需求</span>
-              <textarea id="dpr-chat-desc-input" rows="5" placeholder="请在这里像和 ChatGPT 对话一样描述你的检索需求。例如：&#10;请帮我查找强化学习和符号回归相关的论文&#10;请帮我查找可解释的强化学习驱动符号回归方程发现论文">${escapeHtml(
+              <span class="dpr-chat-label-text">Retrieval requirement</span>
+              <textarea id="dpr-chat-desc-input" rows="5" placeholder="Describe your retrieval need here, like chatting with ChatGPT. For example:&#10;Please help me find papers related to reinforcement learning and symbolic regression&#10;Please help me find papers on explainable reinforcement-learning-driven symbolic regression for equation discovery">${escapeHtml(
                 modalState.inputDesc || '',
               )}</textarea>
             </label>
@@ -2239,20 +2237,20 @@ window.SubscriptionsSmartQuery = (function () {
       <div class="dpr-chat-bottom-bar">
         <div class="dpr-chat-meta-bar">
           <label class="dpr-chat-label dpr-chat-inline-tag">
-            <span class="dpr-chat-label-text">标签</span>
-            <input id="dpr-chat-tag-input" type="text" placeholder="例如：symbolic-regression" value="${escapeHtml(modalState.inputTag || '')}" />
+            <span class="dpr-chat-label-text">Tag</span>
+            <input id="dpr-chat-tag-input" type="text" placeholder="e.g. symbolic-regression" value="${escapeHtml(modalState.inputTag || '')}" />
           </label>
           <label class="dpr-chat-label dpr-chat-inline-profile-desc">
-            <span class="dpr-chat-label-text">中文描述</span>
-            <input id="dpr-chat-required-desc" type="text" placeholder="用于日报展示，可由模型自动补全" value="${escapeHtml(modalState.inputDesc || '')}" />
+            <span class="dpr-chat-label-text">Description</span>
+            <input id="dpr-chat-required-desc" type="text" placeholder="Shown in the daily report; can be auto-completed by the model" value="${escapeHtml(modalState.inputDesc || '')}" />
           </label>
           <div class="dpr-chat-label dpr-chat-inline-sources">
-            <span class="dpr-chat-label-text">论文源</span>
+            <span class="dpr-chat-label-text">Paper source</span>
             <div class="dpr-paper-source-row">${sourceChoices}</div>
           </div>
         </div>
         <button class="arxiv-tool-btn dpr-chat-save-btn" data-action="apply-chat" ${hasCandidates ? '' : 'disabled'}>
-          保存查询
+          Save query
         </button>
       </div>
     `;
@@ -2288,15 +2286,15 @@ window.SubscriptionsSmartQuery = (function () {
     const paperSources = normalizePaperSources(modalState.paper_sources, { fallbackToArxiv: false });
 
     if (!tag) {
-      setMessage('请先填写英文标签、英文缩写或英文连字符短语。', '#c00');
+      setMessage('Please first enter an English tag, an English abbreviation, or an English hyphenated phrase.', '#c00');
       return;
     }
     if (!desc) {
-      setMessage('请先填写中文描述。', '#c00');
+      setMessage('Please fill in the description first.', '#c00');
       return;
     }
     if (!paperSources.length) {
-      setMessage('请至少勾选 1 个论文源。', '#c00');
+      setMessage('Please select at least 1 paper source.', '#c00');
       return;
     }
     if (validationError) {
@@ -2322,11 +2320,11 @@ window.SubscriptionsSmartQuery = (function () {
     }
 
     if (!hasSelection) {
-      setMessage(hasItems ? '应用失败，请重试。' : '请至少勾选 1 条关键词和 1 条意图Query 后再应用。', '#c00');
+      setMessage(hasItems ? 'Apply failed, please retry.' : 'Please select at least 1 keyword and 1 intent query before applying.', '#c00');
       return;
     }
     if (typeof reloadAll === 'function') reloadAll();
-    setMessage(modalState.editProfileId ? '词条修改已应用，请点击「保存」。' : '查询已保存，请点击「保存」。', '#666');
+    setMessage(modalState.editProfileId ? 'Entry changes applied. Please click Save.' : 'Query saved. Please click Save.', '#666');
     closeModal();
   };
 
@@ -2339,14 +2337,14 @@ window.SubscriptionsSmartQuery = (function () {
     let finalTag = tag || 'topic';
 
     if (!finalDesc) {
-      setChatStatus('请先填写检索需求。', '#c00');
+      setChatStatus('Please fill in the retrieval requirement first.', '#c00');
       return;
     }
 
     modalState.pending = true;
     setSendBtnLoading(true);
-    setChatStatus('正在生成候选，请稍候...', '#666');
-    setMessage('正在生成候选，请稍候...', '#666');
+    setChatStatus('Generating candidates, please wait...', '#666');
+    setMessage('Generating candidates, please wait...', '#666');
 
     try {
       const candidates = await requestCandidatesByDesc(finalTag, finalDesc);
@@ -2395,7 +2393,7 @@ window.SubscriptionsSmartQuery = (function () {
       modalState.lastTag = finalTag;
       modalState.lastDesc = finalDesc;
       modalState.requestHistory = history;
-      modalState.chatStatus = `已生成候选（关键词 ${nextCandidates.keywords.length} 条，意图 ${nextCandidates.intent_queries.length} 条）。`;
+      modalState.chatStatus = `Candidates generated (${nextCandidates.keywords.length} keywords, ${nextCandidates.intent_queries.length} intents).`;
       if (document.getElementById('dpr-chat-desc-input')) {
         document.getElementById('dpr-chat-desc-input').value = '';
       }
@@ -2407,13 +2405,13 @@ window.SubscriptionsSmartQuery = (function () {
       setChatStatus(modalState.chatStatus, '#666');
     } catch (e) {
       console.error(e);
-      const rawMsg = e && e.message ? String(e.message) : '未知错误';
+      const rawMsg = e && e.message ? String(e.message) : 'Unknown error';
       const hint =
         /Failed to fetch|NETWORK|network|ERR_TIMED_OUT|timed out/i.test(rawMsg) ||
-        /模型服务请求失败/.test(rawMsg)
-          ? '请检查当前网络是否能访问模型网关，或稍后重试（可先切换/重选模型）。'
+        /Model service request failed/.test(rawMsg)
+          ? 'Please check whether your network can reach the model gateway, or retry later (you may switch/reselect the model first).'
           : '';
-      const msg = `生成失败：${rawMsg}${hint ? `（${hint}）` : ''}`;
+      const msg = `Generation failed: ${rawMsg}${hint ? ` (${hint})` : ''}`;
       setMessage(msg, '#c00');
       setChatStatus(msg, '#c00');
     } finally {
@@ -2522,7 +2520,7 @@ window.SubscriptionsSmartQuery = (function () {
         ) {
           const nextSelected = !modalState.keywords[idx]._selected;
           if (!canSelectMoreCandidates(modalState.keywords, nextSelected, 'keyword')) {
-            setMessage(`关键词最多只能选择 ${MAX_KEYWORDS_PER_PROFILE} 条。`, '#c00');
+            setMessage(`You can select at most ${MAX_KEYWORDS_PER_PROFILE} keywords.`, '#c00');
             return;
           }
           modalState.keywords[idx]._selected = nextSelected;
@@ -2539,7 +2537,7 @@ window.SubscriptionsSmartQuery = (function () {
         ) {
           const nextSelected = !modalState.intent_queries[idx]._selected;
           if (!canSelectMoreCandidates(modalState.intent_queries, nextSelected, 'intent')) {
-            setMessage(`意图Query 最多只能选择 ${MAX_INTENT_QUERIES_PER_PROFILE} 条。`, '#c00');
+            setMessage(`You can select at most ${MAX_INTENT_QUERIES_PER_PROFILE} intent queries.`, '#c00');
             return;
           }
           modalState.intent_queries[idx]._selected = nextSelected;
@@ -2552,18 +2550,18 @@ window.SubscriptionsSmartQuery = (function () {
         const query = normalizeText(document.getElementById('dpr-add-kw-query')?.value || '');
         const logic = normalizeText(document.getElementById('dpr-add-kw-logic')?.value || '');
         if (!kwText) {
-          setMessage('请输入要新增的关键词。', '#c00');
+          setMessage('Please enter a keyword to add.', '#c00');
           return;
         }
         const existed = (modalState.keywords || []).some(
           (x) => normalizeText(x.keyword || x.text || '').toLowerCase() === kwText.toLowerCase(),
         );
         if (existed) {
-          setMessage('该关键词已在候选中。', '#c00');
+          setMessage('That keyword is already in the candidates.', '#c00');
           return;
         }
         if (!canSelectMoreCandidates(modalState.keywords, true, 'keyword')) {
-          setMessage(`关键词最多只能选择 ${MAX_KEYWORDS_PER_PROFILE} 条。`, '#c00');
+          setMessage(`You can select at most ${MAX_KEYWORDS_PER_PROFILE} keywords.`, '#c00');
           return;
         }
         modalState.keywords.push({
@@ -2576,7 +2574,7 @@ window.SubscriptionsSmartQuery = (function () {
         modalState.customKeywordLogic = '';
         modalState.customQuery = '';
         renderAddModal();
-        setMessage('已加入自定义关键词候选。', '#666');
+        setMessage('Added the custom keyword candidate.', '#666');
         return;
       }
       if (action === 'apply-add') {
@@ -2657,7 +2655,7 @@ window.SubscriptionsSmartQuery = (function () {
       if (card) {
         card.classList.remove('selected');
       }
-      setMessage(`${getKindLabel(kind)} 最多只能选择 ${getSelectionLimit(kind)} 条。`, '#c00');
+      setMessage(`You can select at most ${getSelectionLimit(kind)} ${getKindLabel(kind)} items.`, '#c00');
       return;
     }
     if (card) {
@@ -2695,9 +2693,9 @@ window.SubscriptionsSmartQuery = (function () {
   const requestHistoryLength = (state) => {
     const history = Array.isArray(state && state.requestHistory) ? state.requestHistory : [];
     if (!history.length) {
-      return '首次生成';
+      return 'First generation';
     }
-    return `新增第 ${history.length + 1} 轮`;
+    return `Round ${history.length + 1}`;
   };
 
   const generateAndOpenAddModal = async () => {
@@ -2705,20 +2703,20 @@ window.SubscriptionsSmartQuery = (function () {
     const desc = normalizeText(descInputEl?.value || '');
     const finalTag = tag || 'topic';
     if (!desc) {
-      setMessage('请先填写智能 Query 描述。', '#c00');
+      setMessage('Please fill in the smart-query description first.', '#c00');
       return;
     }
 
     try {
-      setMessage('正在生成候选，请稍候...', '#666');
+      setMessage('Generating candidates, please wait...', '#666');
       if (createBtn) createBtn.disabled = true;
       const candidates = await requestCandidatesByDesc(finalTag, desc);
 
       openAddModal(finalTag, desc, candidates);
-      setMessage(`候选已生成（共 ${candidates.keywords.length} 条）。`, '#666');
+      setMessage(`Candidates generated (${candidates.keywords.length} total).`, '#666');
     } catch (e) {
       console.error(e);
-      setMessage(`生成失败：${e && e.message ? e.message : '未知错误'}`, '#c00');
+      setMessage(`Generation failed: ${e && e.message ? e.message : 'Unknown error'}`, '#c00');
     } finally {
       if (createBtn) createBtn.disabled = false;
     }
@@ -2761,19 +2759,19 @@ window.SubscriptionsSmartQuery = (function () {
         next.subscriptions = subs;
         return next;
       });
-      const tag = normalizeText(profile.tag) || '该词条';
-      const statusText = nextPaused ? '已停用日常抓取' : '已启用日常抓取';
-      setMessage(`词条「${tag}」${statusText}，请点击「保存」。`, '#666');
+      const tag = normalizeText(profile.tag) || 'this entry';
+      const statusText = nextPaused ? 'Daily fetching disabled' : 'Daily fetching enabled';
+      setMessage(`Entry "${tag}" ${statusText}. Please click Save.`, '#666');
       return;
     }
     if (action === 'delete-profile') {
       const profile = findCurrentProfile(profileId);
-      const tag = normalizeText(profile && profile.tag) || '该词条';
+      const tag = normalizeText(profile && profile.tag) || 'this entry';
       const desc = normalizeText(profile && profile.description);
       const keywordCount = Array.isArray(profile && profile.keywords) ? profile.keywords.length : 0;
-      const summary = desc || `关键词 ${keywordCount} 条`;
+      const summary = desc || `${keywordCount} keywords`;
       const ok = window.confirm(
-        `确认删除词条「${tag}」吗？\n简介：${summary}\n此操作可在未保存前通过刷新放弃。`,
+        `Delete entry "${tag}"?\nSummary: ${summary}\nYou can discard this by refreshing before saving.`,
       );
       if (!ok) return;
       const normalizedProfileId = getProfileId(profileId);
@@ -2795,7 +2793,7 @@ window.SubscriptionsSmartQuery = (function () {
         return next;
       });
       if (typeof reloadAll === 'function') reloadAll();
-      setMessage(`已删除词条「${tag}」，请点击「保存」。`, '#666');
+      setMessage(`Entry "${tag}" deleted. Please click Save.`, '#666');
     }
   };
 

@@ -45,7 +45,7 @@ def resolve_date_token(date_arg: str, days: int) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="抓取近 N 天 medRxiv 并同步到 Supabase（同 project 可用）。")
+    parser = argparse.ArgumentParser(description="Fetch medRxiv papers and sync to Supabase.")
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--chunk-days", type=int, default=7)
     parser.add_argument("--date", type=str, default="")
@@ -112,7 +112,7 @@ def main() -> None:
             fetch_cmd.append("--ignore-seen")
         run_step("Step 1 - fetch medRxiv", fetch_cmd)
     else:
-        print(f"[INFO] Step 1 已跳过，复用原始文件：{raw_path}", flush=True)
+        print(f"[INFO] Step 1 skipped, reusing original file: {raw_path}", flush=True)
 
     sync_cmd = [
         python,

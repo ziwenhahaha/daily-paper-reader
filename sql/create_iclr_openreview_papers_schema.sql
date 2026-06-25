@@ -1,5 +1,5 @@
 -- ============================================================
--- ICLR OpenReview 会议投稿表
+-- ICLR OpenReview conference submission table
 -- ============================================================
 
 create extension if not exists vector;

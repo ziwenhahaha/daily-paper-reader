@@ -4,10 +4,12 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 
-def _load_module(module_name: str, path: pathlib.Path):
+def _load_module(module_name: str, path: pathlib.Path) -> Any:
     spec = importlib.util.spec_from_file_location(module_name, path)
+    assert spec is not None
     mod = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
     sys.modules[module_name] = mod
@@ -56,8 +58,7 @@ class ConferenceSidebarTest(unittest.TestCase):
                 {
                     "paper_id": "openreview-icml-2025-abc123",
                     "score": 9,
-                    "canonical_evidence": "命中 ICML 会议检索需求。",
-                    "title_zh": "会议论文中文标题",
+                    "canonical_evidence": "Matches the ICML conference search requirement.",
                     "matched_query_tag": "query:rl:composite",
                 }
             ],
@@ -88,7 +89,7 @@ class ConferenceSidebarTest(unittest.TestCase):
                 {
                     "paper_id": paper_id,
                     "score": 9,
-                    "canonical_evidence": "命中会议检索需求。",
+                    "canonical_evidence": "Matches the conference search requirement.",
                     "matched_query_tag": tag,
                 }
             ],
@@ -100,7 +101,7 @@ class ConferenceSidebarTest(unittest.TestCase):
             tmp_path = pathlib.Path(tmp)
             sidebar = tmp_path / "_sidebar.md"
             result = tmp_path / "conference-icml-2025.supabase.llm.json"
-            sidebar.write_text("* <a class=\"dpr-sidebar-root-link\" href=\"#/\">首页</a>\n* Daily Papers\n", encoding="utf-8")
+            sidebar.write_text("* <a class=\"dpr-sidebar-root-link\" href=\"#/\">Home</a>\n* Daily Papers\n", encoding="utf-8")
             self.write_result(result)
 
             self.mod.update_sidebar_with_conference(sidebar, result, docs_dir=tmp_path / "docs", deep_min_score=-1)
@@ -123,7 +124,7 @@ class ConferenceSidebarTest(unittest.TestCase):
             paper_md = tmp_path / "docs" / "conference" / "icml-2025" / "openreview-icml-2025-abc123-a-conference-paper.md"
             self.assertTrue(paper_md.exists())
             md_text = paper_md.read_text(encoding="utf-8")
-            self.assertIn("title_zh: 会议论文中文标题", md_text)
+            self.assertNotIn("title_zh:", md_text)
             self.assertIn("pdf: \"https://openreview.net/pdf?id=abc123\"", md_text)
             self.assertIn("source: ICML-2025-Accepted", md_text)
             self.assertIn('tags: ["query:rl"]', md_text)
@@ -132,14 +133,14 @@ class ConferenceSidebarTest(unittest.TestCase):
             self.assertIn("selection_source: conference_retrieval", md_text)
             self.assertIn("motivation:", md_text)
             self.assertIn("method:", md_text)
-            self.assertIn("method: 方法细节请参考摘要与 OpenReview 原文。", md_text)
+            self.assertIn("method: See the abstract and the original OpenReview text for method details.", md_text)
             self.assertNotIn("method: This paper proposes", md_text)
             self.assertIn("result:", md_text)
             self.assertIn("conclusion:", md_text)
             self.assertIn("## Abstract", md_text)
-            self.assertIn("## 论文详细总结（自动生成）", md_text)
-            self.assertIn("### 1. 检索相关性", md_text)
-            self.assertIn("### 4. 来源与原文", md_text)
+            self.assertIn("## Detailed Summary (auto-generated)", md_text)
+            self.assertIn("### 1. Search relevance", md_text)
+            self.assertIn("### 4. Source and original text", md_text)
             self.assertNotIn("# A Conference Paper", md_text)
             self.assertNotIn("## 命中理由", md_text)
 
@@ -169,8 +170,8 @@ class ConferenceSidebarTest(unittest.TestCase):
                 ],
                 "queries": [],
                 "llm_ranked": [
-                    {"paper_id": "openreview-icml-2025-low", "score": 3, "canonical_evidence": "三分。"},
-                    {"paper_id": "openreview-icml-2025-keep", "score": 4, "canonical_evidence": "四分。"},
+                    {"paper_id": "openreview-icml-2025-low", "score": 3, "canonical_evidence": "Score three."},
+                    {"paper_id": "openreview-icml-2025-keep", "score": 4, "canonical_evidence": "Score four."},
                 ],
             }
             result.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -228,8 +229,8 @@ class ConferenceSidebarTest(unittest.TestCase):
                 ],
                 "queries": [],
                 "llm_ranked": [
-                    {"paper_id": "openreview-icml-2025-mid", "score": 4, "canonical_evidence": "四分。"},
-                    {"paper_id": "openreview-icml-2025-high", "score": 9, "canonical_evidence": "九分。"},
+                    {"paper_id": "openreview-icml-2025-mid", "score": 4, "canonical_evidence": "Score four."},
+                    {"paper_id": "openreview-icml-2025-high", "score": 9, "canonical_evidence": "Score nine."},
                 ],
             }
             result.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -370,7 +371,7 @@ class ConferenceSidebarTest(unittest.TestCase):
         ranked = {
             "paper_id": "openreview-icml-2025-media",
             "score": 4,
-            "canonical_evidence": "相关。",
+            "canonical_evidence": "Relevant.",
             "matched_query_tag": "query:media",
         }
 

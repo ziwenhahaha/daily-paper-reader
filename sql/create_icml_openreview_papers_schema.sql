@@ -1,5 +1,5 @@
 -- ============================================================
--- ICML OpenReview 会议投稿表
+-- ICML OpenReview conference submission table
 -- ============================================================
 
 create extension if not exists vector;

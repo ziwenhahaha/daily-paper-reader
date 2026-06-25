@@ -86,7 +86,7 @@ class LocalDebugEnvTest(unittest.TestCase):
 
         self.assertIn("export DPR_FILTER_PROFILE_TAG=\"$PROFILE_TAG\"", script)
         self.assertIn("build_conference_topic_marker", script)
-        self.assertIn("已存在会议词条，跳过重复检索", script)
+        self.assertIn("Conference entry already exists, skipping duplicate retrieval", script)
         self.assertIn("src/conference_pipeline.py", script)
         self.assertNotIn("\npython src/conference_sidebar.py", script)
         self.assertIn(f"\n{self.mod.sys.executable} src/conference_sidebar.py", script)

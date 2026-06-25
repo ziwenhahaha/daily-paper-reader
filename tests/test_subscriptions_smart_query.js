@@ -22,7 +22,7 @@ function testPromptRequiresEnglishRetrievalFieldsAndChineseCnFields() {
   const prompt = buildPromptFromTemplate('RL', '强化学习算法对比', defaultPromptTemplate);
 
   assert.match(prompt, /keyword and query MUST be English retrieval text only/);
-  assert.match(prompt, /keyword_cn and query_cn MUST be Chinese/);
+  assert.match(prompt, /keyword_cn and query_cn are optional secondary labels/);
   assert.match(prompt, /The query field MUST be English only/);
   assert.match(prompt, /Do NOT output acronym-only/);
   assert.match(prompt, /meaningful atomic noun phrases/);

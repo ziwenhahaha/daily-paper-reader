@@ -1,5 +1,5 @@
 -- ============================================================
--- ICLR OpenReview 投稿表的检索 RPC
+-- ICLR OpenReview paper retrieval RPC
 -- ============================================================
 
 create or replace function match_iclr_openreview_papers_exact(

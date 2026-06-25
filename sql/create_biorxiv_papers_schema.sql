@@ -1,5 +1,5 @@
 -- ============================================================
--- 在同一个 Supabase project 中创建 bioRxiv 独立表
+-- bioRxiv paper table schema
 -- ============================================================
 
 create extension if not exists vector;
