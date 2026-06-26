@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""将会议检索结果写入 docs/_sidebar.md 的 Conference Papers 分组。"""
+"""Write conference search results into the Conference Papers group of docs/_sidebar.md."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def parse_conference_result_name(path: Path) -> Tuple[str, str]:
     name = path.name
     match = re.match(r"^conference-([a-z0-9-]+?)-([0-9]{4}(?:-[0-9]{4})*)\.supabase\.(?:llm|rerank|rrf)\.json$", name)
     if not match:
-        raise ValueError(f"无法从会议结果文件名解析会议和年份：{path}")
+        raise ValueError(f"Could not parse conference and year from result filename: {path}")
     conference = match.group(1).upper()
     years = match.group(2).replace("-", ",")
     return conference, years
@@ -111,7 +111,7 @@ def load_generate_docs_module():
     module_path = src_dir / "6.generate_docs.py"
     spec = importlib.util.spec_from_file_location("dpr_generate_docs_for_conference", module_path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"无法加载日常页生成模块：{module_path}")
+        raise RuntimeError(f"Could not load the daily-page generation module: {module_path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -175,15 +175,13 @@ def build_conference_paper_route(paper: Dict[str, Any], conference: str, years: 
 def get_evidence(ranked_item: Dict[str, Any]) -> str:
     return norm_text(
         ranked_item.get("canonical_evidence")
-        or ranked_item.get("evidence_cn")
         or ranked_item.get("evidence_en")
-        or ranked_item.get("tldr_cn")
         or ranked_item.get("tldr_en")
     )
 
 
 def get_tldr(ranked_item: Dict[str, Any]) -> str:
-    return norm_text(ranked_item.get("tldr_cn") or ranked_item.get("tldr_en"))
+    return norm_text(ranked_item.get("tldr_en"))
 
 
 def ensure_sentence(value: str) -> str:
@@ -192,7 +190,7 @@ def ensure_sentence(value: str) -> str:
         return ""
     if text[-1] in ".。！？!?":
         return text
-    return text + "。"
+    return text + "."
 
 
 def first_sentence(value: str) -> str:
@@ -204,24 +202,24 @@ def first_sentence(value: str) -> str:
 
 
 def build_glance_fields(paper: Dict[str, Any], ranked_item: Dict[str, Any]) -> Dict[str, str]:
-    title = norm_text(paper.get("title")) or "该论文"
+    title = norm_text(paper.get("title")) or "this paper"
     evidence = get_evidence(ranked_item)
     tldr = get_tldr(ranked_item) or evidence
     query_text = norm_text(ranked_item.get("matched_query_text"))
     return {
-        "tldr": ensure_sentence(tldr or f"{title} 是一篇会议检索命中的相关论文"),
+        "tldr": ensure_sentence(tldr or f"{title} is a relevant paper retrieved from the conference search"),
         "motivation": ensure_sentence(
-            norm_text(ranked_item.get("motivation_cn")) or evidence or "本文关注会议检索需求中的相关研究问题"
+            norm_text(ranked_item.get("motivation_en")) or evidence or "This paper addresses a research problem relevant to the conference search requirements"
         ),
         "method": ensure_sentence(
-            norm_text(ranked_item.get("method_cn")) or "方法细节请参考摘要与 OpenReview 原文"
+            norm_text(ranked_item.get("method_en")) or "See the abstract and the original OpenReview text for method details"
         ),
         "result": ensure_sentence(
-            norm_text(ranked_item.get("result_cn")) or tldr or evidence or "结果与实验结论请参考摘要与原文"
+            norm_text(ranked_item.get("result_en")) or tldr or evidence or "See the abstract and full text for results and experimental conclusions"
         ),
         "conclusion": ensure_sentence(
-            norm_text(ranked_item.get("conclusion_cn"))
-            or (f"该论文与检索需求“{query_text}”相关" if query_text else "该论文与当前会议检索需求相关")
+            norm_text(ranked_item.get("conclusion_en"))
+            or (f"This paper is relevant to the search requirement “{query_text}”" if query_text else "This paper is relevant to the current conference search requirements")
         ),
     }
 
@@ -233,7 +231,7 @@ def build_conference_summary_lines(
 ) -> List[str]:
     deep_summary = norm_text(ranked_item.get("_deep_summary"))
     if deep_summary:
-        return ["---", "", "## 论文详细总结（自动生成）", "", deep_summary.rstrip(), ""]
+        return ["---", "", "## Detailed Summary (auto-generated)", "", deep_summary.rstrip(), ""]
 
     evidence = get_evidence(ranked_item)
     tldr = get_tldr(ranked_item)
@@ -244,25 +242,25 @@ def build_conference_summary_lines(
     lines = [
         "---",
         "",
-        "## 论文详细总结（自动生成）",
+        "## Detailed Summary (auto-generated)",
         "",
-        "### 1. 检索相关性",
-        ensure_sentence(evidence or "该论文由会议检索链路召回，具体相关性可结合检索需求和原文进一步判断"),
+        "### 1. Search relevance",
+        ensure_sentence(evidence or "This paper was retrieved by the conference search pipeline; assess its relevance together with the search requirement and the original text"),
         "",
-        "### 2. 核心内容",
-        ensure_sentence(tldr or first_sentence(abstract) or "核心内容请参考摘要与 OpenReview 原文"),
+        "### 2. Core content",
+        ensure_sentence(tldr or first_sentence(abstract) or "See the abstract and the original OpenReview text for the core content"),
         "",
-        "### 3. 对应检索需求",
-        ensure_sentence(query_text or "当前结果未记录具体命中的检索需求"),
+        "### 3. Matched search requirement",
+        ensure_sentence(query_text or "This result did not record a specific matched search requirement"),
         "",
-        "### 4. 来源与原文",
+        "### 4. Source and original text",
     ]
     if source:
-        lines.append(f"- Source：{source}")
+        lines.append(f"- Source: {source}")
     if link:
-        lines.append(f"- OpenReview：[{link}]({link})")
+        lines.append(f"- OpenReview: [{link}]({link})")
     if not source and not link:
-        lines.append("- 来源信息未记录。")
+        lines.append("- No source information recorded.")
     lines.append("")
     return lines
 
@@ -275,8 +273,11 @@ def load_json(path: Path) -> Dict[str, Any]:
 
 def score_from_ranked_item(item: Dict[str, Any]) -> float:
     for key in ("score", "star_rating"):
+        raw = item.get(key)
+        if raw is None:
+            continue
         try:
-            return float(item.get(key))
+            return float(raw)
         except Exception:
             continue
     return 0.0
@@ -355,7 +356,7 @@ def ensure_conference_media(
             asset_key=asset_key,
         )
     except Exception as exc:
-        print(f"[WARN] 会议论文图表提取失败：{asset_key}: {exc}", flush=True)
+        print(f"[WARN] Conference paper figure extraction failed: {asset_key}: {exc}", flush=True)
         return [], []
 
 
@@ -363,15 +364,17 @@ def is_generated_deep_summary(text: str) -> bool:
     summary = norm_text(text)
     if not summary:
         return False
-    if "### 1. 检索相关性" in summary[:500] and "### 4. 来源与原文" in summary[:1500]:
+    if "### 1. Search relevance" in summary[:500] and "### 4. Source and original text" in summary[:1500]:
         return False
-    return "（完）" in summary or "## " in summary or "### " in summary or len(summary) > 600
+    return "(End)" in summary or "## " in summary or "### " in summary or len(summary) > 600
 
 
 def collect_ranked_ids(data: Dict[str, Any], limit: int, min_score: float = CONFERENCE_DISPLAY_MIN_SCORE) -> List[Dict[str, Any]]:
-    papers = data.get("papers") if isinstance(data.get("papers"), list) else []
+    papers_raw = data.get("papers")
+    papers = papers_raw if isinstance(papers_raw, list) else []
     paper_ids = [norm_text(p.get("id")) for p in papers if isinstance(p, dict) and norm_text(p.get("id"))]
-    llm_ranked = data.get("llm_ranked") if isinstance(data.get("llm_ranked"), list) else []
+    llm_ranked_raw = data.get("llm_ranked")
+    llm_ranked = llm_ranked_raw if isinstance(llm_ranked_raw, list) else []
     ranked: List[Dict[str, Any]] = []
     seen = set()
 
@@ -385,7 +388,8 @@ def collect_ranked_ids(data: Dict[str, Any], limit: int, min_score: float = CONF
         ranked.append(item)
 
     if not ranked:
-        queries = data.get("queries") if isinstance(data.get("queries"), list) else []
+        queries_raw = data.get("queries")
+        queries = queries_raw if isinstance(queries_raw, list) else []
         merged: Dict[str, Dict[str, Any]] = {}
         for query in queries:
             if not isinstance(query, dict):
@@ -451,8 +455,8 @@ def build_conference_markdown(
     years: str,
 ) -> str:
     title = norm_text(paper.get("title")) or norm_text(ranked_item.get("paper_id")) or "Untitled"
-    title_zh = norm_text(ranked_item.get("title_zh") or paper.get("title_zh"))
-    authors = paper.get("authors") if isinstance(paper.get("authors"), list) else []
+    authors_raw = paper.get("authors")
+    authors = authors_raw if isinstance(authors_raw, list) else []
     authors_text = ", ".join(norm_text(item) for item in authors if norm_text(item)) or "Unknown"
     published = norm_text(paper.get("published"))[:10] or "Unknown"
     source = norm_text(paper.get("source"))
@@ -477,8 +481,6 @@ def build_conference_markdown(
 
     lines = ["---"]
     lines.append(f"title: {yaml_escape_value(title)}")
-    if title_zh:
-        lines.append(f"title_zh: {yaml_escape_value(title_zh)}")
     lines.append(f"authors: {yaml_escape_value(authors_text)}")
     lines.append(f"date: {yaml_escape_value(published)}")
     if pdf_url:
@@ -522,7 +524,7 @@ def write_conference_docs(
     *,
     deep_min_score: float = CONFERENCE_DEEP_MIN_SCORE,
 ) -> Dict[str, str]:
-    _ = deep_min_score  # 兼容旧参数；会议链路当前对所有展示论文生成精读与图表。
+    _ = deep_min_score  # Legacy parameter kept for compatibility; the conference pipeline now generates deep-read text and figures for every displayed paper.
     route_by_id: Dict[str, str] = {}
     for item in ranked:
         paper_id = norm_text(item.get("paper_id"))
@@ -578,7 +580,7 @@ def enrich_conference_paper_for_deep_read(
     if existing:
         try:
             generate_docs = load_generate_docs_module()
-            existing_summary = generate_docs.extract_section_tail(existing, "论文详细总结（自动生成）")
+            existing_summary = generate_docs.extract_section_tail(existing, "Detailed Summary (auto-generated)")
         except Exception:
             existing_summary = ""
     if existing_summary:
@@ -597,7 +599,7 @@ def enrich_conference_paper_for_deep_read(
         if summary:
             ranked_item["_deep_summary"] = summary
     except Exception as exc:
-        print(f"[WARN] 会议论文精读生成失败：{paper.get('id') or md_path.stem}: {exc}", flush=True)
+        print(f"[WARN] Conference paper deep-read generation failed: {paper.get('id') or md_path.stem}: {exc}", flush=True)
 
 
 def cleanup_conference_outputs(
@@ -607,8 +609,8 @@ def cleanup_conference_outputs(
     conference: str,
     years: str,
 ) -> None:
-    # 会议检索会被不同 profile/tag 反复触发。这里不能删除整个 conference/year
-    # 目录，否则新词条会覆盖旧词条已经生成的正文页和图表资源。
+    # Conference search is triggered repeatedly by different profiles/tags. We must not delete the whole conference/year
+    # directory here, otherwise new entries would overwrite the body pages and figure assets already generated for older entries.
     return None
 
 
@@ -636,9 +638,11 @@ def build_conference_block(
     conference, years = parse_conference_result_name(result_path)
     marker = build_conference_marker(conference, years)
     label = build_conference_label(conference, years)
+    papers_raw = data.get("papers")
+    papers_list = papers_raw if isinstance(papers_raw, list) else []
     papers = {
         norm_text(item.get("id")): item
-        for item in (data.get("papers") if isinstance(data.get("papers"), list) else [])
+        for item in papers_list
         if isinstance(item, dict) and norm_text(item.get("id"))
     }
     ranked = collect_ranked_ids(data, limit, min_score=display_min_score)
@@ -945,7 +949,7 @@ def update_sidebar_with_conference(
 def choose_result_file(paths: Iterable[Path]) -> Path:
     existing = [p for p in paths if p and p.exists()]
     if not existing:
-        raise FileNotFoundError("没有可用的会议结果文件。")
+        raise FileNotFoundError("No usable conference result file is available.")
     priority = {".llm.json": 0, ".rerank.json": 1, ".rrf.json": 2}
     return sorted(
         existing,
@@ -954,8 +958,8 @@ def choose_result_file(paths: Iterable[Path]) -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="更新 docs/_sidebar.md 的 Conference Papers 分组。")
-    parser.add_argument("--result", action="append", default=[], help="会议结果 JSON，优先 llm，其次 rerank/rrf。可重复传入。")
+    parser = argparse.ArgumentParser(description="Update the Conference Papers group of docs/_sidebar.md.")
+    parser.add_argument("--result", action="append", default=[], help="Conference result JSON; prefers llm, then rerank/rrf. May be passed multiple times.")
     parser.add_argument("--sidebar", default=str(DEFAULT_SIDEBAR_PATH))
     parser.add_argument("--docs-dir", default=str(DEFAULT_DOCS_DIR))
     parser.add_argument("--limit", type=int, default=80)
@@ -963,13 +967,13 @@ def main() -> None:
         "--deep-min-score",
         type=float,
         default=CONFERENCE_DEEP_MIN_SCORE,
-        help="兼容旧参数；会议链路现在会为所有展示论文生成精读全文和图表。",
+        help="Legacy parameter kept for compatibility; the conference pipeline now generates full deep-read text and figures for every displayed paper.",
     )
     parser.add_argument(
         "--display-min-score",
         type=float,
         default=CONFERENCE_DISPLAY_MIN_SCORE,
-        help="会议论文进入 sidebar 和 docs 的最低 LLM 分数；默认只展示 4 分及以上。",
+        help="Minimum LLM score for a conference paper to enter the sidebar and docs; by default only papers scoring 4 or above are shown.",
     )
     args = parser.parse_args()
 

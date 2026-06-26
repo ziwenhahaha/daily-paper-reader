@@ -1,15 +1,15 @@
-// 私人研讨区模块：负责聊天 UI、LLM 配置与本地记忆（IndexedDB）
+// Private discussion panel module: handles chat UI, LLM configuration, and local memory (IndexedDB)
 window.PrivateDiscussionChat = (function () {
-  const CHAT_HISTORY_KEY = 'dpr_chat_history_v1'; // 仅用于旧版本迁移
+  const CHAT_HISTORY_KEY = 'dpr_chat_history_v1'; // used only for legacy migration
   const CHAT_DB_NAME = 'dpr_chat_db_v1';
   const CHAT_STORE_NAME = 'paper_chats';
   const CHAT_MODEL_PREF_KEY = 'dpr_chat_model_preference_v1';
 
-  // 最近提问记录（仅本机 localStorage，从现在开始记录，不回溯历史聊天内容）
+  // Recent question log (local localStorage only, recorded from now on — no backfill of prior chat history)
   const QUESTION_RECENT_KEY = 'dpr_chat_recent_questions_v1';
   const QUESTION_PINNED_KEY = 'dpr_chat_pinned_questions_v1';
-  const MAX_RECENT_QUESTIONS = 10; // 展示与保存都只保留最近 10 个（用户诉求）
-  const MAX_PINNED_QUESTIONS = 50; // 防止无限增长
+  const MAX_RECENT_QUESTIONS = 10; // keep only the 10 most recent questions for both display and storage (per user request)
+  const MAX_PINNED_QUESTIONS = 50; // cap to prevent unbounded growth
 
   const resizeChatInput = (input) => {
     if (!input) return;
@@ -21,7 +21,7 @@ window.PrivateDiscussionChat = (function () {
     input.style.overflowY = input.scrollHeight > maxHeight ? 'auto' : 'hidden';
   };
 
-  // 读取用户偏好的 Chat 模型名称（跨页面生效）
+  // Load the user's preferred Chat model name (persisted across pages)
   const loadPreferredModelName = () => {
     try {
       if (!window.localStorage) return '';
@@ -32,7 +32,7 @@ window.PrivateDiscussionChat = (function () {
     }
   };
 
-  // 保存用户偏好的 Chat 模型名称
+  // Save the user's preferred Chat model name
   const savePreferredModelName = (name) => {
     try {
       if (!window.localStorage) return;
@@ -44,7 +44,7 @@ window.PrivateDiscussionChat = (function () {
     }
   };
 
-  // 从 secret.private 解密结果中生成可用的 Chat 模型列表
+  // Build the list of available Chat models from the decrypted secret.private result
   const getChatLLMConfig = () => {
     const secret = window.decoded_secret_private || {};
     const utils = window.DPRLLMConfigUtils || {};
@@ -125,7 +125,7 @@ window.PrivateDiscussionChat = (function () {
         };
         req.onsuccess = (event) => {
           const db = event.target.result;
-          // 迁移旧版 localStorage 聊天记录
+          // Migrate legacy localStorage chat history
           try {
             if (window.localStorage) {
               const raw = window.localStorage.getItem(CHAT_HISTORY_KEY);
@@ -221,13 +221,13 @@ window.PrivateDiscussionChat = (function () {
     return `
       <div id="paper-chat-container">
         <div id="chat-history">
-            <div style="text-align:center; color:#999">暂无讨论，输入你的想法开始对话（仅保存在本机）</div>
+            <div style="text-align:center; color:#999">No discussion yet. Share your thoughts to start a conversation (stored locally only).</div>
         </div>
         <div class="input-area">
-          <textarea id="user-input" rows="3" placeholder="针对这篇论文提问，仅自己可见..."></textarea>
+          <textarea id="user-input" rows="3" placeholder="Ask a question about this paper (visible to you only)..."></textarea>
           <div class="chat-input-actions">
-            <button id="chat-questions-toggle-btn" class="chat-questions-toggle-btn" type="button" title="最近提问">🕘</button>
-            <button id="send-btn">发送</button>
+            <button id="chat-questions-toggle-btn" class="chat-questions-toggle-btn" type="button" title="Recent questions">🕘</button>
+            <button id="send-btn">Send</button>
           </div>
         </div>
         <div id="chat-questions-panel" class="chat-questions-panel" style="display:none"></div>
@@ -235,30 +235,30 @@ window.PrivateDiscussionChat = (function () {
           <div class="chat-footer-controls">
             <button id="chat-sidebar-toggle-btn" class="chat-footer-icon-btn" type="button">☰</button>
             <button id="chat-settings-toggle-btn" class="chat-footer-icon-btn" type="button">⚙️</button>
-            <button id="chat-quick-run-btn" class="chat-footer-icon-btn" type="button" title="快速抓取">🚀</button>
+            <button id="chat-quick-run-btn" class="chat-footer-icon-btn" type="button" title="Quick fetch">🚀</button>
             <div id="chat-quick-run-modal" class="chat-quick-run-modal" aria-hidden="true">
               <div class="chat-quick-run-modal-panel">
                 <div class="chat-quick-run-modal-head">
-                  <div class="chat-quick-run-title">快速抓取</div>
-                  <button id="chat-quick-run-close-btn" class="chat-quick-run-close-btn" type="button" aria-label="关闭">✕</button>
+                  <div class="chat-quick-run-title">Quick fetch</div>
+                  <button id="chat-quick-run-close-btn" class="chat-quick-run-close-btn" type="button" aria-label="Close">✕</button>
                 </div>
-                <button id="chat-quick-run-10d-btn" class="chat-quick-run-item" type="button">立即搜寻十天内论文</button>
-                <button id="chat-quick-run-30d-btn" class="chat-quick-run-item" type="button">立即搜寻三十天内论文</button>
+                <button id="chat-quick-run-10d-btn" class="chat-quick-run-item" type="button">Search papers from the past 10 days</button>
+                <button id="chat-quick-run-30d-btn" class="chat-quick-run-item" type="button">Search papers from the past 30 days</button>
                 <div class="chat-quick-run-divider" aria-hidden="true"></div>
-                <div class="chat-quick-run-title">会议论文（暂未接入）</div>
+                <div class="chat-quick-run-title">Conference papers (not yet connected)</div>
                 <div class="chat-quick-run-row">
-                  <label for="chat-quick-run-year-select">年份</label>
+                  <label for="chat-quick-run-year-select">Year</label>
                   <select id="chat-quick-run-year-select">
-                    <option value="">选择年份</option>
+                    <option value="">Select year</option>
                   </select>
                 </div>
                 <div class="chat-quick-run-row">
-                  <label for="chat-quick-run-conference-select">会议名</label>
+                  <label for="chat-quick-run-conference-select">Venue</label>
                   <select id="chat-quick-run-conference-select">
-                    <option value="">选择会议名</option>
+                    <option value="">Select venue</option>
                   </select>
                 </div>
-                <button id="chat-quick-run-conference-run-btn" class="chat-quick-run-run-btn" type="button">运行</button>
+                <button id="chat-quick-run-conference-run-btn" class="chat-quick-run-run-btn" type="button">Run</button>
                 <div id="chat-quick-run-conference-msg" class="chat-quick-run-msg"></div>
               </div>
             </div>
@@ -272,14 +272,14 @@ window.PrivateDiscussionChat = (function () {
               aria-expanded="false"
             >
               <span class="chat-model-picker-kicker">Model</span>
-              <span id="chat-model-picker-label" class="chat-model-picker-label">选择模型</span>
+              <span id="chat-model-picker-label" class="chat-model-picker-label">Select model</span>
               <span class="chat-model-picker-chevron" aria-hidden="true">⌄</span>
             </button>
             <div
               id="chat-model-picker-menu"
               class="chat-model-picker-menu"
               role="listbox"
-              aria-label="选择 Chat 模型"
+              aria-label="Select Chat model"
             ></div>
             <select
               id="chat-llm-model-select"
@@ -341,7 +341,7 @@ window.PrivateDiscussionChat = (function () {
   const runQuickFetch = (days, statusEl, showToast = () => {}) => {
     if (!window.DPRWorkflowRunner || typeof window.DPRWorkflowRunner.runQuickFetchByDays !== 'function') {
       if (statusEl) {
-        statusEl.textContent = '工作流触发器未加载到当前页面。';
+        statusEl.textContent = 'Workflow runner is not loaded on the current page.';
         statusEl.style.color = '#c00';
       }
       return;
@@ -355,17 +355,17 @@ window.PrivateDiscussionChat = (function () {
     const conf = confSelectEl ? String(confSelectEl.value || '').trim() : '';
     if (!year || !conf) {
       if (msgEl) {
-        msgEl.textContent = '请先选择年份和会议名。';
+        msgEl.textContent = 'Please select a year and venue first.';
         msgEl.style.color = '#c00';
       }
       return;
     }
     if (msgEl) {
-      msgEl.textContent = `${year} ${conf} 的会议论文抓取功能暂未接入。`;
+      msgEl.textContent = `Conference paper ingestion for ${year} ${conf} is not yet connected.`;
       msgEl.style.color = '#c90';
     }
     if (statusEl) {
-      statusEl.textContent = `${year} ${conf} 的会议论文抓取入口先保留。`;
+      statusEl.textContent = `The ${year} ${conf} conference paper entry point is reserved for future use.`;
       statusEl.style.color = '#c90';
     }
   };
@@ -398,7 +398,7 @@ window.PrivateDiscussionChat = (function () {
       .replace(/\s+/g, ' ')
       .trim();
     if (!s) return '';
-    // 防止异常超长内容把 UI 撑爆
+    // Guard against abnormally long content breaking the UI layout
     if (s.length > 500) return s.slice(0, 500);
     return s;
   };
@@ -418,7 +418,7 @@ window.PrivateDiscussionChat = (function () {
     if (!q) return;
 
     const pinned = getPinnedQuestions();
-    // 已钉住的就不再重复进入 recent（避免重复）
+    // Already-pinned questions should not appear again in recent (avoid duplicates)
     if (pinned.includes(q)) return;
 
     const recent = getRecentQuestions().filter((x) => x !== q);
@@ -439,7 +439,7 @@ window.PrivateDiscussionChat = (function () {
 
     pinned.unshift(q);
     setPinnedQuestions(pinned);
-    // 钉住后从 recent 移除（保证“置顶 + recent 仍展示 10 个其它问题”）
+    // After pinning, remove from recent (ensures pinned + recent still shows 10 other questions)
     const recent = getRecentQuestions().filter((x) => x !== q);
     setRecentQuestions(recent);
   };
@@ -492,13 +492,13 @@ window.PrivateDiscussionChat = (function () {
 
     const title = document.createElement('div');
     title.className = 'chat-q-title';
-    title.textContent = '最近提问';
+    title.textContent = 'Recent questions';
 
     const closeBtn = document.createElement('button');
     closeBtn.id = 'chat-q-close';
     closeBtn.className = 'chat-q-close';
     closeBtn.type = 'button';
-    closeBtn.setAttribute('aria-label', '关闭');
+    closeBtn.setAttribute('aria-label', 'Close');
     closeBtn.textContent = '✕';
 
     header.appendChild(title);
@@ -521,8 +521,8 @@ window.PrivateDiscussionChat = (function () {
         const empty = document.createElement('div');
         empty.className = 'chat-q-empty';
         empty.textContent = pinnedFlag
-          ? '暂无钉住的问题'
-          : '暂无最近问题（从现在开始记录）';
+          ? 'No pinned questions yet.'
+          : 'No recent questions yet (they will appear here as you chat).';
         list.appendChild(empty);
       } else {
         items.forEach((q) => {
@@ -533,13 +533,13 @@ window.PrivateDiscussionChat = (function () {
           const useBtn = document.createElement('button');
           useBtn.className = 'chat-q-use';
           useBtn.type = 'button';
-          useBtn.title = '填入输入框';
+          useBtn.title = 'Insert into input';
           useBtn.textContent = q;
 
           const pinBtn = document.createElement('button');
           pinBtn.className = 'chat-q-pin';
           pinBtn.type = 'button';
-          pinBtn.title = pinnedFlag ? '取消钉住' : '钉住';
+          pinBtn.title = pinnedFlag ? 'Unpin' : 'Pin';
           pinBtn.textContent = pinnedFlag ? '📌' : '📍';
 
           item.appendChild(useBtn);
@@ -552,8 +552,8 @@ window.PrivateDiscussionChat = (function () {
       panel.appendChild(sec);
     };
 
-    buildSection('📌 已钉住', pinned, true);
-    buildSection('🕘 最近 10 条', recent.slice(0, MAX_RECENT_QUESTIONS), false);
+    buildSection('📌 Pinned questions', pinned, true);
+    buildSection('🕘 Last 10', recent.slice(0, MAX_RECENT_QUESTIONS), false);
   };
 
   const openQuestionsPanel = (root) => {
@@ -588,7 +588,7 @@ window.PrivateDiscussionChat = (function () {
       });
     }
 
-    // 面板内部事件委托
+    // Event delegation for panel internals
     if (!root._boundQPanelClick) {
       root._boundQPanelClick = true;
       root.addEventListener('click', (e) => {
@@ -628,7 +628,7 @@ window.PrivateDiscussionChat = (function () {
             resizeChatInput(input);
             input.focus();
           }
-          // 选择某一项后自动关闭面板
+          // Close the panel automatically after selecting an item
           closeQuestionsPanel(root);
           e.preventDefault();
           e.stopPropagation();
@@ -640,18 +640,18 @@ window.PrivateDiscussionChat = (function () {
     if (questionsGlobalBound) return;
     questionsGlobalBound = true;
 
-    // 面板外关闭：用 pointerdown（鼠标左键按下就关闭；触摸也会关闭）
+    // Close on outside click: use pointerdown (closes on left mouse button press or touch)
     document.addEventListener(
       'pointerdown',
       (e) => {
-        // 可能存在重复渲染导致的多个 chat 容器，这里对“所有打开的面板”做统一处理
+        // Multiple chat containers may exist due to re-renders; handle all open panels uniformly
         const panels = Array.from(
           document.querySelectorAll('#paper-chat-container .chat-questions-panel'),
         );
         const openPanels = panels.filter((p) => p && p.style.display !== 'none');
         if (!openPanels.length) return;
 
-        // 仅鼠标左键触发（右键/中键不处理）
+        // Only left mouse button triggers this (ignore right/middle clicks)
         if (e && e.pointerType === 'mouse' && typeof e.button === 'number') {
           if (e.button !== 0) return;
         }
@@ -673,7 +673,7 @@ window.PrivateDiscussionChat = (function () {
       true,
     );
 
-    // ESC 关闭
+    // ESC to close
     document.addEventListener('keydown', (e) => {
       if (e && e.key === 'Escape') closeQuestionsPanel(null);
     });
@@ -686,7 +686,7 @@ window.PrivateDiscussionChat = (function () {
     const data = await loadChatHistory(paperId);
     if (!data || !data.length) {
       historyDiv.innerHTML =
-        '<div style="text-align:center; color:#999">暂无讨论，输入上方问题开始提问。</div>';
+        '<div style="text-align:center; color:#999">No discussion yet. Type a question above to get started.</div>';
       return;
     }
 
@@ -702,7 +702,7 @@ window.PrivateDiscussionChat = (function () {
       const isUser = role === 'user';
 
       if (!isThinking) {
-        // 用户消息：时间右对齐；AI 回答：不显示时间（只在思考过程显示）
+        // User messages: timestamp right-aligned; AI replies: no timestamp (only shown for thinking traces)
         if (isUser && msg.time) {
           const timeSpan = document.createElement('span');
           timeSpan.className = 'msg-time msg-time-user';
@@ -731,7 +731,7 @@ window.PrivateDiscussionChat = (function () {
         return;
       }
 
-      // 思考过程：时间显示在上方，左对齐
+      // Thinking trace: timestamp displayed above, left-aligned
       if (msg.time) {
         const timeSpan = document.createElement('span');
         timeSpan.className = 'msg-time msg-time-ai';
@@ -745,10 +745,10 @@ window.PrivateDiscussionChat = (function () {
       const thinkingHeader = document.createElement('div');
       thinkingHeader.className = 'thinking-history-header';
       const titleSpan = document.createElement('span');
-      titleSpan.textContent = '思考过程';
+      titleSpan.textContent = 'Thinking trace';
       const toggleBtn = document.createElement('button');
       toggleBtn.className = 'thinking-history-toggle';
-      toggleBtn.textContent = '展开';
+      toggleBtn.textContent = 'Expand';
       thinkingHeader.appendChild(titleSpan);
       thinkingHeader.appendChild(toggleBtn);
 
@@ -770,7 +770,7 @@ window.PrivateDiscussionChat = (function () {
 
       toggleBtn.addEventListener('click', () => {
         const collapsed = thinkingContent.classList.toggle('thinking-collapsed');
-        toggleBtn.textContent = collapsed ? '展开' : '折叠';
+        toggleBtn.textContent = collapsed ? 'Expand' : 'Collapse';
       });
 
       item.appendChild(thinkingContainer);
@@ -779,18 +779,18 @@ window.PrivateDiscussionChat = (function () {
 
     historyDiv.scrollTop = historyDiv.scrollHeight;
 
-    // 同时更新问题导航
+    // Also update the question navigation
     ensureQuestionNavContainer();
     renderQuestionNav(paperId);
 
-    // 聊天历史渲染完成后，通知 Zotero 元数据刷新一次（包含最新对话）
+    // After chat history is rendered, notify Zotero metadata for a refresh (including the latest conversation)
     try {
       if (window.DPRZoteroMeta && window.DPRZoteroMeta.updateFromPage) {
-        // vm.route.file 在前端不可见，这里只传 paperId，后端函数会使用当前路由
+        // vm.route.file is not visible on the frontend; only paperId is passed here; the backend function uses the current route
         window.DPRZoteroMeta.updateFromPage(paperId);
       }
     } catch {
-      // 忽略刷新失败
+      // Ignore refresh failures
     }
   };
 
@@ -799,19 +799,19 @@ window.PrivateDiscussionChat = (function () {
   const renderQuestionNav = () => {};
 
   const sendMessage = async (paperId) => {
-    // 游客模式或尚未解锁密钥时，禁止直接调用大模型
+    // Block LLM calls when in guest mode or when the secret key has not been unlocked
     if (window.DPR_ACCESS_MODE === 'guest' || window.DPR_ACCESS_MODE === 'locked') {
       const statusEl = document.getElementById('chat-status');
       if (statusEl) {
         statusEl.textContent =
-          '当前为游客模式或尚未解锁密钥，无法直接与大模型对话。';
+          'Currently in guest mode or the secret key is not unlocked. LLM chat is unavailable.';
         statusEl.style.color = '#c00';
       }
       const historyDiv = document.getElementById('chat-history');
       if (historyDiv && !historyDiv._guestHintShown) {
         historyDiv._guestHintShown = true;
         historyDiv.innerHTML =
-          '<div style="text-align:center; color:#999; padding:8px 0;">当前为游客模式，解锁密钥后可启用大模型对话。</div>';
+          '<div style="text-align:center; color:#999; padding:8px 0;">Currently in guest mode. Unlock the secret key to enable LLM chat.</div>';
       }
       return;
     }
@@ -821,7 +821,7 @@ window.PrivateDiscussionChat = (function () {
 
     if (!input || !btn) {
       if (statusEl) {
-        statusEl.textContent = '聊天输入框未就绪，请刷新页面重试。';
+        statusEl.textContent = 'Chat input is not ready. Please refresh the page and try again.';
         statusEl.style.color = '#c00';
       }
       return;
@@ -832,13 +832,13 @@ window.PrivateDiscussionChat = (function () {
 
     if (!question) {
       if (statusEl) {
-        statusEl.textContent = '请输入问题后再发送。';
+        statusEl.textContent = 'Please enter a question before sending.';
         statusEl.style.color = '#c00';
       }
       return;
     }
 
-    // 优先使用与后端一致的 .txt 抽取全文作为上下文（不截断）
+    // Prefer the .txt full-text extraction (consistent with the backend) as context — no truncation
     if (paperId) {
       try {
         const txtUrl = `docs/${paperId}.txt`;
@@ -868,7 +868,7 @@ window.PrivateDiscussionChat = (function () {
       }
     }
 
-    // 回退策略：如果 .txt 不存在，就用页面正文纯文本
+    // Fallback: if .txt is unavailable, use the page body plain text
     if (!paperContent) {
       paperContent =
         (document.querySelector('.markdown-section') || {}).innerText ||
@@ -877,20 +877,20 @@ window.PrivateDiscussionChat = (function () {
 
     if (!question) return;
 
-    // 从现在开始记录“最近提问”（只记录用户输入；不回溯旧聊天）
+    // Record “recent questions” from now on (only user inputs; no backfill of old chats)
     recordRecentQuestion(question);
-    // 如果面板开着，顺手刷新一下列表（体验更顺滑）
+    // If the panel is open, refresh the list in place for a smoother experience
     if (isQuestionsPanelOpen(null)) {
       renderQuestionsPanel(null);
     }
 
     input.disabled = true;
     btn.disabled = true;
-    btn.innerText = '思考中...';
+    btn.innerText = 'Thinking...';
 
     const historyDiv = document.getElementById('chat-history');
     const nowStr = new Date().toLocaleString();
-    // 立刻用“气泡样式”渲染用户消息（避免等刷新后才套上 msg-content-user）
+    // Immediately render the user message with bubble styling (avoid waiting for a full re-render to apply msg-content-user)
     try {
       const userItem = document.createElement('div');
       userItem.className = 'msg-item';
@@ -907,7 +907,7 @@ window.PrivateDiscussionChat = (function () {
       userItem.appendChild(content);
       historyDiv.appendChild(userItem);
     } catch {
-      // 回退：至少不要把用户输入当作 HTML 注入
+      // Fallback: at minimum, do not inject user input as raw HTML
       const userItem = document.createElement('div');
       userItem.className = 'msg-item';
       const content = document.createElement('div');
@@ -931,8 +931,8 @@ window.PrivateDiscussionChat = (function () {
         </div>
         <div class="thinking-container" style="margin-top:8px; border-left:3px solid #ddd; padding-left:8px; font-size:0.85rem; color:#666; display:none;">
           <div style="display:flex; align-items:center; justify-content:space-between;">
-            <span>思考过程</span>
-            <button class="thinking-toggle" style="margin-left:8px; font-size:0.75rem; padding:2px 6px;">展开</button>
+            <span>Thinking trace</span>
+            <button class="thinking-toggle" style="margin-left:8px; font-size:0.75rem; padding:2px 6px;">Expand</button>
           </div>
           <div class="thinking-content" style="white-space:pre-wrap; margin-top:4px;"></div>
         </div>
@@ -940,7 +940,7 @@ window.PrivateDiscussionChat = (function () {
     `;
     historyDiv.appendChild(aiItem);
 
-    // 判断用户是否在页面底部（允许 50px 误差）
+    // Check whether the user is near the bottom of the page (within a 50px threshold)
     let userAtBottom = true;
     const checkIfAtBottom = () => {
       const threshold = 50;
@@ -951,13 +951,13 @@ window.PrivateDiscussionChat = (function () {
     };
     userAtBottom = checkIfAtBottom();
 
-    // 监听用户滚动，更新 userAtBottom 状态
+    // Listen for user scroll events to keep userAtBottom in sync
     const onUserScroll = () => {
       userAtBottom = checkIfAtBottom();
     };
     window.addEventListener('scroll', onUserScroll);
 
-    // 自动滚动到底部（仅当用户本来就在底部时）
+    // Auto-scroll to bottom only when the user was already at the bottom
     const scrollToBottomIfNeeded = () => {
       if (userAtBottom) {
         window.scrollTo({
@@ -967,7 +967,7 @@ window.PrivateDiscussionChat = (function () {
       }
     };
 
-    // 发送消息后立即滚动到底部
+    // Scroll to bottom immediately after sending the message
     window.scrollTo({
       top: document.documentElement.scrollHeight,
       behavior: 'smooth'
@@ -980,7 +980,7 @@ window.PrivateDiscussionChat = (function () {
 
     const history = await loadChatHistory(paperId);
 
-    // 调试：打印历史消息前 50 个字符
+    // Debug: log the first 50 characters of each history message
     try {
       history.forEach((m, idx) => {
         const role = m.role || 'unknown';
@@ -992,7 +992,7 @@ window.PrivateDiscussionChat = (function () {
       const qSnippet = question.slice(0, 50).replace(/\s+/g, ' ');
       console.log(`[DPR DEBUG] current_question: '${qSnippet}'`);
     } catch {
-      // 忽略调试输出错误
+      // Ignore debug output errors
     }
     history.push({
       role: 'user',
@@ -1001,10 +1001,10 @@ window.PrivateDiscussionChat = (function () {
     });
     await saveChatHistory(paperId, history);
 
-    // 更新问题导航（新增了用户提问）
+    // Update question navigation (a new user question was added)
     renderQuestionNav(paperId);
 
-    // 给刚添加的用户消息设置 ID（用于问题导航定位）
+    // Set an ID on the newly added user message (for question navigation anchoring)
     const userMessages = historyDiv.querySelectorAll('.msg-content-user');
     if (userMessages.length > 0) {
       const lastUserItem = userMessages[userMessages.length - 1].closest('.msg-item');
@@ -1014,13 +1014,13 @@ window.PrivateDiscussionChat = (function () {
       }
     }
 
-    // 用户发起提问后，立即刷新一次 Zotero 摘要（包含最新提问）
+    // After the user submits a question, immediately refresh Zotero metadata (including the latest question)
     try {
       if (window.DPRZoteroMeta && window.DPRZoteroMeta.updateFromPage) {
         window.DPRZoteroMeta.updateFromPage(paperId);
       }
     } catch {
-      // 忽略刷新失败
+      // Ignore refresh failures
     }
 
     const chatModels = getChatLLMConfig();
@@ -1028,19 +1028,19 @@ window.PrivateDiscussionChat = (function () {
 
     if (!chatModels.length) {
       aiAnswerDiv.textContent =
-        '当前未在密钥配置中找到可用的 Chat 模型，请先完成首页「新配置指引」。';
+        'No usable Chat model found in the secret configuration. Please complete the "New Setup Guide" on the home page first.';
       if (statusEl) {
         statusEl.textContent =
-          '未检测到可用 Chat 模型，请检查密钥配置。';
+          'No usable Chat model detected. Please check the secret configuration.';
         statusEl.style.color = '#c00';
       }
       input.disabled = false;
       btn.disabled = false;
-      btn.innerText = '发送';
+      btn.innerText = 'Send';
       return;
     }
 
-    // 选择默认模型：优先下拉框当前值，否则取列表第一项
+    // Select the default model: prefer the current dropdown value, fall back to the first available model
     let selectedModelName = '';
     if (modelSelect && modelSelect.value) {
       selectedModelName = modelSelect.value;
@@ -1057,27 +1057,27 @@ window.PrivateDiscussionChat = (function () {
 
     if (!apiKey) {
       aiAnswerDiv.textContent =
-        '未检测到可用的 Chat LLM API Key，请检查密钥配置。';
+        'No usable Chat LLM API Key detected. Please check the secret configuration.';
       if (statusEl) {
-        statusEl.textContent = '未配置 Chat LLM API Key。';
+        statusEl.textContent = 'No Chat LLM API Key configured.';
         statusEl.style.color = '#c00';
       }
       input.disabled = false;
       btn.disabled = false;
-      btn.innerText = '发送';
+      btn.innerText = 'Send';
       return;
     }
 
     if (!model) {
       aiAnswerDiv.textContent =
-        '未指定 Chat 模型，请检查密钥配置。';
+        'No Chat model specified. Please check the secret configuration.';
       if (statusEl) {
-        statusEl.textContent = '未配置 Chat 模型。';
+        statusEl.textContent = 'No Chat model configured.';
         statusEl.style.color = '#c00';
       }
       input.disabled = false;
       btn.disabled = false;
-      btn.innerText = '发送';
+      btn.innerText = 'Send';
       return;
     }
 
@@ -1099,28 +1099,28 @@ window.PrivateDiscussionChat = (function () {
     })();
 
     if (!endpoint) {
-      aiAnswerDiv.textContent = '当前模型配置缺少 baseUrl。';
+      aiAnswerDiv.textContent = 'The current model configuration is missing a baseUrl.';
       if (statusEl) {
-        statusEl.textContent = 'Chat 模型配置缺少 baseUrl，请在配置页修正。';
+        statusEl.textContent = 'Chat model configuration is missing baseUrl. Please fix it in the settings page.';
         statusEl.style.color = '#c00';
       }
       input.disabled = false;
       btn.disabled = false;
-      btn.innerText = '发送';
+      btn.innerText = 'Send';
       return;
     }
 
-    // 记录当前使用的模型为用户偏好，供后续页面复用
+    // Save the currently used model as the user preference for reuse across pages
     savePreferredModelName(model);
 
     if (statusEl) {
-      statusEl.textContent = `正在调用 Chat 模型 ${model}...`;
+      statusEl.textContent = `Calling Chat model ${model}...`;
       statusEl.style.color = '#666';
     }
 
     let thinkingBuffer = '';
     let answerBuffer = '';
-    // 默认以折叠模式展示思考过程，仅显示前若干行
+    // Display the thinking trace collapsed by default, showing only the first few lines
     let thinkingCollapsed = true;
     let renderTimer = null;
 
@@ -1138,7 +1138,7 @@ window.PrivateDiscussionChat = (function () {
         if (lines.length > maxLines) {
           toRender =
             lines.slice(0, maxLines).join('\n') +
-            '\n...（已折叠，点击展开查看更多思考过程）';
+            '\n...(collapsed — click Expand to see more of the thinking trace)';
         }
       }
 
@@ -1154,7 +1154,7 @@ window.PrivateDiscussionChat = (function () {
 
     const applyAnswerView = () => {
       if (!aiAnswerDiv) return;
-      const content = answerBuffer || '（空响应）';
+      const content = answerBuffer || '(empty response)';
       if (renderMarkdownWithTables) {
         aiAnswerDiv.innerHTML = renderMarkdownWithTables(content);
       } else {
@@ -1168,7 +1168,7 @@ window.PrivateDiscussionChat = (function () {
     if (toggleBtn && thinkingContainer) {
       toggleBtn.addEventListener('click', () => {
         thinkingCollapsed = !thinkingCollapsed;
-        toggleBtn.textContent = thinkingCollapsed ? '展开' : '折叠';
+        toggleBtn.textContent = thinkingCollapsed ? 'Expand' : 'Collapse';
         applyThinkingView();
       });
     }
@@ -1193,13 +1193,13 @@ window.PrivateDiscussionChat = (function () {
       messages.push({
         role: 'system',
         content:
-          '你是学术讨论助手，负责围绕当前论文内容进行深入分析与讨论。请使用中文回答，并使用 Markdown + LaTeX 表达公式。',
+          'You are an academic discussion assistant. Your role is to conduct in-depth analysis and discussion of the current paper. Please respond in English and use Markdown + LaTeX for mathematical expressions.',
       });
-      // 使用全文上下文（优先 .txt 抽取结果），不再做 8000 字截断
+      // Use full-text context (preferring .txt extraction); no 8000-character truncation
       if (paperContent) {
         messages.push({
           role: 'user',
-          content: `下面是当前论文的完整纯文本内容（可能包含自动抽取噪声，仅供参考）：\n\n${paperContent}`,
+          content: `Below is the full plain-text content of the current paper (may contain auto-extraction noise; treat as reference only):\n\n${paperContent}`,
         });
       }
 
@@ -1283,15 +1283,15 @@ window.PrivateDiscussionChat = (function () {
         }
         const preview = (errorText || '').slice(0, 300).replace(/\s+/g, ' ');
         console.error(
-          '[DPR CHAT] Chat API 调用失败：',
+          '[DPR CHAT] Chat API request failed:',
           `HTTP ${resp.status} ${resp.statusText || ''}`,
-          preview ? `| 响应内容片段: ${preview}` : '',
+          preview ? `| Response preview: ${preview}` : '',
         );
-        aiAnswerDiv.textContent = `请求失败: HTTP ${resp.status} ${
+        aiAnswerDiv.textContent = `Request failed: HTTP ${resp.status} ${
           resp.statusText || ''
         }${preview ? ` - ${preview}` : ''}`;
         if (statusEl) {
-          statusEl.textContent = `调用 Chat 模型失败: HTTP ${resp.status} ${
+          statusEl.textContent = `Chat model call failed: HTTP ${resp.status} ${
             resp.statusText || ''
           }${preview ? ` - ${preview}` : ''}`;
           statusEl.style.color = '#c00';
@@ -1300,7 +1300,7 @@ window.PrivateDiscussionChat = (function () {
       }
 
       if (!resp.body) {
-        // 回退：如果不支持流，则按一次性响应处理
+        // Fallback: if streaming is not supported, handle as a one-shot response
         const data = await resp.json();
         const answer =
           data &&
@@ -1309,7 +1309,7 @@ window.PrivateDiscussionChat = (function () {
           data.choices[0].message &&
           data.choices[0].message.content
             ? data.choices[0].message.content
-            : '（模型未返回内容）';
+            : '(model returned no content)';
         answerBuffer = answer;
         scheduleRender();
       } else {
@@ -1358,7 +1358,7 @@ window.PrivateDiscussionChat = (function () {
         }
       }
 
-      // 回复完成，移除思考动画及其容器
+      // Reply complete — remove the thinking animation and its container
       const responseHeader = aiItem.querySelector('.ai-response-header');
       if (responseHeader) {
         responseHeader.remove();
@@ -1375,22 +1375,22 @@ window.PrivateDiscussionChat = (function () {
       }
       updated.push({
         role: 'ai',
-        content: answerBuffer || '（模型未返回内容）',
+        content: answerBuffer || '(model returned no content)',
       time: nowStrAnswer,
     });
     await saveChatHistory(paperId, updated);
 
-      // 新一轮对话完成后，再次刷新 Zotero 元数据
+      // After each conversation round completes, refresh Zotero metadata again
       try {
         if (window.DPRZoteroMeta && window.DPRZoteroMeta.updateFromPage) {
           window.DPRZoteroMeta.updateFromPage(paperId);
         }
       } catch {
-        // 忽略刷新失败
+        // Ignore refresh failures
       }
 
       if (statusEl) {
-        statusEl.textContent = `已使用模型 ${model}`;
+        statusEl.textContent = `Model used: ${model}`;
         statusEl.style.color = '#4caf50';
       }
 
@@ -1405,22 +1405,22 @@ window.PrivateDiscussionChat = (function () {
           /timed out|timed_out/i.test((e.message || '')));
       if (isTimeout) {
         aiAnswerDiv.textContent =
-          '请求超时（120 秒），请稍后重试或检查网络后再试。';
+          'Request timed out (120 s). Please try again later or check your network connection.';
         if (statusEl) {
-          statusEl.textContent = '聊天请求超时，请检查网络。';
+          statusEl.textContent = 'Chat request timed out. Please check your network.';
           statusEl.style.color = '#c00';
         }
       } else if (e && e.name === 'TypeError') {
-        aiAnswerDiv.textContent = '网络连接异常（可能为 CORS 或跨域问题）。';
+        aiAnswerDiv.textContent = 'Network connection error (possibly a CORS or cross-origin issue).';
         if (statusEl) {
           statusEl.textContent =
-            '请求失败：网络连接异常，请确认模型端点可访问（含 CORS）及代理设置。';
+            'Request failed: network error. Please verify the model endpoint is reachable (including CORS) and check your proxy settings.';
           statusEl.style.color = '#c00';
         }
       } else {
-        aiAnswerDiv.textContent = '发送失败，请检查网络或模型配置。';
+        aiAnswerDiv.textContent = 'Failed to send. Please check your network or model configuration.';
         if (statusEl) {
-          statusEl.textContent = '发送失败，请检查网络或模型配置。';
+          statusEl.textContent = 'Failed to send. Please check your network or model configuration.';
           statusEl.style.color = '#c00';
         }
       }
@@ -1428,7 +1428,7 @@ window.PrivateDiscussionChat = (function () {
         statusEl.style.color = '#c00';
       }
     } finally {
-      // 确保思考动画及其容器被移除
+      // Ensure the thinking animation and its container are removed
       const responseHeader = aiItem.querySelector('.ai-response-header');
       if (responseHeader) {
         responseHeader.remove();
@@ -1436,7 +1436,7 @@ window.PrivateDiscussionChat = (function () {
       window.removeEventListener('scroll', onUserScroll);
       input.disabled = false;
       btn.disabled = false;
-      btn.innerText = '发送';
+      btn.innerText = 'Send';
       input.focus();
     }
   };
@@ -1473,10 +1473,10 @@ window.PrivateDiscussionChat = (function () {
     const current = (select.value || cleanNames[0] || '').trim();
     const disabled = select.disabled || !cleanNames.length;
 
-    label.textContent = current || '选择模型';
+    label.textContent = current || 'Select model';
     picker.classList.toggle('is-disabled', disabled);
     button.disabled = disabled;
-    button.title = disabled ? select.title || '暂无可用 Chat 模型' : '切换 Chat 模型';
+    button.title = disabled ? select.title || 'No Chat model available' : 'Switch Chat model';
 
     if (disabled) {
       closeChatModelPicker();
@@ -1549,7 +1549,7 @@ window.PrivateDiscussionChat = (function () {
     container.innerHTML = renderChatUI();
     mainContent.appendChild(container);
 
-    // 最近提问按钮/面板
+    // Recent questions button/panel
     bindQuestionsPanelEventsOnce();
 
     const sendBtnEl = document.getElementById('send-btn');
@@ -1600,7 +1600,7 @@ window.PrivateDiscussionChat = (function () {
       if (input && !input._boundKey) {
         input._boundKey = true;
         input.disabled = false;
-        input.placeholder = '针对这篇论文提问，仅自己可见...';
+        input.placeholder = 'Ask a question about this paper (visible to you only)...';
         resizeChatInput(input);
         input.addEventListener('input', () => {
           resizeChatInput(input);
@@ -1615,7 +1615,7 @@ window.PrivateDiscussionChat = (function () {
 
       if (select) {
         const chatModels = getChatLLMConfig();
-        // 解锁后重新启用下拉框
+        // Re-enable the dropdown after unlocking
         select.disabled = false;
         select.title = '';
         select.innerHTML = '';
@@ -1628,9 +1628,9 @@ window.PrivateDiscussionChat = (function () {
           opt.textContent = name;
           select.appendChild(opt);
         });
-        // 选择模型默认值：
-        // 1. 若存在用户偏好（localStorage），优先使用偏好；
-        // 2. 否则退回第一个可用模型。
+        // Determine the default model:
+        // 1. Use the stored user preference (localStorage) if available;
+        // 2. Otherwise fall back to the first available model.
         const prefName = loadPreferredModelName();
         let defaultName = '';
         if (prefName && names.includes(prefName)) {
@@ -1643,12 +1643,12 @@ window.PrivateDiscussionChat = (function () {
         }
         if (!names.length && status) {
           status.textContent =
-            '未检测到可用 Chat 模型，请在新配置指引中配置 chatLLMs。';
+            'No usable Chat model detected. Please configure chatLLMs in the new setup guide.';
           status.style.color = '#c00';
         }
         syncChatModelPicker(names);
 
-        // 用户手动切换模型时，更新偏好，跨页面复用
+        // When the user manually switches the model, update the preference for cross-page reuse
         if (!select._boundChange) {
           select._boundChange = true;
           select.addEventListener('change', () => {
@@ -1665,7 +1665,7 @@ window.PrivateDiscussionChat = (function () {
     if (sendBtnEl) {
       if (inGuestMode) {
         sendBtnEl.disabled = true;
-        sendBtnEl.title = '当前为游客模式或未解锁密钥，无法直接提问。';
+        sendBtnEl.title = 'Currently in guest mode or the secret key is not unlocked. Cannot submit questions.';
       } else {
         enableChatControls();
       }
@@ -1673,20 +1673,20 @@ window.PrivateDiscussionChat = (function () {
     if (inputEl) {
       if (inGuestMode) {
         inputEl.disabled = true;
-        inputEl.placeholder = '当前为游客模式，解锁密钥后才能向大模型提问。';
+        inputEl.placeholder = 'Currently in guest mode. Unlock the secret key to ask the LLM questions.';
       } else {
-        // 已在 enableChatControls 中绑定
+        // Already bound inside enableChatControls
       }
     }
     if (modelSelect) {
       if (inGuestMode) {
         modelSelect.disabled = true;
-        modelSelect.title = '当前为游客模式或未解锁密钥，无法选择大模型。';
+        modelSelect.title = 'Currently in guest mode or the secret key is not unlocked. Cannot select a model.';
         syncChatModelPicker([]);
       }
     }
 
-    // 如果当前是 locked/guest，则等待密钥解锁事件，再启用聊天控件
+    // If currently locked/guest, wait for the key-unlock event before enabling chat controls
     if (inGuestMode) {
       const handler = (e) => {
         const mode = e && e.detail && e.detail.mode;
@@ -1698,17 +1698,17 @@ window.PrivateDiscussionChat = (function () {
       document.addEventListener('dpr-access-mode-changed', handler);
     }
 
-    // 小屏幕下聊天区侧边栏开关与后台管理按钮
+    // Sidebar toggle and admin panel button in the chat area (for small screens)
     if (chatSidebarBtn && !chatSidebarBtn._bound) {
       chatSidebarBtn._bound = true;
       chatSidebarBtn.addEventListener('click', () => {
-        // 优先复用 Docsify 自带的 sidebar-toggle 行为
+        // Prefer reusing Docsify's built-in sidebar-toggle behavior
         const toggle = document.querySelector('.sidebar-toggle');
         if (toggle) {
           toggle.click();
           return;
         }
-        // 兜底：直接切换 body.close，用于控制侧边栏展开/收起
+        // Fallback: directly toggle body.close to control sidebar expand/collapse
         // const body = document.body;
         // if (!body) return;
         // body.classList.toggle('close');
@@ -1718,7 +1718,7 @@ window.PrivateDiscussionChat = (function () {
     if (chatSettingsBtn && !chatSettingsBtn._bound) {
       chatSettingsBtn._bound = true;
       chatSettingsBtn.addEventListener('click', () => {
-        // 复用底部齿轮按钮的行为：发出 ensure-arxiv-ui 和 load-arxiv-subscriptions 事件
+        // Reuse the bottom gear-button behavior: dispatch ensure-arxiv-ui and load-arxiv-subscriptions events
         const ensureEvent = new CustomEvent('ensure-arxiv-ui');
         document.dispatchEvent(ensureEvent);
 
@@ -1767,7 +1767,7 @@ window.PrivateDiscussionChat = (function () {
       const modal = getQuickRunModal();
       if (!modal) {
         if (chatQuickRunConferenceMsg) {
-          chatQuickRunConferenceMsg.textContent = '当前页面未完成快速抓取入口初始化。';
+          chatQuickRunConferenceMsg.textContent = 'The Quick Fetch entry point has not been initialized on the current page.';
           chatQuickRunConferenceMsg.style.color = '#c90';
         }
         return false;

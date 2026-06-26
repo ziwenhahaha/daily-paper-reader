@@ -1,5 +1,5 @@
 -- ============================================================
--- NeurIPS OpenReview 投稿表的检索 RPC
+-- NeurIPS OpenReview paper retrieval RPC
 -- ============================================================
 
 create or replace function match_neurips_openreview_papers_exact(

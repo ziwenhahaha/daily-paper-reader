@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Supabase 公共论文库读取工具（只读）
+# Supabase public paper store reader (read-only)
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import time
 
 try:
     from source_config import get_source_backend
-except Exception:  # pragma: no cover - 兼容 package 导入路径
+except Exception:  # pragma: no cover - fallback for package import path
     from src.source_config import get_source_backend
 
 
@@ -25,7 +25,7 @@ _PG_STATEMENT_TIMEOUT_CODE = "57014"
 
 
 def _is_statement_timeout(resp: requests.Response) -> bool:
-    """判断响应是否为 PostgreSQL 语句超时（error code 57014）。"""
+    """Check whether the response is a PostgreSQL statement timeout (error code 57014)."""
     try:
         import json as _json
         body = _json.loads(resp.text or "")
@@ -60,7 +60,7 @@ def _parse_datetime_like(value: Any) -> datetime | None:
             return None
 
     if " " in text and len(text) > 10:
-        # 兼容 '2026-02-28 12:00:00'
+        # Normalize space-separated datetime strings, e.g. '2026-02-28 12:00:00'
         text = text.replace(" ", "T", 1)
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
@@ -86,8 +86,9 @@ def _is_within_time_window(
     if end_dt <= start_dt:
         return True
 
-    # 为防止兼容字段导致时间窗口被放宽，优先基于 published 做硬过滤；
-    # 当存在可解析时间时，不在窗口内直接剔除；仅在时间字段缺失时按 keep_without_time 回退。
+    # Hard-filter on the `published` field to prevent compatibility fields from widening the window.
+    # If a parseable timestamp exists and falls outside the window, the record is excluded.
+    # Only fall back to keep_without_time when no time field can be parsed.
     fields = [f for f in (time_fields or ("published",)) if str(f).strip()]
     if not fields:
         fields = ["published"]
@@ -171,9 +172,9 @@ def _base_rest_url(url: str) -> str:
 
 def _parse_embedding(value: Any) -> List[float]:
     """
-    兼容 pgvector 的多种返回形式：
-    - "[0.1,0.2,...]" 字符串
-    - [0.1, 0.2, ...] 数组
+    Parse the multiple return formats used by pgvector:
+    - "[0.1,0.2,...]" string
+    - [0.1, 0.2, ...] array
     """
     if isinstance(value, list):
         out: List[float] = []
@@ -222,22 +223,22 @@ def _request_with_retries(
       )
       if resp.status_code < 500 or attempt >= attempts:
         return resp
-      # 语句超时（57014）是服务端配置限制，重试不会改善
+      # Statement timeout (57014) is a server-side configuration limit; retrying won't help
       if _is_statement_timeout(resp):
-        print(f"[WARN] {log_prefix} 检测到数据库语句超时 (57014)，跳过重试。", flush=True)
+        print(f"[WARN] {log_prefix} Database statement timeout detected (57014), skipping retry.", flush=True)
         return resp
-      msg = f"{log_prefix} 状态码重试 ({attempt}/{attempts})：HTTP {resp.status_code}"
+      msg = f"{log_prefix} Status code retry ({attempt}/{attempts}): HTTP {resp.status_code}"
       print(f"[WARN] {msg}", flush=True)
     except Exception as e:
       last_err = e
-      msg = f"{log_prefix} 异常重试 ({attempt}/{attempts})：{e}"
+      msg = f"{log_prefix} Exception retry ({attempt}/{attempts}): {e}"
       print(f"[WARN] {msg}", flush=True)
     if attempt >= attempts:
       if last_err is not None:
         raise last_err
       raise RuntimeError(msg)
     time.sleep(max(float(retry_wait_seconds or 0.0), 0.0))
-  raise RuntimeError(f"{log_prefix} 请求重试失败")
+  raise RuntimeError(f"{log_prefix} Request failed after all retries")
 
 
 def fetch_recent_papers(
@@ -252,9 +253,9 @@ def fetch_recent_papers(
     include_embedding: bool = False,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
-    从 Supabase 拉取窗口内论文元数据。
-    约定 papers_table 至少含字段：
-    id,title,abstract,authors,primary_category,categories,published,link,source
+    Fetch paper metadata within a time window from Supabase.
+    The papers_table must contain at least these fields:
+    id, title, abstract, authors, primary_category, categories, published, link, source
     """
     safe_days = max(int(days_window or 1), 1)
     end_dt = datetime.now(timezone.utc)
@@ -286,7 +287,7 @@ def fetch_papers_by_date_range(
     include_embedding: bool = False,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
-    按明确时间区间拉取论文：
+    Fetch papers within an explicit time range:
     - published >= start_dt
     - published < end_dt
     """
@@ -297,9 +298,9 @@ def fetch_papers_by_date_range(
     start_dt = start_dt.astimezone(timezone.utc)
     end_dt = end_dt.astimezone(timezone.utc)
     if end_dt <= start_dt:
-        return ([], "时间窗口非法：end_dt <= start_dt")
+        return ([], "Invalid time window: end_dt <= start_dt")
 
-    # 避免 +00:00 在 URL 中被当成空格，统一转 Z 并编码
+    # Convert +00:00 to Z before URL-encoding to avoid it being interpreted as a space
     start_iso_q = quote(start_dt.isoformat().replace("+00:00", "Z"), safe="")
     end_iso_q = quote(end_dt.isoformat().replace("+00:00", "Z"), safe="")
 
@@ -335,17 +336,17 @@ def fetch_papers_by_date_range(
               log_prefix="[Supabase]",
             )
             if resp.status_code >= 300:
-                return ([], f"papers 查询失败：HTTP {resp.status_code} {resp.text[:200]}")
+                return ([], f"Papers query failed: HTTP {resp.status_code} {resp.text[:200]}")
             rows = resp.json() or []
             if not isinstance(rows, list):
-                return ([], "papers 查询结果格式异常")
+                return ([], "Papers query returned unexpected format")
             if not rows:
                 break
             all_rows.extend(rows)
             got = len(rows)
             fetched += got
             offset += got
-            # 最后一页（不足页大小）即可结束
+            # Last page: fewer rows than the page size signals the end
             if got < page_limit:
                 break
 
@@ -381,10 +382,10 @@ def fetch_papers_by_date_range(
             )
         return (
             out,
-            f"papers 查询成功：{len(out)} 条（分页，offset 到 {offset}，window={start_dt.isoformat()}~{end_dt.isoformat()}）",
+            f"Papers query successful: {len(out)} records (paginated, offset={offset}, window={start_dt.isoformat()}~{end_dt.isoformat()})",
         )
     except Exception as e:
-        return ([], f"papers 查询异常：{e}")
+        return ([], f"Papers query exception: {e}")
 
 
 def _parse_content_range_total(value: Any) -> int | None:
@@ -411,7 +412,7 @@ def count_papers_by_date_range(
     timeout: int = DEFAULT_TIMEOUT,
 ) -> Tuple[int | None, str]:
     """
-    按时间区间统计论文数量，供 Supabase-only 召回估算动态 top_k。
+    Count papers within a time range; used by Supabase-only retrieval to estimate dynamic top_k.
     """
     if start_dt.tzinfo is None:
         start_dt = start_dt.replace(tzinfo=timezone.utc)
@@ -420,7 +421,7 @@ def count_papers_by_date_range(
     start_dt = start_dt.astimezone(timezone.utc)
     end_dt = end_dt.astimezone(timezone.utc)
     if end_dt <= start_dt:
-        return (None, "count 查询时间窗口非法：end_dt <= start_dt")
+        return (None, "Invalid time window for count query: end_dt <= start_dt")
 
     start_iso_q = quote(start_dt.isoformat().replace("+00:00", "Z"), safe="")
     end_iso_q = quote(end_dt.isoformat().replace("+00:00", "Z"), safe="")
@@ -447,23 +448,23 @@ def count_papers_by_date_range(
             log_prefix="[Supabase Count]",
         )
         if resp.status_code >= 300:
-            return (None, f"count 查询失败：HTTP {resp.status_code} {resp.text[:200]}")
+            return (None, f"Count query failed: HTTP {resp.status_code} {resp.text[:200]}")
         total = _parse_content_range_total(resp.headers.get("Content-Range"))
         if total is None:
-            return (None, "count 查询失败：缺少可解析的 Content-Range")
+            return (None, "Count query failed: missing or unparseable Content-Range header")
         return (
             total,
-            f"count 查询成功：{total} 条（window={start_dt.isoformat()}~{end_dt.isoformat()}）",
+            f"Count query successful: {total} records (window={start_dt.isoformat()}~{end_dt.isoformat()})",
         )
     except Exception as e:
-        return (None, f"count 查询异常：{e}")
+        return (None, f"Count query exception: {e}")
 
 
 def _build_date_filter_payload(
     start_dt: datetime | None,
     end_dt: datetime | None,
 ) -> Dict[str, str]:
-    """构造日期过滤参数（ISO 8601），供 RPC 在数据库侧做 WHERE 过滤。"""
+    """Build ISO 8601 date filter parameters for server-side WHERE filtering in RPC calls."""
     out: Dict[str, str] = {}
     if isinstance(start_dt, datetime):
         dt = start_dt.astimezone(timezone.utc) if start_dt.tzinfo else start_dt.replace(tzinfo=timezone.utc)
@@ -489,19 +490,19 @@ def match_papers_by_embedding(
     filter_sources: List[str] | None = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
-    调用 Supabase RPC，在数据库侧执行向量相似度检索。
-    约定 RPC 参数：
+    Call a Supabase RPC to perform vector similarity search on the database side.
+    Expected RPC parameters:
       - query_embedding: vector(N)
       - match_count: int
-      - filter_published_start: timestamptz (可选，数据库侧 WHERE 过滤)
-      - filter_published_end:   timestamptz (可选，数据库侧 WHERE 过滤)
+      - filter_published_start: timestamptz (optional, server-side WHERE filter)
+      - filter_published_end:   timestamptz (optional, server-side WHERE filter)
     """
     safe_rpc = _norm(rpc_name)
     if not safe_rpc:
         safe_rpc = "match_arxiv_papers"
     vec = [float(x) for x in (query_embedding or [])]
     if not vec:
-        return ([], "query embedding 为空")
+        return ([], "query embedding is empty")
     k = max(int(match_count or 1), 1)
     endpoint = f"{_base_rest_url(url)}/rpc/{safe_rpc}"
     payload: Dict[str, Any] = {
@@ -526,10 +527,10 @@ def match_papers_by_embedding(
             log_prefix="[Supabase RPC]",
         )
         if resp.status_code >= 300:
-            return ([], f"rpc 查询失败：HTTP {resp.status_code} {resp.text[:200]}")
+            return ([], f"RPC query failed: HTTP {resp.status_code} {resp.text[:200]}")
         rows = resp.json() or []
         if not isinstance(rows, list):
-            return ([], "rpc 查询结果格式异常")
+            return ([], "RPC query returned unexpected format")
         rows = _filter_rows_by_window(
             rows,
             start_dt=start_dt,
@@ -563,9 +564,9 @@ def match_papers_by_embedding(
                     "similarity": sim_f,
                 }
             )
-        return (out, f"rpc 查询成功：{len(out)} 条")
+        return (out, f"RPC query successful: {len(out)} records")
     except Exception as e:
-        return ([], f"rpc 查询异常：{e}")
+        return ([], f"RPC query exception: {e}")
 
 
 def match_papers_by_bm25(
@@ -583,19 +584,19 @@ def match_papers_by_bm25(
     filter_sources: List[str] | None = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
-    调用 Supabase RPC，在数据库侧执行 BM25 风格检索（PostgreSQL FTS）。
-    约定 RPC 参数：
+    Call a Supabase RPC to perform BM25-style retrieval (PostgreSQL FTS) on the database side.
+    Expected RPC parameters:
       - query_text: text
       - match_count: int
-      - filter_published_start: timestamptz (可选，数据库侧 WHERE 过滤)
-      - filter_published_end:   timestamptz (可选，数据库侧 WHERE 过滤)
+      - filter_published_start: timestamptz (optional, server-side WHERE filter)
+      - filter_published_end:   timestamptz (optional, server-side WHERE filter)
     """
     safe_rpc = _norm(rpc_name)
     if not safe_rpc:
         safe_rpc = "match_arxiv_papers_bm25"
     q = _norm(query_text)
     if not q:
-        return ([], "query_text 为空")
+        return ([], "query_text is empty")
     k = max(int(match_count or 1), 1)
     endpoint = f"{_base_rest_url(url)}/rpc/{safe_rpc}"
     payload: Dict[str, Any] = {
@@ -620,10 +621,10 @@ def match_papers_by_bm25(
             log_prefix="[Supabase RPC]",
         )
         if resp.status_code >= 300:
-            return ([], f"rpc 查询失败：HTTP {resp.status_code} {resp.text[:200]}")
+            return ([], f"RPC query failed: HTTP {resp.status_code} {resp.text[:200]}")
         rows = resp.json() or []
         if not isinstance(rows, list):
-            return ([], "rpc 查询结果格式异常")
+            return ([], "RPC query returned unexpected format")
         rows = _filter_rows_by_window(
             rows,
             start_dt=start_dt,
@@ -653,6 +654,6 @@ def match_papers_by_bm25(
                     "similarity": r.get("similarity"),
                 }
             )
-        return (out, f"rpc 查询成功：{len(out)} 条")
+        return (out, f"RPC query successful: {len(out)} records")
     except Exception as e:
-        return ([], f"rpc 查询异常：{e}")
+        return ([], f"RPC query exception: {e}")

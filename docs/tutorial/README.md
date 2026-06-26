@@ -1,82 +1,82 @@
-# 使用教程
+# Tutorial
 
-在开始之前，先记住这几个高频操作：
+Before you start, keep these common actions in mind:
 
-> 1. 按键盘左右方向键，可以切换上一篇 / 下一篇论文。
+> 1. Press the left/right arrow keys to switch to the previous / next paper.
 >
-> 2. 按数字键 `1` `2` `3` `4`，可以快速给论文做颜色标记。
+> 2. Press the number keys `1` `2` `3` `4` to quickly color-tag a paper.
 >
-> 3. 在小屏设备上，左右滑动页面，也可以切换上一篇 / 下一篇论文。
+> 3. On small-screen devices, swipe left/right to switch to the previous / next paper.
 >
-> 4. 页面内置分享按钮，遇到值得收藏的论文时可以快速分享出去。
+> 4. The page has a built-in share button to quickly share a paper worth keeping.
 >
-> 5. 喜欢的论文可以一键保存到 Zotero，并自动生成摘要笔记。
+> 5. Save a paper you like to Zotero with one click and auto-generate a summary note.
 
-## 使用入口
+## Entry points
 
-这个项目的大多数入口都集中在左下角的小齿轮里，后台管理、检索配置、工作流触发等功能都在这里。
+Most of this project's entry points are collected in the small gear at the bottom-left: admin management, retrieval configuration, workflow triggering, and more.
 
 <p align="center">
-  <img src="docs/tutorial/tutorial-entry-panel.png" alt="使用入口面板" width="50%" />
+  <img src="docs/tutorial/tutorial-entry-panel.png" alt="Entry panel" width="50%" />
 </p>
 
-进入后台管理面板后，点击“新增”可以创建一个新的专题词条。
+After opening the admin panel, click "Add" to create a new topic entry.
 
-先在“检索需求”里输入你真正想追踪的方向，再点击“生成候选”，然后从候选结果里勾选需要保留的专题。
+First enter the direction you actually want to track in "Retrieval requirement", then click "Generate candidates", and select the topics you want to keep from the candidate results.
 
 <p align="center">
-  <img src="docs/tutorial/tutorial-topic-setup.png" alt="专题创建与候选生成" width="88%" />
+  <img src="docs/tutorial/tutorial-topic-setup.png" alt="Topic creation and candidate generation" width="88%" />
 </p>
 
-建议将关键词控制在 **8 个以内**，自然语言 query 控制在 **5 个以内**，这样更容易保持召回质量和配置可维护性。
+We recommend keeping keywords to **8 or fewer** and natural-language queries to **5 or fewer**, which makes it easier to maintain recall quality and a manageable configuration.
 
-保存查询后，记得再保存一次词条。完成后，就可以点击右侧的搜寻论文区域，发起第一次论文检索。
+After saving the query, remember to save the entry once more. Once done, click the search-papers area on the right to start your first paper retrieval.
 
 <p align="center">
-  <img src="docs/tutorial/tutorial-first-search.png" alt="首次搜寻论文" width="50%" />
+  <img src="docs/tutorial/tutorial-first-search.png" alt="First paper search" width="50%" />
 </p>
 
 ---
 
-### 重置内容按钮
+### Reset content button
 
-“删除所有”按钮会把当前仓库恢复到“还没有抓取任何论文”的状态，但**不会重置密码**，也不会影响你的解锁方式。
+The "Delete all" button restores the current repository to the "no papers fetched yet" state, but it **does not reset the password** and does not affect how you unlock.
 
-### Zotero 集成
+### Zotero integration
 
-1. 安装 Zotero
+1. Install Zotero
 
-2. 安装 [Zotero Connector](https://www.zotero.org/download/connectors)
+2. Install the [Zotero Connector](https://www.zotero.org/download/connectors)
 
-3. 安装 `Actions & Tags`  
+3. Install `Actions & Tags`  
    [Releases · windingwind/zotero-actions-tags](https://github.com/windingwind/zotero-actions-tags/releases/)
 
-4. 打开 Zotero 设置，进入 `Actions & Tags` 完成配置
+4. Open Zotero settings and complete the configuration under `Actions & Tags`
 
 <p align="center">
-  <img src="docs/tutorial/tutorial-zotero-settings.png" alt="Zotero Actions and Tags 设置" width="88%" />
+  <img src="docs/tutorial/tutorial-zotero-settings.png" alt="Zotero Actions and Tags settings" width="88%" />
 </p>
 
-5. 下载仓库里的脚本，并导入到 Zotero 中  
-   脚本链接：
-   <a href="others/actions-zotero.yml" data-no-router download="actions-zotero.yml">下载 actions-zotero.yml</a>
+5. Download the script from the repository and import it into Zotero  
+   Script link:
+   <a href="others/actions-zotero.yml" data-no-router download="actions-zotero.yml">Download actions-zotero.yml</a>
 
 <p align="center">
-  <img src="docs/tutorial/tutorial-zotero-script-download.png" alt="下载 Zotero 脚本" width="88%" />
+  <img src="docs/tutorial/tutorial-zotero-script-download.png" alt="Download the Zotero script" width="88%" />
 </p>
 
 <p align="center">
-  <img src="docs/tutorial/tutorial-zotero-script-import.png" alt="导入 Zotero 脚本" width="88%" />
+  <img src="docs/tutorial/tutorial-zotero-script-import.png" alt="Import the Zotero script" width="88%" />
 </p>
 
-导入并启用脚本后，打开论文页；如果 Zotero 图标状态已经变化，就可以开始一键保存。
+After importing and enabling the script, open a paper page; once the Zotero icon state has changed, you can start one-click saving.
 
 <p align="center">
-  <img src="docs/tutorial/tutorial-zotero-save-entry.png" alt="网页端一键保存到 Zotero" width="88%" />
+  <img src="docs/tutorial/tutorial-zotero-save-entry.png" alt="One-click save to Zotero from the web" width="88%" />
 </p>
 
-保存成功后，你可以在 Zotero 中看到自动生成的摘要笔记效果：
+After a successful save, you can see the auto-generated summary note in Zotero:
 
 <p align="center">
-  <img src="docs/tutorial/tutorial-zotero-note-preview.png" alt="Zotero 自动生成摘要笔记预览" width="88%" />
+  <img src="docs/tutorial/tutorial-zotero-note-preview.png" alt="Preview of the Zotero auto-generated summary note" width="88%" />
 </p>

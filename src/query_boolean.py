@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-# 布尔表达式解析与评估工具：
-# - 支持 AND / OR / NOT、&& / || / !、括号、author: 前缀
-# - 供 BM25 链路使用（Embedding 不执行布尔逻辑）
+# Boolean expression parsing and evaluation utilities:
+# - Supports AND / OR / NOT, && / || / !, parentheses, and the author: prefix
+# - Used by the BM25 path (Embedding does not run boolean logic)
 
 from __future__ import annotations
 
@@ -48,9 +48,9 @@ def strip_outer_quotes(text: str) -> str:
 
 def clean_expr_for_embedding(expr: str) -> str:
   """
-  将布尔表达式清洗为“向量可用的自然语言短语”：
-  - 去掉逻辑操作符和括号
-  - author: 前缀仅保留作者值
+  Clean a boolean expression into a natural-language phrase usable by the vector path:
+  - Remove logical operators and parentheses
+  - For the author: prefix, keep only the author value
   """
   if not expr:
     return ""
@@ -94,7 +94,7 @@ def _tokenize(expr: str) -> List[str]:
       i += 1
       continue
 
-    # author:"xxx yyy" / author:'xxx yyy' 视为一个 term
+    # author:"xxx yyy" / author:'xxx yyy' is treated as a single term
     author_quoted = re.match(r"author\s*:\s*\"([^\"]+)\"", src[i:], flags=re.IGNORECASE)
     if author_quoted:
       out.append(f"author:{author_quoted.group(1)}")
@@ -127,7 +127,7 @@ def _tokenize(expr: str) -> List[str]:
     else:
       out.append(token)
 
-  # 插入隐式 AND（例如 "A B" 或 ") A"）
+  # Insert an implicit AND (e.g. "A B" or ") A")
   fixed: List[str] = []
   prev_type = ""
   for tk in out:

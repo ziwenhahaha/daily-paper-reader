@@ -91,12 +91,21 @@
     };
   };
 
+  const readTitleAlt = (meta) => {
+    const reader = globalThis.LegacyConfigFields
+      || (typeof window !== 'undefined' ? window.LegacyConfigFields : null);
+    if (reader && typeof reader.readTitleAlt === 'function') {
+      return normalizeText(reader.readTitleAlt(meta));
+    }
+    return normalizeText((reader && reader.readTitleAlt && reader.readTitleAlt(meta)) || '');
+  };
+
   const buildMetaSection = (meta, pageUrl, generatedAt) => {
     const safeMeta = meta && typeof meta === 'object' ? meta : {};
-    const titleZh = normalizeText(safeMeta.title_zh);
+    const titleAlt = readTitleAlt(safeMeta);
     const title = normalizeText(safeMeta.title);
-    const heading = titleZh || title || 'Paper Share';
-    const subtitle = titleZh && title ? title : '';
+    const heading = titleAlt || title || 'Paper Share';
+    const subtitle = titleAlt && title ? title : '';
     const tags = Array.isArray(safeMeta.tags) ? safeMeta.tags : [];
 
     const lines = [];
@@ -112,8 +121,8 @@
     if (tags.length) lines.push(`- **Tags**: ${tags.join(', ')}`);
     if (safeMeta.evidence) lines.push(`- **Evidence**: ${String(safeMeta.evidence).trim()}`);
     if (safeMeta.tldr) lines.push(`- **TLDR**: ${String(safeMeta.tldr).trim()}`);
-    if (pageUrl) lines.push(`- **原始页面**: ${pageUrl}`);
-    if (generatedAt) lines.push(`- **生成时间**: ${generatedAt}`);
+    if (pageUrl) lines.push(`- **Source page**: ${pageUrl}`);
+    if (generatedAt) lines.push(`- **Generated at**: ${generatedAt}`);
     return lines.join('\n').trim();
   };
 
@@ -121,10 +130,10 @@
     const parts = [];
     parts.push('---');
     parts.push('');
-    parts.push('## 💬 Chat History（本机记录）');
+    parts.push('## 💬 Chat History (local records)');
     parts.push('');
     if (!chatMessages || !chatMessages.length) {
-      parts.push('暂无对话。');
+      parts.push('No conversation yet.');
       return parts.join('\n');
     }
     chatMessages.forEach((message) => {
@@ -133,7 +142,7 @@
       const content = message && message.content ? String(message.content) : '';
       if (role === 'thinking') {
         parts.push('<details>');
-        parts.push(`<summary>🧠 思考过程 ${time ? `(${time})` : ''}</summary>`);
+        parts.push(`<summary>🧠 Thinking ${time ? `(${time})` : ''}</summary>`);
         parts.push('');
         parts.push('```');
         parts.push(content);
@@ -142,7 +151,7 @@
         parts.push('');
         return;
       }
-      const label = role === 'ai' ? '🤖 AI' : role === 'user' ? '👤 你' : role;
+      const label = role === 'ai' ? '🤖 AI' : role === 'user' ? '👤 You' : role;
       parts.push(`### ${label}${time ? ` (${time})` : ''}`);
       parts.push(content);
       parts.push('');

@@ -1,15 +1,15 @@
 -- ============================================================
--- 多表联合检索：arXiv + bioRxiv
+-- Multi-source paper retrieval RPC
 -- ============================================================
--- 设计目标：
--- 1) 先通过 UNION ALL 将多个论文表合并为统一候选池；
--- 2) 再在统一候选池上执行 exact 向量召回 / BM25 全文召回；
--- 3) 支持通过 filter_sources 精确控制本次检索涉及哪些源。
+-- Design goals:
+-- 1) First, UNION ALL multiple paper tables into a unified candidate pool;
+-- 2) Then, perform exact vector retrieval / BM25 full-text retrieval on the unified candidate pool;
+-- 3) Support filtering the sources involved in this retrieval via filter_sources.
 --
--- 说明：
--- - 当前版本显式联合 public.arxiv_papers + public.biorxiv_papers。
--- - 后续若增加 medRxiv / ChemRxiv，可继续在视图里追加 UNION ALL。
--- - 由于当前项目已经收口为 exact-only，这种“多表先选池再精排”是合适的。
+-- Notes:
+-- - Currently, public.arxiv_papers + public.biorxiv_papers are explicitly UNION ALLed.
+-- - Future extensions (e.g., medRxiv / ChemRxiv) can simply add UNION ALL to the view.
+-- - Given the current project is exact-only, this "multi-table selection pool then re-ranking" approach is appropriate.
 -- ============================================================
 
 create or replace view public.multi_source_papers as

@@ -1,5 +1,5 @@
 -- ============================================================
--- 在同一个 Supabase project 中创建 medRxiv 独立表
+-- medRxiv paper table schema
 -- ============================================================
 
 create extension if not exists vector;

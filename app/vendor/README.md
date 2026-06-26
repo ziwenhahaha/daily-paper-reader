@@ -1,8 +1,8 @@
-# 前端第三方静态依赖
+# Frontend third-party static dependencies
 
-这些文件用于替代首屏加载时的 CDN 请求，避免 GitHub Pages 或本地部署受外部 CDN 延迟影响。
+These files replace the CDN requests made during the first-screen load, so GitHub Pages and local deployments are not affected by external CDN latency.
 
-当前固定版本：
+Currently pinned versions:
 
 - Docsify `4`
 - KaTeX `0.16.9`
@@ -10,4 +10,4 @@
 - libsodium `0.7.10`
 - libsodium-wrappers `0.7.9`
 
-升级时请同步更新 `index.html` 中的本地路径，并保留 KaTeX `dist/fonts` 字体文件。
+When upgrading, update the local paths in `index.html` accordingly and keep the KaTeX `dist/fonts` font files.

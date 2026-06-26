@@ -1,20 +1,20 @@
-# 日报 · 2026-03-06
+# Daily Report · 2026-03-06
 
-- 生成时间：2026-03-06 19:11:19 UTC
-- 当次推荐总数：0
-- 精读区：0
-- 速读区：0
+- Generated at: 2026-03-06 19:11:19 UTC
+- Total recommendations this run: 0
+- Deep Read: 0
+- Quick Skim: 0
 
-## 今日简报（AI）
-> 今日无新推荐，系统未产出可展示论文。
+## Today's Brief (AI)
+> No new recommendations today; the system produced no papers to display.
 
-> 本次触发没有产出可推荐论文。
+> This run produced no recommendable papers.
 
-## 精读区
-- 本次无精读推荐。
+## Deep Read
+- No deep-read recommendations this run.
 
-## 速读区
-- 本次无速读推荐。
+## Quick Skim
+- No quick-skim recommendations this run.
 
 ---
-使用键盘方向键可在日报/论文之间快速切换。
+Use the keyboard arrow keys to move quickly between the daily report and papers.

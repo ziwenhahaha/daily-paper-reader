@@ -61,6 +61,10 @@ def _norm(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def _strip_html(value: Any) -> str:
     text = _norm(value)
     if not text:
@@ -74,7 +78,7 @@ def load_config() -> dict:
     try:
         return load_config_with_source_migration(CONFIG_FILE, write_back=False)
     except Exception as exc:
-        log(f"[WARN] 读取 config.yaml 失败：{exc}")
+        log(f"[WARN] Failed to read config.yaml: {exc}")
         return {}
 
 
@@ -231,8 +235,8 @@ def normalize_chemrxiv_record(raw: Dict[str, Any]) -> Dict[str, Any] | None:
     published = published_dt.isoformat() if published_dt else None
     version = _norm(raw.get("version"))
     article_url = f"https://chemrxiv.org/engage/chemrxiv/article-details/{item_id}"
-    asset = raw.get("asset") if isinstance(raw.get("asset"), dict) else {}
-    original_asset = asset.get("original") if isinstance(asset.get("original"), dict) else {}
+    asset = _as_dict(raw.get("asset"))
+    original_asset = _as_dict(asset.get("original"))
     pdf_url = _norm(original_asset.get("url"))
     return {
         "id": f"chemrxiv-{item_id}",
@@ -264,7 +268,7 @@ def fetch_chemrxiv_dataset(*, timeout: int = 120, retries: int = 3) -> Dict[str,
             resp.raise_for_status()
             payload = json.loads(bz2.decompress(resp.content))
             if not isinstance(payload, dict):
-                raise RuntimeError("ChemRxiv dashboard payload 不是 dict")
+                raise RuntimeError("ChemRxiv dashboard payload is not a dict")
             return payload
         except Exception as exc:
             last_error = exc
@@ -274,7 +278,7 @@ def fetch_chemrxiv_dataset(*, timeout: int = 120, retries: int = 3) -> Dict[str,
             time.sleep(float(attempt))
     if last_error is not None:
         raise last_error
-    raise RuntimeError("ChemRxiv dataset 下载失败")
+    raise RuntimeError("ChemRxiv dataset download failed")
 
 
 def fetch_chemrxiv_metadata(
@@ -363,10 +367,10 @@ def fetch_chemrxiv_metadata(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="抓取 ChemRxiv 论文元数据（基于公开 dashboard 数据镜像）。")
-    parser.add_argument("--days", type=int, default=None, help="抓取窗口天数。")
-    parser.add_argument("--output", type=str, default=None, help="输出 JSON 文件路径。")
-    parser.add_argument("--ignore-seen", action="store_true", help="忽略已见状态，严格按 days_window 回溯。")
+    parser = argparse.ArgumentParser(description="Fetch ChemRxiv paper metadata (based on public dashboard data mirror).")
+    parser.add_argument("--days", type=int, default=None, help="Fetch window days.")
+    parser.add_argument("--output", type=str, default=None, help="Output JSON file path.")
+    parser.add_argument("--ignore-seen", action="store_true", help="Ignore seen state, strictly backtrack by days_window.")
     args = parser.parse_args()
 
     fetch_chemrxiv_metadata(

@@ -25,7 +25,7 @@ class SubscriptionPlanTest(unittest.TestCase):
                             {
                                 'keyword': 'A AND B',
                                 'query': 'find papers about A and B',
-                                'logic_cn': '语义补充',
+                                'note': 'semantic supplement',
                                 'enabled': True,
                             },
                         ],
@@ -46,6 +46,7 @@ class SubscriptionPlanTest(unittest.TestCase):
         self.assertEqual(kw_bm25.get('query_text'), 'A B')
         self.assertEqual(kw_bm25.get('paper_tag'), 'keyword:SR')
         self.assertEqual(kw_bm25.get('paper_sources'), ['arxiv'])
+        self.assertEqual(kw_bm25.get('note'), 'semantic supplement')
 
     def test_build_pipeline_inputs_without_profiles(self):
         plan = build_pipeline_inputs({'subscriptions': {'keyword_recall_mode': 'or'}})

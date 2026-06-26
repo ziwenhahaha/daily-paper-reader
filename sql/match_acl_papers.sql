@@ -1,5 +1,5 @@
 -- ============================================================
--- ACL Anthology 论文表的检索 RPC
+-- ACL Anthology paper retrieval RPC
 -- ============================================================
 
 create or replace function match_acl_papers_exact(

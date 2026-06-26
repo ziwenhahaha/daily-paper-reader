@@ -6,11 +6,12 @@ global.document = global.document || {
   addEventListener() {},
 };
 
+require('../app/legacy-config-fields.js');
 require('../app/subscriptions.smart-query.js');
 
 const {
   buildPromptFromTemplate,
-  containsCjk,
+  containsNonEnglishScript,
   defaultPromptTemplate,
   deriveTagFromCandidates,
   isEnglishRetrievalText,
@@ -18,11 +19,24 @@ const {
   sanitizeAutoTag,
 } = global.window.SubscriptionsSmartQuery.__test;
 
-function testPromptRequiresEnglishRetrievalFieldsAndChineseCnFields() {
-  const prompt = buildPromptFromTemplate('RL', '强化学习算法对比', defaultPromptTemplate);
+const NON_ENGLISH_SAMPLE = {
+  RL: '\u5f3a\u5316\u5b66\u4e60',
+  RL_ALG: '\u5f3a\u5316\u5b66\u4e60\u7b97\u6cd5\u5bf9\u6bd4',
+  POLICY_GRAD: '\u7b56\u7565\u68af\u5ea6',
+  RL_TUTORIAL: '\u5f3a\u5316\u5b66\u4e60\u5165\u95e8\u6559\u7a0b',
+  RL_EQ: '\u5f3a\u5316\u5b66\u4e60\u65b9\u7a0b\u53d1\u73b0',
+  XRL_SR: '\u53ef\u89e3\u91ca\u5f3a\u5316\u5b66\u4e60\u7b26\u53f7\u56de\u5f52',
+  RL_DRIVEN: '\u5f3a\u5316\u5b66\u4e60\u9a71\u52a8',
+  XRL: '\u53ef\u89e3\u91ca\u5f3a\u5316\u5b66\u4e60',
+  SR: '\u7b26\u53f7\u56de\u5f52',
+  XRL_SR_EQ: '\u53ef\u89e3\u91ca\u5f3a\u5316\u5b66\u4e60\u9a71\u52a8\u7b26\u53f7\u56de\u5f52\u65b9\u7a0b\u53d1\u73b0',
+};
+
+function testPromptRequiresEnglishRetrievalFieldsAndOptionalNotes() {
+  const prompt = buildPromptFromTemplate('RL', NON_ENGLISH_SAMPLE.RL_ALG, defaultPromptTemplate);
 
   assert.match(prompt, /keyword and query MUST be English retrieval text only/);
-  assert.match(prompt, /keyword_cn and query_cn MUST be Chinese/);
+  assert.match(prompt, /note is an optional English description or explanation/);
   assert.match(prompt, /The query field MUST be English only/);
   assert.match(prompt, /Do NOT output acronym-only/);
   assert.match(prompt, /meaningful atomic noun phrases/);
@@ -35,11 +49,11 @@ function testPromptRequiresEnglishRetrievalFieldsAndChineseCnFields() {
 function testSuggestedTagIsEnglishAndAtMostTwelveChars() {
   assert.equal(sanitizeAutoTag('reinforcement learning algorithms'), 'rla');
   assert.equal(sanitizeAutoTag('RL_optimization 2026'), 'ro');
-  assert.equal(sanitizeAutoTag('强化学习'), '');
-  assert.equal(sanitizeAutoTag('强化学习 RL'), 'RL');
+  assert.equal(sanitizeAutoTag(NON_ENGLISH_SAMPLE.RL), '');
+  assert.equal(sanitizeAutoTag(`${NON_ENGLISH_SAMPLE.RL} RL`), 'RL');
   assert.equal(
     deriveTagFromCandidates({
-      tag: '强化学习',
+      tag: NON_ENGLISH_SAMPLE.RL,
       keywords: [{ keyword: 'reinforcement learning', query: 'reinforcement learning algorithms comparison' }],
     }),
     'rl',
@@ -47,35 +61,35 @@ function testSuggestedTagIsEnglishAndAtMostTwelveChars() {
   assert.equal(sanitizeAutoTag('verylongsingleword'), 'verylongsing');
 }
 
-function testGeneratedCandidatesKeepChineseOutOfRetrievalFields() {
+function testGeneratedCandidatesKeepNonEnglishOutOfRetrievalFields() {
   const normalized = normalizeGenerated({
     tag: 'RL',
-    description: '强化学习算法对比',
+    description: NON_ENGLISH_SAMPLE.RL_ALG,
     keywords: [
       {
-        keyword: '强化学习',
-        query: '强化学习算法对比',
-        keyword_cn: '强化学习',
+        keyword: NON_ENGLISH_SAMPLE.RL,
+        query: NON_ENGLISH_SAMPLE.RL_ALG,
+        note: NON_ENGLISH_SAMPLE.RL,
       },
       {
         keyword: 'reinforcement learning',
-        query: '强化学习算法对比',
-        keyword_cn: '强化学习',
+        query: NON_ENGLISH_SAMPLE.RL_ALG,
+        note: NON_ENGLISH_SAMPLE.RL,
       },
       {
         keyword: 'policy gradient',
         query: 'policy gradient methods',
-        keyword_cn: '策略梯度',
+        note: NON_ENGLISH_SAMPLE.POLICY_GRAD,
       },
     ],
     intent_queries: [
       {
-        query: '强化学习入门教程',
-        query_cn: '强化学习入门教程',
+        query: NON_ENGLISH_SAMPLE.RL_TUTORIAL,
+        note: NON_ENGLISH_SAMPLE.RL_TUTORIAL,
       },
       {
         query: 'reinforcement learning algorithms comparison',
-        query_cn: '强化学习算法对比',
+        note: NON_ENGLISH_SAMPLE.RL_ALG,
       },
     ],
   });
@@ -93,12 +107,12 @@ function testGeneratedCandidatesKeepChineseOutOfRetrievalFields() {
     ['reinforcement learning algorithms comparison'],
   );
   normalized.keywords.forEach((item) => {
-    assert.equal(containsCjk(item.keyword), false);
-    assert.equal(containsCjk(item.query), false);
+    assert.equal(containsNonEnglishScript(item.keyword), false);
+    assert.equal(containsNonEnglishScript(item.query), false);
     assert.equal(isEnglishRetrievalText(item.query), true);
   });
   normalized.intent_queries.forEach((item) => {
-    assert.equal(containsCjk(item.query), false);
+    assert.equal(containsNonEnglishScript(item.query), false);
     assert.equal(isEnglishRetrievalText(item.query), true);
   });
 }
@@ -106,16 +120,16 @@ function testGeneratedCandidatesKeepChineseOutOfRetrievalFields() {
 function testGeneratedCandidatesDropWeakAcronymKeywords() {
   const normalized = normalizeGenerated({
     tag: 'RL',
-    description: '强化学习方程发现',
+    description: NON_ENGLISH_SAMPLE.RL_EQ,
     keywords: [
-      { keyword: 'rl', query: 'reinforcement learning equation discovery', keyword_cn: '强化学习方程发现' },
-      { keyword: 'xrl', query: 'explainable reinforcement learning symbolic regression', keyword_cn: '可解释强化学习符号回归' },
-      { keyword: 'reinforcement learning driven', query: 'reinforcement learning driven equation discovery', keyword_cn: '强化学习驱动' },
-      { keyword: 'reinforcement learning', query: 'reinforcement learning equation discovery', keyword_cn: '强化学习' },
+      { keyword: 'rl', query: 'reinforcement learning equation discovery', note: NON_ENGLISH_SAMPLE.RL_EQ },
+      { keyword: 'xrl', query: 'explainable reinforcement learning symbolic regression', note: NON_ENGLISH_SAMPLE.XRL_SR },
+      { keyword: 'reinforcement learning driven', query: 'reinforcement learning driven equation discovery', note: NON_ENGLISH_SAMPLE.RL_DRIVEN },
+      { keyword: 'reinforcement learning', query: 'reinforcement learning equation discovery', note: NON_ENGLISH_SAMPLE.RL },
     ],
     intent_queries: [
-      { query: 'rl', query_cn: '强化学习' },
-      { query: 'explainable reinforcement learning for symbolic regression', query_cn: '可解释强化学习符号回归' },
+      { query: 'rl', note: NON_ENGLISH_SAMPLE.RL },
+      { query: 'explainable reinforcement learning for symbolic regression', note: NON_ENGLISH_SAMPLE.XRL_SR },
     ],
   });
 
@@ -132,12 +146,12 @@ function testGeneratedCandidatesDropWeakAcronymKeywords() {
 function testGeneratedCandidatesDoNotCollapseConceptToSingleModifier() {
   const normalized = normalizeGenerated({
     tag: 'xrl-sr',
-    description: '可解释强化学习驱动符号回归方程发现',
+    description: NON_ENGLISH_SAMPLE.XRL_SR_EQ,
     keywords: [
-      { keyword: 'explainable reinforcement learning', query: 'explainable reinforcement learning for symbolic regression', keyword_cn: '可解释强化学习' },
-      { keyword: 'reinforcement learning', query: 'reinforcement learning equation discovery', keyword_cn: '强化学习' },
-      { keyword: 'symbolic regression', query: 'symbolic regression equation discovery', keyword_cn: '符号回归' },
-      { keyword: 'explainable', query: 'explainable reinforcement learning', keyword_cn: '可解释强化学习' },
+      { keyword: 'explainable reinforcement learning', query: 'explainable reinforcement learning for symbolic regression', note: NON_ENGLISH_SAMPLE.XRL },
+      { keyword: 'reinforcement learning', query: 'reinforcement learning equation discovery', note: NON_ENGLISH_SAMPLE.RL },
+      { keyword: 'symbolic regression', query: 'symbolic regression equation discovery', note: NON_ENGLISH_SAMPLE.SR },
+      { keyword: 'explainable', query: 'explainable reinforcement learning', note: NON_ENGLISH_SAMPLE.XRL },
     ],
   });
 
@@ -167,22 +181,24 @@ function testProfileSelectionPersistsAcrossRerender() {
   ]);
   assert.deepEqual(smartQuery.getSelectedProfileTags(), ['selection-a']);
 
-  smartQuery.render([
-    { tag: 'selection-a', description: 'A updated' },
-    { tag: 'selection-b', description: 'B updated' },
-    { tag: 'selection-c', description: 'C new' },
-  ]);
-  assert.deepEqual(
-    smartQuery.getSelectedProfileTags(),
-    ['selection-a', 'selection-c'],
-  );
+  smartQuery.setProfileSelection('selection-a', false);
+  smartQuery.setProfileSelection('selection-b', true);
+  assert.deepEqual(smartQuery.getSelectedProfileTags(), ['selection-b']);
 }
 
-testPromptRequiresEnglishRetrievalFieldsAndChineseCnFields();
+function testLegacyConfigFieldsReadOldNoteKeys() {
+  const reader = global.window.LegacyConfigFields;
+  assert.equal(reader.readNote({ note: 'current' }), 'current');
+  assert.equal(reader.readNote({ logic_cn: 'legacy note' }), 'legacy note');
+  assert.equal(reader.readTitleAlt({ title_alt: 'alt title' }), 'alt title');
+  assert.equal(reader.readTitleAlt({ title_zh: 'legacy alt' }), 'legacy alt');
+}
+
+testPromptRequiresEnglishRetrievalFieldsAndOptionalNotes();
 testSuggestedTagIsEnglishAndAtMostTwelveChars();
-testGeneratedCandidatesKeepChineseOutOfRetrievalFields();
+testGeneratedCandidatesKeepNonEnglishOutOfRetrievalFields();
 testGeneratedCandidatesDropWeakAcronymKeywords();
 testGeneratedCandidatesDoNotCollapseConceptToSingleModifier();
 testProfileSelectionPersistsAcrossRerender();
-
+testLegacyConfigFieldsReadOldNoteKeys();
 console.log('subscriptions smart query tests passed');

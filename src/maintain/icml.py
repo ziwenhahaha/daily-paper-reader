@@ -18,7 +18,7 @@ from common import (
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="维护入口：ICML 抓取 + Supabase 同步。")
+    parser = argparse.ArgumentParser(description="Maintenance entry: ICML retrieval + Supabase sync.")
     parser.add_argument("--year-end", type=int, default=2025)
     parser.add_argument("--year-count", type=int, default=3)
     parser.add_argument("--years", type=str, default="")

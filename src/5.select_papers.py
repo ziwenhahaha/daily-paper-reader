@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Step 5：基于 LLM 评分结果，生成“精读区 + 速览区”的三种模式输出。
+# Step 5: from LLM scores, produce three-mode outputs for deep dive + quick skim.
 
 import argparse
 import json
@@ -42,7 +42,7 @@ MODES = {
         "deep_base": 5,
         "deep_strategy": "round_robin",
     },
-    # 回溯窗口（days）专用：>=8 分全量输出，全部进入速览区
+    # Backfill window (days): output all papers with score >= 8 into quick skim only
     "skims": {
         "all_quick_min_score": 8.0,
     },
@@ -63,8 +63,8 @@ def log(message: str) -> None:
 
 def log_substep(code: str, name: str, phase: str) -> None:
     """
-    用于前端解析的子步骤标记。
-    格式： [SUBSTEP] 5.1 - xxx START/END
+    Sub-step markers for frontend parsing.
+    Format: [SUBSTEP] 5.1 - xxx START/END
     """
     phase = str(phase or "").strip().upper()
     if phase not in ("START", "END"):
@@ -97,7 +97,7 @@ def save_json(data: Dict[str, Any], path: str) -> None:
 def parse_date_str(date_str: str) -> date:
     s = str(date_str or "").strip()
     if re.fullmatch(r"\d{8}-\d{8}", s):
-        # 区间 token 用结束日期参与“今日/最近N天”逻辑
+        # Range tokens use the end date for today / last-N-days logic
         s = s.split("-", 1)[1]
     return datetime.strptime(s, "%Y%m%d").date()
 
@@ -148,7 +148,8 @@ def normalize_carryover_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         for raw_tag, raw_state in raw_states.items():
             tag_key = normalize_carryover_tag(raw_tag) or CARRYOVER_UNTAGGED
             state = raw_state if isinstance(raw_state, dict) else {}
-            items = state.get("items") if isinstance(state.get("items"), list) else []
+            raw_items = state.get("items")
+            items = raw_items if isinstance(raw_items, list) else []
             normalized_states[tag_key] = {
                 "updated_date": str(state.get("updated_date") or payload.get("updated_date") or "").strip(),
                 "carryover_days": int(state.get("carryover_days") or payload.get("carryover_days") or CARRYOVER_DAYS),
@@ -161,7 +162,8 @@ def normalize_carryover_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             "tag_states": normalized_states,
         }
 
-    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    raw_items = payload.get("items")
+    items = raw_items if isinstance(raw_items, list) else []
     tag_states: Dict[str, Dict[str, Any]] = {}
     for item in items:
         if not isinstance(item, dict):
@@ -235,7 +237,8 @@ def load_recent_carryover(
                 delta = 0
         max_delta = max(max_delta, delta)
 
-        items = state.get("items") if isinstance(state.get("items"), list) else []
+        raw_items = state.get("items")
+        items = raw_items if isinstance(raw_items, list) else []
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -258,7 +261,7 @@ def load_recent_carryover(
 
 
 def load_config_tag_count() -> Tuple[int, List[str]]:
-    """读取订阅配置中的 tag 数量（优先新结构 intent_profiles）。"""
+    """Read subscription tag count from config (prefer intent_profiles)."""
     if not os.path.exists(CONFIG_FILE):
         return 0, []
     try:
@@ -420,20 +423,15 @@ def build_scored_papers(papers: List[Dict[str, Any]], llm_ranked: List[Dict[str,
             continue
         paper = dict(paper_map[pid])
         paper["llm_score"] = score
-        evidence_cn = str(item.get("evidence_cn") or "").strip()
         evidence_en = str(item.get("evidence_en") or "").strip()
-        tldr_cn = str(item.get("tldr_cn") or "").strip()
         tldr_en = str(item.get("tldr_en") or "").strip()
         legacy = str(item.get("evidence") or "").strip()
-        canonical_evidence = evidence_cn or evidence_en or legacy
-        # 优先保存中英双语；同时保留 llm_evidence 作为“默认展示”字段（优先中文）
+        canonical_evidence = evidence_en or legacy
         paper["llm_evidence_en"] = evidence_en or legacy
-        paper["llm_evidence_cn"] = evidence_cn or (evidence_en or legacy)
-        paper["llm_evidence"] = paper["llm_evidence_cn"]
+        paper["llm_evidence"] = paper["llm_evidence_en"]
         paper["canonical_evidence"] = canonical_evidence
         paper["llm_tldr_en"] = tldr_en
-        paper["llm_tldr_cn"] = tldr_cn or tldr_en
-        paper["llm_tldr"] = paper["llm_tldr_cn"]
+        paper["llm_tldr"] = tldr_en
         tags = normalize_tags(item.get("tags"))
         matched_query_tag = str(item.get("matched_query_tag") or "").strip()
         if matched_query_tag and matched_query_tag not in tags:
@@ -660,7 +658,7 @@ def select_quick_skim(
     else:
         selected_by_layer = allocate_uniform(layers, target)
 
-    # 标记分层信息，便于消费侧识别
+    # Tag tier info for downstream consumers
     marked: Dict[str, List[Dict[str, Any]]] = {}
     for name, items in selected_by_layer.items():
         marked[name] = [dict(item, quick_tier=name) for item in items]
@@ -881,7 +879,7 @@ def process_mode_all_quick_min_score(
     min_score: float,
 ) -> Dict[str, Any]:
     """
-    回溯窗口（days）场景：不再做“精读/速览配额分配”，而是将达到阈值的论文全部输出到速览区。
+    Backfill window (days): skip deep/quick quotas and put all papers above the threshold in quick skim.
     """
     threshold = float(min_score)
     picked = [p for p in candidates if float(p.get("llm_score", 0)) >= threshold]
@@ -909,8 +907,8 @@ def process_mode_all_quick_min_score(
 
 def force_all_into_quick(result: Dict[str, Any]) -> Dict[str, Any]:
     """
-    将精读区合并进速览区，确保所有论文都归入 quick_skim。
-    规则：保留“精读优先”（高分在前）的顺序：deep_dive 在前，quick_skim 在后；按 id 去重。
+    Merge deep dive into quick skim so every paper ends up in quick_skim.
+    Order: deep dive first, then quick skim (high scores first); dedupe by id.
     """
     deep = result.get("deep_dive") or []
     quick = result.get("quick_skim") or []
@@ -962,12 +960,12 @@ def main() -> None:
     parser.add_argument(
         "--carryover-only",
         action="store_true",
-        help="只使用 archive/carryover.json 作为候选集（忽略输入文件与 seen_ids 过滤）。",
+        help="Use only archive/carryover.json as the candidate pool (ignore input file and seen_ids filtering).",
     )
     parser.add_argument(
         "--preserve-carryover",
         action="store_true",
-        help="运行完成后不覆盖写入 archive/carryover.json（默认会按本次推荐结果更新）。",
+        help="Do not overwrite archive/carryover.json after the run (default updates it from this run's recommendations).",
     )
     parser.add_argument(
         "--all-quick",
@@ -1002,22 +1000,22 @@ def main() -> None:
     if not modes:
         raise ValueError("modes must include at least one of: standard, extend, spark, skims")
 
-    # skims 模式用于“回溯窗口/批量重跑”：默认不做历史 seen_ids 过滤，
-    # 否则会因为之前推荐过而导致输出数量偏少。
+    # skims mode is for backfill/batch reruns: skip historical seen_ids filtering by default,
+    # otherwise previously recommended papers shrink the output count.
     ignore_seen_ids = False
     if modes and all((MODES.get(m) or {}).get("all_quick_min_score") is not None for m in modes):
         ignore_seen_ids = True
 
-    log_substep("5.1", "加载输入数据", "START")
+    log_substep("5.1", "load input data", "START")
     try:
         if args.carryover_only:
-            log("[INFO] carryover-only=true：将忽略输入文件，仅使用 carryover 作为候选集。")
+            log("[INFO] carryover-only=true: ignoring input file; using carryover only as candidate pool.")
             papers = []
             llm_ranked = []
         else:
-            # 检查输入文件是否存在，如果不存在则只使用 carryover
+            # If the input file is missing, use carryover only
             if not os.path.exists(input_path):
-                log(f"[INFO] 输入文件不存在：{input_path}（今天没有新论文，将只使用 carryover）")
+                log(f"[INFO] Input file not found: {input_path} (no new papers today; using carryover only)")
                 papers = []
                 llm_ranked = []
             else:
@@ -1025,10 +1023,10 @@ def main() -> None:
                 papers = data.get("papers") or []
                 llm_ranked = data.get("llm_ranked") or []
     finally:
-        log_substep("5.1", "加载输入数据", "END")
+        log_substep("5.1", "load input data", "END")
 
     if not papers or not llm_ranked:
-        log("[INFO] 今天没有新论文，将只使用 carryover 生成推荐。")
+        log("[INFO] No new papers today; generating recommendations from carryover only.")
 
     tag_count, tag_list = load_config_tag_count()
     active_carryover_tags = [normalize_carryover_tag(tag) for tag in tag_list if normalize_carryover_tag(tag)]
@@ -1036,22 +1034,22 @@ def main() -> None:
     log(f"[INFO] arxiv_paper_setting mode={mode_text} days_window={carryover_days}")
 
     group_start(f"Step 5 - select {os.path.basename(input_path)}")
-    log_substep("5.2", "构建评分论文列表", "START")
+    log_substep("5.2", "build scored paper list", "START")
     try:
         scored_papers = build_scored_papers(papers, llm_ranked)
         log(f"[INFO] scored_papers={len(scored_papers)}")
     finally:
-        log_substep("5.2", "构建评分论文列表", "END")
+        log_substep("5.2", "build scored paper list", "END")
 
     archive_root = os.path.join(ROOT_DIR, "archive")
     today_date = parse_date_str(TODAY_STR)
     if args.carryover_only or ignore_seen_ids:
         seen_ids = set()
         if ignore_seen_ids:
-            log("[INFO] skims/backfill 模式：已关闭历史 seen_ids 过滤（输出数量更完整）。")
+            log("[INFO] skims/backfill mode: historical seen_ids filtering disabled (fuller output).")
     else:
         seen_ids = collect_seen_ids(archive_root, TODAY_STR, active_tags=active_carryover_tags)
-    log_substep("5.3", "加载 carryover 并构建候选集", "START")
+    log_substep("5.3", "load carryover and build candidates", "START")
     try:
         carryover_items, _delta = load_recent_carryover(
             CARRYOVER_PATH,
@@ -1075,10 +1073,10 @@ def main() -> None:
         else:
             candidates = build_candidates(scored_papers, carryover_items, seen_ids)
     finally:
-        log_substep("5.3", "加载 carryover 并构建候选集", "END")
+        log_substep("5.3", "load carryover and build candidates", "END")
 
     if not candidates:
-        log("[INFO] 没有候选论文（新论文=0 且 carryover=0），将写入空推荐结果并更新 carryover。")
+        log("[INFO] No candidates (new papers=0 and carryover=0); writing empty recommendations and updating carryover.")
         os.makedirs(output_dir, exist_ok=True)
         for mode in modes:
             output_path = os.path.join(output_dir, f"arxiv_papers_{TODAY_STR}.{mode}.json")
@@ -1113,7 +1111,7 @@ def main() -> None:
 
     recommended_ids: set = set()
 
-    log_substep("5.4", "按模式生成推荐结果", "START")
+    log_substep("5.4", "generate recommendations by mode", "START")
     for mode in modes:
         cfg = MODES.get(mode) or {}
         if args.all_quick_min_score is not None:
@@ -1146,11 +1144,11 @@ def main() -> None:
                 pid = str(item.get("id") or item.get("paper_id") or "").strip()
                 if pid:
                     recommended_ids.add(pid)
-    log_substep("5.4", "按模式生成推荐结果", "END")
+    log_substep("5.4", "generate recommendations by mode", "END")
 
-    log_substep("5.5", "写入 carryover 状态", "START")
+    log_substep("5.5", "write carryover state", "START")
     if args.preserve_carryover:
-        log("[INFO] preserve-carryover=true：跳过写入 carryover.json")
+        log("[INFO] preserve-carryover=true: skipping carryover.json write")
     else:
         carryover_out = build_carryover_out(candidates, recommended_ids, carryover_days)
         carryover_payload = build_carryover_payload(
@@ -1161,7 +1159,7 @@ def main() -> None:
             updated_date=TODAY_STR,
         )
         save_json(carryover_payload, CARRYOVER_PATH)
-    log_substep("5.5", "写入 carryover 状态", "END")
+    log_substep("5.5", "write carryover state", "END")
 
     group_end()
 

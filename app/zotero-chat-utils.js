@@ -10,12 +10,12 @@
   const normalize = (value) => String(value || '').trim();
 
   const inferSpeaker = ({ roleText = '', className = '' } = {}) => {
-    const role = normalize(roleText);
+    const role = normalize(roleText).toLowerCase();
     const cls = normalize(className);
 
-    if (role.includes('思考过程')) return '';
-    if (role.includes('你')) return 'User';
-    if (role.includes('助手')) return 'AI';
+    if (role.includes('thinking')) return '';
+    if (role.includes('user') || role.includes('you')) return 'User';
+    if (role.includes('assistant') || role.includes('ai')) return 'AI';
 
     if (/\bmsg-content-user\b/.test(cls)) return 'User';
     if (/\bmsg-content-ai\b/.test(cls)) return 'AI';

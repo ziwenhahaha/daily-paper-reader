@@ -47,9 +47,9 @@ class UpdateSidebarMergeTest(unittest.TestCase):
 
     def test_extract_day_block_papers_groups_by_section(self):
         block = [
-            "    * 精读区\n",
+            "    * Deep Read\n",
             '      * <a class="dpr-sidebar-item-link" href="#/papers/A" data-sidebar-item="">A</a>\n',
-            "    * 速读区\n",
+            "    * Quick Skim\n",
             '      * <a class="dpr-sidebar-item-link" href="#/papers/B" data-sidebar-item="">B</a>\n',
         ]
         deep, quick = self.mod._extract_day_block_papers(block)
@@ -61,7 +61,7 @@ class UpdateSidebarMergeTest(unittest.TestCase):
     def test_two_runs_same_date_merge_papers(self):
         with tempfile.TemporaryDirectory() as tmp:
             sidebar = Path(tmp) / "_sidebar.md"
-            sidebar.write_text("* [首页](/)\n", encoding="utf-8")
+            sidebar.write_text("* [Home](/)\n", encoding="utf-8")
 
             # Run A: NLP profile, papers A1 (deep), A2 (quick)
             self._run_update(
@@ -95,7 +95,7 @@ class UpdateSidebarMergeTest(unittest.TestCase):
     def test_new_papers_first_existing_appended(self):
         with tempfile.TemporaryDirectory() as tmp:
             sidebar = Path(tmp) / "_sidebar.md"
-            sidebar.write_text("* [首页](/)\n", encoding="utf-8")
+            sidebar.write_text("* [Home](/)\n", encoding="utf-8")
             self._run_update(
                 str(sidebar),
                 "20260624",
@@ -118,7 +118,7 @@ class UpdateSidebarMergeTest(unittest.TestCase):
     def test_duplicate_paper_id_not_duplicated(self):
         with tempfile.TemporaryDirectory() as tmp:
             sidebar = Path(tmp) / "_sidebar.md"
-            sidebar.write_text("* [首页](/)\n", encoding="utf-8")
+            sidebar.write_text("* [Home](/)\n", encoding="utf-8")
             self._run_update(
                 str(sidebar),
                 "20260624",
@@ -138,7 +138,7 @@ class UpdateSidebarMergeTest(unittest.TestCase):
     def test_section_only_created_when_papers_present(self):
         with tempfile.TemporaryDirectory() as tmp:
             sidebar = Path(tmp) / "_sidebar.md"
-            sidebar.write_text("* [首页](/)\n", encoding="utf-8")
+            sidebar.write_text("* [Home](/)\n", encoding="utf-8")
             # First run: only quick papers
             self._run_update(
                 str(sidebar),
@@ -147,8 +147,8 @@ class UpdateSidebarMergeTest(unittest.TestCase):
                 quick=[("papers/Q1", "Quick 1", [])],
             )
             text1 = sidebar.read_text(encoding="utf-8")
-            self.assertNotIn("精读区", text1)
-            self.assertIn("速读区", text1)
+            self.assertNotIn("Deep Read", text1)
+            self.assertIn("Quick Skim", text1)
 
             # Second run: adds a deep paper, quick section should remain merged
             self._run_update(
@@ -158,8 +158,8 @@ class UpdateSidebarMergeTest(unittest.TestCase):
                 quick=[],
             )
             text2 = sidebar.read_text(encoding="utf-8")
-            self.assertIn("精读区", text2)
-            self.assertIn("速读区", text2)
+            self.assertIn("Deep Read", text2)
+            self.assertIn("Quick Skim", text2)
             self.assertIn("#/papers/D1", text2)
             self.assertIn("#/papers/Q1", text2)
 

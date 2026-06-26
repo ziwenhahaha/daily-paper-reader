@@ -16,7 +16,7 @@
   const DEEPSEEK_PRESETS = Object.freeze({
     deepseek: Object.freeze({
       key: 'deepseek',
-      label: 'DeepSeek 官方',
+      label: 'DeepSeek (official)',
       baseUrl: 'https://api.deepseek.com',
       models: Object.freeze(['deepseek-v4-flash', 'deepseek-v4-pro']),
     }),

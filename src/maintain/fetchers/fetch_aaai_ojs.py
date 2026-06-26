@@ -298,7 +298,7 @@ def save_output(rows: List[Dict[str, Any]], output_path: str) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="抓取 AAAI 官方 OJS proceedings 论文（accepted only）。")
+    parser = argparse.ArgumentParser(description="Fetch AAAI official OJS proceedings papers (accepted only).")
     parser.add_argument("--year-end", type=int, default=datetime.now(timezone.utc).year)
     parser.add_argument("--year-count", type=int, default=3)
     parser.add_argument("--workers", type=int, default=12)
@@ -309,7 +309,7 @@ def main() -> None:
     log(f"[AAAI] start years={years}")
     rows = fetch_aaai_ojs_papers(years=years, workers=args.workers)
     out_path = save_output(rows, args.output)
-    log(f"[OK] AAAI OJS 结果已写入：{out_path} count={len(rows)}")
+    log(f"[OK] AAAI OJS results written to: {out_path} count={len(rows)}")
 
 
 if __name__ == "__main__":

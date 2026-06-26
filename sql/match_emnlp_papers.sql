@@ -1,5 +1,5 @@
 -- ============================================================
--- EMNLP Anthology 论文表的检索 RPC
+-- EMNLP Anthology paper retrieval RPC
 -- ============================================================
 
 create or replace function match_emnlp_papers_exact(

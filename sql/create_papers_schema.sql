@@ -1,5 +1,5 @@
 -- ============================================================
--- 通用论文表结构（适用于 arXiv / bioRxiv 等单源仓库）
+-- Generic paper table schema (for single-source repositories like arXiv / bioRxiv)
 -- ============================================================
 
 create extension if not exists vector;

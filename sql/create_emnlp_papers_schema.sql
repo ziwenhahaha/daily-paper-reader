@@ -1,5 +1,5 @@
 -- ============================================================
--- EMNLP Anthology 论文表
+-- EMNLP Anthology paper table
 -- ============================================================
 
 create extension if not exists vector;

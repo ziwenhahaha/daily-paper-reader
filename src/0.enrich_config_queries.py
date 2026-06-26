@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-# 自动补全 config.yaml 中的 related / rewrite 字段：
-# - keywords 缺少 related 时，调用 DeepSeek 生成相关词
-# - llm_queries 缺少 rewrite 时，调用 DeepSeek 生成英文改写
+# Automatically complete related / rewrite fields in config.yaml:
+# - keywords missing related, call DeepSeek to generate related terms
+# - llm_queries missing rewrite, call DeepSeek to generate English rewrite
 
 import os
 import json
@@ -121,34 +121,34 @@ def call_llm_json(client: DeepSeekClient, messages: List[Dict[str, str]], schema
     allow_json_object_fallback=True,
   )
   if resp.get("refusal"):
-    raise ValueError(f"模型拒绝输出结构化结果：{resp.get('refusal')}")
+    raise ValueError(f"Model refused structured output: {resp.get('refusal')}")
   if resp.get("finish_reason") not in (None, "stop"):
-    raise ValueError(f"结构化输出未完成：finish_reason={resp.get('finish_reason')}")
+    raise ValueError(f"Structured output incomplete: finish_reason={resp.get('finish_reason')}")
   if resp.get("parse_error") is not None:
-    raise ValueError(f"模型未返回合法 JSON：{resp.get('content')}")
+    raise ValueError(f"Model did not return valid JSON: {resp.get('content')}")
 
   parsed = resp.get("parsed")
   if not isinstance(parsed, dict):
-    raise ValueError(f"模型未返回合法 JSON：{resp.get('content')}")
+    raise ValueError(f"Model did not return valid JSON: {resp.get('content')}")
   return parsed
 
 
 def main() -> None:
     import argparse
-    parser = argparse.ArgumentParser(description="补全 config.yaml 中的 related / rewrite 字段。")
+    parser = argparse.ArgumentParser(description="Enrich related / rewrite fields in config.yaml.")
     parser.add_argument(
       "--force",
       action="store_true",
-      help="强制更新 related / rewrite，即使已存在。",
+      help="Force-update related / rewrite even when they already exist.",
     )
     args = parser.parse_args()
 
     if not os.path.exists(CONFIG_FILE):
-        raise FileNotFoundError(f"找不到 config.yaml：{CONFIG_FILE}")
+        raise FileNotFoundError(f"config.yaml not found: {CONFIG_FILE}")
 
     api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("SUMMARY_API_KEY")
     if not api_key:
-        raise RuntimeError("缺少 DEEPSEEK_API_KEY 或 SUMMARY_API_KEY 环境变量，无法调用 DeepSeek。")
+        raise RuntimeError("Missing DEEPSEEK_API_KEY or SUMMARY_API_KEY; cannot call DeepSeek.")
 
     group_start("Step 0.0 - load config")
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -190,7 +190,7 @@ def main() -> None:
       "additionalProperties": False,
     }
 
-    # ===== 检查哪些字段需要扩充 =====
+    # ===== Check which fields need enrichment =====
     missing_kw_related = []
     missing_kw_rewrite = []
     missing_llm_rewrite = []
@@ -202,12 +202,12 @@ def main() -> None:
       if not keyword:
         continue
 
-      # 检查 related 字段
+      # Check related field
       related = item.get("related")
       if args.force or not related or (isinstance(related, list) and not related):
         missing_kw_related.append((idx, keyword, item))
 
-      # 检查 rewrite 字段
+      # Check rewrite field
       rewrite = (item.get("rewrite") or "").strip()
       if args.force or not rewrite:
         missing_kw_rewrite.append((idx, keyword, item))
@@ -219,23 +219,23 @@ def main() -> None:
       if not query:
         continue
 
-      # 检查 rewrite 字段
+      # Check rewrite field
       rewrite = (item.get("rewrite") or "").strip()
       if args.force or not rewrite:
         missing_llm_rewrite.append((idx, query, item))
 
-    # ===== 输出检查结果 =====
-    log(f"[CHECK] 需要扩充 keywords.related: {len(missing_kw_related)} 个")
-    log(f"[CHECK] 需要扩充 keywords.rewrite: {len(missing_kw_rewrite)} 个")
-    log(f"[CHECK] 需要扩充 llm_queries.rewrite: {len(missing_llm_rewrite)} 个")
+    # ===== Report check results =====
+    log(f"[CHECK] keywords.related to enrich: {len(missing_kw_related)}")
+    log(f"[CHECK] keywords.rewrite to enrich: {len(missing_kw_rewrite)}")
+    log(f"[CHECK] llm_queries.rewrite to enrich: {len(missing_llm_rewrite)}")
 
-    # 如果所有字段都完整且不强制更新，直接返回
+    # If all fields are complete and --force is not set, exit early
     if not args.force and not missing_kw_related and not missing_kw_rewrite and not missing_llm_rewrite:
-      log("[INFO] config.yaml 所有字段都完整，无需扩充。使用 --force 参数可强制重新生成。")
+      log("[INFO] All config.yaml fields are complete; no enrichment needed. Use --force to regenerate.")
       return
 
-    # ===== 只扩充缺失的字段 =====
-    # keywords: 补齐 related
+    # ===== Enrich only missing fields =====
+    # keywords: fill in related
     if missing_kw_related:
       group_start("Step 0.1 - enrich keywords.related")
       for idx, keyword, item in missing_kw_related:
@@ -247,7 +247,7 @@ def main() -> None:
           item["related"] = related_terms
       group_end()
 
-    # keywords: 补齐 rewrite
+    # keywords: fill in rewrite
     if missing_kw_rewrite:
       group_start("Step 0.2 - enrich keywords.rewrite")
       for idx, keyword, item in missing_kw_rewrite:
@@ -259,7 +259,7 @@ def main() -> None:
           item["rewrite"] = new_rewrite
       group_end()
 
-    # llm_queries: 补齐 rewrite
+    # llm_queries: fill in rewrite
     if missing_llm_rewrite:
       group_start("Step 0.3 - enrich llm_queries.rewrite")
       for idx, query, item in missing_llm_rewrite:
@@ -271,7 +271,7 @@ def main() -> None:
           item["rewrite"] = rewrite_text
       group_end()
 
-    # 保存更新后的配置
+    # Save updated config
     subs["keywords"] = keywords
     subs["llm_queries"] = llm_queries
     data["subscriptions"] = subs
@@ -280,7 +280,7 @@ def main() -> None:
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
       yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
 
-    log("[INFO] 已更新 config.yaml 的相关字段。")
+    log("[INFO] Updated related fields in config.yaml.")
     group_end()
 
 

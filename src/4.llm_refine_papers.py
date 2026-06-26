@@ -32,7 +32,7 @@ MAX_FILTER_RETRIES = 3
 
 
 class FilterOutputTruncatedError(ValueError):
-    """LLM 输出被截断时触发，优先拆小批次而不是重复请求同一批。"""
+    """Raised when LLM output is truncated; prefer splitting batches over retrying the same batch."""
 
 
 def log(message: str) -> None:
@@ -225,9 +225,9 @@ def build_user_requirements(
     fallback_queries: List[Dict[str, Any]],
 ) -> List[Dict[str, str]]:
     """
-    统一的用户需求列表（不区分 keyword/query 概念）：
-    - 仅保留 query_text/semantic query 语义
-    - 为每条需求生成英文描述，供 Step4 评分 prompt 使用
+    Unified user-requirements list (no keyword vs query distinction):
+    - Keep only query_text / semantic-query meaning
+    - Generate an English description per requirement for the Step 4 scoring prompt
     """
     requirements: List[Dict[str, str]] = []
     seen = set()
@@ -338,28 +338,22 @@ def call_filter(
                         "id": {"type": "string"},
                         "matched_requirement_index": {"type": "integer"},
                         "evidence_en": {"type": "string"},
-                        "evidence_cn": {"type": "string"},
                         "tldr_en": {"type": "string"},
-                        "tldr_cn": {"type": "string"},
-                        "title_zh": {"type": "string"},
-                        "motivation_cn": {"type": "string"},
-                        "method_cn": {"type": "string"},
-                        "result_cn": {"type": "string"},
-                        "conclusion_cn": {"type": "string"},
+                        "motivation_en": {"type": "string"},
+                        "method_en": {"type": "string"},
+                        "result_en": {"type": "string"},
+                        "conclusion_en": {"type": "string"},
                         "score": {"type": "number"},
                     },
                     "required": [
                         "id",
                         "matched_requirement_index",
                         "evidence_en",
-                        "evidence_cn",
                         "tldr_en",
-                        "tldr_cn",
-                        "title_zh",
-                        "motivation_cn",
-                        "method_cn",
-                        "result_cn",
-                        "conclusion_cn",
+                        "motivation_en",
+                        "method_en",
+                        "result_en",
+                        "conclusion_en",
                         "score",
                     ],
                     "additionalProperties": False,
@@ -409,7 +403,7 @@ def call_filter(
         "Papers:\n"
         f"{json.dumps(docs, ensure_ascii=False)}\n\n"
         "Output JSON format example:\n"
-        "{\"results\": [{\"id\": \"paper_id\", \"matched_requirement_index\": 1, \"evidence_en\": \"short English phrase\", \"evidence_cn\": \"简短中文短语\", \"tldr_en\": \"one-sentence TLDR\", \"tldr_cn\": \"中文摘要式 TLDR\", \"title_zh\": \"中文论文标题\", \"motivation_cn\": \"中文研究动机\", \"method_cn\": \"中文方法概括\", \"result_cn\": \"中文结果概括\", \"conclusion_cn\": \"中文结论\", \"score\": 7}]}\n\n"
+        "{\"results\": [{\"id\": \"paper_id\", \"matched_requirement_index\": 1, \"evidence_en\": \"short English phrase\", \"tldr_en\": \"abstract-style English TLDR\", \"motivation_en\": \"English research motivation\", \"method_en\": \"English method summary\", \"result_en\": \"English result summary\", \"conclusion_en\": \"English conclusion\", \"score\": 7}]}\n\n"
         "Requirement: You MUST return exactly one result for every input paper. "
         "The results length must match the papers length, and every input id must appear once.\n\n"
         "Output must be a single-line JSON string. "
@@ -419,29 +413,23 @@ def call_filter(
         "If a paper matches any one point, it can get a high score. "
         "Set matched_requirement_index to the best-matched requirement (1-based). "
         "Use semantic interpretation, not only lexical overlap, to decide relevance and score tier. "
-        "Evidence must be provided in both languages: "
-        "evidence_en (English) and evidence_cn (Chinese). "
-        "They should be short phrases linking the paper to the matched requirement; "
-        "they do NOT need to be direct quotes. "
-        "Also generate TLDR in both languages: tldr_en and tldr_cn. "
-        "tldr_cn is not a one-line slogan; write it in the same style as a paper-page TLDR abstract. "
-        "For relevant papers with score > 0, tldr_cn should target 150-220 Chinese characters, usually 3-4 short Chinese sentences, "
+        "Provide evidence_en: a short English phrase linking the paper to the matched requirement; "
+        "it does NOT need to be a direct quote. "
+        "Also generate tldr_en. "
+        "tldr_en is not a one-line slogan; write it in the same style as a paper-page TLDR abstract. "
+        "For relevant papers with score > 0, tldr_en should target 60-90 words, usually 3-4 short sentences, "
         "covering the problem setting, core method, key result, and why the result matters. "
         "Reference style: first say what limitation/problem the paper addresses; then say what method it proposes; then say what experiments/results show; finally mention the broader contribution. "
-        "Keep tldr_en concise but informative: 160-240 English characters. "
-        "Also generate title_zh as a concise Chinese translation of the paper title. "
-        "title_zh must always be a real translated title based on the input title, even when the paper is unrelated. "
-        "Also generate four Chinese-only overview fields: motivation_cn, method_cn, result_cn, conclusion_cn. "
-        "For relevant papers with score > 0, each overview field should target 30-70 Chinese characters, normally one concrete Chinese sentence. "
+        "Also generate four overview fields: motivation_en, method_en, result_en, conclusion_en. "
+        "For relevant papers with score > 0, each overview field should target 15-35 words, normally one concrete sentence. "
         "Match the style of a paper page overview: concise but not a bare phrase; include concrete content from the title/abstract. "
         "These length targets are guidance, not a reason to omit a paper; if the title/abstract is sparse, return the best faithful concise summary you can. "
-        "Do not put English sentences in these Chinese fields. "
-        "method_cn should summarize the method from the title and abstract, not copy the English abstract. "
+        "method_en should summarize the method from the title and abstract, not copy the abstract verbatim. "
         "Then give a score (0-10). "
-        "If unrelated, use evidence_en=\"not relevant\", evidence_cn=\"不相关\", "
-        "tldr_en=\"not relevant\", tldr_cn=\"不相关\", "
-        "motivation_cn=\"不相关\", method_cn=\"不相关\", result_cn=\"不相关\", conclusion_cn=\"不相关\", "
-        "score 0, matched_requirement_index=0, while keeping title_zh as the translated paper title."
+        "If unrelated, use evidence_en=\"not relevant\", "
+        "tldr_en=\"not relevant\", "
+        "motivation_en=\"not relevant\", method_en=\"not relevant\", result_en=\"not relevant\", conclusion_en=\"not relevant\", "
+        "score 0, matched_requirement_index=0."
     )
     if retry_note:
         user_prompt += f"\n\nRetry correction note:\n{retry_note}"
@@ -515,27 +503,21 @@ def _coerce_int(value: Any, default: int = 0) -> int:
 def _normalize_filter_result_item(item: Dict[str, Any]) -> Dict[str, Any]:
     legacy = _norm_text(item.get("evidence"))
     evidence_en = _norm_text(item.get("evidence_en") or legacy)
-    evidence_cn = _norm_text(item.get("evidence_cn") or legacy or evidence_en)
     score = _coerce_score(item.get("score"))
     tldr_en = _norm_text(item.get("tldr_en")) or ("not relevant" if score <= 0 else evidence_en)
-    tldr_cn = _norm_text(item.get("tldr_cn")) or ("不相关" if score <= 0 else (evidence_cn or tldr_en))
-    title_zh = _norm_text(item.get("title_zh"))
-    motivation_cn = _norm_text(item.get("motivation_cn")) or ("不相关" if score <= 0 else evidence_cn)
-    method_cn = _norm_text(item.get("method_cn")) or ("不相关" if score <= 0 else "方法细节请参考摘要与原文")
-    result_cn = _norm_text(item.get("result_cn")) or ("不相关" if score <= 0 else tldr_cn)
-    conclusion_cn = _norm_text(item.get("conclusion_cn")) or ("不相关" if score <= 0 else tldr_cn)
+    motivation_en = _norm_text(item.get("motivation_en")) or ("not relevant" if score <= 0 else evidence_en)
+    method_en = _norm_text(item.get("method_en")) or ("not relevant" if score <= 0 else "See the abstract and full text for method details.")
+    result_en = _norm_text(item.get("result_en")) or ("not relevant" if score <= 0 else tldr_en)
+    conclusion_en = _norm_text(item.get("conclusion_en")) or ("not relevant" if score <= 0 else tldr_en)
     return {
         "id": _norm_text(item.get("id")),
         "matched_requirement_index": _coerce_int(item.get("matched_requirement_index"), 0),
         "evidence_en": evidence_en,
-        "evidence_cn": evidence_cn,
         "tldr_en": tldr_en,
-        "tldr_cn": tldr_cn,
-        "title_zh": title_zh,
-        "motivation_cn": motivation_cn,
-        "method_cn": method_cn,
-        "result_cn": result_cn,
-        "conclusion_cn": conclusion_cn,
+        "motivation_en": motivation_en,
+        "method_en": method_en,
+        "result_en": result_en,
+        "conclusion_en": conclusion_en,
         "score": score,
     }
 
@@ -681,31 +663,24 @@ def merge_filter_result(
 
     score = _coerce_score(item.get("score"))
     evidence_en = _norm_text(item.get("evidence_en"))
-    evidence_cn = _norm_text(item.get("evidence_cn"))
     tldr_en = _norm_text(item.get("tldr_en"))
-    tldr_cn = _norm_text(item.get("tldr_cn"))
-    title_zh = _norm_text(item.get("title_zh"))
-    motivation_cn = _norm_text(item.get("motivation_cn"))
-    method_cn = _norm_text(item.get("method_cn"))
-    result_cn = _norm_text(item.get("result_cn"))
-    conclusion_cn = _norm_text(item.get("conclusion_cn"))
+    motivation_en = _norm_text(item.get("motivation_en"))
+    method_en = _norm_text(item.get("method_en"))
+    result_en = _norm_text(item.get("result_en"))
+    conclusion_en = _norm_text(item.get("conclusion_en"))
     legacy = _norm_text(item.get("evidence"))
     if not evidence_en:
         evidence_en = legacy
-    if not evidence_cn:
-        evidence_cn = legacy or evidence_en
     if not tldr_en:
         tldr_en = "not relevant" if score <= 0 else evidence_en
-    if not tldr_cn:
-        tldr_cn = "不相关" if score <= 0 else (evidence_cn or tldr_en)
-    if not motivation_cn:
-        motivation_cn = "不相关" if score <= 0 else evidence_cn
-    if not method_cn:
-        method_cn = "不相关" if score <= 0 else "方法细节请参考摘要与原文"
-    if not result_cn:
-        result_cn = "不相关" if score <= 0 else tldr_cn
-    if not conclusion_cn:
-        conclusion_cn = "不相关" if score <= 0 else tldr_cn
+    if not motivation_en:
+        motivation_en = "not relevant" if score <= 0 else evidence_en
+    if not method_en:
+        method_en = "not relevant" if score <= 0 else "See the abstract and full text for method details."
+    if not result_en:
+        result_en = "not relevant" if score <= 0 else tldr_en
+    if not conclusion_en:
+        conclusion_en = "not relevant" if score <= 0 else tldr_en
 
     matched_idx = _coerce_int(item.get("matched_requirement_index"), 0)
     matched_req = requirement_by_index.get(matched_idx) if matched_idx > 0 else None
@@ -719,15 +694,12 @@ def merge_filter_result(
             "paper_id": pid,
             "score": score,
             "evidence_en": evidence_en,
-            "evidence_cn": evidence_cn,
-            "canonical_evidence": evidence_cn or evidence_en or legacy,
+            "canonical_evidence": evidence_en or legacy,
             "tldr_en": tldr_en,
-            "tldr_cn": tldr_cn,
-            "title_zh": title_zh,
-            "motivation_cn": motivation_cn,
-            "method_cn": method_cn,
-            "result_cn": result_cn,
-            "conclusion_cn": conclusion_cn,
+            "motivation_en": motivation_en,
+            "method_en": method_en,
+            "result_en": result_en,
+            "conclusion_en": conclusion_en,
             "matched_requirement_id": matched_id,
             "matched_query_tag": matched_tag,
             "matched_query_text": matched_query,
@@ -773,22 +745,22 @@ def process_file(
     max_output_tokens: int,
     filter_concurrency: int,
 ) -> None:
-    # 检查输入文件是否存在，如果不存在说明今天没有新论文，优雅退出
+    # If the input file is missing, there are no new papers today; exit gracefully
     if not os.path.exists(input_path):
-        log(f"[INFO] 输入文件不存在：{input_path}（今天没有新论文，将跳过 LLM refine）")
+        log(f"[INFO] Input file not found: {input_path} (no new papers today; skipping LLM refine)")
         return
 
     data = load_json(input_path)
     papers = data.get("papers") or []
     queries = data.get("queries") or []
     if not papers or not queries:
-        log("[WARN] missing papers or queries, skip.")
+        log("[WARN] missing papers or queries; skipping.")
         return
 
     config = load_config(config_path)
     user_requirements = build_user_requirements(config, queries)
     if not user_requirements:
-        log("[WARN] no user requirements built from config/queries, skip.")
+        log("[WARN] no user requirements built from config/queries; skipping.")
         save_json(data, output_path)
         return
     paper_map = build_paper_map(papers)
@@ -799,7 +771,7 @@ def process_file(
 
     group_start(f"Step 4 - llm refine {os.path.basename(input_path)}")
     log(
-        f"[INFO] start filter: queries={len(queries)}, papers={len(papers)}, "
+        f"[INFO] Starting filter: queries={len(queries)}, papers={len(papers)}, "
         f"min_star={min_star}, batch_size={batch_size}, max_chars={max_chars}, "
         f"concurrency={filter_concurrency}"
     )
@@ -813,8 +785,8 @@ def process_file(
                 if pid:
                     candidate_ids.append(pid)
 
-    candidate_ids = unique_tagged([{"tag": pid} for pid in candidate_ids])
-    candidate_ids = [item["tag"] for item in candidate_ids]
+    tagged_candidates = unique_tagged([{"tag": pid} for pid in candidate_ids])
+    candidate_ids = [item["tag"] for item in tagged_candidates]
     if not candidate_ids:
         log("[WARN] no candidates found with star_rating >= min_star.")
         save_json(data, output_path)
@@ -853,7 +825,7 @@ def process_file(
     failed_docs: List[Dict[str, str]] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for idx, batch in enumerate(batches, start=1):
-            log(f"[INFO] filter batch {idx}/{total_batches} dispatch docs={len(batch)}")
+            log(f"[INFO] Filtering batch {idx}/{total_batches} dispatch docs={len(batch)}")
             pending[executor.submit(
                 _filter_batch,
                 idx,

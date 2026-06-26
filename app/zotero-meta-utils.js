@@ -7,6 +7,7 @@
     root.DPRZoteroMetaUtils = api;
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  const L = (typeof window !== 'undefined' && window.LegacyPaperMarkers) || {};
   const normalize = (value) => String(value || '').replace(/\r\n/g, '\n').trim();
 
   const stripFrontMatter = (content) => {
@@ -59,7 +60,8 @@
       aiSummaryText: pickFirstSectionText(
         sections,
         (title) =>
-          title.includes('论文详细总结') ||
+          title.includes('detailed summary') ||
+          (L.DETAILED_SUMMARY && title.includes(L.DETAILED_SUMMARY)) ||
           title.includes('ai summary'),
       ),
       originalAbstractText: pickFirstSectionText(
@@ -67,15 +69,18 @@
         (title) =>
           title === 'abstract' ||
           title.includes('original abstract') ||
-          title.includes('原文摘要'),
+          (L.ORIGINAL_ABSTRACT && title.includes(L.ORIGINAL_ABSTRACT)),
       ),
       tldrText: pickFirstSectionText(
         sections,
-        (title) => title.includes('tldr') || title.includes('tl;dr') || title.includes('摘要要点'),
+        (title) =>
+          title.includes('tldr') ||
+          title.includes('tl;dr') ||
+          (L.TLDR_POINTS && title.includes(L.TLDR_POINTS)),
       ),
-      chineseAbstractText: pickFirstSectionText(
+      legacyAbstractText: pickFirstSectionText(
         sections,
-        (title) => title === '摘要',
+        (title) => L.ABSTRACT_SHORT && title === L.ABSTRACT_SHORT,
       ),
     };
   };

@@ -1,5 +1,5 @@
 -- ============================================================
--- AAAI 官方 proceedings 论文表的检索 RPC
+-- AAAI official proceedings paper retrieval RPC
 -- ============================================================
 
 create or replace function match_aaai_papers_exact(

@@ -1,8 +1,8 @@
-# 订阅与查询配置
+# Subscription and query configuration
 
-当前为占位页，后续可以放：
+This is a placeholder page for now. It can later cover:
 
-- 智能 Query 如何新增
-- 修改词条与保存草稿的流程
-- keyword / intent query 的区别
-- 常见配置范式示例
+- How to add a smart query
+- The flow for editing entries and saving drafts
+- The difference between keyword and intent query
+- Examples of common configuration patterns

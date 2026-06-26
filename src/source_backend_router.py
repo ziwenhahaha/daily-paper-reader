@@ -5,8 +5,13 @@ from typing import Any, Dict, List, Tuple
 
 try:
     from source_config import ARXIV_SOURCE_KEY, normalize_source_list
-except Exception:  # pragma: no cover - 兼容 package 导入路径
+except Exception:  # pragma: no cover - compatibility with the package import path
     from src.source_config import ARXIV_SOURCE_KEY, normalize_source_list
+
+try:
+    from legacy_config_fields import read_note
+except Exception:  # pragma: no cover
+    from src.legacy_config_fields import read_note
 
 
 def get_query_paper_sources(query: Dict[str, Any]) -> List[str]:
@@ -34,7 +39,7 @@ def build_query_merge_key(query: Dict[str, Any]) -> Tuple[str, str, str, str, st
         str(query.get("tag") or ""),
         str(query.get("paper_tag") or ""),
         str(query.get("query_text") or ""),
-        str(query.get("logic_cn") or ""),
+        str(read_note(query)),
         str(query.get("boolean_expr") or ""),
     )
 

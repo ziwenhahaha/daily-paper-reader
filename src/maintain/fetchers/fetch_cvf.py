@@ -76,6 +76,15 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _attr_str(value: Any) -> str:
+    """Coerce a BeautifulSoup attribute value into a plain string."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return str(value[0]).strip() if value else ""
+    return str(value).strip()
+
+
 def _slugify(text: str) -> str:
     """Turn a title or URL fragment into a lowercase slug suitable for IDs."""
     text = re.sub(r"[^a-zA-Z0-9]+", "-", text)
@@ -136,7 +145,7 @@ def _parse_cvpr_list(html: str, year: int) -> List[Dict[str, str]]:
         if not a_title:
             continue
         title = _norm(a_title.get_text())
-        href = a_title.get("href", "")
+        href = _attr_str(a_title.get("href"))
         detail_url = href if href.startswith("http") else f"{CVF_BASE}/{href.lstrip('/')}"
 
         # The next <dd> sibling contains the PDF link.
@@ -145,7 +154,7 @@ def _parse_cvpr_list(html: str, year: int) -> List[Dict[str, str]]:
         if dd:
             pdf_a = dd.find("a", href=re.compile(r"\.pdf$", re.I))
             if pdf_a:
-                pdf_href = pdf_a["href"]
+                pdf_href = _attr_str(pdf_a.get("href"))
                 pdf_url = (
                     pdf_href
                     if pdf_href.startswith("http")
@@ -182,7 +191,7 @@ def _parse_eccv_list(html: str, year: int) -> List[Dict[str, str]]:
         if not a_title:
             continue
 
-        href = a_title.get("href", "")
+        href = _attr_str(a_title.get("href"))
         # Filter for the requested year.
         if year_str not in href:
             continue
@@ -195,7 +204,7 @@ def _parse_eccv_list(html: str, year: int) -> List[Dict[str, str]]:
         if dd:
             pdf_a = dd.find("a", href=re.compile(r"\.pdf$", re.I))
             if pdf_a:
-                pdf_href = pdf_a["href"]
+                pdf_href = _attr_str(pdf_a.get("href"))
                 pdf_url = (
                     pdf_href
                     if pdf_href.startswith("http")
@@ -225,7 +234,7 @@ def _fetch_detail(
     abstract = ""
     meta_abs = soup.find("meta", attrs={"name": "citation_abstract"})
     if meta_abs and meta_abs.get("content"):
-        abstract = _norm(meta_abs["content"])
+        abstract = _norm(_attr_str(meta_abs.get("content")))
 
     if not abstract:
         div_abs = soup.find("div", id="abstract")
@@ -235,7 +244,7 @@ def _fetch_detail(
     # -- authors -----------------------------------------------------------
     authors: List[str] = []
     for meta_a in soup.find_all("meta", attrs={"name": "citation_author"}):
-        name = meta_a.get("content", "").strip()
+        name = _attr_str(meta_a.get("content"))
         if name:
             authors.append(name)
 

@@ -10,7 +10,7 @@ from typing import Any
 
 try:
     from source_config import get_source_backend, load_config_with_source_migration
-except Exception:  # pragma: no cover - 兼容 package 导入路径
+except Exception:  # pragma: no cover - fallback for package import path
     from src.source_config import get_source_backend, load_config_with_source_migration
 
 try:
@@ -46,9 +46,9 @@ def load_arxiv_paper_setting() -> dict:
 
 def should_skip_fetch(config: dict | None = None) -> bool:
     """
-    当 Supabase 已完全接管检索（BM25 + 向量 RPC 均已启用）时，
-    Step 1（全量数据拉取到本地）可以跳过——后续 Step 2.1 / 2.2
-    会直接走数据库端召回，不再依赖本地原始文件。
+    When Supabase fully handles retrieval (BM25 + vector RPC both enabled),
+    Step 1 (full local data pull) can be skipped — Steps 2.1/2.2 will query
+    the database directly and no longer depend on local raw files.
     """
     if config is None:
         config = _load_full_config()
@@ -83,9 +83,9 @@ def build_run_date_token(days: int) -> str:
 
 def resolve_run_date_token(fetch_days: int | None) -> str:
     """
-    统一运行日期标识：
-    - 大窗口（>=阈值）使用区间 token：YYYYMMDD-YYYYMMDD
-    - 其它情况使用单日 token：YYYYMMDD
+    Unified run-date identifier:
+    - Large windows (>= threshold) use a range token: YYYYMMDD-YYYYMMDD
+    - All other cases use a single-day token: YYYYMMDD
     """
     if fetch_days is not None:
         if fetch_days >= LONG_RANGE_DAYS_THRESHOLD:
@@ -103,14 +103,14 @@ def resolve_run_date_token(fetch_days: int | None) -> str:
 
 
 def resolve_sidebar_date_label(fetch_days: int | None) -> str | None:
-    # 1) 显式传 --fetch-days 时，仅在大窗口模式下显示日期范围。
+    # 1) When --fetch-days is explicitly provided, only show the date range in large-window mode.
     if fetch_days is not None:
         if fetch_days >= LONG_RANGE_DAYS_THRESHOLD:
             return build_sidebar_date_label(fetch_days)
         return None
 
-    # 2) 未显式传入时，按 config 的 days_window 判断：
-    #    仅在“大时间跨度”模式（默认阈值 >=10 天）自动显示区间标题。
+    # 2) When not explicitly provided, check config's days_window:
+    #    Only auto-display the range label in “large time span” mode (default threshold >= 10 days).
     setting = load_arxiv_paper_setting()
     try:
         days_window = int(setting.get("days_window") or MAIN_DEFAULT_DAYS)
@@ -169,7 +169,7 @@ def load_json_safe(path: str) -> Any:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as exc:
-        print(f"[TRACE] 读取失败: {path} | {exc}", flush=True)
+        print(f"[TRACE] Failed to read: {path} | {exc}", flush=True)
         return None
 
 
@@ -259,12 +259,12 @@ def build_ranked_from_sim_scores(query_obj: dict[str, Any]) -> list[dict[str, An
 
 def prepare_rerank_fallback(input_path: str, output_path: str) -> bool:
     if not os.path.exists(input_path):
-        print(f"[WARN] Step 3 fallback 输入不存在，无法生成兜底 rerank 文件: {input_path}", flush=True)
+        print(f"[WARN] Step 3 fallback input not found, cannot generate fallback rerank file: {input_path}", flush=True)
         return False
 
     data = load_json_safe(input_path)
     if not isinstance(data, dict):
-        print(f"[WARN] Step 3 fallback 输入格式非法，无法生成兜底 rerank 文件: {input_path}", flush=True)
+        print(f"[WARN] Step 3 fallback input has invalid format, cannot generate fallback rerank file: {input_path}", flush=True)
         return False
 
     queries = data.get("queries")
@@ -275,7 +275,7 @@ def prepare_rerank_fallback(input_path: str, output_path: str) -> bool:
 
     data["reranked_at"] = datetime.now(timezone.utc).isoformat()
     save_json(output_path, data)
-    print(f"[INFO] 已生成 Step 3 fallback 结果: {output_path}", flush=True)
+    print(f"[INFO] Step 3 fallback result written: {output_path}", flush=True)
     return True
 
 
@@ -366,7 +366,7 @@ def collect_query_hits(queries: Any, trace_set: set[str]) -> dict[str, list[dict
 
 def print_trace_retrieval(stage: str, path: str, trace_ids: list[str]) -> None:
     if not os.path.exists(path):
-        print(f"[TRACE][{stage}] 文件不存在: {path}", flush=True)
+        print(f"[TRACE][{stage}] File not found: {path}", flush=True)
         return
     data = load_json_safe(path)
     if data is None:
@@ -380,7 +380,7 @@ def print_trace_retrieval(stage: str, path: str, trace_ids: list[str]) -> None:
         paper_index = build_paper_index(data.get("papers"), trace_set)
         query_hits = collect_query_hits(data.get("queries"), trace_set)
     else:
-        print(f"[TRACE][{stage}] 非法 JSON 结构: {type(data)}", flush=True)
+        print(f"[TRACE][{stage}] Unexpected JSON structure: {type(data)}", flush=True)
         return
 
     print(f"[TRACE][{stage}] path={path}", flush=True)
@@ -414,11 +414,11 @@ def print_trace_retrieval(stage: str, path: str, trace_ids: list[str]) -> None:
 
 def print_trace_llm(stage: str, path: str, trace_ids: list[str]) -> None:
     if not os.path.exists(path):
-        print(f"[TRACE][{stage}] 文件不存在: {path}", flush=True)
+        print(f"[TRACE][{stage}] File not found: {path}", flush=True)
         return
     data = load_json_safe(path)
     if not isinstance(data, dict):
-        print(f"[TRACE][{stage}] 非法 JSON 结构: {type(data)}", flush=True)
+        print(f"[TRACE][{stage}] Unexpected JSON structure: {type(data)}", flush=True)
         return
 
     trace_set = set(trace_ids)
@@ -453,11 +453,11 @@ def print_trace_llm(stage: str, path: str, trace_ids: list[str]) -> None:
 
 def print_trace_recommend(stage: str, path: str, trace_ids: list[str]) -> None:
     if not os.path.exists(path):
-        print(f"[TRACE][{stage}] 文件不存在: {path}", flush=True)
+        print(f"[TRACE][{stage}] File not found: {path}", flush=True)
         return
     data = load_json_safe(path)
     if not isinstance(data, dict):
-        print(f"[TRACE][{stage}] 非法 JSON 结构: {type(data)}", flush=True)
+        print(f"[TRACE][{stage}] Unexpected JSON structure: {type(data)}", flush=True)
         return
 
     deep = data.get("deep_dive")
@@ -539,31 +539,31 @@ def main() -> None:
         "--fetch-mode",
         default="auto",
         choices=("auto", "standard", "skims"),
-        help="Force fetch-run mode: auto(按阈值), standard(非skims), skims(强制skims).",
+        help="Force fetch-run mode: auto (threshold-based), standard (non-skims), skims (force skims).",
     )
     parser.add_argument(
         "--profile-tag",
         default="",
-        help="仅运行指定 tag 对应的词条；大小写不敏感，支持空格。",
+        help="Only run entries matching the specified tag; case-insensitive, spaces allowed.",
     )
     parser.add_argument(
         "--trace-arxiv-id",
         action="append",
         default=None,
-        help="可重复传入，追踪指定 arXiv ID 在各阶段是否命中；支持逗号分隔多个值。",
+        help="Repeatable; track whether the given arXiv ID is hit at each stage. Comma-separated values supported.",
     )
     parser.add_argument(
         "--skip-fetch",
         default=None,
         action="store_true",
-        help="跳过 Step 1（全量数据拉取）。当 Supabase 已完全接管检索时自动检测；"
-             "显式传入则强制跳过。",
+        help="Skip Step 1 (full data pull). Auto-detected when Supabase fully handles retrieval; "
+             "passing this flag forces the skip unconditionally.",
     )
     parser.add_argument(
         "--no-skip-fetch",
         dest="skip_fetch",
         action="store_false",
-        help="强制执行 Step 1（全量数据拉取），即使 Supabase 已启用。",
+        help="Force Step 1 (full data pull) even when Supabase is enabled.",
     )
     args = parser.parse_args()
 
@@ -596,7 +596,7 @@ def main() -> None:
         )
     trace_ids = parse_trace_ids(args.trace_arxiv_id)
     if trace_ids:
-        print(f"[TRACE] 启用论文追踪: {', '.join(trace_ids)}", flush=True)
+        print(f"[TRACE] Paper tracing enabled: {', '.join(trace_ids)}", flush=True)
 
     archive_dir = os.path.join(ROOT_DIR, "archive", run_date_token)
     raw_path = os.path.join(archive_dir, "raw", f"arxiv_papers_{run_date_token}.json")
@@ -626,18 +626,18 @@ def main() -> None:
             [python, os.path.join(SRC_DIR, "0.enrich_config_queries.py")],
         )
 
-    # 判断是否跳过 Step 1（全量数据拉取）
+    # Determine whether to skip Step 1 (full data pull)
     if args.skip_fetch is None:
-        # 自动检测：Supabase 已完全接管检索时跳过
+        # Auto-detect: skip when Supabase fully handles retrieval
         skip_fetch = should_skip_fetch()
     else:
         skip_fetch = args.skip_fetch
 
     if skip_fetch:
         print(
-            "[INFO] 跳过 Step 1（全量数据拉取）："
-            "Supabase 已完全接管检索（BM25 + 向量 RPC），"
-            "后续步骤将直接使用数据库端召回。",
+            "[INFO] Skipping Step 1 (full data pull): "
+            "Supabase fully handles retrieval (BM25 + vector RPC). "
+            "Subsequent steps will query the database directly.",
             flush=True,
         )
     else:

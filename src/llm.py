@@ -7,13 +7,14 @@ from typing import List, Dict, Tuple, Any, Optional
 import requests
 
 """
-统一的 LLM 客户端封装。
+Unified LLM client wrapper.
 
-提供商/模型命名规则：'provider/model'，provider 大小写不敏感，model 保留大小写与路径。
-当前运行链路仅支持 DeepSeek；本地 reranker 不走 LLM API。
+Provider/model naming convention: 'provider/model'. Provider is case-insensitive;
+model name preserves original casing and may contain slashes.
+The current pipeline only supports DeepSeek; the local reranker does not use the LLM API.
 """
 
-# 单次实验级别的全局 token 统计（需由调用方在实验开始前手动 reset）
+# Experiment-scoped global token counters (caller must reset before each experiment)
 DEFAULT_MAX_OUTPUT_TOKENS = 393216
 
 
@@ -28,19 +29,19 @@ def resolve_max_output_tokens(default: int = DEFAULT_MAX_OUTPUT_TOKENS) -> int:
 
 
 GLOBAL_TOKENS = {
-    'prompt': 0,    # 提示词（prompt）部分 token
-    'thinking': 0,  # 推理/思维链部分 token（reasoning_tokens）
-    'content': 0,   # 可见输出部分 token（completion_tokens - reasoning_tokens）
-    'total': 0,     # provider 返回的总 token（通常含 prompt + completion）
+    'prompt': 0,    # Prompt tokens
+    'thinking': 0,  # Reasoning/chain-of-thought tokens (reasoning_tokens)
+    'content': 0,   # Visible output tokens (completion_tokens - reasoning_tokens)
+    'total': 0,     # Total tokens reported by the provider (typically prompt + completion)
 }
-# 单次实验级别的全局时间统计（秒）
+# Experiment-scoped global wall-clock time (seconds)
 GLOBAL_TIME_SECONDS: float = 0.0
 
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 
 def reset_global_tokens():
-    """重置本次实验的全局 token 统计。"""
+    """Reset global token counters for the current experiment."""
     GLOBAL_TOKENS['prompt'] = 0
     GLOBAL_TOKENS['thinking'] = 0
     GLOBAL_TOKENS['content'] = 0
@@ -48,18 +49,18 @@ def reset_global_tokens():
 
 
 def get_global_tokens() -> Dict[str, int]:
-    """获取本次实验的全局 token 统计（thinking/content/total）。"""
+    """Return global token counters for the current experiment (thinking/content/total)."""
     return dict(GLOBAL_TOKENS)
 
 
 def reset_global_time():
-    """重置本次实验的大模型总耗时统计（秒）。"""
+    """Reset the global LLM wall-clock time counter (seconds) for the current experiment."""
     global GLOBAL_TIME_SECONDS
     GLOBAL_TIME_SECONDS = 0.0
 
 
 def get_global_time() -> float:
-    """获取本次实验的大模型总耗时（秒）。"""
+    """Return the total LLM wall-clock time (seconds) for the current experiment."""
     return float(GLOBAL_TIME_SECONDS)
 
 
@@ -73,17 +74,17 @@ class LLMClient:
 
     def __init__(self, api_key: str, model: str, base_url: str):
         """
-        初始化 LLM 客户端。
+        Initialize the LLM client.
 
-        :param api_key: API 密钥
-        :param model: 模型名称
-        :param base_url: API 的基础 URL
+        :param api_key: API key
+        :param model: Model name
+        :param base_url: Base URL for the API endpoint
         """
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
         self._base_urls = self._normalize_base_urls([base_url])
-        # 实例级别的累计统计（无需显式 reset；通常每个实验构造一个 client）
+        # Per-instance cumulative stats (no explicit reset needed; typically one client per experiment)
         self._call_index = 0
         self._cum_tokens = {
             'prompt': 0,
@@ -91,7 +92,7 @@ class LLMClient:
             'content': 0,
             'total': 0,
         }
-        # 实例级别的累计耗时（秒）
+        # Per-instance cumulative wall-clock time (seconds)
         self._cum_time_seconds: float = 0.0
         self.kwargs: Dict[str, Any] = {
             'max_tokens': resolve_max_output_tokens(),
@@ -121,7 +122,7 @@ class LLMClient:
     def _build_chat_completions_url(base_url: str | None) -> str:
         raw = str(base_url or "").strip().rstrip("/")
         if not raw:
-            raise ValueError("缺少可用的 LLM base_url")
+            raise ValueError("No usable LLM base_url provided")
         if raw.lower().endswith("/chat/completions"):
             return raw
         if re.search(r"/v\d+$", raw, re.IGNORECASE):
@@ -274,7 +275,7 @@ class LLMClient:
                 except Exception as exc2:
                     last_exc = exc2
 
-        raise ValueError(f"模型未返回合法 JSON：{raw[:500]}") from last_exc
+        raise ValueError(f"Model did not return valid JSON: {raw[:500]}") from last_exc
 
     @staticmethod
     def build_json_schema_response_format(
@@ -300,13 +301,13 @@ class LLMClient:
         allow_json_object_fallback: bool,
     ) -> List[str]:
         """
-        按主请求端点选择结构化输出格式。
+        Select the structured output format based on the primary endpoint.
 
-        DeepSeek 官方 JSON Output 稳定入口是 json_object，因此默认不发送 json_schema。
-        可用 DPR_LLM_STRUCTURED_FORMAT/LLM_STRUCTURED_FORMAT 覆盖：
-        - json_schema: 强制 json_schema，允许时再回退 json_object
-        - json_object: 强制 json_object
-        - auto: 使用默认判断
+        DeepSeek's stable JSON Output entry point is json_object, so json_schema is not
+        sent by default. Override via DPR_LLM_STRUCTURED_FORMAT / LLM_STRUCTURED_FORMAT:
+        - json_schema: force json_schema, then fall back to json_object if allowed
+        - json_object: force json_object
+        - auto: use default logic
         """
         if not allow_json_object_fallback:
             return ["json_schema"]
@@ -441,7 +442,7 @@ class LLMClient:
             return self.build_json_object_response_format()
         if format_name == "prompt_only":
             return None
-        raise ValueError(f"未知结构化输出格式: {format_name}")
+        raise ValueError(f"Unknown structured output format: {format_name}")
 
     @staticmethod
     def _is_structured_output_unsupported_error(error: Exception) -> bool:
@@ -490,10 +491,10 @@ class LLMClient:
 
     def chat(self, messages: List[Dict[str, str]], response_format: Optional[Dict[str, Any]] = None) -> dict:
         """
-        统一 Chat Completions 请求。
+        Unified Chat Completions request.
 
-        :param messages: OpenAI 格式的消息列表
-        :param response_format: 可选，结构化输出配置（DeepSeek JSON mode）
+        :param messages: Message list in OpenAI format
+        :param response_format: Optional structured output config (DeepSeek JSON mode)
         """
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -512,7 +513,7 @@ class LLMClient:
             "model": model_name,
             "messages": messages,
         }
-        # 仅透传 OpenAI Chat Completions 兼容字段，避免提供商拒绝未知参数
+        # Only forward OpenAI Chat Completions-compatible fields to avoid provider rejecting unknown params
         allowed_keys = {
             'max_tokens', 'temperature', 'top_p', 'n', 'stream',
             'presence_penalty', 'frequency_penalty', 'stop', 'logprobs',
@@ -526,7 +527,7 @@ class LLMClient:
         if response_format is not None:
             payload['response_format'] = response_format
 
-        # 对输出 token 上限做保护；DeepSeek V4 支持更长输出，默认按 384K 预留。
+        # Guard against exceeding the output token limit; DeepSeek V4 supports longer output, defaulting to 384K.
         try:
             max_output_tokens = resolve_max_output_tokens()
             if isinstance(payload.get('max_tokens'), int) and payload['max_tokens'] > max_output_tokens:
@@ -545,16 +546,16 @@ class LLMClient:
                 try:
                     response_data = response.json()
                 except ValueError:
-                    print("API 响应无法解析为 JSON，原始文本预览:", response.text[:500])
+                    print("API response could not be parsed as JSON, raw preview:", response.text[:500])
                     raise
 
                 debug_raw = os.getenv("LLM_DEBUG_RAW") == "1"
                 if debug_raw:
-                    print("[DEBUG] LLM 原始响应包:", response.text)
+                    print("[DEBUG] LLM raw response:", response.text)
 
                 if isinstance(response_data, dict) and 'error' in response_data:
                     err = response_data.get('error') or {}
-                    print("API 返回错误:", {
+                    print("API returned error:", {
                         'type': err.get('type'),
                         'code': err.get('code'),
                         'message': err.get('message') or err,
@@ -562,7 +563,7 @@ class LLMClient:
                     raise requests.exceptions.HTTPError(f"API error: {err}")
 
                 if 'choices' not in response_data or not response_data['choices']:
-                    print("API 响应不包含 choices 字段或为空：", str(response_data)[:500])
+                    print("API response missing or empty 'choices' field:", str(response_data)[:500])
                     raise requests.exceptions.HTTPError("API response missing choices")
 
                 choice = response_data['choices'][0] if isinstance(response_data['choices'][0], dict) else {}
@@ -609,18 +610,18 @@ class LLMClient:
                     self._cum_tokens['total'] += int(total_tokens)
 
                     provider = self._provider_name(req_base)
-                    header = f"[{provider}][{self.model}] 第{self._call_index}次"
+                    header = f"[{provider}][{self.model}] call #{self._call_index}"
                     line_cur = (
-                        f"本次 tokens：prompt={int(prompt_tokens)}, thinking={int(reasoning_tokens)}, "
+                        f"current tokens: prompt={int(prompt_tokens)}, thinking={int(reasoning_tokens)}, "
                         f"content={int(completion_tokens - reasoning_tokens)}, total={int(total_tokens)}"
                     )
                     line_cum = (
-                        f"累计 tokens：prompt={self._cum_tokens['prompt']}, thinking={self._cum_tokens['thinking']}, "
+                        f"cumulative tokens: prompt={self._cum_tokens['prompt']}, thinking={self._cum_tokens['thinking']}, "
                         f"content={self._cum_tokens['content']}, total={self._cum_tokens['total']}"
                     )
                     line_time = (
-                        f"本次用时：{elapsed:.2f}s，"
-                        f"累计用时：{self._cum_time_seconds:.2f}s"
+                        f"elapsed: {elapsed:.2f}s, "
+                        f"total elapsed: {self._cum_time_seconds:.2f}s"
                     )
                     print(header + "\n" + line_cur + "\n" + line_cum + "\n" + line_time)
                 except Exception:
@@ -646,14 +647,15 @@ class LLMClient:
                 last_error = e
                 if self._is_authentication_error(e):
                     print(
-                        "LLM 鉴权失败：当前 API Key 无效或无权限，请在本地配置中更新 DeepSeek API Key 后重试。"
+                        "LLM authentication failed: the current API key is invalid or lacks permission. "
+                        "Please update the DeepSeek API key in your local config and retry."
                     )
                     if hasattr(e, "response") and e.response is not None:
                         try:
-                            print("错误详情(JSON):", e.response.json())
+                            print("Error details (JSON):", e.response.json())
                         except ValueError:
                             try:
-                                print("错误详情(TEXT):", e.response.text[:500])
+                                print("Error details (TEXT):", e.response.text[:500])
                             except Exception:
                                 pass
                     raise
@@ -662,32 +664,32 @@ class LLMClient:
                 if attempt_idx < len(request_bases):
                     next_base = request_bases[attempt_idx] if attempt_idx < len(request_bases) else ''
                     print(
-                        f"请求失败（base={req_base}，第 {attempt_idx} 次），"
-                        f"将回退到 {next_base}"
+                        f"Request failed (base={req_base}, attempt {attempt_idx}), "
+                        f"falling back to {next_base}"
                     )
                     if hasattr(e, "response") and e.response is not None:
                         try:
-                            print("错误详情(JSON):", e.response.json())
+                            print("Error details (JSON):", e.response.json())
                         except ValueError:
                             try:
-                                print("错误详情(TEXT):", e.response.text[:500])
+                                print("Error details (TEXT):", e.response.text[:500])
                             except Exception:
                                 pass
                     continue
-                print(f"通过 requests 调用 API 时出错: {e}")
+                print(f"Error calling API via requests: {e}")
                 if hasattr(e, "response") and e.response is not None:
                     try:
-                        print("错误详情(JSON):", e.response.json())
+                        print("Error details (JSON):", e.response.json())
                     except ValueError:
                         try:
-                            print("错误详情(TEXT):", e.response.text[:500])
+                            print("Error details (TEXT):", e.response.text[:500])
                         except Exception:
                             pass
                 raise
 
         if last_error is not None:
             raise last_error
-        raise RuntimeError("LLM 请求未命中可用 base")
+        raise RuntimeError("LLM request exhausted all available base URLs")
 
     def chat_structured(
         self,
@@ -726,7 +728,7 @@ class LLMClient:
                     and self._is_structured_output_unsupported_error(exc)
                 ):
                     print(
-                        f"[INFO] Structured Outputs 不受支持，回退到 {attempts[idx + 1][0]}。"
+                        f"[INFO] Structured Outputs not supported, falling back to {attempts[idx + 1][0]}."
                     )
                     continue
                 raise
@@ -747,8 +749,8 @@ class LLMClient:
 
             if parse_error is not None and idx + 1 < len(attempts):
                 print(
-                    f"[INFO] {format_name} 返回内容未通过 JSON 校验，"
-                    f"回退到 {attempts[idx + 1][0]}。"
+                    f"[INFO] {format_name} response failed JSON validation, "
+                    f"falling back to {attempts[idx + 1][0]}."
                 )
                 continue
 
@@ -760,7 +762,7 @@ class LLMClient:
 
         if last_error is not None:
             raise last_error
-        raise RuntimeError("结构化输出请求未命中可用格式")
+        raise RuntimeError("Structured output request exhausted all available formats")
 
     def rerank(
         self,
@@ -769,8 +771,8 @@ class LLMClient:
         top_n: Optional[int] = None,
         model: Optional[str] = None,
     ) -> dict:
-        """重排序接口不走远端 LLM API，请使用本地 reranker。"""
-        raise NotImplementedError("远端 rerank 已关闭，请使用 src/3.rank_papers.py 的本地 reranker。")
+        """Reranking does not use the remote LLM API; use the local reranker instead."""
+        raise NotImplementedError("Remote rerank is disabled. Use the local reranker in src/3.rank_papers.py.")
 
 
 class DeepSeekClient(LLMClient):
@@ -780,14 +782,15 @@ class DeepSeekClient(LLMClient):
 
 def parse_provider_model(model_str: str) -> Tuple[str, str]:
     """
-    解析模型字符串为 (provider, model)。
+    Parse a model string into (provider, model).
 
-    规则：第一个 '/' 之前为提供商（大小写不敏感），之后的全部为模型名（大小写敏感，允许包含 '/').
-    示例：
+    Rule: everything before the first '/' is the provider (case-insensitive);
+    everything after is the model name (case-sensitive, may contain '/').
+    Example:
     - "deepseek/deepseek-v4-flash" -> ("deepseek", "deepseek-v4-flash")
     """
     if not isinstance(model_str, str) or '/' not in model_str:
-        raise ValueError("缺少模型提供商：请使用 'deepseek/model' 格式，例如 'deepseek/deepseek-v4-flash'")
+        raise ValueError("Missing model provider: use the format 'deepseek/model', e.g. 'deepseek/deepseek-v4-flash'")
     provider, model = model_str.split('/', 1)
     return provider.lower(), model
 
@@ -796,17 +799,17 @@ class ClientFactory:
     @staticmethod
     def from_env():
         """
-        基于环境变量创建具体客户端。
+        Create a client from environment variables.
 
-        必填：
-        - LLM_MODEL：形如 'provider/model'。
-        选填：
-        - LLM_API_KEY：通用 API key（优先级高于各 provider 专用 key）
-        - LLM_BASE_URL：通用 base_url（优先级高于默认 base_url）
+        Required:
+        - LLM_MODEL: in the form 'provider/model'.
+        Optional:
+        - LLM_API_KEY: generic API key (takes precedence over provider-specific keys)
+        - LLM_BASE_URL: generic base URL (takes precedence over the default)
         """
         model_env = (os.getenv('LLM_MODEL') or '').strip()
         if not model_env:
-            raise ValueError("缺少必要环境变量: LLM_MODEL（格式为 'deepseek/model'）")
+            raise ValueError("Missing required environment variable: LLM_MODEL (format: 'deepseek/model')")
 
         provider, model = parse_provider_model(model_env)
         api_key = (os.getenv('LLM_API_KEY') or '').strip() or None
@@ -815,11 +818,12 @@ class ClientFactory:
         if provider == 'deepseek':
             base_url = base_url or DEFAULT_DEEPSEEK_BASE_URL
             return DeepSeekClient(api_key=api_key or os.getenv('DEEPSEEK_API_KEY', ''), model=model, base_url=base_url)
-        raise ValueError(f"当前仅支持 DeepSeek API，请使用 'deepseek/模型名'，当前 provider={provider}")
+        raise ValueError(f"Only DeepSeek API is currently supported. Use 'deepseek/<model>', got provider={provider}")
 
     @staticmethod
     def from_config(_config: dict | None = None):
         """
-        兼容旧调用入口，但不再读取 config 文件，统一从环境变量读取。
+        Legacy entry point kept for backward compatibility; config is ignored and
+        all settings are now read from environment variables.
         """
         return ClientFactory.from_env()

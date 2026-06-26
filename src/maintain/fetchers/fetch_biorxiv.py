@@ -19,7 +19,7 @@ if SRC_DIR not in sys.path:
 
 try:
     from source_config import load_config_with_source_migration
-except Exception:  # pragma: no cover - 兼容 package 导入路径
+except Exception:  # pragma: no cover
     from src.source_config import load_config_with_source_migration
 
 
@@ -60,7 +60,7 @@ def load_config() -> dict:
     try:
         return load_config_with_source_migration(CONFIG_FILE, write_back=False)
     except Exception as exc:
-        log(f"[WARN] 读取 config.yaml 失败：{exc}")
+        log(f"[WARN] Read config.yaml failed: {exc}")
         return {}
 
 
@@ -350,17 +350,17 @@ def fetch_biorxiv_metadata(
         f"({source_desc})"
     )
     if len(windows) > 1:
-        log(f"🗓️  [bioRxiv Ingest] 将按 {chunk_days} 天/片拆分窗口：{len(windows)} 段")
+        log(f"🗓️  [bioRxiv Ingest] Splitting windows into {chunk_days} days/chunks: {len(windows)} segments")
 
     for idx, (window_start, window_end) in enumerate(windows, start=1):
         log(
-            f"[bioRxiv] 抓取窗口 {idx}/{len(windows)}："
+            f"[bioRxiv] Fetching window {idx}/{len(windows)}:"
             f"{window_start.date().isoformat()} ~ {(window_end - timedelta(seconds=1)).date().isoformat()}"
         )
         try:
             rows = fetch_window_records(window_start, window_end)
         except Exception as exc:
-            log(f"[WARN] bioRxiv 窗口抓取失败，将跳过：{exc}")
+            log(f"[WARN] bioRxiv window fetch failed, skipping: {exc}")
             continue
 
         for paper in rows:
@@ -400,11 +400,11 @@ def fetch_biorxiv_metadata(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="抓取 bioRxiv 论文元数据。")
-    parser.add_argument("--days", type=int, default=None, help="抓取窗口天数。")
-    parser.add_argument("--output", type=str, default=None, help="输出 JSON 文件路径。")
-    parser.add_argument("--ignore-seen", action="store_true", help="忽略已见状态，严格按 days_window 回溯。")
-    parser.add_argument("--chunk-days", type=int, default=7, help="将时间窗口拆分为若干段（默认 7 天）。")
+    parser = argparse.ArgumentParser(description="Fetch bioRxiv paper metadata.")
+    parser.add_argument("--days", type=int, default=None, help="Fetch window days.")
+    parser.add_argument("--output", type=str, default=None, help="Output JSON file path.")
+    parser.add_argument("--ignore-seen", action="store_true", help="Ignore seen state, strictly backtrack by days_window.")
+    parser.add_argument("--chunk-days", type=int, default=7, help="Split time windows into several segments (default 7 days).")
     args = parser.parse_args()
 
     fetch_biorxiv_metadata(

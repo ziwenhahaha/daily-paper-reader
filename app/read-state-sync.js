@@ -1,8 +1,8 @@
 /**
- * DPR Read State Sync — 阅读状态同步到 Supabase
+ * DPR Read State Sync — sync read state to Supabase
  *
- * 认证用户（有 GitHub Token）的阅读记录存到 Supabase user_read_state 表，
- * 游客/未认证仍用 localStorage 回退。
+ * Authenticated users (with a GitHub Token) store read records in the Supabase user_read_state table,
+ * guests/unauthenticated users fall back to localStorage.
  */
 (function () {
   'use strict';
@@ -31,8 +31,8 @@
   }
 
   /**
-   * 初始化：传入 Supabase 连接信息和 GitHub 用户名
-   * 从 Supabase 拉取该用户的全部阅读记录
+   * Initialize: pass in Supabase connection info and the GitHub username
+   * Pull all of this user's read records from Supabase
    */
   function init(supabaseUrl, anonKey, githubUsername) {
     if (!supabaseUrl || !anonKey || !githubUsername) return Promise.resolve();
@@ -62,7 +62,7 @@
   }
 
   /**
-   * 标记论文阅读状态
+   * Mark a paper's read state
    */
   function markRead(paperId, status) {
     if (!paperId) return;
@@ -89,7 +89,7 @@
   }
 
   /**
-   * 删除阅读标记
+   * Remove a read mark
    */
   function clearRead(paperId) {
     if (!paperId) return;
@@ -106,21 +106,21 @@
   }
 
   /**
-   * 获取某篇论文的阅读状态
+   * Get the read state of a paper
    */
   function getStatus(paperId) {
     return _cache[paperId] || null;
   }
 
   /**
-   * 获取全部已读状态（返回对象 { paper_id: status }）
+   * Get all read states (returns an object { paper_id: status })
    */
   function getAll() {
     return Object.assign({}, _cache);
   }
 
   /**
-   * 计算一组论文 ID 中的未读数
+   * Count unread papers among a set of paper IDs
    */
   function countUnread(paperIds) {
     var count = 0;
@@ -131,28 +131,28 @@
   }
 
   /**
-   * 是否已初始化（认证用户模式）
+   * Whether it is initialized (authenticated-user mode)
    */
   function isActive() {
     return _initialized && !!_username;
   }
 
   /**
-   * 从 localStorage 迁移已有的阅读记录到 Supabase（一次性）
+   * Migrate existing read records from localStorage to Supabase (one-time)
    */
   function migrateFromLocalStorage(localState) {
     if (!_initialized || !_username || !localState) return;
     var entries = Object.keys(localState);
     if (!entries.length) return;
 
-    // 合并到缓存
+    // Merge into the cache
     entries.forEach(function (paperId) {
       if (!_cache[paperId]) {
         _cache[paperId] = localState[paperId];
       }
     });
 
-    // 批量 upsert
+    // Bulk upsert
     var rows = entries.map(function (paperId) {
       return {
         github_username: _username,
@@ -162,7 +162,7 @@
       };
     });
 
-    // 分批 upsert（每批 50 条）
+    // Upsert in batches (50 per batch)
     var batchSize = 50;
     for (var i = 0; i < rows.length; i += batchSize) {
       var batch = rows.slice(i, i + batchSize);

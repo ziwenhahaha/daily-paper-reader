@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-# 统一订阅解析模块：
-# - 输出 BM25 / Embedding / LLM refine 可直接消费的数据（仅基于 intent_profiles）
-# - 支持迁移阶段门禁（A/B/C）
+# Unified subscription parsing module:
+# - Outputs data directly consumable by BM25 / Embedding / LLM refine (based only on intent_profiles)
+# - Supports migration-stage gating (A/B/C)
 
 from __future__ import annotations
 
@@ -12,13 +12,18 @@ from typing import Any, Dict, List, Tuple
 import re
 
 try:
+  from legacy_config_fields import read_note
+except Exception:  # pragma: no cover
+  from src.legacy_config_fields import read_note
+
+try:
   from source_config import list_known_source_keys, validate_profile_paper_sources
-except Exception:  # pragma: no cover - 兼容 package 导入路径
+except Exception:  # pragma: no cover - compatibility with the package import path
   from src.source_config import list_known_source_keys, validate_profile_paper_sources
 
 try:
   from query_boolean import clean_expr_for_embedding
-except Exception:  # pragma: no cover - 兼容 package 导入路径
+except Exception:  # pragma: no cover - compatibility with the package import path
   from src.query_boolean import clean_expr_for_embedding
 
 
@@ -192,7 +197,7 @@ def _normalize_intent_query_entry(item: Any) -> Dict[str, Any]:
     "query": query,
     "enabled": _as_bool(item.get("enabled"), True),
     "source": _norm_text(item.get("source") or "manual"),
-    "note": _norm_text(item.get("note") or ""),
+    "note": read_note(item),
     "embedding_cache": copy.deepcopy(item.get("embedding_cache")) if isinstance(item.get("embedding_cache"), dict) else None,
     "_cache_ref": copy.deepcopy(item.get("_cache_ref")) if isinstance(item.get("_cache_ref"), dict) else None,
   }
@@ -233,7 +238,6 @@ def _normalize_keyword_entry(item: Any) -> Dict[str, Any]:
     return {
       "keyword": keyword,
       "query": keyword,
-      "logic_cn": "",
       "enabled": True,
       "source": "manual",
       "note": "",
@@ -252,10 +256,9 @@ def _normalize_keyword_entry(item: Any) -> Dict[str, Any]:
   return {
     "keyword": keyword,
     "query": query,
-    "logic_cn": _norm_text(item.get("logic_cn") or ""),
+    "note": read_note(item),
     "enabled": _as_bool(item.get("enabled"), True),
     "source": _norm_text(item.get("source") or "manual"),
-    "note": _norm_text(item.get("note") or ""),
     "embedding_cache": copy.deepcopy(item.get("embedding_cache")) if isinstance(item.get("embedding_cache"), dict) else None,
     "_cache_ref": copy.deepcopy(item.get("_cache_ref")) if isinstance(item.get("_cache_ref"), dict) else None,
   }
@@ -390,7 +393,7 @@ def _build_from_profiles(subs: Dict[str, Any], known_sources: List[str]) -> Dict
         raw_query = raw_text
 
       expr = _normalize_keyword_expr(raw_text)
-      logic_cn = _norm_text(normalized.get("logic_cn") or "")
+      note = _norm_text(read_note(normalized))
       source = _norm_text(normalized.get("source") or "manual")
       bm25_queries.append(
         {
@@ -401,7 +404,7 @@ def _build_from_profiles(subs: Dict[str, Any], known_sources: List[str]) -> Dict
           "query_text": expr,
           "query_terms": [{"text": expr, "weight": MAIN_TERM_WEIGHT}],
           "boolean_expr": "",
-          "logic_cn": logic_cn,
+          "note": note,
           "source": source,
           "or_soft_weight": OR_SOFT_WEIGHT,
         }
@@ -413,18 +416,18 @@ def _build_from_profiles(subs: Dict[str, Any], known_sources: List[str]) -> Dict
           "paper_tag": paper_tag_keyword,
           "paper_sources": copy.deepcopy(paper_sources),
           "query_text": raw_query,
-          "logic_cn": logic_cn,
+          "note": note,
           "source": source,
           "embedding_cache": copy.deepcopy(normalized.get("embedding_cache")) if isinstance(normalized.get("embedding_cache"), dict) else None,
           "cache_ref": copy.deepcopy(normalized.get("_cache_ref")) if isinstance(normalized.get("_cache_ref"), dict) else None,
         }
       )
-      context_keywords.append({"tag": paper_tag_keyword, "keyword": raw_text, "logic_cn": logic_cn})
+      context_keywords.append({"tag": paper_tag_keyword, "keyword": raw_text, "note": note})
       context_queries.append(
         {
           "tag": paper_tag_query,
           "query": raw_query,
-          "logic_cn": logic_cn,
+          "note": note,
         }
       )
 
@@ -439,6 +442,7 @@ def _build_from_profiles(subs: Dict[str, Any], known_sources: List[str]) -> Dict
       if not raw_query:
         continue
 
+      intent_note = _norm_text(read_note(normalized_intent))
       source = _norm_text(normalized_intent.get("source") or "manual")
       intent_query_tag = paper_tag_query
 
@@ -451,7 +455,7 @@ def _build_from_profiles(subs: Dict[str, Any], known_sources: List[str]) -> Dict
           "query_text": raw_query,
           "query_terms": [{"text": raw_query, "weight": MAIN_TERM_WEIGHT}],
           "boolean_expr": "",
-          "logic_cn": "",
+          "note": intent_note,
           "source": source,
           "or_soft_weight": OR_SOFT_WEIGHT,
         }
@@ -463,7 +467,7 @@ def _build_from_profiles(subs: Dict[str, Any], known_sources: List[str]) -> Dict
           "paper_tag": f"query:{tag}",
           "paper_sources": copy.deepcopy(paper_sources),
           "query_text": raw_query,
-          "logic_cn": "",
+          "note": intent_note,
           "source": source,
           "embedding_cache": copy.deepcopy(normalized_intent.get("embedding_cache")) if isinstance(normalized_intent.get("embedding_cache"), dict) else None,
           "cache_ref": copy.deepcopy(normalized_intent.get("_cache_ref")) if isinstance(normalized_intent.get("_cache_ref"), dict) else None,
@@ -473,7 +477,7 @@ def _build_from_profiles(subs: Dict[str, Any], known_sources: List[str]) -> Dict
         {
           "tag": intent_query_tag,
           "query": raw_query,
-          "logic_cn": "",
+          "note": intent_note,
         }
       )
 
@@ -489,10 +493,10 @@ def _build_from_profiles(subs: Dict[str, Any], known_sources: List[str]) -> Dict
 
 def build_pipeline_inputs(config: Dict[str, Any]) -> Dict[str, Any]:
   """
-  统一输出流水线输入：
-  - bm25_queries：供 Step 2.1 使用
-  - embedding_queries：供 Step 2.2 使用
-  - context_keywords/context_queries：供 Step 4 使用
+  Produce unified pipeline inputs:
+  - bm25_queries: used by Step 2.1
+  - embedding_queries: used by Step 2.2
+  - context_keywords/context_queries: used by Step 4
   """
   cfg = config or {}
   subs = (cfg.get("subscriptions") or {}) if isinstance(cfg, dict) else {}
@@ -509,7 +513,7 @@ def build_pipeline_inputs(config: Dict[str, Any]) -> Dict[str, Any]:
     plan = profile_plan
     source = "intent_profiles"
   else:
-    # 阶段 A/B/C：未配置新链路则返回空输入，避免回退到旧结构。
+    # Stages A/B/C: if the new pipeline is not configured, return empty inputs to avoid falling back to the old structure.
     plan = {
       "profiles": [],
       "bm25_queries": [],

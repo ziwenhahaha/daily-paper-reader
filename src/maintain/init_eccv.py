@@ -32,7 +32,7 @@ def _has_cuda() -> bool:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="抓取 ECCV 论文并同步到 Supabase。")
+    parser = argparse.ArgumentParser(description="Fetch ECCV papers and sync to Supabase.")
     parser.add_argument("--year-end", type=int, default=datetime.now(timezone.utc).year)
     parser.add_argument("--year-count", type=int, default=3)
     parser.add_argument("--workers", type=int, default=12)
@@ -76,7 +76,8 @@ def main() -> None:
         if not args.local_maintain:
             args.embed_device = "cpu"
         elif _has_cuda():
-            args.embed_devices = ",".join(f"cuda:{idx}" for idx in range(int(torch.cuda.device_count() or 0)))
+            cuda_count = int(torch.cuda.device_count() or 0) if torch is not None else 0
+            args.embed_devices = ",".join(f"cuda:{idx}" for idx in range(cuda_count))
         else:
             args.embed_device = "cpu"
 
@@ -104,7 +105,7 @@ def main() -> None:
         ]
         run_step("Step 1 - fetch ECCV papers", fetch_cmd)
     else:
-        print(f"[INFO] Step 1 已跳过，复用原始文件：{raw_path}", flush=True)
+        print(f"[INFO] Step 1 skipped, reusing original file: {raw_path}", flush=True)
 
     sync_cmd = [
         python,

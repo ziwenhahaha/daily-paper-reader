@@ -10,7 +10,7 @@ from common import TODAY_STR, cleanup_backend, default_raw_path, ensure_parent_d
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="维护入口：ICLR 抓取 + Supabase 同步。")
+    parser = argparse.ArgumentParser(description="Maintenance entry: ICLR retrieval + Supabase sync.")
     parser.add_argument("--year-end", type=int, default=2026)
     parser.add_argument("--year-count", type=int, default=3)
     parser.add_argument("--run-date", type=str, default=TODAY_STR)

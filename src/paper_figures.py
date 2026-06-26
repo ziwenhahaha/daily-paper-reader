@@ -120,7 +120,7 @@ def _save_tables_meta(meta_path: str, tables: List[Dict[str, Any]], *, extractor
 
 
 def _warn_papercropper(message: str) -> None:
-    print(f"[WARN] PaperCropper 表格/图表提取降级：{message}", flush=True)
+    print(f"[WARN] PaperCropper table/figure extraction degraded: {message}", flush=True)
 
 
 def _tail_log_text(text: str, limit: int = PAPERCROPPER_LOG_LIMIT) -> str:
@@ -282,7 +282,7 @@ def _extract_media_with_papercropper(
     python_path, script_path, model_path = _resolve_papercropper()
     if not python_path or not script_path or not model_path:
         if not _truthy_env(PAPERCROPPER_DISABLE_ENV) and _papercropper_was_configured():
-            _warn_papercropper("未找到可用的 PaperCropper 脚本或模型，改用备用图片提取器。")
+            _warn_papercropper("No usable PaperCropper script or model found; falling back to the backup image extractor.")
         return [], []
 
     timeout = int(os.getenv("PAPERCROPPER_TIMEOUT_SECONDS") or "360")
@@ -330,12 +330,12 @@ def _extract_media_with_papercropper(
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            _warn_papercropper(f"执行超时（>{max(timeout, 30)}s），改用备用图片提取器。")
+            _warn_papercropper(f"Execution timed out (>{max(timeout, 30)}s); falling back to the backup image extractor.")
             return [], []
         if proc.returncode != 0:
             detail = _tail_log_text("\n".join([proc.stdout or "", proc.stderr or ""]))
-            suffix = f"；输出：{detail}" if detail else ""
-            _warn_papercropper(f"执行失败 returncode={proc.returncode}{suffix}")
+            suffix = f"; output: {detail}" if detail else ""
+            _warn_papercropper(f"Execution failed, returncode={proc.returncode}{suffix}")
             return [], []
 
         doc_output = os.path.join(tmp_root, os.path.splitext(os.path.basename(pdf_path))[0])
@@ -359,10 +359,10 @@ def _extract_media_with_papercropper(
             _save_tables_meta(os.path.join(table_output_dir, "meta.json"), tables, extractor="papercropper")
         if not figures and not tables:
             detail = _tail_log_text("\n".join([proc.stdout or "", proc.stderr or ""]))
-            suffix = f"；输出：{detail}" if detail else ""
-            _warn_papercropper(f"执行完成但未产出 figure/table{suffix}")
+            suffix = f"; output: {detail}" if detail else ""
+            _warn_papercropper(f"Execution finished but produced no figure/table{suffix}")
         else:
-            print(f"[INFO] PaperCropper 提取完成：figures={len(figures)} tables={len(tables)}", flush=True)
+            print(f"[INFO] PaperCropper extraction complete: figures={len(figures)} tables={len(tables)}", flush=True)
         return figures, tables
 
 
