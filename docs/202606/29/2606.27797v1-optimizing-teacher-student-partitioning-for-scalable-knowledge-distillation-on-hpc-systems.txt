@@ -1,0 +1,371 @@
+Title: Optimizing Teacher-Student Partitioning for Scalable Knowledge Distillation on HPC Systems
+
+URL Source: https://arxiv.org/pdf/2606.27797v1
+
+Published Time: Mon, 29 Jun 2026 00:31:12 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# Optimizing Teacher-Student Partitioning for Scalable Knowledge Distillation on HPC Systems 
+
+Adrian P. Dieguez, Victor Conchello Vendrell, Alex Batlle, Vinnam Kim, Jordi Ros-Giralt, and Harris Teague 
+
+Qualcomm AI Research ⋆⋆ 
+
+Correspondence to: aperezdi@qti.qualcomm.com 
+
+Abstract. Knowledge Distillation (KD) enables training smaller “stu-dent” models under the guidance of larger “teacher” models, and the widely adopted TRL library implements it. Yet, TRL treats both models symmetrically, missing opportunities to exploit their pronounced asym-metry in memory footprint, and communication requirements. This pa-per presents an HPC-aware methodology for KD that decouples teacher and student partitioning efficiently. Our approach achieves up to 67% higher samples-per-second than TRL by avoiding unnecessary teacher-model data structures and selecting the best split strategy. We combine vertical and horizontal partitioning of models, deriving an analytical ex-pression that identifies the existence of inflection points between splitting regimes. These results showed that exploiting teacher–student asymme-try through topology-aware parallelism notably accelerated GKD train-ing on production HPC clusters at our company. 
+
+# 1 Introduction 
+
+Large Language Models (LLMs) have a huge impact on different scientific and technological applications, accelerating discoveries and productivity. Contempo-rary LLMs are predominantly autoregressive Transformers [13] that generate tokens sequentially. The accuracy of the model is highly correlated to the qual-ity of the training data, and the number of parameters required for training it. Nevertheless, large models have a negative impact on the memory and communi-cation footprint; hence, multiple research efforts focus on getting similar model accuracy by using smaller models, especially on the edge-AI industry. Knowledge distillation (KD) has become a principal method to compress such models by transferring knowledge from a large teacher to a smaller stu-dent. Classic results such as DistilBERT report a 40% parameter reduction while retaining roughly 97% of BERT’s accuracy [10], motivating widespread adoption of KD. Specifically, KD utilizes probabilities produced by the teacher model on the student’s loss calculation to accelerate its training by transferring knowledge. In some cases, this enables keeping the accuracy of a larger teacher model while reducing its computational cost and size. For autoregressive LLMs,  
+
+> ⋆⋆
+
+Qualcomm AI Research is an initiative of Qualcomm Technologies, Inc.  
+
+> arXiv:2606.27797v1 [cs.DC] 26 Jun 2026 2Adrian P. Dieguez et al.
+
+Generalized Knowledge Distillation (GKD) [1] addresses train–inference distri-bution mismatches, and has become a very common technique. In summary, each KD iteration performs a training step on the student and a forward pass (inference-like) on the teacher to obtain probability distributions for the same batch of data. Training and inference stress systems differently: inference priori-tizes low-latency, small-batch execution and is often memory bandwidth bound, whereas training targets large global batches that begin compute-bound but be-come communication-bound at scale. Training at scale requires efficient gradient synchronization, in addition to parameter and data partitioning, where collective communication (e.g., all-reduce, all-gather) dominates. KD uniquely stresses the system because both the teacher (inference) and the student (training) must be resident and frequently accessed. The teacher runs forward passes at the stu-dent’s batch sizes, effectively performing inference at far larger batches than typ-ical serving in inference frameworks (e.g. vLLM [5]). In multi-node deployments, this hybrid workload couples teacher-side memory and inference collectives with student-side training collectives, so their joint placement and partitioning across GPUs and nodes determine memory footprint, collective latency, and overall throughput. This coupling is further amplified when the teacher uses model parallelism and the student uses data sharding, or vise versa, as each induces different collective patterns. We observe that the HuggingFace TRL GKD im-plementation underperforms on multi-node setups for two main reasons. First, the teacher is run under a DeepSpeed training engine, which allocates opti-mizer states irrelevant to inference, wasting GPU memory. Second, TRL mirrors teacher and student partitioning, leading to suboptimal throughput relative to asymmetric partitions. We analyze these inefficiencies on a Llama3 workload, removing training-only allocations and broaden sharding and placement choices. Further, by decoupling student–teacher partitioning and developing an analytical cost model, we select inference-optimized partitioning strategies for the teacher while independently choosing the best training strategy for the student, reduc-ing end-to-end time. We apply this methodology to train a production model, achieving up to a 67% speedup relative to TRL implementation. In summary, our contributions are: (i) an analysis isolating multi-node inefficiencies in TRL GKD; (ii) teacher-specific modifications that remove training-state overhead; (iii) a pluggable inference backend for the teacher; (iv) an analytical performance model for demonstrating the existence of inflection points in teacher partitioning; and (v) a large-scale Llama-3 study demonstrating that asymmetric placement and suggested optimizations deliver up to 67% speed-up. 
+
+# 2 Background: LLM Training and Parallelism 
+
+2.1 LLM Training 
+
+LLM training optimizes model parameters to estimate a probability distribu-tion over text, typically beginning with large-scale self-supervised pretraining 
+
+followed by task-specific fine-tuning . Each training iteration runs a forward pass 
+
+dominated by tensor operations— multi-head self-attention whose quadratic cost Optimizing Teacher-Student Partitioning for Scalable KD 3
+
+in sequence length drives memory and compute demand—followed by a back-ward pass to compute gradients and an optimizer step (e.g., SGD or Adam) that updates parameters. The forward pass produces a softmax projection (proba-bility distribution over the vocabulary) for the next token, compared to ground truth to compute the loss , which drives gradient and parameter updates. Train-ing proceeds over batches of sequences; larger batches reduce steps per epoch but increase computational and memory requirements per step due to larger activations and optimizer state. When memory is limited, gradient accumula-tion simulates larger effective batches by aggregating gradients over multiple forward–backward passes before updating parameters. Knowledge distillation follows the same optimization structure but introduces an additional teacher 
+
+model that guides the training of a smaller model, named as the student . In each iteration, the student undergoes a standard forward, backward, and update step, while the teacher performs inference-only forward passes to produce soft targets (probability distributions for the given sequence), syncing at the computation of the loss . Therefore, the loss measures how close the student’s predictions are to these teacher distributions. Unlike standard KD, which relies on a fixed dataset of teacher outputs, GKD mixes two signals in the loss calculation: (i) the supervised objective using real labels, and (ii) a distillation objective compar-ing teacher and student vocabulary distributions on student-generated outputs. This helps correct the mismatch between the data seen during training and the sequences produced at inference time, a limitation of classical distillation. 
+
+2.2 Parallelism strategies and frameworks 
+
+Modern frameworks such as DeepSpeed [7] and Megatron [11] combine different 
+
+parallelism strategies to balance memory usage, compute efficiency, and com-munication overhead during training in distributed systems. The literature also refers to this distribution as partitioning or splitting. The two most common strategies are Data Parallelism (DP) and Tensor Parallelism (TP). In DP, each GPU processes a disjoint portion of the input batch while holding a replica of the model; gradients are synchronized via an all-reduce across GPUs [8]. Deep-Speed ZeRO (Zero Redundancy Optimizer) [9] reduces replication by partition-ing model states across GPUs, known as Data Distributed Parallelism (DDP). In ZeRO Stage 1, optimized states are sharded; Stage 2 additionally shards gradients; Stage 3 also shards parameters. Due to this, DDP is also known as 
+
+model sharding . For mixed-precision training, parameters and gradients are kept in FP16 (2 bytes each), while optimizers such as Adam maintain FP32 master parameters and moment estimates, requiring K = 12 additional bytes per pa-rameter. With Ψ parameters, then (2 + 2 + K) × Ψ bytes are distributed across GPUs, excluding activations and temporary buffers. Communication in Stages 1 and 2 consists of a gradient reduce-scatter followed by parameter all-gather ,while Stage 3 requires additional all-gathers during the forward pass. In TP, the same batch is replicated across GPUs, but parameters within each layer are parti-tioned. Transformer models split linear projections in attention and feed-forward 4 Adrian P. Dieguez et al. 
+
+layers along the hidden dimension, distributing matrix multiplications across de-vices. Each layer therefore requires collective communication to assemble partial activations. Consequently, TP reduces per-GPU parameter memory but intro-duces frequent, fine-grained layer-wise communication that scales poorly across nodes with slower interconnects. DeepSpeed-Inference framework [2] uses TP partitioning for distributing models for inference. DDP thus benefits from large per-GPU batches (to amortize communication), and it is independent of model architecture. In contrast, TP introduces fine-grained layer-wise collective, mak-ing performance highly sensitive to bandwidth/latency and hop count. 
+
+2.3 Related Work 
+
+Google DeepMind introduced Knowledge Distillation in [3], and later they re-leased General Knowledge Distillation (GKD) in [1], which is currently imple-mented in HuggingFace’s TRL package [4]. Beyond TRL, other tools also support KD workflows. Tan et al. present the GKD-framework , a general tool that uni-fies multiple distillation methods and emphasizes memory-constrained execution [12], which is orthogonal to the system issues we target. Also, torchdistill [6] pro-vides a modular framework for implementing a wide range of KD methods, but focuses on algorithmic reproducibility rather than the distributed systems. For multi-node training, DeepSpeed’s ZeRO family reduces memory redun-dancy via optimizer/gradient/parameter partitioning [9], while Megatron-LM popularizes intra-layer tensor parallelism for large Transformers [11]. For in-ference, DeepSpeed-Inference [2] and vLLM [5] optimize latency/throughput with tensor-parallel and KV-cache–aware designs. Instead, our work analyzes role-specific parallelism (vertical/horizontal for the teacher, vertical for the stu-dent), and show that topology-aware, asymmetric partitioning yields consistent throughput gains over symmetric TRL defaults. 
+
+# 3 Testing Setup 
+
+The experimental platform consists of 16 nodes with 2TB of RAM and eight NVIDIA H100 GPUs (80GB each), interconnected via NVLink-4, providing up to 900GB/s of intra-node bandwidth. Each node offers 2 ×200Gbps storage bandwidth and 4 ×400Gbps compute bandwidth, and relies on a RoCE-based inter-node network. We consider one representative LLM training workload con-sisting of an 8B-parameter, quantized LLaMA-3–based model as student. Train-ing was performed via knowledge distillation from a floating-point LLaMA-3-8B teacher using 1024-token sequences, using BF16 and the Adam optimizer. To reduce memory footprint, FlashAttention-2 was enabled. All experiments were conducted with PyTorch 2.5, DeepSpeed 0.15.4, and TRL 0.13. 
+
+# 4 GKD Analysis and Improvements 
+
+TRL’s GKD implementation trains the student with Distributed Data Parallel (DDP), but also executes the teacher forward pass through the DeepSpeed train-Optimizing Teacher-Student Partitioning for Scalable KD 5
+
+ing engine (DDP), as illustrated in Listing 1.1 Line-7 , even when only inference is required for the teacher. In particular, TRL forces a symmetric configura-tion (Listing 1.1 L5-6 ): the teacher runs with ZeRO-0 whenever the student uses ZeRO-1/2, and both the teacher and the student use ZeRO-3 when the stu-dent is in ZeRO-3. This design simplifies orchestration but prevents intermediate combinations (e.g., a ZeRO-2 student with a partitioned ZeRO-3 teacher). Since teachers do not maintain gradients or optimizer state in inference, they should not benefit from Stages 1 and 2. 
+
+Listing 1.1. Teacher’s initialization with DeepSpeed configuration in TRL’s GKD                      
+
+> 1def _prepare_deepspeed (...):
+> 2deepspeed_plugin =self . accelerator . state . deepspeed_plugin
+> 3config_kwargs =deepcopy ( deepspeed_plugin . deepspeed_config )
+> 4...
+> 5if config_kwargs [ " zero_optimization " ][ " stage " ] != 3:
+> 6config_kwargs [ " zero_optimization " ][ " stage " ] =0
+> 7model , * _ =deepspeed . initialize ( model , config_kwargs )
+> 8model . eval ()
+
+Our analysis reveals the central limitation in TRL design: the teacher is exe-cuted through the DeepSpeed training engine , which allocates optimizer-related buffers even though the teacher performs pure inference. Calling model.eval() 
+
+and wrapping the forward pass in no_grad() context prevents updates but does not stop DeepSpeed from allocating optimizer machinery associated with train-ing. As a result, the teacher path incurs avoidable memory overhead that di-rectly restricts the attainable micro-batch size, which reduces training through-put (samples/sec). In our testing setup, this effect becomes evident when the student is configured with ZeRO-2. In TRL’s default setup, the teacher is forced into ZeRO-0, leading to out-of-memory failures even at modest batch sizes. By contrast, we implement an improvement proposal that modifies this code to en-able ZeRO-2 in the teacher (despite the theoretical absence of teacher gradients or optimizer state needs), allowing these unnecessary tensors to be sharded across GPUs. As shown by the initial two rows of Table 1, this modification was suf-ficient to avoid OOMs and complete training, indicating that optimizer-related buffers are indeed allocated for the teacher, benefiting from Stage 2 distribution, despite these elements being unnecessary for inference. 
+
+Name Student DS stg Teacher DS stg Samples/s μ-batch size 
+
+Original GKD 2 0 OOM 2Modified-ADAM 2 2 43.4 2Modified-ADAM 2 2 OOM 4Modified-None 2 2 53.61 4
+
+Table 1. Effects of DDP on teacher: (Rows 1-2) Sharding teacher optimizer, compared to the original TRL GKD, reduces memory consumption; (Rows 3-4) decoupling teacher and student configurations so teacher can fully get rid of its optimizer ( None instead of student’s Adam ) further reduces memory usage, enabling larger batch sizes. 6 Adrian P. Dieguez et al. 
+
+Profiling our testing setup further corroborates this diagnosis. Under the original student–teacher (2–0) configuration on 64 GPUs, we observe a large allocation (29.9 GiB total) originating from TRL’s teacher-init path and traced the DeepSpeed routines responsible for optimizer setup. With our proposal that modifies the code to enable a (2–2) configuration, the same allocation appears in sharded form (i.e. 29 .964 -GiB per rank), confirming that these optimizer-associated tensors are distributed with Stage 2. Specifically, tracing down the DeepSpeed initialization routine, we observe this allocation corresponds to teacher-side fp32 (master) weights 1—unnecessary for teacher inference—whereas with our ZeRO-2 modification these are partitioned according to the ZeRO strategy. A second source of overhead arises from the fact that TRL uses a single Deep-Speed configuration file for both teacher and student (Listing 1.1 L2-3 ), forcing the teacher to inherit the student’s optimizer settings (currently Adam), which is wasteful that under the current TRL implementation requires an optimizer but does not update its weights. Our second improvement proposal for code mod-ification is to decouple the student-teacher configurations, so we can assign a lightweight optimizer to the teacher or directly overwrite it with a None object. The implementation of this proposal, as illustrated in Table 1, enables larger micro-batches by avoiding any optimizer-related tensor in the teacher model: while the first improvement proposal described in earlier paragraphs enabled the student to run with Stage 2 at a μ-batch size of 2—previously impossible in TRL’s original implementation—the additional memory savings from alter-ing the teacher’s optimizer configuration allowed increasing the μ-batch size to 4. Previous proposals show similar improvement for both bf16 and fp16 preci-sion. Additionally, although this study used TRL v0.13 for compatibility, this behavior is part of TRL’s core design and persists as of v0.29. 
+
+4.1 Experimental Results 
+
+We implement our improvement proposals and apply them to the Llama-3 train-ing workflow on our cluster, then conduct an empirical sweep to identify the maximum μ-batch size permitted by each student–teacher DDP pairing—(2–0), (3–0), (2–3), (3–3) in our implementation; and (2–0), (3–0), (3–3) in TRL—using gradient accumulation of 2, bf16 precision, and scales from 2 (16 GPUs) to 16 nodes (128 GPUs). In the TRL baseline, (3–3) consistently delivers the highest throughput across node counts, enabling μ-batches up to 4 × larger than (2–0); this is expected, since the TRL implementation is allocating teacher optimizer states that inflates memory consumption, and partitioning those tensors (Stage 3) offsets its extra communication cost once memory is the dominant constraint. Under our proposal, the same (3–3) configuration admits larger μ-batches than TRL (e.g., on 4 nodes, a maximum of 6 versus 4 μ-batch), yet the best overall performance is typically achieved with (2–0). By removing teacher-side opti-mizer allocations entirely, (2–0) avoids parameter partitioning on the teacher   
+
+> 1https://github.com/deepspeedai/DeepSpeed/blob/v0.15.4/deepspeed/runtime/ bf16_optimizer.py#L162C13-L162C101 Optimizing Teacher-Student Partitioning for Scalable KD 7
+
+and thereby reduces communication collectives. For example, on 8 nodes, (2–0) reaches a μ-batch of 4 at 168 samples/s, whereas (2–3) reaches 6 at 142 sam-ples/s, and (3–3) reaches 6 at 107 samples/s. In short, once teacher memory overhead is eliminated, communication becomes the limiting factor, and avoid-ing teacher partitioning yields higher throughput. Finally, as shown in Figure 1 (a), the best-performing configuration of our method, usually (2-0) at the max-imum allowed μ-batch, consistently achieves roughly ≈ 50% higher samples/s than the best configurations available, often (3-3) at its maximum μ-batch, in the default TRL implementation. Similar conclusions were observed with f p 16 .  
+
+> (a) Throughput (b) Accuracy
+> Fig. 1. (a) Training throughput from 2 to 16 nodes comparing original TRL GKD best configuration against our proposal best configuration; (b) Training loss evolution when using ZeRO (DDP) or TP in the teacher, showing no negative effect on accuracy.
+
+# 5 Effects of Horizontal and Vertical Parallelism for GKD 
+
+Section 4 demonstrated how teacher’s forward pass can be accelerated under the existing DeepSpeed DDP-style training engine. A natural next question is how the model itself should be partitioned. Based on the DeepSpeed training 
+
+documentation 2, parameters in DDP are placed on GPUs in a vertical man-ner: entire layers (or contiguous blocks of layers) reside on a single device, so weights within a layer are not split across GPUs. Conceptually, one can picture the layer laid out left to right and “cut” by vertical lines so that different devices own different layers ( vertical splitting ). Our question is whether a horizontal 
+
+split is preferable for the teacher in GKD: Here, the weights within each layer are partitioned across devices so that every GPU holds a slice of every layer. This splitting alternative is known as Tensor Parallelism (TP), and changes the balance of memory-communication in DDP at the cost of more-frequent finer-grained collectives in each forward pass. Horizontal partitioning may enable larger micro-batches, although vertical partitioning can reduce per-layer synchro-nization. The DeepSpeed inference engine (also known as DeepSpeed-Inference   
+
+> 2https://www.microsoft.com/en-us/research/blog/zero-deepspeed-new-system-optimizations-enable-training-models-with-over-100-billion-parameters/ 8Adrian P. Dieguez et al.
+
+framework) performs this horizontal partition when distributing models multi-node. While vLLM could be used, accessing logits and integrating with TRL was more challenging, motivating the use of DeepSpeed-Inference for the study. The remainder of this section evaluates these regimes for the teacher under GKD to identify where each partitioning mode is most effective.   
+
+> (a) Vertical split (b) Horizontal split
+> Fig. 2. Partitioning options: (a) partitioning for a forward pass where each GPU holds a disjoint subset of full layers; (b) each GPU stores a portion of each layer, syncing through frequent communication collectives to execute the forward pass.
+
+Figure 2 (a) illustrates the vertical layer partitioning when using DeepSpeed’s 
+
+training engine (which uses DDP). In this configuration, full model layers are statically distributed across GPUs to reduce the per-device memory footprint. During the forward pass, every GPU requires access to all model layers in order to process its local data shard under data parallelism. To achieve this, Deep-Speed issues a single collective operation that broadcasts corresponding layer weights. There are different approaches to perform this collective. One option is to do an all-gather , and bring all weights from different GPUs locally into each GPU, but this has a huge memory impact. Another option is to pipeline the communication on several sub-stages to minimize memory footprint, so that each GPU temporarily holds a replica of a subset of layers, which offers the ad-vantage of memory-efficient partitioning and requires only as many collectives as GPUs. In contrast, Figure 2 (b) displays the horizontal layer partitioning when using DeepSpeed’s inference engine for the forward pass, the scheme im-plemented by Tensor Parallelism (TP). In this setup, every GPU holds a shard of each layer’s weights and processes the same batch of input tokens. Because each device computes only a partial output, the intermediate activations must be synchronized across all GPUs before continuing to the next layer. This results in a communication collective (usually an all-reduce ) after every layer bound-ary, as illustrated. While TP provides fine-grained model parallelism and enables training very large models by distributing tensors across devices, its major draw-back is the high communication frequency: each forward pass incurs one global synchronization per layer, which can become a performance bottleneck on multi-node clusters with limited bandwidth or higher latency. Optimizing Teacher-Student Partitioning for Scalable KD 9Symbol Description                  
+
+> gTotal number of GPUs
+> nNumber of nodes
+> p=g/n Number of GPUs per node
+> MgUsable GPU memory for teacher inference, excluding student footprint
+> MTotal model size (parameters only)
+> asActivation memory per sample per layer
+> bBatch size used by the teacher
+> tMIdeal single-GPU compute time per sample
+> Bintra , α intra Intra-node bandwidth and latency
+> Binter , α inter Inter-node bandwidth and latency
+> u(b)GPU utilization as a function of per-GPU batch size
+> ρCompute/communication overlap factor
+> A,CLatency-, bandwidth-dominated communication terms
+> Table 2. Summary of notation for Section 5.1.
+
+Our improved proposal replaces the teacher initialization in TRL (Listing 1.1) with the DeepSpeed inference engine (horizontal, TP) rather than the training 
+
+engine (vertical, DDP). Because TP does not shard batches across GPUs while the student trains with DDP, we gather the student’s per-GPU micro-batches and make the full batch available on each device before invoking the teacher, ensuring both compute the loss on identical inputs while the teacher benefits from inference-optimized parallelism. To assess whether TP (horizontal) parti-tioning can outperform DDP (vertical) partitioning in certain GKD regimes, we develop an analytical cost model to identify conditions under which the commu-nication pattern of TP (more frequent but cheaper collectives and typically lower memory per rank) may outweigh the advantages of DDP. This is motivated by the observation that DeepSpeed’s inference engine adopts horizontal splitting for inference workloads, whereas the training engine relies on vertical splitting for training, and TRL inherits the latter for both teacher and student. Figure 1 (b) shows no negative effects on the loss evolution when the teacher uses TP. Our goal is to show that Knowledge Distillation, which combines inference-style teacher computation with training-style student computation, benefits from a hybrid approach rather than a single uniform strategy. We later validate it em-pirically to demonstrate that there are cases where the hybrid approach (teacher horizontal, student vertical) outperforms the state-of-the-art static approach. 
+
+5.1 Simple Analytical model of Parallel Training 
+
+We introduce a deliberately simplified performance model to explain qualitative trends, not to predict exact runtimes. The model isolates how memory footprint, batch size, and communication frequency interact for teacher inference under GKD. Its purpose is to identify regimes where horizontal (TP) partitioning can be preferable to the default vertical (DDP). Because training performance depends on many interacting factors, any ana-lytical model is necessarily an approximation. Still, this simplified model suffices 10 Adrian P. Dieguez et al. 
+
+to reveal that horizontal teacher partitioning can outperform the commonly as-sumed vertical split in several realistic operating regimes, which we later check empirically. For that, we consider g GPUs arranged into n nodes with p = g/n 
+
+GPUs per node. Each GPU has available memory Mg for the teacher inference. The model has total size M bytes, l identical layers, and per-sample activa-tion footprint (bytes) as (deallocated after use). The ideal single-GPU com-pute time per sample is tM . Intra- and inter-node links have bandwidth/latency 
+
+(Bintra , α intra ) and (Binter , α inter ), respectively. GPU utilization is u(b) ∈ (0 , 1] ,depending on per-GPU batch. Compute/communication overlap is modeled via 
+
+ρ ∈ [0 , 1] in the per-batch training time formulation: 
+
+Ttraining = Tcomp + Tcomm − ρ · min {Tcomp , T comm }. (1) All inputs have equal length; memory for matrix–vector ops and allocation over-heads are neglected; gradient accumulation is not considered; each layer can be arbitrarily partitioned; and Mg already excludes student-model memory. GPU compute utilization is u(·) ∈ (0 , 1] (larger is faster), depending on the number of operations (batch size). To model communication time, we consider all collectives have the same cost for simplicity, which aligns with the hierarchical all-gather implementation. A hierarchical all-gather consists of an intra-node ring, followed by an inter-node ring, and an intra-node scatter (another intra-node ring). If each 
+
+i-GPU contributes mi = M/g bytes, its cost is 
+
+TAG (mi) = 2 
+
+
+
+(p − 1) αintra + ( p − 1) mi
+
+Bintra 
+
+
+
++
+
+
+
+(n − 1) αinter + n − 1
+
+ng m i
+
+Binter 
+
+
+
+.
+
+Table 2 summarizes the notation used throughout the analysis. 
+
+Vertical split (DDP). In the vertical (DDP/ZeRO-style) layout, each GPU owns complete layers, and communication occurs sparsely but with large pay-loads. In DDP, there is only one single all-gather required to get the layers from other GPUs into local memory and perform the forward operation. How-ever, this would incur an unnecessary memory footprint, and practical imple-mentations pipeline the operation into up to g − 1 broadcast steps to reduce peak memory usage. Each GPU keeps its mi = M/g weights and allocates a buffer for handling the reception of other non-local mj weights. The λ param-eter, λ ∈ (0 , 1] (larger values imply larger allocation, and typical values are 1
+
+or 1(g−1) depending on collective implementation), models this communication buffer. Therefore, the total memory constraint, dominated by weights and acti-vations footprint, determines the batch size: Mg > M/g +λ(g−1) M/g +asb/g ⇒
+
+bmax = ⌊(gM g − (1 + ( g − 1) λ)M )/a s⌋.Grouping terms in the TAG expression, we define: 
+
+A = 2( p − 1) αintra + ( n − 1) αinter , C = 2( p − 1) 1 
+
+> gB intra
+
++ n−1 
+
+> n
+> 1
+> Binter
+
+.
+
+where A captures latency-dominated terms and C the bandwidth-dominated terms. Depending on whether the all-gather is pipelined into multiple broadcast Optimizing Teacher-Student Partitioning for Scalable KD 11 
+
+stages (normally λ = 1(g−1) ) or executed as a single collective, the resulting per-batch training time expression can be divided by b to obtain the per-sample training time: 
+
+¯TDDP (b) = tM
+
+g u (b/g ) + A/λ + M C b − ρDDP 
+
+min {TDDP comp , T DDP comm }
+
+b . (2) 
+
+Horizontal split (TP). In the horizontal (TP) layout, each GPU owns a frac-tion of every layer, leading to frequent but smaller communication events at each layer boundary. The memory constraint is Mg > M/g + asb =⇒ bmax =j Mg −M/g as
+
+k
+
+. Each transformer layer performs two communication collectives (af-ter MHA and FFN) with mi = asb/g , yielding the resulting per-sample training time time: 
+
+¯TT P (b) = tM
+
+g u (b) + 2l · Ab + 2 l · as · C − ρT P 
+
+min {TT P comp , T T P comm }
+
+b . (3) 
+
+Comparison. Let b∗ 
+
+> DDP
+
+≈ bmax (DDP ) and b∗ 
+
+> T P
+
+≈ bmax (T P ) be the optimal batches. Assuming utilization saturation near the optimum, u(b∗ 
+
+> DDP
+
+/g ) ≈ u(b∗ 
+
+> T P
+
+) ≈ u∞,and modeling overlap by scaling communication by (1 − ρi), we obtain 
+
+¯TDDP (b∗ 
+
+> DDP
+
+) ≈ tM
+
+g u ∞
+
++ (1 − ρDDP )( A/λ + M C )
+
+b∗
+
+> DDP
+
+,
+
+¯TT P (b∗ 
+
+> T P
+
+) ≈ tM
+
+g u ∞
+
++ (1 − ρT P ) 2 l · Ab∗
+
+> T P
+
++ (1 − ρT P ) 2 l · as · C. 
+
+Canceling the common compute term, tensor parallelism is faster iff 
+
+(1 − ρT P ) 2 l · Ab∗
+
+> T P
+
++ (1 − ρT P ) 2 l · as · C < (1 − ρDDP )( A/λ + M C )
+
+b∗
+
+> DDP
+
+⇐⇒ (4) 
+
+⇐⇒ (1 − ρT P )b∗
+
+> DDP
+
+(1 − ρDDP )b∗
+
+> T P
+
+< 12l
+
+ A/λ + M C A + b∗ 
+
+> T P
+
+asC
+
+
+
+(5) Solving this inequality to get the inflection points is out of the scope for this paper. However, from the inequality above, we can identify several conditions under which horizontal splitting (TP) may become advantageous. When the model is dominated by weights while activations remain small, the right-hand side grows, making the condition easier to satisfy. A small number of layers has a similar effect, since the right-hand side scales inversely with l. Moreover, a high sharding memory overhead (i.e., λ ≈ 1) reduces the maximal batch size 
+
+b∗ 
+
+> DDP
+
+(bmax DDP depends on memory constraints), enlarging the denominator of the left-hand side and thus penalizing sharded execution. Overlap effects are also im-portant: tensor parallelism benefits when ρT P is large, whereas ρDDP is typically smaller, further reducing the left-hand side. Finally, since batch size increases with the number of GPUs, the right-hand side decreases at scale with b∗ 
+
+> T P
+
+, ex-panding the regime in which tensor parallelism outperforms model sharding. 12 Adrian P. Dieguez et al.                          
+
+> Teacher Mode μBS Student Teacher Samples/s
+> Horizontal 3St 3 TP 16.783 Horizontal 3St 2 TP 26.990
+> Vertical 4St 2 DDP St 2 OOM Vertical 4St 2 DDP St 3 21.712 Vertical 4St 2 DDP St 3 19.696
+> Table 3. Single-node (NVLink) results comparing teacher TP to DDP. TP attains the best throughput outperforming DDP-style teacher variants.
+
+5.2 Experimental Results 
+
+We empirically found a case where a TP (horizontal) teacher outperforms a DDP-style (vertical) teacher. Specifically, when running the training on a single-node. As shown in Table 3, with the student at Stage 2 and μBS = 3 , the teacher configured with TP surpasses DDP-based teacher variants, which either underperform or run out memory. This is consistent with the intuition that, when traffic is confined to the single-node NVLink fast interconnect, per-layer collectives are not expensive and TP’s increased communication is amortized compared to the more expensive communications in DDP. Under our analytical model from Eq. 5, we find this case satisfies the inequality. The teacher in TP wins over DDP when we assume ρT P ≈ ρDDP and A ≈ 0 (latency negligible relative to bandwidth), yielding: 
+
+43 ∼ (1 − ρT P )4 (1 − ρDDP )3 < 12 · 32 
+
+ 8A + 15 GB · CA + 3 × 0.0088 GB · C
+
+
+
+= 8A + 15 GB · C
+
+64 A + 1 .6GB · C ∼ 15 GB 
+
+1.6GB .
+
+with 1/λ = 8 , l = 32 and M = 15 GB on LLama-3-8B , bDDP = 4 , bT P = 3 ,
+
+a_s = 1024 ∗ 4096 ∗ 2 = 0 .0088 GB. Observe that, as the system scales (more GPUs), b∗ 
+
+> T P
+
+grows in the denominator of Eq. 5; even with small as, this even-tually reduces the RHS and the inequality is not satisfied anymore. 
+
+# 6 Conclusions 
+
+This work demonstrates that Generalized Knowledge Distillation can be sub-stantially accelerated by recognizing and exploiting the fundamental asymmetry between teacher and student workloads. TRL’s default GKD implementation executes the teacher through a training-oriented engine, provisioning optimizer states that are unnecessary for the forward pass. Decoupling orchestration, re-moving training-only allocations on the teacher, and selecting topology-aware partitioning per actor increases throughput by up to 67% across multi-node runs, enlarge feasible micro-batch sizes, and improve utilization without chang-ing the GKD objective or accuracy. Our results demonstrate consistent ≈ 50% 
+
+throughput improvement from 16- to 128-GPU scenarios. We formalized the trade-off between vertical (DDP-like) and horizontal (TP-like) partitioning for the teacher and showed the existence of regimes where hor-izontal splitting, despite its higher synchronization frequency, can outperform Optimizing Teacher-Student Partitioning for Scalable KD 13 
+
+vertical splitting due to lower per-rank memory and cheaper per-layer collec-tives. Importantly, the balance between these regimes is sensitive to intercon-nect. High-bandwidth, low-latency fabrics (e.g., NVLink) favor tensor parallelism by amortizing frequent collectives, whereas higher-latency interconnects reduce this advantage and shift the balance toward vertical partitioning. Our analytical model makes this dependence explicit, enabling topology-aware reasoning rather than assuming a single optimal strategy. A hybrid strategy (horizontal for the teacher, vertical for the student) emerges as a robust alternative. Empirical results on production Llama-3 workloads con-firm these predictions and indicate that removing teacher-side optimizer state shifts the bottleneck from memory to communication, after which finding the best teacher partitioning yields the best end-to-end throughput. Finally, the proposed changes are deliberately non-intrusive. As a result, the approach in-tegrates cleanly into existing TRL workflows with modest orchestration-level changes, making hybrid parallelism for GKD both practical and immediately deployable. Future work includes solving and integrating the cost model into autotun-ing, extending to other types of parallelism (sequence/pipeline), test with long-context, larger-teacher models, and fuse some teacher/student operations. 
+
+Acknowledgments. Language and grammar improvements were supported by Mi-crosoft Copilot . All content, analysis, and conclusions are solely those of the authors. 
+
+# References 
+
+1. Agarwal, R., Vieillard, N., Zhou, Y., Stanczyk, P., Ramos, S., Geist, M., Bachem, O.: On-policy distillation of language models: Learning from self-generated mis-takes. In: International Conference on Learning Representations (ICLR) (2024) 2. Aminabadi, R.Y., Rajbhandari, S., Zhang, M., Awan, A.A., Li, C., Li, D., Zheng, E., Rasley, J., Smith, S., Ruwase, O., He, Y.: Deepspeed inference: Enabling ef-ficient inference of transformer models at unprecedented scale. arXiv preprint arXiv:2207.00032 (2022), https://arxiv.org/abs/2207.00032 
+
+3. Hinton, G., Vinyals, O., Dean, J.: Distilling the knowledge in a neural network. arXiv (2015), https://arxiv.org/abs/1503.02531 
+
+4. Hugging Face: Trl — transformer reinforcement learning. https://huggingface. co/docs/trl/index (2026), accessed: Mar 10, 2026 5. Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu, C.H., Gonzalez, J., Zhang, H., Stoica, I.: Efficient memory management for large language model serving with pagedattention. In: Proceedings of the 29th Symposium on Operating Systems Principles. p. 611–626. SOSP ’23, ACM (2023) 6. Matsubara, Y.: torchdistill: A modular, configuration-driven framework for knowl-edge distillation. In: Proceedings of the International Workshop on Reproducible Research in Pattern Recognition (RRPR). Lecture Notes in Computer Science, vol. 12636, pp. 24–44. Springer (2021) 7. Microsoft: Deepspeed: Accelerating deep learning training and inference. https: //github.com/microsoft/DeepSpeed (2024), accessed: 2025-08-06 14 Adrian P. Dieguez et al. 8. Pérez Diéguez, A., Batlle Casellas, A., Torres, A., Teague, H., Ros, J.: Pretrain-ing llms at scale: Tuning strategies and performance portability. In: Proceedings of the SC ’25 Workshops of the International Conference for High Performance Computing, Networking, Storage and Analysis. p. 1512–1523. ACM (2025) 9. Rajbhandari, S., Rasley, J., Ruwase, O., He, Y.: Zero: Memory optimizations to-ward training trillion parameter models. ArXiv (May 2020) 10. Sanh, V., Debut, L., Chaumond, J., Wolf, T.: Distilbert, a distilled version of bert: smaller, faster, cheaper and lighter. In: Proceedings of the 5th Workshop on Energy Efficient Machine Learning and Cognitive Computing (EMC 2) at NeurIPS (2019) 11. Shoeybi, M., Patwary, M., Puri, R., LeGresley, P., Casper, J., Catanzaro, B.: Megatron-lm: Training multi-billion parameter language models using model par-allelism (2020), https://arxiv.org/abs/1909.08053 
+
+12. Tan, S., Tam, W.L., Wang, Y., Gong, W., Yang, Y., Tang, H., He, K., Liu, J., Wang, J., Zhao, S., Zhang, P., Tang, J.: Gkd: A general knowledge distillation framework for large-scale pre-trained language model. arXiv preprint arXiv:2306.06629 (2023), 
+
+https://arxiv.org/abs/2306.06629 
+
+13. Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A.N., Kaiser, Ł., Polosukhin, I.: Attention is all you need. In: Advances in Neural Information Processing Systems (NeurIPS) (2017)
