@@ -1,0 +1,1356 @@
+Title: ScaleAcross Explorer: Exploring Communication Optimization for Scale-Across AI Model Training
+
+URL Source: https://arxiv.org/pdf/2605.24326v1
+
+Published Time: Tue, 26 May 2026 00:30:37 GMT
+
+Number of Pages: 28
+
+Markdown Content:
+# ScaleAcross Explorer: Exploring Communication Optimization for Scale-Across AI Model Training 
+
+Minghao Li 1,2∗, Alicia Golden 1,2∗, Samuel Hsia 2, Michael Kuchnik 2, Adi Gangidi 2, Xu Zhang 2, Ashmitha Jeevaraj Shetty 2, Zachary DeVito 2, Weiwei Chu 2, Dong He 2, Haoci Zhang 2, Yuchen Hao 2, Ruoming Pang 2,
+
+James Hongyi Zeng 2, Ying Zhang 2, Minlan Yu 1,2∗, Carole-Jean Wu 21Harvard University, 2Meta Platforms, Inc. 
+
+> ∗
+
+Work done at Meta 
+
+The rapid scaling of large language model training requires distributing GPU resources across multiple data center buildings and regions. We refer to such paradigm as “scale-across” training. As infrastructure expands, the system design space becomes increasingly intricate, encompassing new model architectures, hardware heterogeneity, and evolving communication patterns. Drawing from Meta’s production experience, we highlight the complexities of deploying training jobs across a few data centers housing hundreds of thousands of GPUs. To accelerate exploration of the large design space and to enable efficient training for frontier model development, we conduct in-depth characterization of three key design dimensions: parallelism placement, parallelism scheduling, and network layer technologies. We then propose ScaleAcross Explorer — an optimizer that considers the interplay of design dimensions and holistically optimizes scale-across training. Testbed experiments and simulations demonstrate up to 64.62% training speedups over production configuration and up to 37.59% training speedups over state-of-the-art baseline across a wide range of design points.  
+
+> Date:
+
+May 26, 2026  
+
+> Correspondence:
+
+Minghao Li at minghaoli@g.harvard.edu , Minlan Yu at minlanyu@g.harvard.edu , Carole-Jean Wu at carolejeanwu@meta.com .
+
+## 1 Introduction 
+
+Model scaling has emerged as a primary driver to advance machine intelligence. The size of pretraining jobs in terms of GPUs required is rapidly growing. As the scale of AI training infrastructure grows, it becomes increasingly impractical to concentrate all compute resources in one data center building or even a single geographic region (Gherghescu et al., 2024; Ontiveros et al., 2023; Zu et al., 2024; Gandhi et al., 2024; Strati et al., 2025). In this paper, we share the key learning and challenges from our production experience at Meta, where we successfully deploy training jobs across zones and buildings housing hundreds of thousands of GPUs (Song and Veeraraghavan, 2025). Such multi-building training is enabled by advanced parallelism placement, scheduling, and networking protocols, which we delve into with detail in Section 2.1. As we continue to grow the training infrastructure across data center buildings with different distances and even across regions, the design space across the entire system stack becomes highly complex, including new model architectures, hardware heterogeneity (from the perspective of both accelerators and networks), and new communication challenges for distributed training at-scale. For example, emerging mixture-of-experts (MoE) models exposes new parallelism opportunities to overlap communication latency with useful computations. Scale-across model training introduces new communication patterns influenced by parallelism strategies and infrastructure design choices. Data center buildings may be co-located within a region ( ∼1:3-1:8 oversubscription and 10’s-100 km distance) or distributed across regions (beyond 1:8 oversubscription and 100’s km distance). As we show in this paper, training iteration time vary with cross-building bandwidth oversubscription and latency. Figure 1 provides an overview for Meta’s scale-across model training infrastructure. We define scale-across (red 1 
+
+> arXiv:2605.24326v1 [cs.DC] 23 May 2026 Table 1
+
+Characteristics of Scale-out (cross zones) vs Scale-across (cross buildings) networks. Bandwidth Distance Latency Oversubscription (km) (μs) Cross Zones 1:2-1:4 ∼5 20-30 Cross Buildings 1:3 and beyond O(10)-O(100) ≥ 50 1    
+
+> 1
+> 2
+> 2
+> m
+> n
+> Host
+> RTSW
+> CTSW
+> ATSW 12k
+> Building p
+> AI Zone 5
+> AI Zone 8
+> AI Zone 1
+> AI Zone 4
+> ATSW Layer
+> ATSW Links
+> 100’s km
+> 10’s km
+> 100’s km
+> Building q
+> AI Zone 5
+> AI Zone 8
+> AI Zone 1
+> AI Zone 4
+> ATSW Layer
+> 10’s km
+> AI Zone 5
+> AI Zone 8
+> AI Zone 1
+> AI Zone 4
+> ATSW Layer
+> Scaling-across
+> Scaling-out Building s
+> AI Zone 5
+> AI Zone 8
+> AI Zone 1
+> AI Zone 4
+> ATSW Layer
+> AI Zone 5
+> AI Zone 8
+> AI Zone 1
+> AI Zone 4
+> ATSW Layer
+> Building t
+> Building 1
+> Figure 1
+
+Scale-across model training infrastructure (Si et al., 2026; Meta, 2025). RTSW: Rack Training Switch; CTSW: Cluster Training Switch; ATSW: Aggregation Training Switch. 
+
+dashed arrows in Figure 1) as model training expanded across multiple data center buildings, interconnected via cross-building networks. This contrasts with “scale-out” (teal dashed arrows), which increases capacity within a zone or connects additional zones through a homogeneous network. To accelerate exploration of the large model design space and to enable training productivity for frontier model development, we deployed a scale-across testbed with configurable latency and bandwidth across clusters to comprehensively characterize the extensive design space of scale-across training. While the design space characterization provides an in-depth understanding of key design dimensions of scale-across training, it does not consider the interplay of model architectures, parallelism placement and schedules, and network layer technologies. To optimize scale-across model training holistically, we propose ScaleAcross Explorer —a new optimizer for scale-across training configuration. ScaleAcross Explorer takes model architecture specification, batch sizes, network topology configurations, and hardware specifications as input. It then searches for the configuration across the stack of parallelism placement, parallelism schedules, and network protocols that minimizes iteration time. Figure 2 provides an overview for the key design dimensions and the optimizer workflow. We characterize the following key design dimensions in ScaleAcross Explorer :
+
+Parallelism Placement. In scale-across training, the choice of whether to place data parallelism or pipeline par-allelsm as the outermost layer (DP-out vs PP-out) depends on model density and bandwidth oversubscription. For example, DP-out uses the cross-building links less frequently and thus performs better for dense model. For MoE models, as the number of experts increases, DP data volume grows signficantly, making PP-out a better choice. 
+
+Parallelism Scheduling. In production, there are many variations on DP and PP scheduling strategies. For example, Hybrid Sharded Data Parallel (HSDP) is an alternative to Fully Sharded Data Parallelism (FSDP) Zhao et al. (2023) to mitigate scale-across network bottlenecks. We have also extended flexible PP Grattafiori et al. (2024) to DoraPP and Interleaved Zero Bubble V-schedule (ZBV) with different tradeoffs between computation efficiency and cross-building traffic. The choice of these solutions depend on cross-building network settings. 
+
+Network Layer. The measurement on our scale-across testbed shows that collective communication times depend on message sizes and cross-building distances. The performance of DP and PP traffic on across-building links also depends on latency, loss rates, and transport configurations (e.g., ECMP vs packet spraying). 2Input  
+
+> Cluster Information & Network Topology
+> Model Architecture & Batch Size
+> Parallelism Configuration and Placement (§ 3)
+> TP, CP, EP, PP, DP degrees; microbatch size; PP stage size
+> PP-out and DP-out
+> Model Chunk Size
+> Parallelism Scheduling (§ 4)
+> Hierarchical Aggregation
+> DoraPP and Interleaved ZBV
+> Reliability
+> Network Technologies (§ 5)
+> Load Balancing
+> Congestion Control
+> Output
+> Workload Configuration & Parallelism Placement
+> Network Planning Guidelines Figure 2
+
+Overview for ScaleAcross Explorer and the key design dimensions for scale-across model training. 
+
+ScaleAcross Explorer automatically navigates the large design space and identifies cross-training config-urations that achieves 16.38% to 37.59% speedup over the state-of-the-art baseline for various model and network settings. 
+
+## 2 Deployment Experience for Scaling-Across Training 
+
+The ever-increasing scale of large language model training demands innovations in infrastructure design. Llama 3 was trained with 16K GPUs located in one data center building (Grattafiori et al., 2024; "@Scale", 2025b). With Llama 4, the training scale reached 100K+ GPUs across data center buildings ("@Scale", 2025b). In this section, we share our experiences running cross-building training jobs. We then discuss the challenges of the complex design space as we further scale training jobs, and show our new scale-across testbed for characterizing the design choices. 
+
+2.1 Cross-Building Training Configurations 
+
+Infrastructure. Our 100K-GPU deployment spans across multiple buildings (Figure 1). The cross-building network interconnects the aggregation-layer switches (ATSW) of each building, with bandwidth oversub-scription ratio in the range of ∼1:3("@Scale", 2025b) to 1:8 and latencies rising to 4× longer latency than intra-zone network ("@Scale", 2025a). The bandwidth and latency of cross-building links in this infrastructure is at the lower end of the numbers in Table 1. Each building contains multiple AI zones, supporting tens of thousands of GPUs. These zones are interconnected via a Clos architecture with three layers of switches (ATSW, cluster-layer switches (CTSW), and rack-layer switches (RTSW)) (Si et al., 2026). 
+
+Parallelisms placement. Our cross-building training jobs encompass five dimensions of parallelisms: Tensor Parallelism (TP), Context Parallelism (CP), Expert Parallelism (EP), Pipeline Parallelism (PP), and Data Parallelism (DP). We place DP on the outermost cross-building layer and place PP on the cross-zone layer. Due to their high communication overhead, TP, CP, and EP require high bandwidth and low latency network and are confined within AI Zone. DP partitions the training dataset across GPUs. We employ Fully Sharded Data Parallelism (FSDP) (Zhao et al., 2023), which shards both model parameters and gradients among workers. By applying DP at the outermost layer, gradient ReduceScatter and parameter AllGather operations occur over the cross-building network. Gradient synchronization for each layer can begin immediately after its backward pass and overlap with the backward computation of earlier layers; the same applies to parameter prefetching (Grattafiori et al., 2024). Therefore, we identify DP as tolerant to low bandwidth and long latency of the cross-building network. We place PP as the second-to-outermost parallelism on the cross-zone network. PP divides model layers into sequential stages and introduces point-to-point communication of activation and activation gradient between adjacent stages per model chunk per microbatch. PP demands higher bandwidth and is less tolerant of long-distance communication than DP. Any PP communication that is not fully overlapped with computation becomes part of the critical path. 
+
+Parallelism scheduling. We inherit parallelism schedule choices for intra-building training. For DP, we use FSDP. For PP, we extend the flexible PP schedule used in Llama 3 (Chu et al., 2025) to Doraemon PP (DoraPP) to further reduce bubbles (Figure 3). Inspired by the zero bubble schedule (Qi et al., 2024), DoraPP splits backward computation into input (dx) and weight (dw) gradients to maximize overlap between computation and communication. Like flexible PP, DoraPP uses a “wrap-around” communication pattern, connecting 39 5 6 7 8 98 9 5 6 7 8 9
+
+(a) Flexible PP schedule                                                                                                                             
+
+> 0 1 2 3 4 0 1 2 3 4 5 6 07182935460718293456789567890 1 2 3 4 0 1 2 3 4 0516273849051627384956789567890 1 2 3 4 0 1 2 031425364708192536475869789567890 1 2 3 4 0 0112233445061728394556677889956789
+
+(b) DoraPP schedule                                                                                                        
+
+> 0 1 2 3 4 0 1 2 3 4 5 6 07182935460718293456789567890 1 2 3 4 0 1 2 3 4 0 5 1 6 273849051627384956789567890 1 0 1 2 3 4 0 1 2 0 3 1 4 2 5 3 6 4708192536475869789567890 1 2 3 0 1 2 3 4 0 0 1 1 2 2 3 3 4 4 5 0 6 17283945566778899567890 1 2 3 4 0
+
+(c) Interleaved ZBV schedule                                                                                                                            
+
+> 0 1 2 3 4 5 6 0 0 0 1 1 1 2 2 2 3 370448155926637744 8 855 9 967788990 1 2 3 4 0 5 1 0 0 2 1 1 3 2 2 6 00 4 371548265937644 8 755 9 869677 9 88990 1 2 0 3 1 4 2 0 0 3 1 1 5 00 4 2615372648375944 8 655 9 768679788 8 99 9 0 0 1 1 2 2 3 3 0 0 4 00 4 1 1 5 152626373748485955 9 667678789899 7 8 9
+
+Chunk 0-3 forward Chunk 0-3 backward Chunk 4-7 forward Chunk 4-7 backward Chunk 0-3 dx Chunk 0-3 dw Chunk 4-7 dx Chunk 4-7 dw Figure 3 A comparison of different pipeline schedules using an example setup with 4 PP ranks, 2 model chunks per PP rank (8 chunks in total), and 8 microbatches: (a) Llama 3 Flexible PP Chu et al. (2025), (b) DoraPP, (c) Interleaved ZBV Qi et al. (2024). Within each pipeline schedule, each row represents a PP rank, each column represents a time unit and dashed lines show propagation of the first microbatch. 
+
+the last and first pipeline stages for adjacent model chunks. DoraPP executes the same layer for multiple microbatches on every rank, allowing prefetching weights for the next layer and thereby enabling integration with ZeRO-2 and ZeRO-3 (Rajbhandari et al., 2021), which reduces gradient and weight memory usage. 
+
+Network layer. As discussed in our previous work on the operation of RDMA for distributed training (Gangidi et al., 2024), we disable congestion control because our collective-library level congestion management, combined with deep-buffer spine switches (CTSW and ATSW), already ensures stable training performance without persistent congestion. Overall, 11.3% of total traffic is cross-building, and 0.05% and less than 0.01% of packets are ECN-marked for intra- and cross-building communication, respectively. The 99th percentile latencies are 40 μs for intra-building and 85 μs for cross-building communication. With these configurations, we have been successfully running cross-building training jobs at 100K GPU scale with high GPU utilization and network stability since Llama 4 pretraining ("@Scale", 2025b,a). 
+
+2.2 Complex Scale-Across Design Space 
+
+Building on our experiences of running cross-building training, we aim to further scale training jobs to support next-generation large models requiring millions of GPUs. However, as gigawatt-scale energy demands and grid constraints prevent single locations from supporting hundreds of thousands of synchronous GPUs (Gherghescu et al., 2024; Ontiveros et al., 2023; Choukse et al., 2025)—we are compelled to expand to multiple buildings across distributed regions. In this expanded topology, inter-building distances are dictated by power, grid, and cooling constraints, resulting in significant variability (Table 1). For example, regions may be separated by more than 200 kilometers, introducing bandwidth oversubscription of 1:8 or higher and latencies ranging from 100 μs to several milliseconds (Gherghescu et al., 2024; Patel et al., 2025; Morales, 2024). This variability necessitates us revisiting the configurations for our scale-across training jobs from Section 2.1. We only discuss the design options that are practical to implement at today’s devices and make significant impact on the iteration time from our production experiences. 
+
+Parallelisms placement. Although our cross-building training uses DP-out, previous Microsoft and academic work (Gandhi et al., 2024; Strati et al., 2024, 2025; Chen et al., 2025) suggested PP-out for geo-distributed 4Table 2 Workload configurations for the testbed experiments and emulation (8K sequence length). Mbs: “Microbatch size”; “Gbs”: “Global batch size”. 
+
+Model Mbs, Gbs TP-CP-EP-PP-DP Chunk size Experts 40B-MoE 1, 64 4-1-16-2-16 2 layer 16-128 17B-Dense 4, 176 8-1-NA-2-4 1 layer NA training. As MoE models introduce new parallelism options and communication patterns, we need to revisit DP-out and PP-out for more model and network configurations.  
+
+> Parallelisms scheduling.
+
+As cross-building links have longer delay and lower bandwidth, we need to revisit those parallelism solutions that can reduce traffic on these links. In practice, we only consider lossless solutions to avoid affecting ML team optimization and debugging. For DP scheduling, hierarchical communication (e.g., Hybrid Sharding Data Parallel, HSDP)(Zhao et al., 2023) combines inner-group parameter sharding with model replication across groups. We can place replica groups across building, so that bandwidth-intensive parameter AllGather stays intra-building and we only perform gradient synchronization across buildings. For PP scheduling, although we chose DoraPP for intra-building settings, we revisit other alternatives with different computation-communication tradeoffs because communication overhead becomes more important for cross-building settings. For example, alongside DoraPP, we invented Interleaved Zero Bubble V-schedule (ZBV in Figure 3) separates the calculation of input gradients from weight gradients. The schedule prioritizes the input gradients to immediately unblock upstream devices, while deferring the weight gradient computations. These deferred tasks are then executed during the gaps that would normally result in pipeline bubbles, reducing activation memory usage. Compared to DoraPP, interleaved ZBV incurs more computation overhead due to its more aggressive backward splitting. But its V-schedule enforces a non-cyclic dependency chain, eliminating the wrap-around communications between the last and first stages, and thus reducing cross-building communications.  
+
+> Network layer.
+
+For our 100K-GPU cross-building training, we inherited intra-building network protocols described in our prior paper (Gangidi et al., 2024). However, as the cross-building distance further grows, it becomes necessary to systematically characterize latency, bandwidth, and packet loss behavior, since these factors directly influence future protocol design choices. For example, we need to revisit the utility of selective redundancy for proactive loss mitigation, the throughput comparison between ECMP and packet spraying, and the effectiveness of ECN-based congestion control. 
+
+2.3 Scale-Across Testbed 
+
+To systematically characterize the impact of configurations for cross-building training, we build a scale-across testbed in production. Our testbed features multiple independent clusters, each equipped with multiple racks of H100 GPUs. These clusters are fully meshed via optical systems allowing flexible configurations of cross-building topology and bandwidth. We also introduced fiber spools of up to 500km (similar to the M2 Optics Fiber Lab (M2 Optics, 2026)) to support configurable distances between buildings. We configure bandwidth oversubscription ratios of 1:1.33, 1:4, 1:8, and 1:16, encompassing all scenarios described in Table 1. To achieve different oversubscription ratios on the production testbed, we incrementally drained uplinks on the CTSW. Out of the 48 links between the 2 clusters, we drained 32, 40, and 44 links to obtain 1:4, 1:8, and 1:16 oversubscription ratios respectively. In production, adjusting port speed with software rate limiters such as “ethtool” is not feasible due to auto-negotiation of link speed between senders and receivers. If the sender changes link speed, the receiver will detect the mismatch and disable the link. Unless otherwise specified, the default oversubscription ratio on the production testbed is 1:1.33, which is the minimum achievable given the testbed configuration. We choose dense and MoE models based on our production experiences and list their configuration in Table 2. Because the production testbed also supports other users, we prioritize experiments with MoE models on scale-across testbed given our limited time slots, but run the dense model experiments on another research cluster of 64 H100 GPUs (see Appendix A.1 for detailed description). To validate our findings at 100K-GPU scale, we employ an in-house packet-level network simulator (Wang et al., 2026) which are validated and used 5No oversub-   
+
+> scription
+> 1:4 1:8 1:16
+> Oversubscription ratio
+> 0.9
+> 1.0
+> 1.1
+> 1.2
+> 1.3
+> 1.4
+> 1.5
+> 1.6
+> Iteration time normalized to baseline
+> FSDP-out, Dense
+> PP-out, Dense Figure 4
+
+[Testbed] 17B dense model iteration time, normalized to no oversubscription baseline. 2 4 10 22 44  
+
+> Microbatches
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> Iteration time normalized to
+> FSDP-out, 2 microbatches case  FSDP-out, Dense
+> PP-out, Dense
+> Figure 5
+
+[Testbed] Iteration time for PP-out and DP-out across varying number of microbatches. 
+
+in production. This simulator further enable characterizing the effects of link latency, packet loss rates, and network protocols. Simulations are configured using model architectures and workload settings mirroring the 100K GPUs training job we discussed in Section 2.1. We simulate multiple data center buildings and cover 1:1, default, and 2 × and 4 × the default oversubscription ratios (“default ratio” is based on that of an internal multi-building region), as well as link latencies of 10, 25, 50, 100, and 1000 μs, with 50 μs being the default. The default topology is designated as “Topology A1” in the later text. To demonstrate the generalizability of our findings, we further simulate multiple topology variants (configurations in Table 3). Simulation setup details are in Appendix A.2. In the following sections, we share our characterization of parallelism placement, parallelism scheduling, and network layer technologies with extensive experiments on our scale-across testbed and large-scale simulations. 
+
+## 3 Parallelism Placement 
+
+When configuring distributed training across long distances, the key initial decision is which parallelism strategy to place at the outermost layer, as this choice shapes all subsequent optimizations. We analyze the performance factors of PP-out versus DP-out. While prior geo-distributed studies often favor PP-out, our findings show that PP-out can be less effective for dense model training. 
+
+3.1 Dense Models 
+
+Let H be model dimension, S be sequence length, m be microbatch size, F be Feed-Forward Networks (FFN) dimension, E be number of experts, and Fe be expert intermedaite dimension. Then for each iteration, the data transmitted in point-to-point (P2P) communication between adjacent PP stages is roughly 2 × H 
+
+> TP
+
+× S
+
+> CP
+
+×m, with a total of microbatches × model chunks such communications in each iteration. With DP-out, the per-layer data exchanged per iteration is approximately 1 
+
+> TP
+
+× (4 × H2 +3 × H × F ) for Llama-style dense models, and 1 
+
+> TP
+
+× (4 × H2 +3 × H × Fe × E 
+
+> EP
+
+) for MoE models. As discussed in Section 2.1, with PP-out, P2P communications between stages may cross building boundaries and become exposed. In contrast, DP-out introduces delay in parameter AllGather and gradient ReduceScatter per layer, but only the first layer’s communication is fully exposed.  
+
+> Parallelism placement with varying bandwidth oversubscription.
+
+As network oversubscription increases from cross-building to cross-region scenarios, how does the performance gap between PP-out and DP-out change? To answer this, we evaluate both the baseline case with no oversubscription (1:1) and emulated scenarios where inter-building GPU communication experiences oversubscription ratios of 1:4, 1:8, and 1:16. We set the global batch size as 176, which is training loss optimal following the LLM scaling law (Shuai et al., 2024). As shown in Figure 4, the performance gap between PP-out and DP-out is narrow when the oversubscription 6No oversub-scription  
+
+> Default ratio
+> 2x Default ratio
+> 4x Default ratio Oversubscription ratio
+> 0.90
+> 0.95
+> 1.00
+> 1.05
+> 1.10 Iteration time normalized to baseline FSDP-out, Dense, Topology A1 PP-out, Dense, Topology A1 Figure 6 [Simulation] Production trace based simulations.
+
+ratio is low. The critical threshold occurs at a 1:4 ratio. Beyond this point, DP-out is notably faster for the 17B dense model, with a 28.47% speedup at a 1:16 oversubscription ratio.  
+
+> Parallelism Placement with Varying Number of Microbatches.
+
+In real-world deployments, batch sizes are set also considering the limitations of training tokens or compute resources and convergence speed. Here, we show that picking a smaller batch size, which leads to fewer microbatches in total, has a fundamental impact on PP-out performance. In this set of experiments, we gradually decrease the batch size from 176 to 8 and study the performance trend of DP-out and PP-out as we vary the batch size while keeping micro-batch size static as 4 (i.e., the number of microbatches equals batch size  
+
+> 4
+
+). As shown in Figure 5, with the 17B dense model, while PP-out is slower than DP-out under batch size 176, the performance gap closes when batch size is decreased to 88. As we further decrease the batch size, PP-out overtakes DP-out. The root cause behind the performance difference is the communication frequency. Pipeline parallelism involves pair-to-pair activation and gradient communication for each model chunk. When PP is the outermost parallelism, GPUs running adjacent stages might reside in different buildings, and therefore cross-building communication happens twice per model chunk per micro-batch (one for activation in the forward pass and another for gradient in the backward pass). On the other hand, when FSDP is the outermost parallelism, cross building communication only happens twice per iteration (one for parameter all-gathering and one for gradient reduce-scattering). In summary, a major performance determinant of PP-out is the number of micro-batches. Under a static parallelism configuration and an increasing number of micro-batches, the total volume of data communicated over cross-building links remains static for DP-out, but scales linearly for PP-out. When the number of micro-batches is large, PP-out transmits much more data over the cross-building links than DP-out, leading to worse performance at high oversubscription ratios.  
+
+> PP-out vs. DP-out large scale simulations.
+
+We conduct large-scale simulations using production workload traces, where 100K GPUs are placed into multiple buildings under a Clos network topology (Bagga et al., 2025). As in Figure 6, we observe that PP-out is comparable or worse than DP-out (up to 6.60% slower at the 
+
+4× default oversubscription ratio). Two key factors contribute to this result. First, to prevent stage idling, it is necessary to ensure that the number of micro-batches per iteration at least equals the number of pipeline stages. As the production workload has many pipeline stages, the number of microbatches per iteration is large. Second, the model chunk size setting and pipeline schedule exacerbates the issue. The workload sets one single layer per model chunk and uses DoraPP, which assigns model chunks sequentially across pipeline stages in a round-robin fashion (e.g., with 6 model chunks and 2 pipelines stages, chunk 0, 2, and 4 are on stage 0, and chunk 1, 3, and 5 are on stage 1). This leads to hundreds of cross-building activation and gradient communication within one iteration. Consequently, PP-out exhibits a longer iteration time due to the high cross-building communication frequency.  
+
+> Takeaways:
+
+DP-out is better for training dense models with a large number of microbatches. 716 32 64 128  
+
+> Number of Experts
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> 1.8
+> 2.0
+> Iteration time normalized to
+> 16 experts case
+> DPout, MoE, 1:16
+> PPout, MoE, 1:16 Figure 7
+
+[Testbed] Comparison of the iteration time with increasing number of experts for the 40B MoE model. DP-out iteration time increases faster than PP-out as the number of experts increases. 1:1.33 1:4 1:8 1:16 Oversubscription Ratio  
+
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0 Iteration time normalized to baseline at 1:1.33 FSDP-out, MoE PP-out, MoE
+> Figure 8
+
+[Testbed] 40B MoE model iteration time, normalized to baseline of 1:1.33 oversubscription ratio. PP-out yields faster iterations when the oversubscrip-tion ratio is larger than 1:4. 
+
+3.2 MoE Models  
+
+> Parallelism placement with varying bandwidth oversubscription.
+
+The ongoing trend of model architecture design is leveraging Mixture-of-Experts (MoE) layers. To gather more realistic insights on scaling-across MoE model training, we conduct experiments on the production testbed with 128 H100 GPUs. Contrary to dense model results, Figure 7 and Figure 8 show that PP-out scales better as the number of experts and oversubscription ratio increases. At a 1:16 oversubscription ratio with 128 experts, PP-out achieves a 49.4% speedup over DP-out. PP-out scales better with MoE models because PP communication (activation and activation gradient) volume remains constant as the number of experts increases. In contrast, DP communication (model parameters and model gradients) volume grows linearly with the number of experts.  
+
+> Large scale simulations with varying experts.
+
+We conduct large-scale simulations for MoE model training by adapting the traces of an 8K GPUs production workload. We simulate two buildings, each hosting 4K GPUs. We configure TP degree as 4, PP degree as 16, and DP degree as 128 for the first set of experiments. As shown in Figure 9b, increasing oversubscription ratios leads to substantial iteration time increase for MoE models using DP-out. However, high oversubscription ratio has limited impact on PP-out. Dense model iteration time increases at a high oversubscription ratio (4 × default) when using either DP-out or PP-out. PP-out increases slightly more due to the shorter computation time of the dense model not hiding the longer cross-building P2P SendRecv time. Longer latency increases the iteration time for both MoE models and dense models. PP-out is more sensitive to latency for dense models than MoE models. This is because MoE layer has a longer computation time, which overlaps with cross-building P2P and effectively minimizes pipeline bubbles due to cross-building communication delays. Meanwhile, the shorter computation time of the dense model exposes such delays, leading to bubbles that slows down the iteration. We configure TP degree as 4, PP degree as 2, and DP degree as 1024 for the second set of experiments. As shown in Figure 10, increasing oversubscription ratios across the datacenter building leads to substantial increase in iteration time for MoE models, but less so for the dense model training using FSDP-out. For dense and MoE models with fewer experts under constrained bandwidth (e.g. 4 × default oversubscription ratio), FSDP-out has a slower iteration time increase than PP-out. This is due to a smaller communication volume with fewer experts and for the dense model. In contrast, for the 128 expert MoE model, FSDP-out starts seeing a faster increase in iteration time as the oversubscription ratio increases. Increasing latency across the datacenter building leads to increase in iteration time for both MoE models and dense models. The increase is especially pronounced for FSDP-out at longer distances (e.g., 1000 us latency). This is caused by DP groups having 1024 GPUs, leading to each step in the ring transferring only a small chunk of data and link latency dominating the overall communication time. Additionally, the number of DP communication collectives is 8Dense 
+
+(no expert) 
+
+16 
+
+experts 
+
+64 
+
+experts 
+
+128 
+
+experts 
+
+Model Type 
+
+0.6 
+
+0.7 
+
+0.8 
+
+0.9 
+
+1.0 
+
+1.1 
+
+1.2      
+
+> Iteration time normalized to baseline
+> FSDP-out PP-out FSDP-out PP-out FSDP-out PP-out FSDP-out PP-out
+> No oversub-
+> scription
+> Default
+> ratio
+> 2x Default
+> ratio
+> 4x Default
+> ratio FSDP-out PP-out
+
+(a) Impact of varying bandwidth oversubscription. Dense 
+
+(no expert) 
+
+16 
+
+experts 
+
+64 
+
+experts 
+
+128 
+
+experts 
+
+Model Type 
+
+0.7 
+
+0.8 
+
+0.9 
+
+1.0 
+
+1.1 
+
+1.2               
+
+> Iteration time normalized to
+> baseline (50us)
+> FSDP-out PP-out FSDP-out PP-out FSDP-out PP-out FSDP-out PP-out
+> 10us 25us 50us 100us 1000us FSDP-out PP-out
+
+(b) Impact of varying link latencies. 
+
+Figure 9 [Simulation] Training time comparison between MoE models with varying number of experts and dense model, under parallelism configuration TP4-PP16-DP128. Dense 
+
+(no expert) 
+
+16 
+
+experts 
+
+64 
+
+experts 
+
+128 
+
+experts 
+
+Model Type 
+
+0.6 
+
+0.8 
+
+1.0 
+
+1.2 
+
+1.4      
+
+> Iteration time normalized to baseline
+> FSDP-out PP-out FSDP-out PP-out FSDP-out PP-out FSDP-out PP-out
+> No oversub-
+> scription
+> Default
+> ratio
+> 2x Default
+> ratio
+> 4x Default
+> ratio FSDP-out PP-out
+
+(a) Varying bandwidth oversubscription ratios. Dense 
+
+(no expert) 
+
+16 
+
+experts 
+
+64 
+
+experts 
+
+128 
+
+experts 
+
+Model Type 
+
+0
+
+2
+
+4
+
+6
+
+8
+
+10               
+
+> Iteration time normalized to
+> baseline (50us)
+> FSDP-out PP-out FSDP-out PP-out FSDP-out PP-out FSDP-out PP-out
+> 10us 25us 50us 100us 1000us FSDP-out PP-out
+
+(b) Varying link latencies. 
+
+Figure 10 [Simulation] Training time comparison between MoE models with varying number of experts and the dense model, under parallelism configuration TP4-PP2-DP1024. 
+
+determined by the number of model chunks per pipeline stage. With just two stages and one layer per model chunk, each stage contains 31 chunks in total. This results in 62 DP collectives per iteration (31 parameter AllGather’s and 31 gradient ReduceScatter’s with FSDP), which accounts for a large fraction of the overall iteration time. In comparison, PP-out is less sensitive to long distance communication. 
+
+Takeaways: PP-out is advantageous for training Mixture-of-Experts (MoE) models. Topology-aware model chunk sizing comes with throughput improvement potential. 
+
+3.3 Topology Variants Impact 
+
+To verify that the qualitative takeaways we derived from previous simulations will hold for other intra-building topologies, we simulate the 100K dense model workload on several topology variants. The detailed configuration of each variant is listed in Table 3. In Figure 11 and Figure 12, we compare how iteration changes on topologies with different intra-building oversubscription ratios as we change the cross-building network conditions. PP-out iteration time grows faster as we increase the cross-building oversubscription ratio or latency. This trend is consistent with the dense model results in Section 3.1. When the intra-building 9No oversub-
+
+> scription
+> Default
+> ratio
+> 2x Default
+> ratio
+> 4x Default
+> ratio
+> Oversubscription ratio
+> 0.90
+> 0.95
+> 1.00
+> 1.05
+> 1.10
+> 1.15
+> 1.20
+> Iteration time normalized to
+> no-oversubscription, Topology A1
+> FSDP-out, Dense, Topology A1
+> PP-out, Dense, Topology A1
+> FSDP-out, Dense, Topology A2
+> PP-out, Dense, Topology A2
+> FSDP-out, Dense, Topology A3
+> PP-out, Dense, Topology A3
+
+(a) Varying cross-building oversubscription ratio with topology A1-A3. No oversub-
+
+> scription
+> Default
+> ratio
+> 2x Default
+> ratio
+> 4x Default
+> ratio
+> Oversubscription ratio
+> 0.90
+> 0.95
+> 1.00
+> 1.05
+> 1.10
+> Iteration time normalized to
+> no-oversubscription, Topology B1
+> FSDP-out, Dense, Topology B2
+> PP-out, Dense, Topology B2
+> FSDP-out, Dense, Topology B1
+> PP-out, Dense, Topology B1
+> FSDP-out, Dense, Topology B3
+> PP-out, Dense, Topology B3
+
+(b) Varying cross-building oversubscription ratio with topology B1-B3. 
+
+Figure 11 [Simulation] Impact of cross-building oversubscription on topologies with different intra-building oversub-scription ratio. Iteration time normalized against the baseline scenario of A1 and B1 under their respective default cross-building oversubscription ratio. In the bottom figure, B2 (instead of B1) is placed on the left because B1 has a lower oversubscription ratio (1:1). 10 25 50 100 1000 Latency (us) 
+
+0.90 
+
+0.95 
+
+1.00 
+
+1.05 
+
+1.10 
+
+1.15 Iteration time normalized to 50us, Topology A1 FSDP-out, Dense, Topology A1 PP-out, Dense, Topology A1 FSDP-out, Dense, Topology A2 PP-out, Dense, Topology A2 FSDP-out, Dense, Topology A3 PP-out, Dense, Topology A3 
+
+(a) Varying cross-building latency with topology A1-A3. 10 25 50 100 1000 Latency (us) 
+
+0.90 
+
+0.95 
+
+1.00 
+
+1.05 
+
+1.10 
+
+1.15 Iteration time normalized to 50us, Topology B1 FSDP-out, Dense, Topology B2 PP-out, Dense, Topology B2 FSDP-out, Dense, Topology B1 PP-out, Dense, Topology B1 FSDP-out, Dense, Topology B3 PP-out, Dense, Topology B3 (b) Varying cross-building latency with topology B1-B3. 
+
+Figure 12 [Simulation] Impact of cross-building latency on topologies with different intra-building oversubscription ratio. Iteration time normalized against the baseline scenario of A1 and B1 under 50 μs link latency. In the bottom figure, B2 (instead of B1) is placed on the left because B2 has a lower oversubscription ratio (1:1). 
+
+oversubscription ratio is high, cross-building network has a more notable impact on iteration time, likely due to a longer queuing delay and more congestion events at the top layer switches of each building. We further simulate configurations where the GPU count per building is reduced, leading to more buildings involved in the training process. To ensure a fair comparison, we adjust the cross-building network layer so that the default cross-building oversubscription ratio remains consistent between A1 and A4, as well as between B1 and B4. As shown in Figure 13 and Figure 14, increasing the number of buildings has a greater impact on PP-out performance. This is because the number of point-to-point communications across datacenter buildings rises, due to more pairs of adjacent PP stages being distributed across different buildings. 10 No oversub-scription 
+
+> Default ratio
+> 2x Default ratio
+> 4x Default ratio Oversubscription ratio
+> 0.90
+> 0.95
+> 1.00
+> 1.05
+> 1.10
+> 1.15 Iteration time normalized to no-oversubscription, Topology A1 FSDP-out, Dense, Topology A1 PP-out, Dense, Topology A1 FSDP-out, Dense, Topology A2 PP-out, Dense, Topology A2
+
+(a) Varying cross-building oversubscription ratio with topology A1 and A4. No oversub-scription 
+
+> Default ratio
+> 2x Default ratio
+> 4x Default ratio Oversubscription ratio
+> 0.90
+> 0.95
+> 1.00
+> 1.05
+> 1.10 Iteration time normalized to no-oversubscription, Topology B1 FSDP-out, Dense, Topology B2 PP-out, Dense, Topology B2 FSDP-out, Dense, Topology B1 PP-out, Dense, Topology B1
+
+(b) Varying cross-building oversubscription ratio with topology B1 and B4. 
+
+Figure 13 [Simulation] Impact of cross-building oversubscription on topologies with different number of GPUs per building. Iteration time normalized against the baseline scenario of A1 and B1 under their respective default cross-building oversubscription ratio. 10 25 50 100 1000 
+
+Latency (us) 
+
+0.90 
+
+0.95 
+
+1.00 
+
+1.05 
+
+1.10 
+
+> Iteration time normalized to
+> 50us, Topology A1
+
+FSDP-out, Dense, Topology A1 
+
+PP-out, Dense, Topology A1 
+
+FSDP-out, Dense, Topology A4 
+
+PP-out, Dense, Topology A4 
+
+(a) Varying cross-building latency with topology A1 and A4. 10 25 50 100 1000 
+
+Latency (us) 
+
+0.90 
+
+0.95 
+
+1.00 
+
+1.05 
+
+1.10 
+
+> Iteration time normalized to
+> 50us, Topology B1
+
+FSDP-out, Dense, Topology B1 
+
+PP-out, Dense, Topology B1 
+
+FSDP-out, Dense, Topology B4 
+
+PP-out, Dense, Topology B4 
+
+(b) Varying cross-building latency with topology B1 and B4. 
+
+Figure 14 [Simulation] Impact of cross-building latency on topologies with different number of GPUs per building. Iteration time normalized against the baseline scenario of A1 and B1 under 50 μs link latency. 
+
+## 4 Parallelism Scheduling 
+
+4.1 DP Communication Pattern 
+
+Hierarchical DP has been adopted by LocalSGD works (Lin et al., 2020; Douillard et al., 2024) to enable varying synchronization frequency within and across groups. However, its communication pattern also works well for heterogeneous network links. Compared to FSDP, it reduces the total number of cross-building communication operations, as only the group leaders communicate over the cross-building links. However, this approach has a higher memory usage, as it has smaller FSDP groups and demands the group leaders to have a complete gradient during synchronization. This results in a lower maximum micro-batch size. We investigate the memory usage-throughput tradeoff of hierarchical DP by training the 17B dense model with the same setup as Section 3.1, but employing a 2 × 2 hierarchical HSDP, with Figure 27c visualizing the DP replicas organization of this setting. DP replicas 0 and 1 form one local group, with replica 0 being the leader; DP replicas 2 and 3 form the other local group, with replica 2 being the leader. FSDP is used within local 11 No oversub-   
+
+> scription
+> 1:4 1:8 1:16
+> Oversubscription ratio
+> 0.90
+> 0.95
+> 1.00
+> 1.05
+> 1.10
+> 1.15
+> 1.20
+> 1.25
+> Iteration time normalized to baseline
+> FSDP-out, Dense, mbs=4
+> Hier-HSDP2x2-out, Dense, mbs=2
+> FSDP-out, Dense, mbs=2 Figure 15
+
+[Testbed] Performance comparison between FSDP and HSDP. Iteration time are normalized to FSDP-out (microbatch size of 4). No oversub-   
+
+> scription
+> 1:4 1:8 1:16
+> Oversubscription ratio
+> 0.9
+> 1.0
+> 1.1
+> 1.2
+> 1.3
+> 1.4
+> 1.5
+> 1.6
+> Iteration time normalized to
+> Interleaved ZBV, No oversubscription
+> Interleaved ZBV, Dense
+> DoraPP, Dense
+> Figure 16
+
+[Testbed] PP-out iteration time with inter-leaved ZBV and DoraPP schedules. DoraPP increases cross-building communication frequency and is less ef-fective under high oversubscription ratios. 
+
+group, and DDP is used across local groups. Upon gradient synchronization, gradients are first aggregated within local groups, followed by one round of synchronization among the two group leaders. As shown in Figure 15, at moderate oversubscription, hierarchical HSDP performs slightly worse than FSDP due to GPU compute resource under-utilization and a worse communication-computation ratio caused by the smaller micro-batch size. However, at high oversubscription (e.g., beyond 1:4), HSDP’s hierarchical aggregation design reduces cross-building communication frequency, leading to a 6.83% iteration speedup at a 1:16 oversubscription ratio. While hierarchical HSDP has a memory usage versus communication overhead tradeoff, the trend toward scale-across training is favorable to it. From a convergence perspective, the critical batch size for recent large language models is usually around tens of millions tokens (Liu et al., 2024a; Guo et al., 2025; Liu et al., 2025a); at tens to hundreds GPU scale with many pipeline stages, batch size constraints will likely require microbatch size as small as one. In such scenarios, HSDP’s hierarchical aggregation pattern can be leveraged without concern for compute under-utilization compared to FSDP. 
+
+Takeaways: By reducing cross-building communication frequency, hierarchical aggregation offsets the performance loss typically associated with small microbatch sizes and improves training throughput under high oversubscription ratios. 
+
+4.2 Pipeline Schedules 
+
+PP-specific optimizations focus on minimizing scheduling bubbles. However, the high communication cost over cross-building links bring in new tradeoffs to consider. As explained in Section 2.2, interleaved ZBV has an inferior performance than DoraPP in intra-building training due to its longer computation time. However, in scale-across setting, its V-shaped execution pattern leads to fewer cross-building P2P communication. To illustrate this, we train the 17B dense model (same setup as Section 3.1) with PP-out. As shown in Figure 16, DoraPP outperforms interleaved ZBV at lower oversubscription ratios thanks to its computational efficiency. However, its “wrap-around” pattern leads to more cross-boundary communication. At high oversubscription ratios where network is the bottleneck(e.g., beyond 1:8), minimizing traffic over the constrained links becomes important and interleaved ZBV becomes faster. 
+
+Takeaways: Scale-across configurations benefit from bi-directional schedules – that is, model chunks are assigned in the first-to-last-stage and then last-to-first order (e.g., interleaved ZBV). 12 0 100 200 300 400 500       
+
+> Cluster distance (km)
+> 0
+> 20000
+> 40000
+> 60000
+> 80000
+> 100000
+> Communication time (  s)
+> 0100 200 300 400 500
+> Cluster distance (km)
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> Throughput (GB/s)
+> 8M (8x2 AllReduce)
+> 8M (Send-Recv)
+> 32M (8x2 AllReduce)
+> 32M (Send-Recv)
+> 256M (8x2 AllReduce)
+> 256M (Send-Recv)
+> 2G (8x2 AllReduce)
+> 2G (Send-Recv) Figure 17
+
+Completion time and throughput of NCCL Send-Recv between a pair of GPUs AllReduce among 16 GPUs located in two clusters at varying distances. 
+
+## 5 Network Layer Technologies 
+
+While it is intuitive that longer links have increased network latency and thus prolong the end-to-end training iteration time, their impact goes far beyond simple message delays. Long links often introduce reliability issues, and prolonged latency can undermine the effectiveness of load balancing and congestion control mechanisms. By simulating and analyzing these network conditions, we derive insights that inform transport layer design for scaling-across training. 
+
+5.1 Collectives Performance at Long Distances 
+
+We study NCCL collective completion times at varying distances with GPUs located in two clusters. Overall, we observe that the completion time increases linearly with cross-cluster distance, except for the 2GB AllReduce operation among 16 GPUs (eight per cluster). This linear trend supports our approach of simulating longer inter-cluster distances by increasing link latency and guides the communication time modeling of ScaleAcross Explorer (Section 6). For a given message size, the maximum achievable throughput is Message Size Latency . Consequently, larger message sizes are more effective at approaching line rate over long distances. We also observe that point-to-point Send-Recv outperforms AllReduce. This is because AllReduce, being a more complex collective operation, incurs higher processing stack overhead and requires careful tuning of communication buffers and channels to maintain high throughput. Optimizing AllReduce for large message sizes is challenging, as the available memory for communication buffers without affecting application performance becomes limited. With a 2GB message size, AllReduce requires manual tuning at distances longer than 100 km, leading to the non-monotonic completion time curve. 
+
+5.2 Latency Impact 
+
+Reliability. Reliability challenges become more prominent as network distance grows. With greater distances, both packet loss rates and latency variation tend to rise. Our observations indicate that cross-region packet loss rates in our data centers is more than 20 × higher than that of intra-building communication. In geo-distributed environments, these issues are even more pronounced: loss rates can range from 0.1% to 10%, and the 99th percentile latency may be one to two orders of magnitude higher than the median latency in such settings (Khalilov et al., 2025; Sriraman et al., 2017; Dean and Barroso, 2013). We investigate the impact of packet loss on PP-out and DP-out performance using simulation. For loss recovery, we employ Go-Back-N (Guo et al., 2016), which is the default protocol for RDMA (Yang et al., 2025; Zhu et al., 2015). To isolate the effects of increased loss rates and longer latencies, we conduct two sets of 13 0 0.002% 0.02% 0.2%  
+
+> Loss Rate
+> 0.96
+> 0.97
+> 0.98
+> 0.99
+> 1.00
+> 1.01
+> 1.02
+> 1.03
+> 1.04
+> Iteration time normalized to
+> lossless case
+> FSDP-out, Dense
+> PP-out, Dense (a)
+
+Impact of increasing packet loss rate with a 50 μslink latency. 10 25 50 100 1000  
+
+> Latency (us)
+> 0.8
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> 1.8
+> 2.0
+> Iteration time normalized to
+> 50us case
+> FSDP-out, Dense
+> PP-out, Dense
+> (b)
+
+Impact of increasing link latency at a fixed packet loss rate of 0.02%.  
+
+> Figure 18
+
+[Simulation] PP-out is more sensitive to packet loss. Higher link latencies substantially increase the cost of lost packet retransmissions, resulting in slower training. 
+
+experiments: (1) fix latency at 50 microseconds and vary the packet loss rate from 0.002% to 0.2%, and (2) fix the loss rate at 0.02% and vary latency from 10 to 1000 microseconds. As shown in Figure 18a and Figure 18b, PP-out exhibits greater sensitivity to increased packet loss rates. This sensitivity arises from pipeline bubbles caused by timeouts and retransmissions during each point-to-point activation and gradient communication. In contrast, DP-out is less affected, as its communication frequency across long-distance links is low, and only the parameter all-gather and gradient reduce-scatter operations of the first layer are on the critical path. In Figure 18b, we observe that at a link latency of 1000 μs, the iteration time increases by 1.30 × for DP-out and 1.93 × for PP-out compared to the baseline case of 50 μs link latency. These increases are substantially larger than those observed without packet loss in Figure 12a (1.07 × and 1.10 × for DP-out and PP-out respectively on Topology A1). This gap highlight that latency’s impact on training iteration time is amplified when the network is lossy, as the packet loss recovery cost is primarily determined by the Round-Trip-Time (RTT). It is also worth noting that the above analysis extends to latency variation, which tends to worsen over long distances. In such scenarios, tail latency is often a magnitude greater than the RTT and has a similar impact on training iteration time as the overhead from packet loss recovery. 
+
+> Heterogeneous latency.
+
+We also model a heterogeneous topology scenario where buildings locate in different regions. We set the default inter-building latency as 50 μs, but pick one building as a distanced building and vary the latency between this building and other buildings between 50 to 2000 μs. Besides comparing PP-out and DP-out, we also enable imbalanced model chunk size for PP-out so that one model chunk has twice as many layers as the other model chunks. Imbalanced chunk size reduces the total number of model chunks (and hence the frequency of cross-region communication) and introduces more FLOPs for the larger chunk, which can improve computation-communication ratio to mask long latency, but can also become the bottleneck when the latency is not long enough. As shown in Figure 19, enabling imbalanced chunk size makes PP-out slower initially. However, when the latency reaches 2000 μs, imbalanced chunk size leads to a 1.3% iteration speed up over PP-out.  
+
+> Takeaways:
+
+For training over ultra long distances (e.g., beyond 20 kilometers with longer than 100 microseconds latency), proactive measures such as selective redundancy and erasure encoding are worth considering. When cross-region latency is high, reducing the frequency of cross-region communication becomes more important for PP-out—this favors lower interleaving (fewer model chunks) by increasing model chunk size. 14 50 100 1000 2000  
+
+> Latency (us)
+> 0.90
+> 0.95
+> 1.00
+> 1.05
+> 1.10
+> 1.15
+> 1.20
+> Iteration time normalized to
+> baseline (50us)
+> FSDP-out, Dense
+> PP-out, Dense
+> PP-out (imbalanced chunks),
+> Dense Figure 19
+
+[Simulation] Iteration times normalized against default case with a 50 μs link latency. Impact of having heterogeneous link latency due to varying distances between regions. 8QP, 50us  
+
+> 4QP, 50us
+> 2QP, 50us
+> 1QP, 50us
+> 8QP, 1000us
+> 4QP, 1000us
+> 2QP, 1000us
+> 1QP, 1000us
+> 0.9
+> 1.0
+> 1.1
+> 1.2
+> 1.3
+> 1.4
+> 1.5
+> 1.6 Iteration time normalized to 4QP Spray without bandwidth limit case  Spray w/o bandwidth limit, FSDP-out, Dense Spray w/ bandwidth limit, FSDP-out, Dense ECMP, FSDP-out, Dense Spray w/o bandwidth limit, PP-out, Dense Spray w/ bandwidth limit, PP-out, Dense ECMP, PP-out, Dense
+> Figure 20
+
+[Simulation] Comparison of ECMP and Packet Spraying results with various number of Queue Pairs (QP). Realistic packet spraying that accounts for in-flight data limitation struggles under long latencies. 
+
+5.3 ECMP vs. Packet Spraying 
+
+In this subsection, we present controlled simulation results to characterize the throughput of load balancing techniques under long latencies. Packet spraying (Dixit et al., 2013b) is generally believed to outperform the hash-based Equal-Cost Multi-Path (ECMP) (Hopps, 2000) routing (Dixit et al., 2013a; Sadok et al., 2018; Liu et al., 2025b). However, the throughput of packet spraying is limited by the overhead of metadata to track in-flight packets on a per Queue Pair (QP) basis at the network interface controller (NIC). Between each QP, running packet spraying leads to out-of-order packet arrival, as packets might take different paths with varying latencies. To handle out-of-order delivery and support reliable transport, NICs must track additional per-packet metadata for in-flight packets on each QP. This bookkeeping overhead imposes an upper bound on the number of outstanding packets that can be in flight per QP. NVIDIA ConnectX-6 sets this upper bound as 29 = 512 (the maximum log_tx_psn_win value is 9) (Corporation, 2023), which leads to a maximum of 2MB in-flight data when using a 4KB packet payload. When link latency is 1000 μs, per QP throughput drops to 2MB  
+
+> 1000 μs
+
+= 16 Gbps with packet spraying. In this section, we compare packet spraying and ECMP at long distances, both with and without accounting for the in-flight packets limitation. We fix the oversubscription ratio at the default value and evaluate with the default latency of 50 μs as well 15 50us, 4x  
+
+> 100us, 4x
+> 1000us, 4x
+> 50us, 8x
+> 100us, 8x
+> 1000us, 8x
+> 0.90
+> 0.95
+> 1.00
+> 1.05
+> 1.10
+> 1.15
+> 1.20
+> 1.25 Iteration time normalized to no CC, 50us, 4x Default ratio case No CC, FSDP-out, Dense DCQCN, FSDP-out, Dense No CC, PP-out, Dense DCQCN, PP-out, Dense Figure 21 [Simulation] Comparison of congestion control strategies. Under long link latencies and higher oversubscription ratio, not enabling congestion control is better than using an ECN based congestion control.
+
+as the more extreme case with latencies of 1000 μs. We vary the number of QPs per GPU pair between one to eight. When enforcing the bandwidth restriction for packet spraying, we keep the same number of cross-building links and directly change their bandwidth. In Figure 20, packet spraying outperforms ECMP with or without bandwidth limitation consideration at 50 μs latency. With more than two QPs, the iteration time difference between simulating the bandwidth restriction or not is negligible. However, when link latency reaches 1000 μs and reduces the packet spraying’s transmission speed upper-bound to merely 16 Gbps per QP, packet spraying becomes 0.10% to 11.44% slower than ECMP with no more than 4 QPs.  
+
+> Takeaways:
+
+Packet spraying is better for cross-building training due to avoiding the per-flow hashing that leads to persistent hash collisions and significant load imbalance under low-entropy training traffic. In contrast, for cross-region deployments, ECMP can be more effective because packet spraying throughput becomes limited by constraints on the number of in-flight packets. Consequently, when attempting to extend packet spraying to cross-region scenarios, increasing the number of QPs without NIC and switch resource exhaustion is required to sustain throughput. 
+
+5.4 Congestion Control 
+
+Explicit Congestion Notification (ECN (Floyd et al., 2001))-based congestion control (CC) is widely adopted in modern data center. However, concerns arise regarding the effectiveness of ECN-based CC over high-latency links. ECN-based algorithms rely on feedback from the network, and the time required for endpoints to receive and react to ECN signals grows with link latency, making the control loop less responsive. To simulate congestion, we study the scenarios with a high oversubscription ratios that are 4 × and 8 × of the default ratio. We evaluate with the default latency of 50 μs as well as more extreme cases with latencies of 100 and 1000 μs. At an oversubscription 4 × the default ratio, disabling congestion control (CC) does not significantly affect end-to-end iteration time, regardless of link latency. This suggests that the network is not experiencing congestion under these conditions. At an oversubscription 8 × the default ratio, disabling CC still has minimal impact at a link latency of 50 μs, indicating that ECN-based CC continues to perform well in typical cross-building scenarios. However, as we extend the latency to 100 μs and 1000 μs, disabling CC results in a modest training iteration speedup of 0.89% and 1.52% respectively. While our simulations demonstrate only marginal gains, it is worth noting that these results are based on a single-tenant environment with only one training workload. In real-world deployments where multiple jobs are collocated, network congestion dynamics become significantly more complex. The presence of concurrent workloads can lead to higher buffer occupancy, greater variability in queue lengths, and more frequent 16 ① Model Architecture      
+
+> Transformer Block
+> Expert Block
+> Model Dimension
+> Head Dimension
+> Attention & KV Heads
+> ②Training Information
+> Global Batch Size
+> Sequence Length
+> ③Data Center Information
+> Number of GPUs
+> GPU FLOPs & Memory
+> GPU FLOPs & Memory
+> Input
+> Configuration Generator
+> TP, EP, CP, PP, DP degrees
+> PP stage model chunks
+> Microbatch size
+> Per Chunk TP-EP-CP Computation Kernels
+> Per Chunk TP-EP-CP Communication Kernels
+> PP, DP Communication Kernels
+> Kernel Dependencies
+> Fit Memory?
+> ①Model Architecture
+> ②Training Information
+> Duration Estimator
+> ③Data Center Information
+> Computation Time Model
+> Communication Time Model
+> Iteration Time Reconstruction
+> Reconstruct iteration time with kernel dependencies using Algorithm 1
+> Network Simulation
+> Parallelism Placement & Schedule; Job Configuration
+> Network Layer Recommendation
+> Output ScaleAcross Explorer
+
+Figure 22 ScaleAcross Explorer workflow overview. 
+
+congestion events. Under these conditions, the performance differences between various CC strategies are expected to be more pronounced. 
+
+Takeaways: Disabling CC at ultra-long distances yields slightly better performance compared to applying DCQCN universally across all distances. 
+
+## 6 ScaleAcross Explorer 
+
+Section 3 to Section 5 characterizes individual design space dimensions. As it’s challenging to capture their combined impact with a decision tree, we introduce ScaleAcross Explorer , a configuration optimizer that given model architecture, batch size, and cluster settings, holistically optimizes microbatch size and parallelism configurations and recommends appropriate network transport layer mechanisms. 
+
+6.1 Design Overview 
+
+ScaleAcross Explorer aims to minimize training iteration time for scaling-across training jobs spanning across diverse network characteristics. The end-to-end workflow is presented in Figure 22. ScaleAcross Explorer takes (1) model architecture (e.g., # of layers, model dimension, FFN dimension, # of experts, # of attention and kv heads, etc.), (2) batch size, and (3) cluster settings (# of accelerators and their specifications and network topology) as input, and solve for near optimal workload configurations in three steps: 1. Parallelism configuration and placement: Generate all valid combinations of microbatch size, degrees of TP, EP, CP, PP, and DP, and model chunk sizes that fit the accelerator memory. And then generate communication groups for both DP and PP as the outermost and runs on the across network. 2. Parallelism scheduling: Estimate the computation and communication kernel time of each valid com-bination on the input topology, reconstruct the end-to-end iteration time with interleaved ZBV and DoraPP schedules using Algorithm 1, and return the configuration with the fastest iteration. 3. Network technology choices: Based on the configure returned by the previous step and the input topology, recommend load balancing, congestion control, and packet loss handling strategies. Compared to previous approaches, we add support for the emerging Mixture-of-Experts (MoE) architecture and Expert Parallelism (EP), and models long-distance communication time based on real testbed measurements. Our work also examines model chunk sizes within pipeline stages, leverages hierarchical DP communication patterns, and integrates network technologies previously overlooked. ScaleAcross Explorer output include parallelism placement order, job configuration (degrees of parallelisms, microbatch size, model chunk sizes, and communication pattern), pipeline scheduling, and network-level technique recommendations (load balancing and congestion control). 17 Algorithm 1 End-to-end training iteration time reconstruction 
+
+Input 
+
+M Model chunk TP-EP-CP kernels; 
+
+P PP communication kernels; 
+
+D DP communication kernels; 
+
+E E[K] := List of kernels that K depends on; 
+
+TDPout ← {} ; TPPout ← {} ; tDPout ← 0; tPPout ← 0;
+
+while M̸ = ∅ or P̸ = ∅ or D̸ = ∅ do for each Ki whose parent kernels all finished do 
+
+/* Find the latest finish time of parent kernels */ 
+
+tDPout_start = max J∈E[Ki] TDPout [J];
+
+tPPout_start = max J∈E[Ki] TPPout [J];
+
+if Ki ∈ M then 
+
+TDPout [Ki] = tDPout_start + tchunk i ;
+
+TPPout [Ki] = tPPout_start + tchunk i ;
+
+M .pop( Ki); 
+
+else if Ki ∈ P then 
+
+TDPout [Ki] = tDPout_start + tPP-in i ;
+
+TPPout [Ki] = tPPout_start + tPP-out i ;
+
+P .pop( Ki); 
+
+else 
+
+TDPout [Ki] = tDPout_start + tDP-out i ;
+
+TPPout [Ki] = tPPout_start + tDP-in i ;
+
+D.pop( Ki); 
+
+end if 
+
+/* Update DP-out and PP-out iteration end time */ 
+
+tDPout = max( tDPout , T DPout [Ki]) ;
+
+tPPout = max( tPPout , T PPout [Ki]) ;
+
+end for end while return min( tDPout , t PPout );
+
+6.2 Search Space and Heuristics 
+
+ScaleAcross Explorer explores the space of possible combination of parallelism configuration and microbatch size, each defined by a tuple (T P, CP, EP, P P, DP degrees, microbatch size, model chunk sizes). The total number of possible combinations can easily exceed trillions (for example, for a model with 100 layers and 20 pipeline stages, the number of possible layer partitions alone can reach trillions). To make this tractable, we employ several heuristics: (1) TP is placed at the innermost CP at the second to the innermost layer. TP degree defaulted to the number of accelerators per server, but user-configurable. We bounded CP degree so that each context shard has at least 2,048 tokens. (2) The difference between the largest and smallest chunk is capped (default 3 ×) to prevent straggler effects. This bound is user-configurable. (3) We perform early pruning for PP-out. Search starts with the minimum number of PP stages required by resource constraints, and stops if further increases in stage count does not improve iteration time. Despite these heuristics, the main complexity from partitioning layers across pipeline stages and then model chunks remains. The combinatorial nature of the partitioning problem leads to an exponential growth in the search space. To accelerate the search process, we adopt Monte Carlo sampling (Metropolis et al., 1953), commonly used in recent machine learning system works (Golden et al., 2025; Olson et al., 2025; Xie et al., 2024). The sampling process starts with an exploration phase where we randomly sample partitions of layers across stages, evaluate the iteration time of each sampled partition with multiple (100 by default) model chunk 18 1:1.33 1:4 1:8 1:16    
+
+> Oversubscription Ratio
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> Speedup over Production
+> at each oversubscription ratio
+> Production Sailor ScaleAcross Explorer Figure 23
+
+[Testbed] 40B-MoE model training iteration speedup over the production configuration under various oversubscription ratios. At a high oversubscription ratio, 
+
+ScaleAcross Explorer achieves a 2.19 × speedup over the production baseline while Sailor achieves 1.69 ×.No oversub-     
+
+> scription
+> 1:4 1:8 1:16
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> Speedup over Production
+> at each oversubscription ratio
+> Production Sailor ScaleAcross Explorer
+> Figure 24
+
+[Testbed] 17B-Dense model training iteration speedup over the production configuration under various oversubscription ratios. At a high oversubscription ratio, 
+
+ScaleAcross Explorer achieves a 2.83 × speedup over the production baseline while Sailor achieves 2.36 ×.
+
+configurations and placements on the input topology, and extract features (e.g., largest chunk size, chunk size variation) that correlate with iteration time to guide future sampling. For each of the top K (1000 by default) fastest configurations found through exploration, we start the exploitation phase and generate M (100 by default) new configurations by perturbing model chunks. This approach enables the optimizer to efficiently identify high-quality configurations, accounting for non-linear objectives introduced by pipeline scheduling and chunking, and outperforming traditional random sampling or Mixed-Integer Linear Programming methods. 
+
+6.3 Evaluation Results  
+
+> Testbed.
+
+We first evaluate ScaleAcross Explorer on the production testbed. We use 64 GPUs per cluster and set the cluster distance as 10 kilometers. We compare the iteration time required to train the 40B-MoE model using three configurations: the configuration produced by ScaleAcross Explorer , the configuration produced by a baseline training workload optimizer Sailor (Strati et al., 2025), and (3) the default production configuration manually tuned by engineers. Batch size is set based on the production configuration. Figure 23 demonstrates that ScaleAcross Explorer achieves 8.93% to 54.39% training iteration time speedup. This improvement is primarily attributed to (1) reducing the number of microbatches per pipeline by optimizing parallelism degrees, (2) switching between DP-out and PP-out as appropriate, and (3) selecting larger model chunk sizes to reduce cross-cluster P2P communication overhead. 
+
+ScaleAcross Explorer also achieves a 23.07% to 37.59% speedup over Sailor. Sailor assumes PP as the outermost parallelism, and optimizes iteration time across valid microbatch sizes and layers per pipeline stage. 1 However, Sailor only supports the 1F1B (One Forward One Backward) Schedule (Narayanan et al., 2019) and overlooks model chunking (i.e., all layers in a pipeline stage are processed together as one model chunk). Therefore, at lower oversubscription ratio (below 1:16) where the performance gap of DP-out and PP-out is narrower, Sailor is slower than the production configuration by 17.40% to 43.16% due to pipeline schedule inefficiency. We also evaluate with training the 17B-Dense model in our research cluster. Due to the small batch size set by the production setting we compared with, PP-out is the better parallelism placement when the network becomes oversubscribed. As shown in Figure 24, ScaleAcross Explorer achieves a 0.12% to 64.62% speedup over the production configuration and a 16.38% to 26.21% speedup over Sailor. This improvement comes from identifying PP-out as the better placement and choosing a larger microbatch size and model chunk size to reduce the cross-cluster P2P communication cost. Sailor produces a configuration with eight 
+
+> 1We set throughput as Sailor’s optimization objective.
+
+19 No over-  
+
+> subscription
+> Default
+> ratio
+> 2x
+> Default
+> 4x
+> Default
+> 0.90
+> 0.95
+> 1.00
+> 1.05
+> 1.10
+> Speedup over Production
+> at each oversubscription ratio
+> Production ScaleAcross Explorer (a)
+
+Varying bandwidth oversubscription. 10 25 50 100 1000    
+
+> Latency (us)
+> 0.90
+> 0.95
+> 1.00
+> 1.05
+> 1.10
+> Speedup over Production
+> at each latency
+> Production ScaleAcross Explorer (b)
+
+Varying link latencies.  
+
+> Figure 25
+
+[Simulation] Training iteration speedup over the production trace configuration. ScaleAcross Explorer 
+
+achieves an up to 1.09 × speedup over the production baseline under various oversubscription ratios and latencies. Sailor is not optimized for long-context training and performs poorly; we omit it here to avoid skewing the bars. No over-   
+
+> subscription
+> Default
+> ratio
+> 2x
+> Default
+> 4x
+> Default
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Speedup over Production
+> at each oversubscription ratio
+> Production Sailor ScaleAcross Explorer
+> (a)
+
+Varying bandwidth oversubscription, with Sailor bars. 10 25 50 100 1000     
+
+> Latency (us)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Speedup over Production
+> at each latency
+> Production Sailor ScaleAcross Explorer (b)
+
+Varying link latencies, with Sailor bars.  
+
+> Figure 26
+
+[Simulation] Training iteration speedup over the production trace configuration, including Sailor results. A speedup less than 1.0 signals that the training iteration becomes longer than that of the production baseline. Sailor is at least 2.32 × slower than the production baseline under various oversubscription ratios and latencies. 
+
+pipeline stages and without model chunking, leading to poor performance due to the long pipeline warm-up and cool-down periods. 
+
+Simulation. For large-scale simulation, we compare our solution with the configuration of the large-scale production run with 100K GPUs. The large-scale production run is configured with DP at the outermost layer, which is the optimal placement. Nevertheless, as shown in Figure 25, ScaleAcross Explorer consistently achieves a speedup of 1.04% to 8.10% in iteration time across various oversubscription ratios and latencies. This improvement stems from optimizing intra-building PP by reducing the number of stages, thereby minimizing GPU idle time during pipeline warm-up. The speedups ScaleAcross Explorer achieves reduces as latencies increase (1.04% under 1,000 μs latency). This is due to ScaleAcross Explorer returning a configuration with fewer PP stages and larger DP group size than the production configuration. As discussed in Section 3.2, a larger DP group size makes the configuration more sensitive to longer latencies. As shown in Figure 26, Sailor performs poorly (2.32-2.63 × slower than ScaleAcross Explorer ) at this scale. The 100K GPU production workload’s long sequence length forces Sailor to use a high TP degree to 20 meet memory constraints, as it lacks support for CP. This causes substantial TP communication overhead. Moreover, Sailor defaults to PP-out, which is suboptimal compared to DP-out for the 100K GPU workload. 
+
+## 7 Related Work and Lessons Learned  
+
+> From Cross-Building to Heterogeneous Scale-Across.
+
+There are prior work on geo-distributed training. Sailor (Strati et al., 2025) optimizes the number of and size of pipeline stages and micro batch size within each region for 1F1B scheduling. CrossPipe (Chen et al., 2025) generates optimized pipeline schedule for a given topology. FusionLLM (Tang et al., 2024) supports DP as the outermost parallelism in geo-distributed training and accelerate communication through compression. ScaleAcross Explorer considers full stack configurations and supports MoE models. This paper primarily characterizes the important communication aspects of training across two data center buildings. Going forward, scale-across training can expand to many data center buildings. These buildings may house different generations and numbers of accelerators and intra-building topologies, and may have heterogeneous distances. Moreover, design decisions extend beyond distributed training efficiency Hsia et al. (2024) to include availability and reliability Kokolis et al. (2025). We therefore need to extend ScaleAcross Explorer to such heterogeneous settings.  
+
+> Evolvability.
+
+Having systems that can adapt quickly is critical in the era of large language models, as model architectures and hardware specifications change rapidly. It is prohibitively expensive to run scale-across training for many configurations. Before ScaleAcross Explorer , we relied on roofline analysis to determine configurations. However, our experience shows that this approach failed to capture complex yet critical factors, such as, pipeline scheduling and network protocols. ScaleAcross Explorer enables agile design space exploration quantitatively and holistically across the model-system-infrastructure stack for distributed training. Having the ability to carry out what-if analysis for the highly-complex design space of distributed training, to characterize the interplay between multiple key design dimensions, and to determine higher-performing training workload configurations can significantly reduce experimentation and LLM development cost. A key enabler for ScaleAcross Explorer is our configurable scale-across testbed featuring optical systems. This testbed was essential not just to inform and validate the evaluation results, but it also helped uncover non-intuitive network behavior in NIC and switch implementations.  
+
+> Interplay between System Efficiency and Training Algorithms.
+
+A key design choice in ScaleAcross Explorer 
+
+is to push the limits of infrastructure efficiency without affecting model accuracy. We deliberately focus on lossless optimizations—such as parallelism placement and scheduling (e.g., DoraPP, Interleaved ZBV)—that result in mathematically equivalent training to a single-cluster baseline. We note that there are many research on asynchronous training. Local SGD leverages nearby GPUs from local groups to train a local model synchronously, and periodically communicate their local model with other groups (Liu et al., 2024b; Douillard et al., 2024; Lin et al., 2020). HALoS (Kim et al., 2025) further accelerates Local SGD by removing the synchronization barrier of local models. StellaTrain (Lim et al., 2024) studies semi-asynchronous training with partially stale layer parameter updates. ScaleAcross Explorer will consider these alternative training algorithm options once they become production ready.  
+
+> Communication Collective and Network Optimization.
+
+Advanced collective schedules, such as Parallel Aggregated Trees (PAT (Jeaugey, 2025)) and Bruck algorithms (Bruck et al., 1994), offer logarithmic latency benefits but introduce significant implementation complexity due to intricate buffer management and non-contiguous memory access patterns. Furthermore, the computational overhead required for local data packing and unpacking in these algorithms can potentially negate network latency gains if not highly optimized for specific hardware architectures. This is an important area of research. We need to co-design next-generation networking protocols and collective algorithms for fast, efficient cross-building communications to enable more network-layer design choices for ScaleAcross Explorer .
+
+## 8 Conclusion 
+
+In this work, we present a comprehensive exploration of the communication optimization strategies for training workloads that scale across multiple buildings, data centers, and geographic regions. Our study reveals that 21 the optimal parallelism placement depends on model architecture and job configuration, while careful model chunk sizing and hierarchical communication patterns can substantially accelerate training. We show that pipeline schedules should be tuned to minimize communication frequency over the constrained scaling-across network. We also demonstrate the impact of long link latency on lossy network and the effectiveness of load balancing and congestion control. Building on these insights, we developed a workload optimizer that consistently outperforms existing solutions. 22 References 
+
+Jasmeet Bagga, Tian Fang, Ravindra Sunkad, Rohit Puri, Olaf Moeller, Lingjun Wu, Vignesh Vijayanath, Vimal Vasudevan, and Dharmesh Jani. Ocp summit 2025: The open future of networking hardware for ai, 2025. 
+
+https://engineering.fb.com/2025/10/13/data-inf rastructure/ocp-summit-2025-the-open-f uture-of-netwo rking-hardware-for-ai/ . Accessed: 2026-02-02. Jehoshua Bruck, Ching-Tien Ho, Shlomo Kipnis, and Derrick Weathersby. Efficient algorithms for all-to-all commu-nications in multi-port message-passing systems. In Proceedings of the sixth annual ACM symposium on Parallel algorithms and architectures , pages 298–309, 1994. Tiancheng Chen, Ales Kubicek, Langwen Huang, and Torsten Hoefler. Crosspipe: towards optimal pipeline schedules for cross-datacenter training. In Proceedings of the 2025 USENIX Conference on Usenix Annual Technical Conference ,USENIX ATC ’25, USA, 2025. USENIX Association. ISBN 978-1-939133-48-9. Esha Choukse, Brijesh Warrier, Scot Heath, Luz Belmont, April Zhao, Hassan Ali Khan, Brian Harry, Matthew Kappel, Russell J Hewett, Kushal Datta, et al. Power stabilization for ai training datacenters. arXiv preprint arXiv:2508.14318 , 2025. Weiwei Chu, Xinfeng Xie, Jiecao Yu, Jie Wang, Amar Phanishayee, Chunqiang Tang, Yuchen Hao, Jianyu Huang, Mustafa Ozdal, Jun Wang, et al. Scaling llama 3 training with efficient parallelism strategies. In Proceedings of the 52nd Annual International Symposium on Computer Architecture , pages 1703–1716, 2025. NVIDIA Corporation. Nvidia connectx-6 dx adapter cards firmware release notes v22.35.3006 lts, 2023. https: //docs.nvidia.com/networking/display/connectx6dxfirmwarev22353006lts/changes+and+new+feature+history .Accessed: 2025-12-18. Jeffrey Dean and Luiz André Barroso. The tail at scale. Communications of the ACM , 56(2):74–80, 2013. Advait Dixit, Pawan Prakash, Y Charlie Hu, and Ramana Rao Kompella. On the impact of packet spraying in data center networks. In 2013 proceedings ieee infocom , pages 2130–2138. IEEE, 2013a. Advait Dixit, Pawan Prakash, Y. Charlie Hu, and Ramana Rao Kompella. On the impact of packet spraying in data center networks. In 2013 Proceedings IEEE INFOCOM , pages 2130–2138, 2013b. doi: 10.1109/INFCOM.2013.6567 015. Arthur Douillard, Qixuan Feng, Andrei A. Rusu, Rachita Chhaparia, Yani Donchev, Adhiguna Kuncoro, Marc’Aurelio Ranzato, Arthur Szlam, and Jiajun Shen. Diloco: Distributed low-communication training of language models. 2024. 
+
+https://arxiv.org/abs/2311.08105 .Sally Floyd, Dr. K. K. Ramakrishnan, and David L. Black. The Addition of Explicit Congestion Notification (ECN) to IP. RFC 3168, September 2001. https://www.rfc-editor.org/info/rfc3168 .Rohan Gandhi, Karan Tandon, Debopam Bhattacherjee, Venkata N Padmanabhan, et al. Improving training time and gpu utilization in geo-distributed language model training. arXiv preprint arXiv:2411.14458 , 2024. Adithya Gangidi, Rui Miao, Shengbao Zheng, Sai Jayesh Bondu, Guilherme Goes, Hany Morsy, Rohit Puri, Mohammad Riftadi, Ashmitha Jeevaraj Shetty, Jingyi Yang, et al. Rdma over ethernet for distributed training at meta scale. In 
+
+Proceedings of the ACM SIGCOMM 2024 Conference , pages 57–70, 2024. Alexandru M Gherghescu, Vlad-Andrei Bădoiu, Alexandru Agache, Mihai-Valentin Dumitru, Iuliu Vasilescu, Radu Mantu, and Costin Raiciu. I’ve got 99 problems but flops ain’t one. In Proceedings of the 23rd ACM Workshop on Hot Topics in Networks , pages 195–204, 2024. Alicia Golden, Michael Kuchnik, Samuel Hsia, Zachary DeVito, Gu-Yeon Wei, David Brooks, and Carole-Jean Wu. Prism: Probabilistic runtime insights and scalable performance modeling for large-scale distributed training. arXiv preprint arXiv:2510.15596 , 2025. Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. Chuanxiong Guo, Haitao Wu, Zhong Deng, Gaurav Soni, Jianxi Ye, Jitu Padhye, and Marina Lipshteyn. Rdma over commodity ethernet at scale. In Proceedings of the 2016 ACM SIGCOMM Conference , pages 202–215, 2016. Dong Guo, Faming Wu, Feida Zhu, Fuxing Leng, Guang Shi, Haobin Chen, Haoqi Fan, Jian Wang, Jianyu Jiang, Jiawei Wang, et al. Seed1.5-vl technical report. arXiv preprint arXiv:2505.07062 , 2025. 
+
+23 Christian Hopps. Analysis of an equal-cost multi-path algorithm. Technical Report RFC 2992, IETF, 2000. https: //datatracker.ietf.org/doc/html/rfc2992 .Samuel Hsia, Alicia Golden, Bilge Acun, Newsha Ardalani, Zachary DeVito, Gu-Yeon Wei, David Brooks, and Carole-Jean Wu. Mad-max beyond single-node: Enabling large machine learning model acceleration on distributed systems. In 2024 ACM/IEEE 51st Annual International Symposium on Computer Architecture (ISCA) , pages 818–833. IEEE, 2024. Sylvain Jeaugey. Pat: a new algorithm for all-gather and reduce-scatter operations at scale, 2025. https://arxiv.org/ abs/2506.20252 .Mikhail Khalilov, Siyuan Shen, Marcin Chrapek, Tiancheng Chen, Kenji Nakano, Nicola Mazzoletti, Peter-Jan Gootzen, Salvatore Di Girolamo, Rami Nudelman, Gil Bloch, et al. Sdr-rdma: Software-defined reliability architecture for planetary scale rdma communication. In Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis , pages 1223–1239, 2025. Geon-Woo Kim, Junbo Li, Shashidhar Gandham, Omar Baldonado, Adithya Gangidi, Pavan Balaji, Zhangyang Wang, and Aditya Akella. HALos: Hierarchical asynchronous local SGD over slow networks for geo-distributed large language model training. In Forty-second International Conference on Machine Learning , 2025. https: //openreview.net/forum?id=LMPJnZSNC8 .Apostolos Kokolis, Michael Kuchnik, John Hoffman, Adithya Kumar, Parth Malani, Faye Ma, Zachary DeVito, Shubho Sengupta, Kalyan Saladi, and Carole-Jean Wu. Revisiting Reliability in Large-Scale Machine Learning Research Clusters . In 2025 IEEE International Symposium on High Performance Computer Architecture (HPCA) , 2025. Hwijoon Lim, Juncheol Ye, Sangeetha Abdu Jyothi, and Dongsu Han. Accelerating model training in multi-cluster environments with consumer-grade gpus. In Proceedings of the ACM SIGCOMM 2024 Conference , ACM SIGCOMM ’24, page 707–720, New York, NY, USA, 2024. Association for Computing Machinery. ISBN 9798400706141. doi: 10.1145/3651890.3672228. https://doi.org/10.1145/3651890.3672228 .Tao Lin, Sebastian U. Stich, Kumar Kshitij Patel, and Martin Jaggi. Don’t use large mini-batches, use local sgd. In 
+
+International Conference on Learning Representations , 2020. https://openreview.net/forum?id=B1eyO1BFPr .Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Chenggang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, et al. Deepseek-v3 technical report. arXiv preprint arXiv:2412.19437 , 2024a. Bo Liu, Rachita Chhaparia, Arthur Douillard, Satyen Kale, Andrei Alex Rusu, Jiajun Shen, Arthur Szlam, and MarcAurelio Ranzato. Asynchronous local-SGD training for language modeling. In 2nd Workshop on Advancing Neural Network Training: Computational Efficiency, Scalability, and Resource Optimization (WANT@ICML 2024) ,2024b. https://openreview.net/forum?id=mT3PdRKl40 .Jingyuan Liu, Jianlin Su, Xingcheng Yao, Zhejun Jiang, Guokun Lai, Yulun Du, Yidao Qin, Weixin Xu, Enzhe Lu, Junjie Yan, et al. Muon is scalable for llm training. arXiv preprint arXiv:2502.16982 , 2025a. Xiangzhou Liu, Wenxue Li, and Kai Chen. Enabling packet spraying over commodity rnics with in-network support. In Proceedings of the 9th Asia-Pacific Workshop on Networking , pages 51–58, 2025b. Inc. M2 Optics. Fiber network and link simulation solutions. https://www.m2optics.com/solutions/network-simulat ion-latency , 2026. Accessed: 2026-02-05. Meta. Meta’s dc networks for generative ai, 2025. https://atscaleconference.com/videos/metas-dc-networks-for-gen erative-ai/ . AtScale Conference. Accessed: 2025-12-09. Nicholas Metropolis, Arianna W Rosenbluth, Marshall N Rosenbluth, Augusta H Teller, and Edward Teller. Equation of state calculations by fast computing machines. The journal of chemical physics , 21(6):1087–1092, 1953. Jowi Morales. China makes ai breakthrough, reportedly trains generative ai model across multiple data centers and gpu architectures, 2024. https://www.tomshardware.com/tech-industry/artificial-intelligence/china-makes-ai-b reakthrough-reportedly-trains-generative-ai-model-across-multiple-data-centers-and-gpu-architectures . Tom’s Hardware. Accessed: 2025-12-09. Deepak Narayanan, Aaron Harlap, Amar Phanishayee, Vivek Seshadri, Nikhil R. Devanur, Gregory R. Ganger, Phillip B. Gibbons, and Matei Zaharia. Pipedream: generalized pipeline parallelism for dnn training. In Proceedings of the 27th ACM Symposium on Operating Systems Principles , SOSP ’19, page 1–15, New York, NY, USA, 2019. Association for Computing Machinery. ISBN 9781450368735. doi: 10.1145/3341301.3359646. https: //doi.org/10.1145/3341301.3359646 .
+
+24 Miles Olson, Elizabeth Santorella, Louis C Tiao, Sait Cakmak, Mia Garrard, Samuel Daulton, Zhiyuan Jerry Lin, Sebastian Ament, Bernard Beckerman, Eric Onofrey, et al. Ax: a platform for adaptive experimentation. In AutoML 2025 ABCD Track , 2025. Jeremie Eliahou Ontiveros, Dylan Patel, and Ajey Pandey. Ai training load fluctuations at gigawatt scale: Risk of power grid blackout, 2023. https://newsletter.semianalysis.com/p/ai-training-load-fluctuations-at-gigawatt-sca le-risk-of-power-grid-blackout . Accessed: 2025-12-04. Dylan Patel, Daniel Nishball, and Jeremie Eliahou Ontiveros. Multi datacenter training: Openai’s secret sauce for scaling ai, 2025. https://newsletter.semianalysis.com/p/multi-datacenter-training-openais . Accessed: 2025-12-05. Penghui Qi, Xinyi Wan, Guangxing Huang, and Min Lin. Zero bubble (almost) pipeline parallelism. In The Twelfth International Conference on Learning Representations , 2024. https://openreview.net/forum?id=tuzTN0eIO5 .Samyam Rajbhandari, Olatunji Ruwase, Jeff Rasley, Shaden Smith, and Yuxiong He. Zero-infinity: Breaking the gpu memory wall for extreme scale deep learning. In Proceedings of the international conference for high performance computing, networking, storage and analysis , pages 1–14, 2021. Hugo Sadok, Miguel Elias M Campista, and Luís Henrique MK Costa. A case for spraying packets in software middleboxes. In Proceedings of the 17th ACM Workshop on Hot Topics in Networks , pages 127–133, 2018. "@Scale". Performance optimizations at 100k+ scale by ashmitha jeevaraj shetty and min si, 2025a. https://www.yo utube.com/watch?v=XoTok_8lFXE . Accessed: 2025-12-15. "@Scale". Meta’s dc networks for generative ai by rohit puri and hany morsy, 2025b. https://www.youtube.com/wa tch?v=AqIPRseYcTU . Accessed: 2025-12-15. Xian Shuai, Yiding Wang, Yimeng Wu, Xin Jiang, and Xiaozhe Ren. Scaling law for language models training considering batch size. arXiv preprint arXiv:2412.01505 , 2024. Min Si, Pavan Balaji, Yongzhou Chen, Ching-Hsiang Chu, Adi Gangidi, Saif Hasan, Subodh Iyengar, Dan Johnson, Bingzhe Liu, Regina Ren, Deep Shah, Ashmitha Jeevaraj Shetty, Greg Steinbrecher, Yulun Wang, Bruce Wu, Xinfeng Xie, Jingyi Yang, Mingran Yang, Kenny Yu, Minlan Yu, Cen Zhao, Wes Bland, Denis Boyda, Suman Gumudavelli, Prashanth Kannan, Cristian Lumezanu, Rui Miao, Zhe Qu, Venkat Ramesh, Maxim Samoylov, Jan Seidel, Srikanth Sundaresan, Feng Tian, Qiye Tan, Shuqiang Zhang, Yimeng Zhao, Shengbao Zheng, Art Zhu, and Hongyi Zeng. Collective communication for 100k+ gpus, 2026. https://arxiv.org/abs/2510.20171 .Yee Jiun Song and Kaushik Veeraraghavan. Meta’s infrastructure evolution and the advent of ai, 2025. https: //engineering.fb.com/2025/09/29/data-infrastructure/metas-infrastructure-evolution-and-the-advent-of-ai/ .Meta Engineering Blog. Accessed: 2025-12-07. Akshitha Sriraman, Sihang Liu, Sinan Gunbay, Shan Su, and Thomas F Wenisch. Deconstructing the tail at scale effect across network protocols. arXiv preprint arXiv:1701.03100 , 2017. Foteini Strati, Paul Elvinger, Tolga Kerimoglu, and Ana Klimovic. Ml training with cloud gpu shortages: Is cross-region the answer? In Proceedings of the 4th Workshop on Machine Learning and Systems , pages 107–116, 2024. Foteini Strati, Zhendong Zhang, George Manos, Ixeia Sánchez Périz, Qinghao Hu, Tiancheng Chen, Berk Buzcu, Song Han, Pamela Delgado, and Ana Klimovic. Sailor: Automating distributed training over dynamic, heterogeneous, and geo-distributed clusters. In Proceedings of the ACM SIGOPS 31st Symposium on Operating Systems Principles ,pages 204–220, 2025. Zhenheng Tang, Xueze Kang, Yiming Yin, Xinglin Pan, Yuxin Wang, Xin He, Qiang Wang, Rongfei Zeng, Kaiyong Zhao, Shaohuai Shi, et al. Fusionllm: a decentralized llm training system on geo-distributed gpus with adaptive compression. arXiv preprint arXiv:2410.12707 , 2024. Zhaodong Wang, Satyajeet Singh Ahuja, Xu Zhang, Yuhui Zhang, Max Noormohammadpour, Gregory R. Steinbrecher, Thomas Fuller, Xin Liu, Kevin Quirk, Mikel Jimenez Fernandez, Abhinav Triguna, Yan Cai, Steve Politis, Petr Lapukhov, Naader Hasani, and Ying Zhang. Enabling ai network cross-layer design and operations with arcadia: A simulation platform at scale. In Accepted for 23rd USENIX Symposium on Networked Systems Design and Implementation (NSDI 26) , Philadelphia, PA, 2026. USENIX Association. Yuxi Xie, Anirudh Goyal, Wenyue Zheng, Min-Yen Kan, Timothy P Lillicrap, Kenji Kawaguchi, and Michael Shieh. Monte carlo tree search boosts reasoning via iterative preference learning. arXiv preprint arXiv:2405.00451 , 2024. 
+
+25 Zhiyi Yang, Zhexiong Li, Deze Zeng, and Lin Gu. Dcts-rdma: Adaptive fec via dynamic coding for efficient rdma over lossy networks. In IFIP International Conference on Network and Parallel Computing , pages 235–246. Springer, 2025. Yanli Zhao, Andrew Gu, Rohan Varma, Liang Luo, Chien-Chin Huang, Min Xu, Less Wright, Hamid Shojanazeri, Myle Ott, Sam Shleifer, Alban Desmaison, Can Balioglu, Pritam Damania, Bernard Nguyen, Geeta Chauhan, Yuchen Hao, Ajit Mathews, and Shen Li. Pytorch fsdp: Experiences on scaling fully sharded data parallel. 
+
+Proc. VLDB Endow. , 16(12):3848–3860, August 2023. ISSN 2150-8097. doi: 10.14778/3611540.3611569. https: //doi.org/10.14778/3611540.3611569 .Yibo Zhu, Haggai Eran, Daniel Firestone, Chuanxiong Guo, Marina Lipshteyn, Yehonatan Liron, Jitendra Padhye, Shachar Raindel, Mohamad Haj Yahia, and Ming Zhang. Congestion control for large-scale rdma deployments. 
+
+ACM SIGCOMM Computer Communication Review , 45(4):523–536, 2015. Yazhou Zu, Alireza Ghaffarkhah, Hoang-Vu Dang, Brian Towles, Steven Hand, Safeen Huda, Adekunle Bello, Alexander Kolbasov, Arash Rezaei, Dayou Du, et al. Resiliency at scale: Managing {Google’s }{ TPUv4 } machine learning supercomputer. In 21st USENIX Symposium on Networked Systems Design and Implementation (NSDI 24) , pages 761–774, 2024. 
+
+26 Building A                
+
+> Building B
+> DP Replica 0
+> PP Stage 0
+> 0123
+> 4567
+> TP Group
+> PP Stage 1
+> 8910 11
+> 12 13 14 15
+> TP Group
+> DP Replica 1
+> PP Stage 0
+> 16 17 18 19
+> 20
+> 21
+> 22
+> 23
+> TP Group
+> PP Stage 1
+> 24
+> 25
+> 26
+> 27
+> 28
+> 29
+> 30
+> 31
+> TP Group
+> DP Replica 2
+> PP Stage 0
+> 32
+> 33
+> 34
+> 35
+> 36
+> 37
+> 38
+> 39
+> TP Group
+> PP Stage 1
+> 40
+> 41
+> 42
+> 43
+> 44
+> 45
+> 46
+> 47
+> TP Group
+> DP Replica 3
+> PP Stage 0
+> 48
+> 49
+> 50
+> 51
+> 52
+> 53
+> 54
+> 55
+> TP Group
+> PP Stage 1
+> 56
+> 57
+> 58
+> 59
+> 60
+> 61
+> 62
+> 63
+> TP Group
+> Intra-building communication
+> Cross-building communication
+
+(a) DP-out Building A                 
+
+> Building B
+> DP Replica 0
+> 0123
+> 4567
+> TP Group
+> DP Replica 1
+> 8910 11
+> 12 13 14 15
+> TP Group
+> DP Replica 2
+> 16 17 18 19
+> 20
+> 21
+> 22
+> 23
+> TP Group
+> DP Replica 3
+> 24
+> 25
+> 26
+> 27
+> 28
+> 29
+> 30
+> 31
+> TP Group
+> DP Replica 0
+> 32
+> 33
+> 34
+> 35
+> 36
+> 37
+> 38
+> 39
+> TP Group
+> DP Replica 1
+> 40
+> 41
+> 42
+> 43
+> 44
+> 45
+> 46
+> 47
+> TP Group
+> DP Replica 2
+> 48
+> 49
+> 50
+> 51
+> 52
+> 53
+> 54
+> 55
+> TP Group
+> DP Replica 3
+> 56
+> 57
+> 58
+> 59
+> 60
+> 61
+> 62
+> 63
+> TP Group
+> Intra-building communication
+> Cross-building communication
+> PP Stage 0
+> PP Stage 1
+
+(b) PP-out Local Group 1                 
+
+> Building A
+> Building B
+> DP Replica 0 (Group 0 Leader)
+> PP Stage 0
+> 0123
+> 4567
+> TP Group
+> PP Stage 1
+> 8910 11
+> 12 13 14 15
+> TP Group
+> DP Replica 1
+> PP Stage 0
+> 16 17 18 19
+> 20
+> 21
+> 22
+> 23
+> TP Group
+> PP Stage 1
+> 24
+> 25
+> 26
+> 27
+> 28
+> 29
+> 30
+> 31
+> TP Group
+> DP Replica 2 (Group 1 Leader)
+> PP Stage 0
+> 32
+> 33
+> 34
+> 35
+> 36
+> 37
+> 38
+> 39
+> TP Group
+> PP Stage 1
+> 40
+> 41
+> 42
+> 43
+> 44
+> 45
+> 46
+> 47
+> TP Group
+> DP Replica 3
+> PP Stage 0
+> 48
+> 49
+> 50
+> 51
+> 52
+> 53
+> 54
+> 55
+> TP Group
+> PP Stage 1
+> 56
+> 57
+> 58
+> 59
+> 60
+> 61
+> 62
+> 63
+> TP Group
+> Intra-building communication
+> Cross-building communication
+> Local Group 0
+
+(c) Hierarchical HSDP 
+
+Figure 27 Visualization of the emulation settings for DP-out, PP-out, and the hierarchical communication pattern of HSDP. 
+
+Table 3 Overview of network topologies used in simulations. "1:1" stands for no bandwidth oversubscription. The circled number in the "Configuration Space" column corresponds to the circled number in Figure 1 and represents the scale-across network configuration we simulate with each topology. 
+
+Topology Name Intra-building Oversubscription Per Building Device Count Configuration Space A1 Default Default 1○- 4 ○
+
+A2 2× Default Default 1○- 3 ○
+
+A3 4× Default Default 1○- 3 ○
+
+A4 Default 0.8 × Default 1○, 2 ○, 4 ○
+
+B1 Default Default 1○- 4 ○
+
+B2 1:1 Default 1○- 3 ○
+
+B3 2× Default Default 1○- 3 ○
+
+B4 Default 0.75 × Default 1○, 2 ○, 4 ○
+
+# Appendix 
+
+## A Exploration Details 
+
+A.1 Testbed Settings 
+
+We evaluate scale-across training with a production testbed equipped with tools capable of increasing bandwidth oversubscription ratios by disabling links and reconfiguring cluster distances through optical systems. Because the testbed is shared among multiple users, we prioritize experiments with Mixture-of-Experts (MoE) models, which reflects the current trend in model architecture design. For dense model experiments, we utilize a dedicated testbed consisting of 64 NVIDIA H100 GPUs hosted by our research cluster and develop a custom AWS OFI NCCL plugin to restrict bandwidth between GPUs located in different emulated buildings. The default oversubscription ratio across the emulated buildings is 1:4. We use testbed experiments to systematically characterize the impact of parallelism placement and scheduling. Our study covers bandwidth oversubscription ratios of 1:1, 1:2, 1:4, 1:8, and 1:16, encompassing all scenarios described in Table 1. The 1:1 ratio serves as the baseline configuration of the research cluster testbed, representing no oversubscription and providing 400 Gbps of bandwidth between each pair of GPUs located in different servers. For parallelism scheduling, we evaluate FSDP and HSDP with hierarchical aggregation, as well as the effects of different pipeline schedules using DoraPP and Interleaved ZBV. To ensure that the emulation takeaways apply to much larger scale production settings, we configure the workload to use model architecture similar to production training jobs. The detailed workload configurations are listed in Table 2. 
+
+A.2 Simulation Settings 
+
+We cover parallelism placement, communication pattern, and pipeline schedules with the testbed emulations. To fully characterize the optimization space—including the effects of link latency, packet loss rate, and 27 network protocol design—and to enable large-scale evaluation of cross-building network impacts, we employ an in-house packet-level network simulator (Wang et al., 2026). This simulator provides a precise modeling of the end-to-end traversal of individual data packets, capturing the behavior of network interface cards (NICs) and switches. It also supports the implementation of custom load balancing and congestion control protocols. Simulations are configured using model architectures and workload settings that precisely mirror the 100K GPUs training job we discussed in Section 2.1. We simulate multiple data center buildings and set the default oversubscription ratio based on that of an internal multi-building region (referred to as the "default ratio"). The default latency is 50 μs, which is the latency of 10 kilometer links and is reasonable for cross-building but intra-region connections. To extrapolate to future scenarios where millions of GPUs spanning across regions located longer than 100 kilometers apart, our simulations also consider oversubscription ratios of 2 ×
+
+and 4 × the default, as well as link latencies of 10, 25, 100, and 1000 μs. This topology is designated as "A1" in Table 3. To demonstrate the generalizability of our findings, we further simulate multiple variants of A1, along with an additional series of multi-tier Clos topologies labeled B1–B4. The most notable distinction between the A and B series is that the B series, by default, also has intra-building oversubscription. 28

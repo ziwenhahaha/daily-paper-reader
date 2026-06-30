@@ -1,0 +1,748 @@
+Title: ZipCCL: Efficient Lossless Data Compression of Communication Collectives for Accelerating LLM Training
+
+URL Source: https://arxiv.org/pdf/2604.27844v1
+
+Published Time: Fri, 01 May 2026 01:11:44 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# ZipCCL: Efficient Lossless Data Compression of Communication Collectives for Accelerating LLM Training 
+
+# Wenxiang lin 1, Xinglin Pan 2, Ruibo Fan 2, Shaohuai Shi 1,∗
+
+# , Xiaowen Chu 2,3,∗
+
+> 1
+
+Harbin Institute of Technology, Shenzhen, China 
+
+> 2
+
+The Hong Kong University of Science and Technology (Guangzhou), China 
+
+> 3
+
+The Hong Kong University of Science and Technology, Hong Kong SAR wenxianglin@stu.hit.edu.cn,{xpan413,ruibo.fan}@connect.hkust-gz.edu.cn shaohuais@hit.edu.cn,xwchu@hkust-gz.edu.cn 
+
+ABSTRACT 
+
+Communication has emerged as a critical bottleneck in the distributed training of large language models (LLMs). While numerous approaches have been proposed to reduce com-munication overhead, the potential of lossless compression has remained largely underexplored since compression and decompression typically consume larger overheads than the benefits of reduced communication traffic. We observe that the communication data, including activations, gradients and parameters, during training often follows a near -Gaussian distribution, which is a key feature for data compression. Thus, we introduce ZipCCL, a lossless compressed commu-nication library of collectives for LLM training. ZipCCL is equipped with our novel techniques: (1) theoretically ground-ed exponent coding that exploits the Gaussian distribution of LLM tensors to accelerate compression without expen-sive online statistics, (2) GPU-optimized compression and decompression kernels that carefully design memory ac-cess patterns and pipeline using communication-aware data layout, and (3) adaptive communication strategies that dy-namically switch collective operations based on workload patterns and system characteristics. Evaluated on a 64 -GPU cluster using both mixture-of-experts and dense transformer models, ZipCCL reduces communication time by up to 1.35 ×
+
+and achieves end -to -end training speedups of up to 1.18 ×
+
+without any impact on model quality. 
+
+1 INTRODUCTION 
+
+As large language models (LLMs) continue to scale, training on massive GPU clusters has become inevitable [ 26 , 42 ]. To fully utilize these resources, various parallelism strategies have been developed, including Data Parallelism (DP) [ 3], Pipeline Parallelism (PP) [ 29 ], Tensor Parallelism (TP) [ 3 , 29 ], 
+
+> ∗Corresponding author.
+
+Expert Parallelism (EP) [ 12 , 37 ], and Fully Sharded Data Par-allelism (FSDP) [ 50 ]. While enabling parallel computation across thousands of devices, these methods introduce sub-stantial communication overhead, which often becomes the bottleneck for system scalability. Existing efforts to mitigate this overhead fall broadly into three categories. The first category focuses on scheduling optimization , which overlaps computation with commu-nication to mask latency [ 14 , 24 , 32 , 39 , 46 ]. The second category involves topology-aware operations , optimiz-ing collectives based on specific network hardware proper-ties [ 25 , 26 , 45 ]. The third category adopts communication compression , primarily utilizing lossy techniques such as quantization [ 40 ] or sparsification [ 15 ]. While effective in reducing data volume, these methods introduce irreversible information loss. For the expensive and complex training of large-scale LLMs, this lossy nature poses significant risks and quantification difficulties regarding model convergence and final accuracy. Distinct from these works, we explore a promising yet underutilized direction: lossless compression . By leverag-ing data redundancy and entropy coding (e.g., Huffman [ 11 ], ANS [ 6 ]), lossless compression provides a bit-exact represen-tation without any information loss. Our insight stems from the statistical properties of LLM training tensors, includ-ing activations [ 47 ], gradients [ 23 , 38 ], and parameters [ 41 ]. Driven by the extensive use of Layer Normalization and well-conditioned optimization landscapes, these tensors typically follow Gaussian or log-normal distributions [ 4 , 19 –21 , 41 ](some experimental results can also be found in §6.6). In the de-facto BFloat16 (BF16) format [ 17 ], this statistical regular-ity manifests as a highly concentrated distribution of expo-nent values, where a small subset of exponents accounts for the vast majority of the data. To validate this potential, we analyze the communication patterns of a Qwen3-A22B [ 42 ]Mixture-of-Experts (MoE) model, specifically focusing on the 
+
+> 1
+> arXiv:2604.27844v1 [cs.DC] 30 Apr 2026
+
+arxiv, 2026 X.et al.  
+
+> (a) Compression ratio. (b) Execution time.
+
+Figure 1: Left: Compression ratio (original communi-cation volume / compressed communication volume) averaged over training iterations; Right: Execution time of a lossless compressed All-Gather communi-cation with different lossless compression methods for Llama3-8B with FSDP. 
+
+bandwidth-intensive All-to-All operations required at MoE layers. As illustrated in Fig. 1a, tracking the communication volume over 40,000 training iterations reveals that the origi-nal data volume is 1.33 × larger than its losslessly compressed counterpart. Furthermore, this compression gain increases as training progresses, suggesting substantial potential for mitigating communication bottlenecks in large-scale runs. However, realizing this potential in practice is challeng-ing. The core obstacle is that the computational overhead of compression often outweighs the bandwidth savings. While lossless compression has been applied in checkpoints [ 10 , 44 ]or inference [ 8 , 48 ], applying it to the critical path of training communication requires ultra-low latency. General-purpose GPU compressors like DietGPU [ 16 ] and nvCOMP [ 30 ] are ill-suited for this regime. They fail to leverage communication-aware memory hierarchies and incur significant kernel-launch overheads. As shown in Fig. 1b, this leads to a “performance cliff”: despite reducing data volume, the substantial com-pression and decompression overheads make these methods slower than direct uncompressed communication (NCCL) for FSDP workloads, effectively turning a network bottleneck into a computational one. To address the issue, we present ZipCCL, a lossless com-munication collective library (§3) for LLM training, which bridges the gap between the theoretical compression po-tential of near - Gaussian LLM tensors and practical GPU performance with three key innovations: ❶ We propose a theoretically grounded exponent coding technique (§4.1) that exploits the normality of LLM tensors to bypass dynamic his-togram construction. By deriving theoretical bounds on ex-ponent concentration in normally distributed floating -point data, we directly compute a compact lookup table for ex-ponent remapping, eliminating the need for online sort-ing and enabling deterministic, low -latency compression. 
+
+❷ We design GPU-optimized compression and decompres-sion kernels (§4.2) with a communication-aware data layout, which is used to carefully design memory access patterns and pipelines. By leveraging the characteristics of communi-cation operations, we design data layouts and access patterns that eliminate redundant data transformations. In the kernel implementation, we carefully account for global memory access costs and shared memory banking effects, and imple-ment pipelined execution to overlap computation with data movement. ❸ We propose adaptive communication strate-gies for All-to-All operations (§5) in MoE model training under imbalanced expert computation loads, and we design a dynamic switcher for Reduce-Scatter that adapts to system characteristics. We implement ZipCCL as a drop - in replacement for stan-dard NCCL collectives and evaluate it on a 64 - GPU cluster using representative MoE (DeepSeek -V3, Qwen -MoE) and dense (Llama3 - 8B) models. Experiments show that ZipCCL reduces communication time by up to 1.35 × and achieves end - to - end training speedups of 1.16 –1.18 × over state-of-the-art training systems including Megatron-LM [ 29 ] and TorchTitan [22]. 
+
+2 PRELIMINARIES AND MOTIVATIONS 2.1 Parallelism Paradigms 
+
+Parallelism is an essential technique for large - scale LLM training. Common parallelism strategies include Data Paral-lelism (DP) [ 3 ], Pipeline Parallelism (PP) [ 29 ], Tensor Paral-lelism (TP) [ 3 , 29 ], Expert Parallelism (EP) [ 12 , 37 ], and Fully Sharded Data Parallelism (FSDP) [50]. 
+
+Expert Parallelism is specifically designed for Mixture-of-Experts (MoE) models, where different experts are dis-tributed across multiple devices. Each device hosts a subset of experts and processes only the tokens assigned to its local experts. Communication occurs via an All -to - All operation to dispatch tokens to targeted devices based on the gating function’s decisions and to combine tokens after local ex-perts computation. EP maximizes device utilization in MoE training by allowing multiple experts to be activated simul-taneously across the system. 
+
+Fully Sharded Data Parallelism is an advanced form of data parallelism that shards model parameters, gradients, and optimizer states across all devices. Unlike classic DP, which replicates the entire model on each GPU, FSDP dis-tributes the model’s components, thereby significantly reduc-ing per -device memory footprint. During the forward pass, each device gathers the necessary parameters via All-Gather for its local computation; in the backward pass, each device 
+
+> 2
+
+ZipCCL arxiv, 2026 A0  A1  A2  A3                      
+
+> C0 C1 C2 C3
+> D0 D1 D2 D3
+> B0 B1 B2 B3
+> A0 B0 C0 D0
+> A1 B1 C1 D1
+> A2 B2 C2 D2
+> A3 B3 C3 D3
+> GPU 0
+> GPU 1
+> GPU 2
+> GPU 3
+
+Figure 2: A 4-GPU example of the All-to-All collective. A0  A1  A2  A3                  
+
+> C0 C1 C2 C3
+> D0 D1 D2 D3
+> B0 B1 B2 B3
+> GPU 0
+> GPU 1
+> GPU 2
+> GPU 3
+> A0+B0
+> +C0+D0
+> A1+B1
+> +C1+D1
+> A2+B2
+> +C2+D2
+> A3+B3
+> +C3+D3
+> A0+B0
+> +C0+D0
+> A0+B0
+> +C0+D0
+> A0+B0
+> +C0+D0
+> A0+B0
+> +C0+D0 A1+B1
+> +C1+D1 A2+B2
+> +C2+D2 A3+B3
+> +C3+D3
+> A1+B1
+> +C1+D1 A2+B2
+> +C2+D2 A3+B3
+> +C3+D3
+> A1+B1
+> +C1+D1 A2+B2
+> +C2+D2 A3+B3
+> +C3+D3
+> A1+B1
+> +C1+D1
+> A2+B2
+> +C2+D2
+> A3+B3
+> +C3+D3
+> Reduce-Scatter All-Gather
+> All-Reduce
+
+Figure 3: A 4-GPU example of All-Gather, Reduce-Scatter and All-Reduce collectives. 
+
+also gathers parameters to compute gradients which are then synchronized via Reduce -Scatter, and optimizer updates are performed on the sharded parameters. FSDP enables train-ing of very large models that would otherwise exceed the memory of a single accelerator. 
+
+Data Parallelism synchronizes model states by replicat-ing the full model on each worker. During the backward pass, after local gradients are computed, an All-Reduce operation is triggered across all replicas to aggregate and average the gradients for consistent parameter updates. 
+
+Tensor Parallelism partitions individual weight matrices within a layer across multiple devices. To ensure mathemati-cal equivalence to a non-partitioned layer, communication is required in both forward and backward passes. Specifically, a TP implementation invokes an All-Reduce after each block’s linear transformation to synchronize partial results before the next activation function. 
+
+2.2 Communication Collectives 
+
+Communication collectives [ 31 ] are essential primitives for distributed training of LLMs using parallelism paradigms enabling efficient data exchange and synchronization across multiple devices. 
+
+All-to-All . The All-to-All collective enables each process in a group to send distinct data to every other process and receive different data from all processes. As shown in Fig. 2, All-to-All divides the data into chunks corresponding to the number of devices, sequentially sends these chunks to each device, and simultaneously receives data from every other device. 
+
+Reduce -Scatter . Reduce - Scatter performs an element - wise reduction (e.g., sum) over a tensor distributed across all pro-cesses, then scatters the resulting reduced slices so that each process receives a distinct portion as shown in the right part of Fig. 3. It is widely used in TP to aggregate partial results across devices and in FSDP to combine partial weight or gradient across devices. 
+
+All -Gather . The All -Gather operation collects distinct data blocks from each process and concatenates them, deliv-ering the complete assembled tensor to every participant as shown in the left part of Fig. 3. This collective is commonly employed in TP and FSDP. Each worker initially holds a unique segment; after the collective, all workers possess the full concatenated output. 
+
+All-Reduce . The All-Reduce collective operation is fun-damental in distributed deep learning for synchronizing gra-dients or other tensors across all processes in a group. It combines values from all processes using a reduction oper-ation and distributes the result back to all processes. This operation is crucial for gradient synchronization in data par-allel training, ensuring all model replicas maintain consistent parameter updates. All-Reduce can be viewed as a combina-tion of Reduce-Scatter followed by an All-Gather [ 36 , 43 ] as shown in Fig. 3. During Reduce-Scatter, each device’s data is first divided into chunks, allowing every device to obtain one chunk of the reduced result across devices. The All-Gather then ensures that every card possesses all the reduced data. 
+
+2.3 Floating-Point Format 
+
+In LLM training, the most commonly used floating - point format is BFloat16 (BF16) [ 17 , 28 ], which strikes a balance between memory efficiency and numerical robustness. It is widely deployed in production -scale models, including Llama3 [5], Qwen [42], and Mistral [13]. A BF16 value is composed of 1 sign bit, 8 exponent bits, and 7 mantissa bits. Its numeric representation follows: BF16 (𝑥 ) = (− 1)sign × 2exponent −127 × ( 1.mantissa ).
+
+This design retains the full 8 - bit exponent range of IEEE 754 single -precision (FP32) while reducing the mantissa to 7 bits. Compared to the half - precision FP16 format (1 - 5-10), BF16 provides a substantially wider dynamic range, which significantly mitigates the risk of overflow and underflow in large-scale model training. Consequently, most communication operations during training are performed in BF16. Nevertheless, a subset of operations, such as optimizer updates and gradient accu-mulation, still relies on higher-precision FP32 arithmetic to maintain numerical stability and convergence fidelity. 
+
+2.4 Motivation 
+
+Underutilized data distribution in LLM communication compression. A large fraction of the data exchanged during 
+
+> 3
+
+arxiv, 2026 X.et al. 
+
+Table 1: Percentage of the top 𝑘 most frequent expo-nents covering all exponents in BF16 data sampled from a normal distribution. 
+
+Top 𝑘 1 2 3 4 5 6 7
+
+Coverage (%) 29.9 57.2 75.7 85.5 90.4 95.0 97.5 
+
+LLM training, including activations, gradients, and weight pa-rameters, are approximately Gaussian or log - normal distribu-tions [ 4, 19 –21 , 41 ], which is also observed in§6.6. This statis-tical regularity is especially pronounced in well -normalized intermediate tensors and has been observed across differ-ent model architectures and training stages. While general compression algorithms ignore such distributional priors, this property can be exploited to accelerate compression. In particular, for exponent -based formats like BF16, the distri-bution of exponent values is highly concentrated; the top-7 most frequent exponents often cover over 97% of the data as shown in Table 1. By theoretically bounding the concen-tration of exponents in normally distributed floating - point data, we can directly derive the lookup table required for exponent remapping without expensive histogram collection and sorting. 
+
+Thus, a distribution -aware compression method that lever-ages the inherent normality of LLM tensors can bypass costly statistical gathering steps and enable near -optimal, low - latency compression fully on the GPU. 
+
+Inefficient communication - aware lossless compres-sion for LLM training. Communication accounts for a sub-stantial portion of the end -to - end training time in distributed LLM training. Lossless compression can effectively reduce the volume of transmitted data and thus alleviate communica-tion bottlenecks. However, existing GPU -accelerated lossless compression schemes often fail to fully exploit GPU architec-tural and communication characteristics, resulting in subopti-mal throughput and high compression latency. As introduced in §2.2, efficient communication collectives require splitting data into chunks before transmission. However, compression and decompression kernels typically reorganize the data lay-out after processing, preventing direct chunk - wise splitting. For example, to support All -to - All, the data must be manually partitioned and compressed per chunk, which introduces sig-nificant overhead. Furthermore, existing compression meth-ods are insufficiently optimized for GPU execution: they lack careful design of data access and storage patterns for global and shared memory, resulting in inefficient memory trans-actions and limited overlap between computation and data movement. 
+
+Therefore, designing communication-aware lossless compres-sion and decompression GPU kernels that fully align with GPU Compressor      
+
+> [4,5,3]
+> Size Communication
+> Data Communication
+> Decompressor
+> Split
+> Combine
+> Split
+> Combine
+> Compressor
+> [4,5,3]
+> Size Communication
+> Data Communication
+> Decompressor
+> Improve
+> Improve
+> Naive Efficient
+
+Figure 4: Comparison of the naive implementation of lossless compressed communication collectives (left) and our efficient ZipCCL design (right). GPU 0 
+
+> GPU 1
+> Compressor
+> Compressor
+> 3
+> 4
+> [3,4]->4
+> [3,4]->4
+> Size Communication Data Compress
+> Decompressor
+> Decompressor
+> Data Decompress
+> All-Gather
+> Compressed Data Communication
+> All-Gather
+
+(a) Zipped All-Gather GPU 0 
+
+> GPU 1
+> Compressor
+> Compressor
+> [3]
+> [4]
+> [3,4]
+> [3,4]
+> Size Communication Data Compress
+> Decompressor
+> Decompressor
+> Data Decompress
+> All-to-All
+> Compressed Data Communication
+> All-to-All
+
+(b) Zipped All-to-All Design 1 GPU 0  
+
+> GPU 1
+> Comp.
+> Comp.
+> [1]
+> [2]
+> [1,2]
+> [1,2]
+> Dynamic Size Communication
+> Data Compress
+> Decomp.
+> Decomp.
+> Data Decompress
+> All-to-All
+> Dynamic Compressed Data Communication
+> All-to-All
+> All-to-All
+> Static Compressed
+> Data Communication
+
+(c) Zipped All-to-All Design 2 GPU 0 
+
+> GPU 1
+> Compressor
+> Compressor
+> [1]
+> [2]
+> [1,2]
+> [1,2]
+> Size Communication Data Compress
+> Decompressor
+> Decompressor
+> Data Decompress
+> All-to-All
+> Compressed Data Communication
+> All-to-All
+> Local Reduce
+
+(d) Zipped Reduce-Scatter 
+
+Figure 5: The workflow of our zipcclAllGather ,
+
+zipcclAlltoAll , and zipcclReduceScatter .
+
+memory hierarchies, minimize kernel launch overhead, and efficiently overlap compression with memory access is essential to achieve practical end-to-end speedups in LLM training. 
+
+3 ZIPCCL: LIBRARY DESIGN 
+
+To seamlessly support the communication collectives for LLM training, we design our ZipCCL, where each zipped collective is one API that is compatible with NCCL. First, to maximally reduce the extra operations required for data com-pression and decompression, we implement our lossless data 
+
+4ZipCCL arxiv, 2026 
+
+compressor and its decompressor together with collectives, as shown in Fig. 4. Compared to the naive implementation (left in Fig. 4), which requires two extra split operations and two combine operations to enable compressed data collec-tives, our ZipCCL design (right in Fig. 4) eliminates these extra operations using customized GPU kernels (§4.2). Specif-ically, data is compressed before transmission, followed by decompression. Because the compressed size depends on data distribution, each collective performs a lightweight syn-chronization step to exchange only the metadata (i.e., com-pressed sizes) prior to data transfer (details in the following subsections for each collective). We implement ZipCCL as a library of collectives atop NCCL and follow the same input format requirements as NCCL collectives, thereby minimizing extra data movement and kernel overhead that would be needed for format align-ment. Since All-Reduce can be viewed as a Reduce-Scatter operation followed by an All-Gather operation, we focus on three collectives: All -Gather, All - to -All, and Reduce-Scatter with our lossless compression; that is: zipcclAllGather ,
+
+zipcclAlltoAll , and zipcclReduceScatter , respectively. 
+
+3.1 zipcclAllGather 
+
+As shown in Fig. 5a, zipped All -Gather enhances the stan-dard All -Gather with compression and decompression stages. Each worker first applies a fast lossless compressor to its local data. Since the compressed sizes vary between work-ers, an All-Gather operation should be used to communicate the compressed data size for each worker. This operation only introduces negligible overhead, as only an integer is all-gathered, but it enables precise buffer allocation and effi-cient scheduling of the subsequent data movement. The com-pressed blocks are then gathered using another All -Gather operation, after which each worker decompresses all re-ceived blocks to reconstruct the full tensor. 
+
+3.2 zipcclAlltoAll 
+
+All -to -All is a bandwidth -heavy collective operation that plays a key role in training MoE models, as it redistributes tokens among the different experts. As shown in Fig. 5b and Fig. 5c, we propose two practical designs for zipcclAlltoAll .The first design (Fig. 5b) follows a four -phase approach: compress locally, exchange compressed sizes via an addi-tional All -to - All, then transmit the compressed data using the size information and decompress the received data. The second design (Fig. 5c) splits compressed data into a “static part” (whose size is known before compression and is un-affected by data distribution) and a “dynamic part” (whose compressed size varies with the input). The workflow fol-lows: first, compress locally; second, transmit the static part via a conventional All - to -All; third, exchange the sizes of the dynamic parts across workers; fourth, transmit the dynamic data itself using the exchanged size information; finally, de-compress all received blocks. This ordering is motivated by load -imbalance patterns commonly observed in MoE train-ing: because expert computation times can vary significantly across devices, workers may become ready for communica-tion at different times. By front -loading the transmission of the static part, whose size is fixed and known a prior, we allow faster devices to start useful communication earlier while slower devices catch up. A detailed discussion of the load -imbalance problem and how our design addresses it is provided in §5.1. 
+
+3.3 zipcclReduceScatter 
+
+Directly integrating compression into a native Reduce - Scatter is challenging because decompression is required before ev-ery reduction step. Instead, we implement zipcclReduceScatter 
+
+by decomposing the operation into a zipcclAlltoAll fol-lowed by a local reduction, as illustrated in Fig. 5d. Each worker performs a zipcclAlltoAll operation to send and receive data with other workers. After that, each worker decompresses the data and sums the results locally. This de-composition shifts the reduction from the network to the device, reusing the efficient zipcclAlltoAll . However, the performance of this decomposed form depends on cluster characteristics; on networks with high bisection bandwidth, a native Reduce -Scatter may be faster. Therefore, we equip the collective with an “adaptive switcher” (§5.2) that pro-files the cluster at initialization and selects between the de-composed path and the native Reduce -Scatter based on a cost model that considers measured bandwidth, latency, and compression ratio. This ensures robustness across different hardware configurations, always matching or outperforming the baseline while providing substantial gains when com-pression is effective. 
+
+4 COMMUNICATION-AWARE LOSSLESS COMPRESSION AND DECOMPRESSION 
+
+We focus on lossless compression targeting the exponent bits of floating - point numbers, which has been demonstrated by numerous studies [ 8 , 9, 16 ] to contain significant redun-dancy. For normally distributed data, the coverage of the top -k most frequent exponent values is shown in Table 1: just 7 exponents can cover 97% of the data. Therefore, we encode exponents using these 7 values plus an additional “zero -point” flag (indicating an exponent outside the top -7set), requiring only three bits per exponent. For the BF16 format commonly used in LLM training, this lossless com-pression reduces the exponent storage from 8 bits to 3 bits, thereby lowering the total bit -width per value from 16 bits 
+
+> 5
+
+arxiv, 2026 X.et al. Input  BF16    
+
+> Sign-Mantissa
+> Bits
+> Exponent Bits
+> Sign-Mantissa
+> Bits Array
+> Exp
+> Bit 0
+> Array
+> Exp
+> Bit 1
+> Array
+> Exp
+> Bit 2
+> Array
+> Sign-Mantissa
+> Bits Array
+> Exp
+> Bit 0
+> Array
+> Exp
+> Bit 1
+> Array
+> Exp
+> Bit 2
+> Array
+> Zero-Points
+> (Full 8 bit Exp)
+> & Code 0
+> Top7?
+> Map to
+> 3-bit Code
+> (1-7)
+> Warp
+> Level
+> Index
+> Warp
+> Level
+> Index
+> Zero
+> Points
+> Array
+> Padding
+> Zero
+> Points
+> Array
+> Padding
+> Warp-Level
+> Index
+> Recombine
+> 3-bit Code ==0?
+> Reconstruct
+> BF16
+> Recover
+> Exponent
+> Output BF16
+> Level 2 Alignment:
+> Split 3-bit segments for aligned access
+> Worker i Chunk
+> Worker i+1 Chunk
+> Level 1 Alignment:
+> Chunk padded to 128-byte boundary
+> Split
+> Bit 0
+> Bit 1
+> Bit 2
+> Reconstruct
+> BF16
+> Read Exponent
+> Output BF16
+> COMPRESSOR PIPELINE
+> DECOMPRESSOR PIPELINE
+> GLOBAL MEMORY DATA LAYOUT
+> Yes
+> No
+> No
+> Yes
+
+Figure 6: The workflows of our Compressor and De-compressor on the GPU. 
+
+to 11 bits, achieving a theoretical compression ratio of up to 31%. As illustrated in Fig. 6, our compression pipeline bifur-cates the data stream into decoupled segments. First, each floating -point number is split into its exponent bits and the remaining bits (sign and mantissa). The sign and man-tissa bits are preserved in their raw form to ensure a fixed-stride memory layout, which allows the hardware to per-form vectorized and coalesced memory accesses and stores without the overhead of bit-shuffling. Concurrently, for the exponent, we check whether its value belongs to the pre-determined set of top -7 exponents. If yes, it is mapped to a 3 -bit code (001 - 111); otherwise, it is assigned the special code 0 (000), and the full 8 -bit exponent is stored separately as a “zero - point.” Third, we aggregate the counts of these zero -points to generate warp-level indices for efficient stor-age and to determine the final compressed size for communi-cation. It is worth noting that, apart from the data size of the exponent bits corresponding to zero-points, all other data sizes remain fixed. This aligns with the earlier distinction be-tween static compressed data and dynamic compressed data. The decompression workflow follows a similar process: first, the 3 - bit exponent code is examined; if it is non - zero, the original exponent is recovered by looking up the correspond-ing top - 7 value; if it is zero, the full exponent is read from the stored zero -point list with the generated index. Then, the exponent is recombined with the saved sign - mantissa bits to reconstruct the original floating-point value. 
+
+4.1 Determination of Top-7 Most Frequent Exponent Values 
+
+We introduce a method for efficiently identifying the seven most frequent exponent values in BF16 data. The method avoids expensive frequency counting or sorting by deriving and leveraging a theoretical relationship between a layer’s weight distribution and its optimal exponent coverage. To characterize the distribution of exponents in BF16 data, we seek to identify the optimal base exponent that maxi-mizes the probability coverage within a specific range. By determining the relationship between the weight standard deviation 𝜎 and this optimal exponent 𝑥 , we can quantify the expected redundancy and concentration in the expo-nent field. Although 𝑥 is discrete in practice, we treat it as a continuous variable to find the optimal coverage through differentiation. To analyze the exponent distribution, we first define 𝑥 as the unbiased exponent value of a BF16 number. Given the BF16 format 𝑣 = (− 1)𝑆 × 2𝐸 −127 × ( 1.𝑚 1...𝑚 7)2, the value 
+
+𝑥 = 𝐸 − 127 determines the magnitude range such that 
+
+|𝑣 | ∈ [ 2𝑥 , 2𝑥 +1). Under the assumption that weights follow a Gaussian distribution 𝑤 ∼ N ( 0, 𝜎 2), we define 𝑃 win (𝑥 ) as the probability that a randomly sampled weight falls within a contiguous window of 8 exponents starting from 𝑥 , covering the magnitude range [2𝑥 , 2𝑥 +7). By integrating the probabil-ity density function over both positive and negative intervals, we obtain: 
+
+𝑃 win (𝑥 ) = 2
+
+∫ 2𝑥 +7
+
+> 2𝑥
+
+1
+
+√2𝜋𝜎 2 𝑒 − 𝑡 22𝜎 2 𝑑𝑡 . (1) This can be simplified using the error function as 
+
+𝑃 win (𝑥 ) = erf 
+
+ 2𝑥 +7
+
+𝜎 √2
+
+
+
+− erf 
+
+ 2𝑥 
+
+𝜎 √2
+
+
+
+. (2) For algebraic simplicity, we define a substituted variable 
+
+𝑢 (𝑥 ) = 2𝑥  
+
+> 𝜎 √2
+
+. As 2𝑥 +7 = 128 · 2𝑥 , the expression becomes 
+
+𝑃 win (𝑥 ) = erf (128 𝑢 ) − erf (𝑢 ). To find the base exponent 𝑥 
+
+that maximizes this coverage, we compute the derivative with respect to 𝑥 using the chain rule, that is 
+
+𝑑𝑃 𝑑𝑥 = 𝑑𝑃 𝑑𝑢 𝑑𝑢 𝑑𝑥 =
+
+ 2
+
+√𝜋 𝑒 − ( 128 𝑢 )2
+
+· 128 − 2
+
+√𝜋 𝑒 −𝑢 2
+
+
+
+·( 𝑢 ln 2 ). (3) Setting 𝑑𝑃 𝑑𝑥 = 0 for non-zero weights, we obtain the optimality condition 128 𝑒 − ( 128 𝑢 )2
+
+= 𝑒 −𝑢 2
+
+. Taking the natural logarithm of both sides yields ln 128 − 128 2𝑢 2 = −𝑢 2, which simplifies to (128 2 − 1)𝑢 2 = ln 128 . Solving for 𝑢 , we find: 
+
+𝑢 =√︂ 7 ln 2 16383 ≈ 0.0172 . (4) Substituting the definition of 𝑢 back into the equation, we derive the relationship 2𝑥  
+
+> 𝜎 √2
+
+=√︃ 7 ln 2 16383 . By solving for 𝑥 , we establish the theoretical optimal base exponent as a function of the layer’s weight scale 𝜎 :
+
+𝑥 opt = log 2 (𝜎 ) + 12 log 2
+
+ 14 ln 2 16383 
+
+
+
+≈ log 2 (𝜎 ) − 5.35 . (5) 
+
+6ZipCCL arxiv, 2026 
+
+This result demonstrates that the exponent window pro-viding maximum coverage is centered around a value de-termined primarily by log 2 (𝜎 ). In practice, we can utilize high-performance computing via torch.std to efficiently calculate 𝜎 .
+
+4.2 Kernel Design 
+
+To support the compressor and decompressor in efficiently executing on GPUs, we design dedicated CUDA kernels. 
+
+Compressor Kernel : ❶ Global memory to shared mem-ory transfer: Threads load the input BF16 tile from global memory into shared memory using vectorized loads (e.g., "LDG.128"). ❷ Shared memory to register transfer and local compression: The tile is moved from shared memory to reg-isters. In registers, each thread separates the sign -mantissa bits from the exponent bits and performs compression. The partially compressed data is then written back to shared memory. ❸ Zero -point counting and warp -level index: The warp - level zero -point index is obtained by first computing a warp -level prefix sum, then performing inter - warp syn-chronization and a block -level atomic addition to determine each warp’s global index. ❹ Write -back: The compressed sign -mantissa array, the three separated 1 - bit exponent ar-rays, and the warp -level prefix -sum metadata are written back to global memory using vectorized stores. 
+
+Decompressor Kernel : ❶ Global memory to shared mem-ory transfer of compressed data: The kernel loads the com-pressed sign - mantissa array and the three 1 - bit exponent arrays from global memory into shared memory, again using aligned vector loads. ❷ Shared memory to register transfer and exponent reconstruction: Each warp moves its assigned portion of the sign - mantissa and exponent bits from shared memory into registers. In registers, each thread performs decompression to reconstruct the original BF16 values and writes them back to shared memory (the warp - level index and zero-points are directly loaded from global memory due to their small size). ❸ Shared memory to global memory: The reconstructed BF16 values are then written back to global memory via vectorized stores. 
+
+4.2.1 Global Memory Data Layout. We focus on address-ing unaligned memory access patterns in global memory through two alignment strategies. In collective operations (e.g., All-to-All), varied compres-sion ratios often shift the boundaries of worker-specific data chunks to arbitrary byte offsets. Such misalignment prevents the hardware from issuing coalesced 128-byte transactions, forcing the memory controller to split single logical requests into multiple physical bus cycles. We eliminate this overhead by padding each worker’s data chunk to a 128-byte boundary, as shown in Fig. 6. This ensures that every worker starts its memory sweep at a DRAM-line-aligned address, enabling Column-major  
+
+> Aligned with Banks
+> Group 0
+> 0
+> /8 -1
+> ...
+> 0
+> /8 -1
+> ...
+> 0
+> /8 -1
+> ...
+> 0
+> /8 -1
+> ...
+> 0
+> /8 -1
+> ...
+> 0
+> /8 -1
+> ...
+> Group 0 Lane 0 Lane 1
+
+...  B4  B7 B0  ... B3  
+
+> Group 3 Lane24 Lane25
+
+...  B4  B7 B0  ... B3 
+
+... 
+
+> Lane 7
+
+B28  B31 ... 
+
+> Lane31
+
+... B28  B31   
+
+> 4-Way Bank Conflict
+> ...
+> 017
+> Lane 0
+
+B1 B0  B2 
+
+> Group 31 Lane31
+
+B29  B31 B30 
+
+> 32-Way Bank Conflict
+
+... 
+
+B1 B0  B2  B29  B31 B30 ... ...       
+
+> ... ... ...
+> 017
+> ... ... ...
+
+... 
+
+> ...
+> ...
+> ...
+> ...
+> ...
+> ...
+> ...
+> ...
+> ...
+> ...
+> ...
+> ...
+> ...
+> ...
+
+Row-major 
+
+... B1 B0  B2  B3  29 28  30  31 
+
+... B1 B0  B2  B3  29 28  30  31 
+
+... B1 B0  B2  B3  29 28  30  31 
+
+> BF16 Data
+> Sign and Mantissa
+> Exponent Bit 0
+> Exponent Bit 1
+> Exponent Bit 2
+
+Figure 7: The data layout in shared memory. “B0, B1, ..., 30, 31” means “Bank0, Bank1, ..., Bank30, Bank31”. 
+
+the use of LDG.E.128 (vectorized float4 loads) to saturate the global memory bandwidth. We also address the storage of the 3 -bit exponent field used in our compression scheme. Storing these 3-bit values con-tiguously with the sign and mantissa bits would often lead to unaligned memory accesses, severely degrading efficiency. Therefore, we separate the 3 - bit exponent into three individ-ual 1 - bit segments and store each segment independently, as shown in Fig. 6. When the number of input floating - point values is a power of two, the start addresses of these three segments also become well -aligned, enabling coalesced mem-ory operations. 
+
+4.2.2 Shared Memory Data Layout. Shared memory in NVIDIA GPUs is divided into 32 banks, each 4 bytes wide. 
+
+> 7
+
+arxiv, 2026 X.et al. 
+
+Concurrent accesses by the 32 threads of a warp to differ-ent banks are fully parallelized, while accesses to the same bank cause bank conflicts and serialization. As shown in Fig. 7, the data stored in shared memory includes the origi-nal floating - point values in BF16 format, the combined 8 - bit sign - mantissa fields after splitting, and the compressed 3 -bit exponent values (stored as three separate 1 -bit segments). We first place the original floating - point array, followed by the 8 - bit sign - mantissa array, and finally the three 1 -bit ex-ponent segments. Each section is arranged to start at bank 0 and end at bank 31. To ensure that global data can utilize ‘LDG.E.128’ (vector-ized float4 loads) to saturate global memory bandwidth, we store data in units of a Float4, which corresponds to four bank cells. Fig. 7 (middle and bottom) also illustrates two data layout schemes for BF16 data, where eight BF16 values constitute one Float4. We set the number of BF16 values processed per thread to 𝑝 . Since we need to store warp -level zero - point index data, 𝑝 cannot be too small; otherwise, the indexing overhead would become excessive. Consequently, a row -major layout would cause each lane in a warp to access data across all 32 banks, resulting in 32 - way bank conflicts (Fig. 7 middle). To reduce conflicts, we design a column - major data layout, which decreases the conflicts to 4 -way (Fig. 7 bottom). 
+
+4.2.3 Zero - point Index. During compression, we count the number of zero points per warp and compute a warp -level prefix sum of these counts. This prefix sum is stored and used during decompression to quickly locate the start of each warp’s zero -point exponent data within the global zero -point array. The computation proceeds hierarchically: first, each thread computes its local count; then warp -level primitives (e.g., __shfl_up_sync ) are used to compute the thread -level prefix sum in each warp; finally, block -level and global -level reductions propagate the sums across warps and blocks, yielding a global number of zero points. Moreover, the per-thread prefix sum within each warp is then used to construct the warp-level prefix sum, which is stored and later leveraged to efficiently determine the position of every zero-point’s exponent in the zero-points exponent set. 
+
+4.2.4 Fine - grained Pipeline. To maximize throughput on the NVIDIA GPUs (e.g., Ampere architecture), we implement a two-level hierarchical pipelining strategy that explicitly leverages hardware-level asynchronous primitives. In the first stage, we utilize the Asynchronous Copy Engine via 
+
+cp.async instructions to facilitate direct data movement from global memory to shared memory. Unlike traditional LDG/STS patterns, this approach bypasses the Register File (RF), significantly reducing register pressure and preventing pipeline stalls caused by register-to-memory dependencies. In the second stage, we decouple the Load/Store Units (LSU) Expert Computation GPU 0 
+
+> GPU 1
+> GPU 2
+> GPU 3
+> Expert Computation
+> Expert Computation
+> Expert Computation
+> Time
+> All-to-All
+> All-to-All
+> All-to-All
+> All-to-All
+
+Figure 8: An example of the imbalanced computation workloads in an MoE layer, where GPU 1 requires longer computation time. 
+
+from the Arithmetic Logic Unit (ALU) by employing register-level double-buffering. This allows the LSU to prefetch data into a secondary register bank while the ALU operates on the primary bank. By interleaving these two levels of double-buffering, we effectively hide both memory and instruction latencies, maintaining high functional unit utilization even in the absence of a hardware Tensor Memory Accelerator (TMA). 
+
+5 ADAPTIVE COMMUNICATION 5.1 Imbalanced Workload in MoE Models 
+
+In MoE model training, expert load imbalance frequently oc-curs, leading to significant variations in computation speed across different workers. Some workers complete expert com-putations quickly, while others are much slower, resulting in uneven communication start times, as shown in Fig. 8. This imbalance may be partially mitigated by the subsequent All -to -All operation, because All - to -All inherently requires all workers to both send and receive data from each other. Workers that start communication earlier can begin exchang-ing data among themselves, while slower workers initiate their transfers later. There are two scenarios that can compensate for compu-tational imbalance. The first arises when communication among workers fails to achieve real peer -to -peer concur-rency. Consider a simplified scenario where four GPUs need to send and receive 𝑥 bytes to/from every other GPUs. Sup-pose that the first GPU starts its communication significantly later than the other three, allowing the remaining three GPUs enough time to fully exchange 𝑥 bytes among themselves before the first GPU begins. Consequently, when the first GPU finally initiates communication, it only needs to ex-change 𝑥 bytes with each of the other three GPUs. Because true peer - to - peer concurrency cannot be achieved, the first GPU may finish its data transfers in less time than a com-plete four - GPU All-to-All would take, since the inter - GPU 
+
+> 8
+
+ZipCCL arxiv, 2026 
+
+communication among the remaining three cards no longer impedes the transfers involving the first GPU. The second scenario arises when early - starting workers have heavier communication tasks, requiring them to send or receive more data than late -starting workers. As shown in Fig. 8, GPU 1 needs to send and receive 𝑥 bytes to/from each of the other GPUs, while the other GPUs must exchange 
+
+2𝑥 bytes among themselves. Assuming communication be-tween GPUs is fully P2P -parallel, the overall communication overhead is determined by the GPU that sends or receives the largest volume of data. In the illustrated example, GPU 1 is the last to become ready. If the other GPUs start commu-nicating earlier, GPU 1 only needs to transfer 3𝑥 bytes once it begins. However, if all GPUs wait until GPU 1 is ready, then GPUs 0, 2, and 3 each must send and receive 5𝑥 bytes. Clearly, allowing the other GPUs to start earlier can effec-tively overlap with the imbalance in expert computation, thereby improving overall throughput. However, if we adopt the first zipped All -to -All design (Fig. 5b), the initial communication step only exchanges size information, which involves very small data volumes and is insufficient to compensate for the load imbalance caused by uneven expert execution. Therefore, for MoE training, we employ the second scheme (Fig. 5c), which splits the commu-nication data into static and dynamic parts. The static -data All -to -All helps to absorb the start - time variation across workers due to expert imbalance. 
+
+5.2 Adaptive Switcher for Reduce-Scatter 
+
+Reduce -Scatter is typically used for aggregating activations in TP and gradients in DP and FSDP. Particularly for gra-dient aggregation, FP32 is often employed to avoid numer-ical overflow issues such as “large numbers swallow small numbers.” However, since our Zipped All - to - All + local re-duce ( zipcclReduceScatter ) approach performs no arith-metic during communication—all reduction occurs locally in high precision. It avoids overflow and can safely use BF16 for communication. This reduces communication vol-ume compared to an FP32 Reduce -Scatter. It is worth not-ing that when training with FSDP and BF16 precision, the Reduce -Scatter operation is performed immediately after the gradients of each layer are computed in BF16 format. Al-though the Reduce -Scatter itself is executed in FP32, because the initial gradients are in BF16, this process is mathemati-cally equivalent to first performing All - to -All communica-tion in BF16 followed by a local reduction in FP32. Additionally, whether Zipped All -to - All is faster than a native Reduce -Scatter depends on cluster characteristics. To make an adaptive choice, we introduce an adaptive switcher. Following previous works (e.g., FSMoE [ 32 ] and PipeMoE [ 39 ]), we model the communication costs of Reduce-Scatter (RS) and All-to-All (A2A) with linear functions: 
+
+𝑇 RS (𝑑 ) = 𝛼 RS + 𝛽 RS · 𝑑, (6) 
+
+𝑇 A2A (𝑑 ) = 𝛼 A2A + 𝛽 A2A · 𝑒 · 𝑠 · 𝑑, (7) where 𝑑 is the data size, 𝛼 is the startup latency, 𝛽 is the per - byte transmission time, 𝑒 is the compression factor of 
+
+zipcclAlltoAll , and 𝑠 is the precision scale factor (e.g., 0.5 if Reduce -Scatter uses FP16 while zipcclAlltoAll uses BF16). The switcher selects zipcclReduceScatter when 
+
+𝑇 A2A (𝑑 ) < 𝑇 RS (𝑑 ); otherwise, it falls back to the original Reduce-Scatter. 
+
+6 EVALUATION 6.1 Experimental Settings 
+
+Testbeds. Experiments are mainly carried out on a 64-GPU cluster comprising four interconnected nodes with 200Gb/s network, each of which is equipped with eight Nvidia RTX A6000 GPUs. We also test the end to end performance on a 16-H800 clusters with 400Gb/s network. 
+
+Baselines. We integrate our ZipCCL on top of the widely used Megatron-LM [ 29 ] and TorchTitan [ 22 ] LLM train-ing systems. Megatron-LM supports various MoE architec-tures that require intensive All-to-All communication, while TorchTitan supports FSDP, which relies heavily on All-Gather and Reduce-Scatter communications. Both training systems utilize PyTorch’s built-in NCCL [31] for communication. 
+
+Real-World LLM Models. We conduct experiments with MoE models in Megatron-LM to evaluate zipcclAlltoAll ,and with dense models in TorchTitan using FSDP to evalu-ate zipcclReduceScatter and zipcclAllGather . To mea-sure end-to-end training performance on real MoE work-loads, we adopt two widely used MoE configurations derived from DeepSeek-V3 [ 26 ] and Qwen3-235B-A22B [ 42 ] (Qwen3-MoE). Given the GPU memory limitations of our platform, we set the number of experts in DeepSeek-V3 to 64 and the total number of layers to 4, while Qwen3-MoE is configured with 16 layers. For dense models, we use Llama3-8B [ 5] on TorchTitan with FSDP. The micro-batch size is 1, and the sequence length is 1024. 
+
+6.2 End-to-end Training Time Comparison 
+
+To validate the effectiveness of our method, we compare our ZipCCL on both Megatron -LM and TorchTitan with NCCL. For Megatron -LM, we conducted experiments on two MoE models: DeepSeek -V3 and Qwen3-MoE. For TorchTi-tan, we tested Llama3-8B. In MoE models, we used DP+EP parallelism, where both DP and EP degrees are equal to the number of GPUs. For Llama3-8B, we employed FSDP, shard-ing model weights, gradients, and optimizer states across all GPUs. 
+
+> 9
+
+arxiv, 2026 X.et al. 
+
+Figure 9: End-to-end speedups of our ZipCCL over base-lines on DeepSeek-V3, Qwen3-MoE, and Llama3-8B across different GPU counts. DeepSeek-V3 and Qwen3-MoE are tested on Megatron-LM, while Llama3-8B is evaluated on TorchTitan. 
+
+Figure 10: Communication speedups of our ZipCCL over baselines with NCCL on DeepSeek-V3, Qwen3-MoE, and Llama3-8B across different GPU counts. All -to - All is measured for DeepSeek - V3 and Qwen3-MoE, while All-Gather is measured for Llama3-8B. 
+
+The results, as shown in Fig. 9, demonstrate that our ZipCCL achieves speedups of 1.16 × on DeepSeek -V3, 1.16 ×
+
+on Qwen3-MoE, and 1.18 × on Llama3-8B. We also evaluated scaling with GPU counts of 16, 32, and 64. As the number of GPUs increases, the speedups on DeepSeek -V3 rise from 
+
+1.06 × to 1.16 ×, while Qwen3-MoE remains stable around 
+
+1.16 ×, and Llama3-8B consistently stays near 1.18 ×.We also test the performance on Qwen3-MoE and Llama3-8B on a 16-H800 clusters with 400Gb/s network. Results show that we outperform Megatron-LM by 1.13 × on Qwen3-MoE and outperform TorchTitan by 1.13 × on Llama3-8B. 
+
+6.3 Communication Time Comparison 
+
+We also separately measured the improvement in commu-nication performance. For DeepSeek-V3 and Qwen3-MoE, 
+
+Figure 11: End-to-end and All-to-All communication speedups of our ZipCCL over DietGPU on Qwen3-MoE. 
+
+Figure 12: Computation time (compression and decom-pression) of ZipCCL and DietGPU with different data sizes. 
+
+we measured the average per - iteration All -to -All commu-nication time. For Llama3-8B, we measured the All - Gather time, while for Reduce - Scatter, based on our analysis in §5.2, the original Reduce - Scatter implementation was found to be faster on our platform. The results, as shown in Fig. 10, indi-cate that our ZipCCL achieves communication speedups of 
+
+1.25 × on DeepSeek -V3, 1.24 × on Qwen3-MoE, and 1.35 × on Llama3-8B over NCCL. We further evaluated scaling across 16, 32, and 64 GPUs. Consistent with the end -to - end results, DeepSeek -V3 shows improvements from 1.17 × to 1.25 × as GPU count increases, Qwen3-MoE remains stable around 
+
+1.25 ×, and Llama3-8B maintains a speedup of approximately 
+
+1.34 ×.
+
+6.4 Comparison with DietGPU 
+
+We further compare our method with DietGPU 1, a popular GPU -based lossless compression library. We do not compare 
+
+> 1https://github.com/facebookresearch/dietgpu 10
+
+ZipCCL arxiv, 2026 
+
+with nvCOMP as the data fails to be decompressed when transmitted to other workers. This is likely because nvCOMP generates hidden metadata during compression that is not accessible. Since nvCOMP is closed - source and its internal metadata format is undocumented, we cannot transmit that information to other workers, making cross -device decom-pression infeasible. Additionally, nvCOMP currently lacks support for the BF16 format. Experiments are conducted on Qwen3-MoE using the same configuration as in §6.2. As shown in Fig. 11, DietGPU actually increases end - to -end training time due to inefficient memory management and excessive data movement over-head, which are not optimized for communication -centric workflows. In contrast, our method effectively reduces com-munication volume and accelerates training, achieving 1.26 ×
+
+to 1.83 × higher end -to -end throughput compared to Diet-GPU. We also evaluate the pure compression speed, disregarding any data movement and other overheads, of DietGPU versus our compression kernels (§4). As illustrated in Fig. 12, our method significantly outperforms DietGPU across both small and large data sizes. Furthermore, we compare the per -layer All-Gather time with compression and decompression time required for Llama3-8B training on TorchTitan (due to li-brary conflicts, DietGPU could not be directly integrated into TorchTitan; here we measure the All -Gather time separately). The results indicate that DietGPU - compressed All -Gather performs slower than the baseline NCCL All - Gather, whereas our approach achieves a 1.35 × speedup. 
+
+Collective Performance Comparison with NCCL. As shown in Fig. 13, we compare the All -Gather and All - to -All times of ZipCCL against NCCL across different GPU counts and communication volumes. When the data volume is small, bandwidth cannot be fully utilized, and our ZipCCL shows very close performance to NCCL. However, as the data vol-ume increases (which is very common in LLM training) and bandwidth is better saturated, the improvement of our ZipCCL over NCCL becomes significant: on average, we achieve 1.36 × speedup for All -to - All and 1.31 × for All -Gather. 
+
+6.5 Ablation Study 
+
+We conduct ablation studies in this section to evaluate the methods introduced in §5.1 and §5.2. 
+
+Effect of the Two All -to - All Designs. To validate the practical value of the two All -to - All designs introduced in §5.1, we conduct experiments on Qwen3-MoE using the same 
+
+> (a) All-to-All time with varied communication volume
+> (b) All-Gather time with var-ied communication volume
+> (c) All-to-All time with varied number of GPUs
+> (d) All-Gather time with var-ied number of GPUs
+
+Figure 13: All-to-All and All-Gather time of ZipCCL and NCCL on different configuration 
+
+Figure 14: End-to-end and All-to-All communication speedups of Zipped All-to-All Design-2 over Design-1 on Qwen3-MoE. 
+
+configuration as in §6.2. Results shown in Fig. 14 demon-strate that the Zipped All - to - All Design - 1 (Fig. 5b) com-pletely loses the benefit of communication compression un-der imbalanced data distributions, even increasing commu-nication time and slowing down end -to - end training. In con-trast, Zipped All - to -All Design - 2 (Fig. 5c) successfully retains the advantage of compressed communication, improving end - to - end performance by 1.25 ×–1.37 × and communica-tion speed by 1.40 ×–1.55 × relative to Design-1. 
+
+> 11
+
+arxiv, 2026 X.et al. 
+
+Figure 15: End-to-end and All-to-All communication speedups of our ZipCCL with the adaptive switcher compared to the base implementation without the adaptive switcher across seven scenarios. Effect of the Adaptive Switcher for Reduce -Scatter. 
+
+To evaluate the adaptive switcher proposed in §5.2, we con-duct Llama3-8B training experiments on TorchTitan with seven different hardware configurations: (1) 1 node, 8 GPUs; (2) 2 nodes, 16 GPUs; (3) 4 nodes, 32 GPUs; (4) 8 nodes, 64 GPUs; (5) 8 nodes, 8 GPUs (1 GPU per node); (6) 8 nodes, 16 GPUs (2 GPUs per node); (7) 8 nodes, 32 GPUs (4 GPUs per node). These configurations represent different efficiencies be-tween zipped and native Reduce -Scatter. We compare end-to-end training time and Reduce - Scatter latency with and with-out the adaptive switcher. As shown in Fig. 15, the switcher consistently delivers equal or better performance: for con-figurations (6) and (7), it matches the baseline, while for all others, it achieves measurable speedups, providing an average improvement of 1.39 ×.
+
+6.6 Data Normality in LLM Training 
+
+To validate our assumption that the data follows a normal or near - Gaussian distribution, we conducted additional ex-periments by training a Llama3 - 8B model on 2B tokens from OpenWebText [ 35 ]. We collected the numerical distributions of the input activations (I), weights (W), and their correspond-ing gradients (IG, WG) from the first matrix multiplication in the FFN module of the first transformer layer at three training checkpoints: after 0.002B (-1), 1B (-2), and 2B (-3) tokens. As illustrated in Fig. 16, all three distributions: acti-vations, weights, and gradients consistently exhibit normal or near -Gaussian shapes throughout the training process. While I-1 as shown in Fig. 16(a) demonstrates a particular shape, it becomes near-Gaussian shapes afterward as shown in Fig. 16(e)(i).          
+
+> (a) I-1 (b) IG-1 (c) W-1 (d) WG-1
+> (e) I-2 (f) IG-2 (g) W-2 (h) WG-2
+> (i) I-3 (j) IG-3 (k) W-3 (l) WG-3
+
+Figure 16: Data distribution of the activation, weight and gradient in Llama3-8B training. 
+
+7 RELATED WORKS 
+
+Lossless Compression. LMC [ 44 ] and ZipNN [ 10 ] employ Huffman coding [ 11 ] to compress model checkpoints for ef-ficient storage and transmission, whereas NeuZip [ 9 ] targets runtime memory reduction. DietGPU [ 16 ] and nvCOMP [ 30 ]specialize in GPU - accelerated lossless compression and de-compression. UCCL-Zip [ 27 ], DFloat11 [ 48 ] and ZipServ [ 8 ]use compression to accelerate inference or weights synchro-nization. Additionally, several hardware augmented lossless compression schemes have been proposed [ 1, 2, 7, 18 , 33 , 34 ,49 ]. However, a more generally applicable software -only ap-proach for lossless compression in communication remains underexplored. 
+
+Communication Optimization. We can roughly divide current communication optimization research into three cat-egories. The first category centers on scheduling [ 14 , 24 , 32 ,39 , 46 ], where computation is overlapped with communica-tion to hide communication latency. The second category focuses on the network topology [ 25 , 26 , 45 ]. The third cate-gory adopts communication compression, primarily utiliz-ing lossy techniques such as quantization [ 40 ] or sparsifi-cation [ 15 ]. While effective in reducing data volume, these methods introduce irreversible information loss. Different from previous works, we focus on a more generally practical but rarely explored method for communication optimization: lossless compression communication. 
+
+8 CONCLUSION 
+
+In this work, we present ZipCCL, a library of lossless com-pressed communication collectives designed to alleviate the 
+
+> 12
+
+ZipCCL arxiv, 2026 
+
+communication bottleneck in distributed LLM training. Our approach effectively bridges the gap between the theoret-ical compression potential of near Gaussian LLM tensors and practical GPU performance through three core innova-tions: (1) a theoretically grounded exponent coding scheme that eliminates costly online statistics collection, (2) GPU-optimized compression and decompression kernels with communication-aware data layout, carefully design memory access patterns, and pipelining, and (3) adaptive communica-tion strategies for All -to -All operations in MoE training that handle imbalanced expert computation loads, along with a dynamic switcher for Reduce - Scatter that adapts to un-derlying system characteristics. Through extensive evalua-tion on a 64 - GPU cluster using both MoE and dense trans-former models, we demonstrate that ZipCCL significantly reduces communication latency, achieving up to 1.35 × faster communication and 1.18 × end - to - end training speedups on Megatron-LM and TorchTitan, while preserving bit -exact correctness. 
+
+REFERENCES 
+
+[1] Esha Choukse, Mattan Erez, and Alaa R Alameldeen. 2018. Compresso: Pragmatic main memory compression. In 2018 51st Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) . IEEE, 546–558. [2] Esha Choukse, Michael B Sullivan, Mike O’Connor, Mattan Erez, Jeff Pool, David Nellans, and Stephen W Keckler. 2020. Buddy compression: Enabling larger memory for deep learning and hpc workloads on gpus. In 2020 ACM/IEEE 47th Annual International Symposium on Computer Architecture (ISCA) . IEEE, 926–939. [3] Jeffrey Dean, Greg Corrado, Rajat Monga, Kai Chen, Matthieu Devin, Mark Mao, Marc’aurelio Ranzato, Andrew Senior, Paul Tucker, Ke Yang, et al . 2012. Large scale distributed deep networks. Advances in neural information processing systems 25 (2012). [4] Tim Dettmers, Artidoro Pagnoni, Ari Holtzman, and Luke Zettlemoyer. 2023. QLoRA: Efficient Finetuning of Quantized LLMs. In NeurIPS .[5] Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Ka-dian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, et al . 2024. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 (2024). [6] Jarek Duda, Khalid Tahboub, Neeraj J Gadgil, and Edward J Delp. 2015. The use of asymmetric numeral systems as an accurate replacement for Huffman coding. In 2015 Picture Coding Symposium (PCS) . IEEE, 65–69. [7] Magnus Ekman and Per Stenstrom. 2005. A robust main-memory compression scheme. In 32nd International Symposium on Computer Architecture (ISCA’05) . IEEE, 74–85. [8] Ruibo Fan, Xiangrui Yu, Xinglin Pan, Zeyu Li, Weile Luo, Qiang Wang, Wei Wang, and Xiaowen Chu. 2026. ZipServ: Fast and Memory-Efficient LLM Inference with Hardware-Aware Lossless Compression. In Proceedings of the ACM International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS ’26) .[9] Yongchang Hao, Yanshuai Cao, and Lili Mou. 2024. NeuZip: Memory-Efficient Training and Inference with Dynamic Compression of Neural Networks. CoRR abs/2410.20650 (2024). [10] Moshik Hershcovitch, Andrew Wood, Leshem Choshen, Guy Girmon-sky, Roy Leibovitz, Ilias Ennmouri, Michal Malka, Peter Chin, Swami-nathan Sundararaman, and Danny Harnik. 2024. ZipNN: Lossless Compression for AI Models. CoRR abs/2411.05239 (2024). [11] David A Huffman. 2007. A method for the construction of minimum-redundancy codes. Proceedings of the IRE 40, 9 (2007), 1098–1101. [12] Changho Hwang, Wei Cui, Yifan Xiong, Ziyue Yang, Ze Liu, Han Hu, Zilong Wang, Rafael Salas, Jithin Jose, Prabhat Ram, et al . 2023. Tutel: Adaptive mixture-of-experts at scale. Proceedings of Machine Learning and Systems 5 (2023). [13] Albert Q Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Mensch, Blanche Savary, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Emma Bou Hanna, Florian Bressand, et al . 2024. Mixtral of experts. arXiv preprint arXiv:2401.04088 (2024). [14] Chenyu Jiang, Ye Tian, Zhen Jia, Chuan Wu, Yida Wang, and Shuai Zheng. 2024. Lancet: Accelerating Mixture-of-Experts Training by Overlapping Weight Gradient Computation and All-to-All Communi-cation. Proceedings of Machine Learning and Systems 6 (2024), 74–86. [15] Zewen Jin, Shengnan Wang, Jiaan Zhu, Hongrui Zhan, Youhui Bai, Lin Zhang, Zhenyu Ming, and Cheng Li. 2025. BigMac: A Communication-Efficient Mixture-of-Experts Model Structure for Fast Training and Inference. Proceedings of the AAAI Conference on Artificial Intelligence 
+
+39, 17 (Apr. 2025), 17689–17698. https://doi.org/10.1609/aaai.v39i17. 33945 [16] Jeff Johnson. 2024. DIET-GPU: Efficient Model Inference on GPUs. https://github.com/facebookresearch/dietgpu. (2024). [17] Dhiraj Kalamkar, Dheevatsa Mudigere, Naveen Mellempudi, Dipankar Das, Kunal Banerjee, Sasikanth Avancha, Dharma Teja Vooturi, Nataraj Jammalamadaka, Jianyu Huang, Hector Yuen, et al . 2019. A study of BFLOAT16 for deep learning training. arXiv preprint arXiv:1905.12322 
+
+(2019). [18] Jungrae Kim, Michael Sullivan, Esha Choukse, and Mattan Erez. 2016. Bit-plane compression: Transforming data for better compression in many-core architectures. ACM SIGARCH Computer Architecture News 
+
+44, 3 (2016), 329–340. [19] Sehoon Kim, Coleman Hooper, Amir Gholami, Zhen Dong, Xi-uyu Li, Sheng Shen, Michael W. Mahoney, and Kurt Keutzer. 2024. SqueezeLLM: Dense-and-Sparse Quantization. In ICML . OpenRe-view.net. [20] Günter Klambauer, Thomas Unterthiner, Andreas Mayr, and Sepp Hochreiter. 2017. Self-Normalizing Neural Networks. In NIPS . 971– 980. [21] Hoil Lee, Fadhel Ayed, Paul Jung, Juho Lee, Hongseok Yang, and Fran-cois Caron. 2023. Deep Neural Networks with Dependent Weights: Gaussian Process Mixture Limit, Heavy Tails, Sparsity and Compress-ibility. J. Mach. Learn. Res. 24 (2023), 289:1–289:78. [22] Wanchao Liang, Tianyu Liu, Less Wright, Will Constable, Andrew Gu, Chien-Chin Huang, Iris Zhang, Wei Feng, Howard Huang, Junjie Wang, Sanket Purandare, Gokul Nadathur, and Stratos Idreos. 2025. TorchTitan: One-stop PyTorch native solution for production ready LLM pretraining. In The Thirteenth International Conference on Learn-ing Representations .[23] Jihao Andreas Lin, Shreyas Padhy, Javier Antoran, Austin Tripp, Alexander Terenin, Csaba Szepesvari, José Miguel Hernández-Lobato, and David Janz. 2024. Stochastic Gradient Descent for Gaussian Pro-cesses Done Right. In The Twelfth International Conference on Learning Representations .[24] Wenxiang Lin, Xinglin Pan, Shaohuai Shi, Xuan Wang, Bo Li, and Xiaowen Chu. 2025. Mast: Efficient Training of Mixture-of-Experts Transformers with Task Pipelining and Ordering. In 2025 IEEE 45th International Conference on Distributed Computing Systems . IEEE. [25] Wenxiang Lin, Xinglin Pan, Lin Zhang, Shaohuai Shi, Xuan Wang, and Xiaowen Chu. 2025. HierMoE: Accelerating MoE Training with Hierarchical Token Deduplication and Expert Swap. arXiv preprint arXiv:2508.09591 (2025). 13 arxiv, 2026 X.et al. 
+
+[26] Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Chenggang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, et al .2024. Deepseek-v3 technical report. arXiv preprint arXiv:2412.19437 
+
+(2024). [27] Shuang Ma, Chon Lam Lao, Zhiying Xu, Zhuang Wang, Ziming Mao, Delong Meng, Jia Zhen, Jun Wu, Ion Stoica, Yida Wang, and Yang Zhou. 2026. UCCL-Zip: Lossless Compression Supercharged GPU Communication. arXiv e-prints (April 2026). [28] Paulius Micikevicius, Sharan Narang, Jonah Alben, Gregory F. Diamos, Erich Elsen, David García, Boris Ginsburg, Michael Houston, Oleksii Kuchaiev, Ganesh Venkatesh, and Hao Wu. 2018. Mixed Precision Training. In ICLR (Poster) . OpenReview.net. [29] Deepak Narayanan, Mohammad Shoeybi, Jared Casper, Patrick LeGres-ley, Mostofa Patwary, Vijay Korthikanti, Dmitri Vainbrand, Prethvi Kashinkunti, Julie Bernauer, Bryan Catanzaro, et al . 2021. Efficient large-scale language model training on gpu clusters using megatron-lm. In Proceedings of the international conference for high performance computing, networking, storage and analysis . 1–15. [30] NVIDIA. 2025. nvcomp: Repository for nvCOMP docs and examples. https://github.com/NVIDIA/nvcomp. (2025). Accessed: 2025-08-18. [31] NVIDIA. 2026. NCCL (pronounced "Nickel") is a stand-alone library of standard communication routines for GPUs. (2026). https://github. com/NVIDIA/nccl [32] Xinglin Pan, Wenxiang Lin, Lin Zhang, Shaohuai Shi, Zhenheng Tang, Rui Wang, Bo Li, and Xiaowen Chu. 2025. FSMoE: A flexible and scalable training system for sparse mixture-of-experts models. In Pro-ceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1 .524–539. [33] Gennady Pekhimenko, Vivek Seshadri, Yoongu Kim, Hongyi Xin, Onur Mutlu, Phillip B Gibbons, Michael A Kozuch, and Todd C Mowry. 2013. Linearly compressed pages: A low-complexity, low-latency main memory compression framework. In Proceedings of the 46th Annual IEEE/ACM International Symposium on Microarchitecture . 172–184. [34] Gennady Pekhimenko, Vivek Seshadri, Onur Mutlu, Phillip B Gibbons, Michael A Kozuch, and Todd C Mowry. 2012. Base-delta-immediate compression: Practical data compression for on-chip caches. In Pro-ceedings of the 21st international conference on Parallel architectures and compilation techniques . 377–388. [35] Joshua Peterson, Stephan Meylan, and David Bourgin. 2019. Open clone of openai’s unreleased webtext dataset scraper. (2019). [36] Rolf Rabenseifner. 2004. Optimization of collective reduction opera-tions. In International Conference on Computational Science . Springer, 1–9. [37] Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton, and Jeff Dean. 2016. Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer. In 
+
+International Conference on Learning Representations .[38] Shaohuai Shi, Xiaowen Chu, Ka Chun Cheung, and Simon See. 2019. Understanding top-k sparsification in distributed deep learning. arXiv preprint arXiv:1911.08772 (2019). [39] Shaohuai Shi, Xinglin Pan, Xiaowen Chu, and Bo Li. 2023. PipeMoE: Accelerating Mixture-of-Experts through Adaptive Pipelining. In IEEE INFOCOM 2023-IEEE Conference on Computer Communications .[40] Shaohuai Shi, Xinglin Pan, Qiang Wang, Chengjian Liu, Xiaozhe Ren, Zhongzhe Hu, Yu Yang, Bo Li, and Xiaowen Chu. 2024. ScheMoE: An Extensible Mixture-of-Experts Distributed Training System with Tasks Scheduling. In Proceedings of the Nineteenth European Conference on Computer Systems . 236–249. [41] Chongjie Si, Jingjing Jiang, and Wei Shen. 2025. Unveiling the mystery of weight in large foundation models: Gaussian distribution never fades. arXiv preprint arXiv:2501.10661 (2025). [42] Qwen Team. 2025. Qwen3 Technical Report. arXiv preprint arXiv:2505.09388 (2025). [43] Rajeev Thakur, Rolf Rabenseifner, and William Gropp. 2005. Opti-mization of collective communication operations in MPICH. The International Journal of High Performance Computing Applications 19, 1 (2005), 49–66. [44] Daniel Waddington and Cornel Constantinescu. 2025. Lossless Com-pression for LLM Tensor Incremental Snapshots. arXiv preprint arXiv:2505.09810 (2025). [45] Guanhua Wang, Shivaram Venkataraman, Amar Phanishayee, Jorgen Thelin, Nikhil R. Devanur, and Ion Stoica. 2020. Blink: Fast and Generic Collectives for Distributed ML. In MLSys . mlsys.org. [46] Ne Wang, Wenxiang Lin, Lin Zhang, Shaohuai Shi, Ruiting Zhou, and Bo Li. 2025. SP-MoE: Expediting Mixture-of-Experts Training with Optimized Pipelining Planning. In IEEE INFOCOM 2025-IEEE Conference on Computer Communications .[47] Haocheng Xi, Han Cai, Ligeng Zhu, Yao Lu, Kurt Keutzer, Jianfei Chen, and Song Han. 2025. COAT: Compressing Optimizer states and Activations for Memory-Efficient FP8 Training. In The Thirteenth International Conference on Learning Representations .[48] Tianyi Zhang, Yang Sui, Shaochen Zhong, Vipin Chaudhary, Xia Hu, and Anshumali Shrivastava. 2025. 70% Size, 100% Accuracy: Lossless LLM Compression for Efficient GPU Inference via Dynamic-Length Float. arXiv preprint arXiv:2504.11651 (2025). [49] Jishen Zhao, Sheng Li, Jichuan Chang, John L Byrne, Laura L Ramirez, Kevin Lim, Yuan Xie, and Paolo Faraboschi. 2015. Buri: Scaling big-memory computing with hardware-based memory expansion. ACM Transactions on Architecture and Code Optimization (TACO) 12, 3 (2015), 1–24. [50] Yanli Zhao, Andrew Gu, Rohan Varma, Liang Luo, Chien-Chin Huang, Min Xu, Less Wright, Hamid Shojanazeri, Myle Ott, Sam Shleifer, et al . 2023. PyTorch FSDP: Experiences on Scaling Fully Sharded Data Parallel. Proceedings of the VLDB Endowment 16, 12 (2023), 3848–3860. 14

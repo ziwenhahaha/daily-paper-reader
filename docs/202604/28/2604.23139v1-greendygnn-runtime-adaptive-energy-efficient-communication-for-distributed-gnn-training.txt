@@ -1,0 +1,642 @@
+Title: GreenDyGNN: Runtime-Adaptive Energy-Efficient Communication for Distributed GNN Training
+
+URL Source: https://arxiv.org/pdf/2604.23139v1
+
+Published Time: Tue, 28 Apr 2026 00:23:14 GMT
+
+Number of Pages: 11
+
+Markdown Content:
+# GreenDyGNN: Runtime-Adaptive Energy-Efficient Communication for Distributed GNN Training 
+
+Arefin Niam 
+
+Tennessee Technological University Cookeville, Tennessee, USA aniam42@tntech.edu 
+
+Tevfik Kosar 
+
+University at Buffalo Buffalo, New York, USA tkosar@buffalo.edu 
+
+M. S. Q. Zulkar Nine 
+
+Tennessee Technological University Cookeville, Tennessee, USA mnine@tntech.edu 
+
+Abstract —Distributed GNN training is dominated by remote feature fetching, which can be very costly. Multi-hop neighbor-hood sampling crosses partition boundaries and triggers fine-grained RPCs whose fixed initiation cost and GPU-stall latency waste energy. Prior systems try to reduce this overhead with presampling and static caching, but cache policies cannot react to runtime network variation. We show that under time-varying congestion, static caching can increase energy by up to 45% because a fixed rebuild schedule is insufficient. We present GreenDyGNN, which formulates cache window management as a sequential decision problem. GreenDyGNN performs intra-epoch cache rebuilds and uses a Double-DQN agent, trained in a calibrated simulator with domain-randomized congestion, to adapt rebuild window size and per-owner cache allocation at each boundary. An asynchronous double-buffered pipeline makes adaptation effectively free. Under congestion, GreenDyGNN cuts total energy by up to 43% over Default DGL and 4–24% over the best static policy, while closely matching the optimum under clean conditions. 
+
+Index Terms —Distributed GNN training, energy efficiency, runtime adaptation, reinforcement learning, communication op-timization. 
+
+I. I NTRODUCTION 
+
+Graph neural networks (GNNs) have become a standard framework for learning on relational data, with applications in molecular discovery, recommendation, fraud detection, and social network analysis [1], [2]. As real-world graphs grow to billions of edges, training moves to distributed clusters that partition the graph across workers and synchronize model updates through data-parallel execution [3]–[6]. In this set-ting, each mini-batch expands a multi-hop neighborhood that often crosses partition boundaries, forcing workers to fetch remote node features through fine-grained RPCs. These fetches consume a large fraction of per-step time on commodity clusters [7], [8] and waste energy in a particularly costly way: while the worker waits for remote features, the GPU continues to draw near-idle power but cannot make progress. This makes distributed GNN training fundamentally different from conventional distributed DNN training, where communication is dominated by gradient synchronization. Here, the main bottleneck is irregular, data-dependent feature movement. A growing body of work reduces this overhead through caching, prefetching, and communication consolidation [7], [9]–[11]. Among these, RapidGNN [7] shows that presampling the training trace once per epoch and caching frequently accessed remote features can substantially reduce communi-cation cost and energy. However, this cache policy remains static within the epoch. It fixes both rebuild timing and cache composition in advance, which means it cannot react when runtime network conditions shift. That rigidity becomes costly under congestion. On a 4-node cluster, injecting just 4 ms of additional latency on a single inter-node link shifts the energy-optimal cache rebuild regime and increases per-epoch energy by more than 60% under the best fixed policy. This kind of perturbation is not unusual in shared clusters, where co-tenant jobs, cross-rack traffic, and transient switch contention introduce millisecond-scale variation over time. Once conditions change, a static cache policy continues executing a communication plan shaped for an earlier network state: rebuild timing is no longer well matched to actual fetch cost, cache space is not directed where it is most valuable, and remote stalls leave the GPU waiting. The challenge becomes even harder when congestion is time-varying or affects multiple links at once, because the best rebuild interval and cache allocation then depend on a multi-dimensional congestion state that changes over seconds or minutes. No single fixed policy can track this reliably. This paper presents GreenDyGNN , which turns cache win-dow management into an online control problem. Unlike prior systems that rely on static epoch-level caching, GreenDyGNN introduces fine-grained window-based cache rebuilds within an epoch and adapts them at runtime. At each rebuild boundary, GreenDyGNN observes per-owner fetch latencies and cache statistics, then selects both the rebuild window size W and the per-owner cache allocation for the next window. Because each decision affects many future training steps under non-stationary conditions, and because window size and allocation bias interact in ways that simple heuristics cannot fully cap-ture, this naturally becomes a sequential decision problem with delayed and coupled effects. GreenDyGNN addresses it with a lightweight Double-DQN agent trained in a calibrated simu-lator under domain-randomized congestion and deployed into the live training loop with negligible overhead per decision. To avoid costly on-cluster RL training, we use a sim-to-real design: short profiling runs calibrate the simulator, and do-main randomization exposes the policy to congestion patterns beyond those seen in calibration. An asynchronous double-buffered prefetching pipeline ensures that cache rebuilds, at 
+
+> arXiv:2604.23139v1 [cs.DC] 25 Apr 2026
+
+whatever frequency the policy selects, do not stall the GPU. GreenDyGNN makes the following contributions: 1) It identifies runtime network variability as a first-class systems problem for energy-efficient distributed GNN training, showing that even modest link-level congestion can shift the energy-optimal operating point and sub-stantially increase energy consumption under fixed cache policies (Section II). 2) It introduces fine-grained window-based cache rebuild-ing for distributed GNN training and formulates runtime cache adaptation as a Markov decision process , solved with a Double-DQN agent trained through sim-to-real transfer with domain randomization over congestion patterns, temporal behavior, and measurement noise (Sec-tion IV). 3) It designs an asynchronous double-buffered pipeline 
+
+that decouples cache rebuilds from the training loop, making runtime adaptation effectively overhead-free at the decision timescale (Section V). 4) Under realistic time-varying congestion on a 4-node cluster, GreenDyGNN reduces total energy by up to 43% relative to Default DGL and outperforms the strongest static caching baseline, RapidGNN, by 4–24% across all 9 configurations. On the largest graph, the learned policy absorbs up to 26 percentage points of congestion overhead that static caching cannot. Under clean con-ditions (i.e., no congestion), GreenDyGNN matches the best fixed operating point. II. M OTIVATION 
+
+We profile a 4-node Chameleon Cloud [12] cluster running DistDGL GraphSAGE [2], [3] on OGBN-Products (METIS-partitioned, PyTorch DDP [13]) and identify two physical mechanisms that make remote feature fetching the dominant energy consumer. Together, they explain why static cache policies are brittle under runtime network variability and why distributed GNN training needs adaptive cache control. 
+
+A. Per-RPC Initiation Overhead 
+
+Every remote feature fetch pays a fixed initiation cost 
+
+Einit , which includes CPU interrupt handling, kernel cross-ings, socket-buffer allocation, and TCP/IP protocol processing. RDMA bypasses the kernel and removes most software over-head, but each transfer still requires posting a work request, signaling the NIC, and waiting for a completion event. These steps take on the order of 1–2 μs regardless of how many bytes are sent, so for the tens to low hundreds of remote nodes that GNN sampling typically requests per mini-batch, the fixed per-transfer cost still outweighs the payload cost. On top of this, each fetch pays a variable payload cost 
+
+Epayload ∝ N · Fb, where N is the number of remote nodes and Fb is the per-node feature size in bytes. For the small, irregular transfers produced by GNN neighborhood sampling, the fixed component dominates. We quantify this by profiling DistTensor RPCs across a range of payload sizes on our 25 Gbps cluster. Figure 1
+
+Fig. 1: Per-RPC energy decomposed into initiation (red) and payload (blue) cost as a function of batch size. Percentages indicate the initiation share. At GNN-typical request sizes (tens to hundreds of nodes), initiation accounts for 90–99% of total energy. Payload cost does not dominate until batch sizes exceed ≈1,000 nodes, well above what distributed GNN training produces per mini-batch. breaks down per-RPC energy cost into initiation and payload components as batch size grows from 10 to 50,000 nodes. At GNN-typical request sizes, initiation accounts for 90–99% of total per-RPC energy. Even at 1,000 nodes, initiation still consumes roughly half the energy. The crossover at which payload cost begins to dominate does not occur until batch sizes exceed approximately 1,000 nodes, far above the per-batch remote set size observed in practice. Distributed GNN training therefore operates largely in the initiation-dominated regime, paying a high fixed energy cost to move relatively little data. The immediate implication is that many small remote fetches should be consolidated into fewer, larger transfers. This motivates rebuilding a cache over an upcoming window of batches: if the hot remote nodes needed in the next W steps are fetched together in one bulk transfer, the system can amortize the fixed initiation cost across many future accesses. The larger the window, the stronger this amortization becomes, although, as we show next, larger windows also make the cache less fresh. 
+
+B. GPU Stall Energy 
+
+Modern datacenter GPUs draw 40–80 W even when idle, a significant fraction of their 250–400 W TDP (Thermal Design Power). In distributed GNN training, the GPU frequently stalls while the CPU thread resolves remote features. The forward pass cannot begin until all input-node features are available, and the last remote RPC to return determines the stall duration, creating a straggler effect across remote owners. Every millisecond of stall time therefore translates directly into wasted energy at the GPU’s idle power draw. Pipelining and prefetching can overlap communication with computation and improve utilization under normal conditions. GreenDyGNN’s asynchronous pipeline (Section V-A) removes most GPU idle time when the network has no contention. However, overlap alone does not reduce the total volume of re-mote data fetched or the total energy consumed by those trans-fers. When congestion inflates RPC latencies, the prefetcher can no longer resolve future batches quickly enough, and stalls reappear. Reducing stall energy under congestion re-quires reducing expensive remote misses themselves, either by refreshing the cache more frequently or by steering more cache capacity toward the congested owner. Both responses require runtime awareness of network conditions. 
+
+C. Why Static Policies Fail 
+
+The two mechanisms above create a fundamental tradeoff. Larger cache-rebuild intervals amortize initiation costs over more steps, reducing rebuild overhead per batch, but they also make cached contents less fresh, which increases miss rate, remote fetch cost, and GPU stall time. Smaller rebuild intervals improve cache freshness and reduce misses, but they pay rebuild overhead more often. Any static cache policy therefore fixes a single operating point in this tradeoff. RapidGNN-style epoch-level caching fixes that operating point once per epoch. To expose the underlying tension more clearly, consider a finer-grained window-based rebuild regime in which the cache is rebuilt every W steps. Under clean network conditions, the energy-optimal window balances amortized rebuild cost against miss cost at a stable point. Under congestion, however, the per-miss cost tmiss rises, the miss-energy term grows disproportionately, and the optimal operating point shifts toward smaller windows that tolerate more frequent rebuilds in exchange for fewer expensive remote fetches. On OGBN-Products, the energy-optimal window shifts from 
+
+W ∗=16 under clean conditions to W ∗≈8 under 4 ms single-link congestion. Operating at the wrong window inflates energy by over 60%. Conversely, operating at W =8 under clean conditions wastes energy on unnecessary rebuilds. No single fixed choice is correct across both regimes. The challenge becomes harder when congestion is time-varying or affects multiple links simultaneously. In that setting, the best rebuild interval and cache allocation become functions of a multi-dimensional congestion vector σ = ( σ1, . . . , σ P −1)
+
+that changes over seconds to minutes. A threshold rule can approximate the right response under simple single-link con-gestion, but it degrades quickly once patterns become multi-link, asymmetric, or time-varying. What is needed is a policy that maps the current network state to the best joint decision over rebuild window and cache allocation. That is the adaptive control problem GreenDyGNN is designed to solve. III. R ELATED WORK 
+
+Distributed GNN systems. DistDGL [3] introduced the distributed graph store and DistTensor RPC abstraction that enable training on billion-scale partitioned graphs, forming the substrate on which GreenDyGNN builds. P3 [4] overlaps inter-partition communication with GPU computation in a layer-wise pipeline. Roc [5] dynamically repartitions to balance computation. ByteGNN [6] combines high sampling paral-lelism with workload-aware partitioning for large speedups over DistDGL. BNS-GCN [14] reduces boundary communi-cation in full-graph training by randomly sampling boundary nodes. GNNLab [15] decouples sampling from training across CPU and GPU and uses pre-sampling to reduce mini-batch generation variance. Across these systems, the main goals are throughput and scalability. None explicitly targets energy-efficient runtime adaptation to changing network conditions. 
+
+Feature caching and prefetching. PaGraph [9] caches frequently accessed features in GPU memory using offline frequency analysis. DUCATI [16] extends this idea with a dual-cache architecture and counting-Bloom-filter-based fre-quency estimation. BGL [11] builds a multi-tier cache hi-erarchy spanning GPU, CPU, and SSD with graph-aware I/O scheduling. SALIENT++ [10] provides theoretical anal-ysis of miss rates under static caching. MassiveGNN [8] introduces asynchronous prefetching for massively connected graphs. RapidGNN [7] shows that epoch-level presampling and static hot-feature caching can substantially reduce commu-nication and energy in distributed GNN training. Orthogonally, DGCL [17] fuses small messages and balances load across heterogeneous interconnects to reduce training time. The com-mon limitation is that these systems rely on fixed cache or communication policies decided offline or at deployment time. In contrast, GreenDyGNN introduces intra-epoch window-based cache rebuilding and adapts both the rebuild window and cache allocation online using a learned policy targeted at energy. 
+
+Energy-efficient ML training. The environmental cost of large-model training has drawn substantial attention [18]–[20]. At the systems level, Zeus [21] jointly optimizes GPU power limits and batch size for single-GPU DNN training, achieving large energy reductions. Perseus [22] studies energy bloat from pipeline bubbles in large-model training and exposes an iteration-time versus energy Pareto frontier. EnvPipe [23] modulates GPU frequency during non-critical pipeline stages. These systems target compute-side energy in DNN training. In distributed GNN training, however, a major source of waste is network-induced GPU idle power during remote feature stalls. RapidGNN [7] is the closest prior work in this space because it explicitly measures and reduces energy in distributed GNN training. GreenDyGNN builds on that direction, however, replaces static epoch-level caching with an adaptive online policy. 
+
+RL for systems and sim-to-real transfer. Pensieve [24] for adaptive bitrate streaming, Decima [25] for cluster scheduling, and learned device placement [26] show that RL can out-perform hand-tuned heuristics in dynamic systems settings. GreenDyGNN applies this idea to cache control in distributed GNN training, where decisions are infrequent, their effects persist across many future steps, and energy is the primary optimization target. To make training practical, GreenDyGNN uses sim-to-real transfer through domain randomization [27]. This idea was first developed in robotics and later demon-strated at scale by systems such as OpenAI’s Dactyl [28]. In our setting, domain randomization exposes the policy to diverse congestion patterns during simulator training so that it generalizes to unseen runtime conditions on the real cluster. Graph partitioning methods such as METIS [29] are orthogonal to our contribution: GreenDyGNN operates after partitioning and reduces the energy cost of the cross-partition communication that still remains. IV. G REEN DYGNN D ESIGN 
+
+GreenDyGNN operates in three phases. First, an offline calibration phase, run once per cluster, builds a lightweight cost model and simulator from measured communication and power data. Second, a Double-DQN agent is trained in that simulator under domain-randomized congestion profiles, us-ing the state inputs and action outputs shown in Figure 3. Third, the trained policy is deployed inside the asynchronous prefetching pipeline shown in Figure 2, where it selects the rebuild window and per-owner cache allocation at each cache rebuild boundary with no measurable overhead on the critical path. 
+
+A. Cost Model 
+
+Consider a distributed GNN trainer with P partitions, batch size B, and rebuild window W . Prior systems such as RapidGNN rebuild the remote-feature cache once per epoch using epoch-level presampling. In contrast, GreenDyGNN introduces fine-grained window-based rebuilding within an epoch. Every W steps, a background thread rebuilds the cache using the hot remote nodes expected in the upcoming window. The wall-clock time of a single training step decomposes as 
+
+Tstep (W ) = Tbase 
+
+| {z } 
+
+> compute
+
++ α · Trebuild (W )
+
+W| {z }
+
+> amortized rebuild
+
++ R · tmiss · (1 − h(W )) 
+
+| {z }
+
+> remote miss
+
+,
+
+(1) where Tbase is the irreducible compute-plus-AllReduce cost, 
+
+α ∈ [0 , 1] is the fraction of rebuild time that remains on the critical path, R is the expected number of remote nodes per batch, tmiss is the mean per-node RPC latency, and h(W ) is the cache hit rate under rebuild window W . The first two terms decrease as W grows, while the third increases. Their balance defines the best fixed operating point for a given network state. When congestion raises tmiss , that operating point shifts toward smaller windows. The hit rate follows a logistic decay fit for each dataset: 
+
+h(W ) = hmin + hmax − hmin 
+
+1 + ( W/W 1/2)γ . (2) Rebuild time grows sublinearly because hub-node reuse satu-rates the unique remote set, following Trebuild (W ) = a+b·W c
+
+with 0 < c < 1. Since the asynchronous pipeline (Sec-tion V-A) keeps GPU utilization approximately constant, per-step energy satisfies Estep (W ) ≈ ¯P ·Tstep (W ), so minimizing energy reduces to minimizing step time. Under congestion on the link to owner o with multiplier 
+
+σo ≥ 1, the effective miss latency becomes 
+
+tcong miss = max 
+
+> o∈O
+
+t(o)miss · σo . (3) Batch 1 remote fetch  
+
+> Feature Cache
+> GNN Dataset
+> Distributed KV
+> Store
+> Dataset
+> Distribution
+> Training Steps
+> Part 0
+> Feature Fetch From Cache
+> 1
+> 2
+> 3
+> 4
+> 5
+> Mini-batch
+> sampling
+> Transfer to device and train
+> Batch 2 remote fetch
+> Batch Q remote fetch
+> Computation
+> Blocks
+> RL
+> Controller
+> 6Manage Cache
+
+Fig. 2: GreenDyGNN runtime training pipeline (single-worker view). 1⃝ The graph dataset is partitioned and distributed across nodes. 2⃝ A background thread samples mini-batches from the local partition. 3⃝ Sampled computation blocks retrieve node features from the local feature cache. 4⃝ Cache misses trigger batched remote fetches from the distributed KV store, with up to Q batches resolved concurrently across owners. 5⃝ Resolved features are transferred to the GPU for training. 6⃝ The RL controller observes fetch latencies and cache statistics, then selects the next rebuild window W and per-owner cache allocation at each rebuild boundary. Even 4 ms of additional delay ( σo ≈ 1.6) shifts the best fixed rebuild window from 16 to approximately 8. More importantly, the best choice depends on which links are congested and by how much, information available only at runtime. DDP AllRe-duce also inherits a straggler penalty ∆TAR ∝ (max o σo − 1) 
+
+because the slowest worker delays the synchronization barrier. No single fixed rule can track the combined effect of miss-cost inflation and AllReduce delay across an arbitrary congestion vector. We therefore formulate runtime cache control as a Markov decision process in Section IV-C. 
+
+B. Calibrated Simulator 
+
+Training an RL agent directly on a live cluster is imprac-tical because each episode would require a full training run. GreenDyGNN instead trains in a lightweight simulator cali-brated from one-time measurements that take approximately 15 minutes to collect. The round-trip time for a single RPC carrying N · Fb bytes under congestion delay δ is modeled as 
+
+Trpc (N, δ ) = αrpc + β · N · Fb + γc · N · Fb · δ. (4) Algorithm 1 summarizes the calibration procedure. The fit-ted parameters are αrpc =4 .67 ms, β=1 .40 ×10 −9 s/byte, and 
+
+γc=2 .01 ×10 −10 s/byte/ms ( R2=0 .75 ). The domain random-ization described in Section IV-C absorbs the residual model-ing error of this imperfect fit. Given these parameters, the simulator evaluates Tstep (W, σ)
+
+analytically for any rebuild window and congestion vector. A full episode of 30 epochs completes in under 10 ms on one Algorithm 1 Offline Simulator Calibration (run once per cluster) 
+
+Input: cluster C, dataset G, sweep Wsw = {1, . . . , 128 }
+
+Output: calibrated parameter set θsim  
+
+> 1:
+
+Phase 1: RPC cost regression  
+
+> 2:
+
+Inject delays δ ∈ { 0, 2, 4, 6, 8} ms and vary payload N ·
+
+Fb ∈ [10 3, 10 7] bytes  
+
+> 3:
+
+Record round-trip times and fit Eq. (4) via OLS to obtain 
+
+αrpc , β, γ c 
+
+> 4:
+
+Phase 2: Windowed-cache calibration  
+
+> 5:
+
+for W ∈ W sw do  
+
+> 6:
+
+Run one training epoch and record Tstep (W ), h(W ),and Trebuild (W ) 
+
+> 7:
+
+end for  
+
+> 8:
+
+Fit Eq. (2) to obtain hmin , h max , W 1/2, γ  
+
+> 9:
+
+Fit Trebuild = a + b · W c via Nelder–Mead  
+
+> 10:
+
+Phase 3: Power baseline  
+
+> 11:
+
+Record mean power ¯P via NVML (GPU) and Intel RAPL (CPU) over a clean 5-epoch run  
+
+> 12:
+
+return θsim = {αrpc , β, γ c, h min , h max , W 1/2, γ, a, b, c, ¯P }
+
+CPU core, enabling 50,000 training episodes in approximately 20 minutes. 
+
+C. RL-Based Adaptive Policy 
+
+The cache adaptation problem has three properties that favor reinforcement learning over simpler alternatives. First, decisions have delayed effects : a rebuild-window choice at step s determines cache contents, hit rate, miss cost, and energy over the next W steps, creating a temporal credit-assignment problem that myopic optimization cannot solve. Second, the problem is non-stationary : congestion varies within and across epochs, and the best action changes with the runtime network state. Third, the problem involves combina-torial interactions : rebuild window and per-owner allocation interact, and no hand-crafted rule captures those dependencies well across all congestion patterns. 
+
+1) MDP Formulation: We model cache adaptation as a finite-horizon MDP M = ( S, A, P, R, γ, H ) with one de-cision at each cache rebuild boundary. 
+
+a) State space S.: At each decision point, the agent observes s ∈ R23 (for P =4 ), comprising four feature groups already maintained by the training pipeline: per-owner con-gestion multipliers σo estimated from recent fetch latencies (P −1 floats); per-owner and global cache hit rates ( P floats); system load ratios including Tstep /T base , the rebuild-time fraction, the network-miss fraction, Estep /E baseline , and the normalized remaining batches in the epoch (5 floats); and a one-hot encoding of the previous window size and allocation (NW + P − 1 floats). 
+
+b) Action space A.: The agent selects a joint deci-sion over rebuild window W ∈ {1, 2, 4, 8, 16 , 32 , 64 , 128 }
+
+(NW =8 ) and a cache allocation template that is either uniform or biased 60% toward one designated owner ( NA=P ). For 
+
+P =4 this yields 32 discrete actions. The compact action space Congestion   
+
+> per owner σ (cost)
+> Cache
+> Performance
+> hit rate values
+> Previous Actions
+> Window Length
+> 8values
+> Cache allocation
+> Owner-cost based
+> System Load
+> timing/energy
+> ratios
+
+RL Agent 
+
+Fig. 3: RL agent state inputs and action outputs. The agent observes per-owner congestion multipliers, cache hit rates, system load ratios, and previous actions, and selects a joint rebuild window ( W , 8 discrete values) and per-owner cache allocation at each rebuild boundary. enables sample-efficient learning and convergence in approx-imately 15,000 episodes. Figure 3 summarizes the mapping from state to action. 
+
+c) Reward R.: The reward is the negative normalized energy penalized for allocation instability: 
+
+rt = − Estep ,t 
+
+Eref 
+
+− λ X
+
+> o
+
+|ao,t − ao,t −1|, (5) where Eref is the per-step energy under a reference policy at the current congestion level, making the reward scale-invariant across episode difficulty, and λ=0 .02 penalizes allo-cation thrashing. The horizon H equals the number of rebuild boundaries in one training run ( H ≈ 240 for 30 epochs at 
+
+W =16 ). 
+
+2) Agent Architecture and Training: We use Double DQN [30], which decouples action selection from value estimation to reduce overestimation bias. This is important in our setting because the agent must distinguish genuinely good actions from those that merely coincide with transient improvements. The Q-network Qθ (s, a ) has two hidden layers of 256 ReLU units mapping the 23-dimensional state to 32 Q-values, with a target network Qθ− synchronized every 100 gradient steps. Training minimizes the Huber loss on the Double-DQN target: 
+
+yt = rt + γ Q θ−
+
+
+
+st+1 , arg max  
+
+> a′
+
+Qθ (st+1 , a ′)
+
+
+
+, (6) with discount γ=0 .99 , ϵ-greedy exploration ( ϵ : 1 .0 → 0.05 
+
+over 5,000 episodes), a replay buffer of 50,000 transitions, mini-batch size 64, and gradient clipping at 10. 
+
+a) Domain randomization.: At the start of each episode, the simulator draws a congestion profile from six archetypes: no congestion, single-link slow or fast, two-link symmetric or asymmetric, and oscillating. These are combined with three severity levels, randomized onset and duration, and ±3% measurement noise on energy and fetch-time observations. When multiple calibrated profiles are available, the episode selects uniformly among datasets and batch sizes. Training runs for 50,000 episodes and produces a 400 KB checkpoint after approximately 20 minutes on one CPU core. The mean episode reward stabilizes after approximately 15,000 episodes. Under moderate congestion, the converged policy consistently selects W ∈ { 4, 8} rather than the clean-network operating point near W =16 , and under time-varying congestion it tracks the shifting optimum. 
+
+b) Sim-to-real transfer.: The simulator is calibrated from real RPC latencies, cache hit-rate curves, and NVML/RAPL energy readings rather than synthetic parameters. At deploy-ment, the policy observes real fetch latencies through the same state-construction pipeline used during training: the simulator teaches the agent what actions are effective, while runtime observations tell it which operating regime it is currently in. Domain randomization helps bridge residual gaps from unmodeled effects such as OS scheduling jitter and NIC buffer dynamics. The deployed policy achieves within 4% of its simulated reward on the real cluster. 
+
+c) Heuristic fallback.: For environments where a neural-network policy is undesirable, GreenDyGNN provides alightweight threshold rule: 
+
+W ∗ 
+
+> heuristic
+
+=
+
+
+
+W0 ˆδ ≤ 1 ms ,
+
+⌊W0/2⌋ 1 < ˆδ ≤ 6 ms ,
+
+⌊W0/4⌋ ˆδ > 6 ms ,
+
+(7) where ˆδ is the inferred congestion delay and W0 is the nominal window size. This rule is effective under single-link stationary congestion but degrades under time-varying or multi-link scenarios where the RL policy performs significantly better. V. G REEN DYGNN I MPLEMENTATION 
+
+The RL policy is only useful if rebuild decisions can be applied without blocking the training loop. This section describes the asynchronous pipeline that makes runtime adap-tation effectively overhead-free and the deployment machinery that connects the policy to the live training system. 
+
+A. Asynchronous Prefetching Pipeline 
+
+GreenDyGNN decouples sampling, cache rebuilding, fea-ture resolution, and GPU training into concurrent stages, allowing rebuilds at any decision frequency the agent selects, including W =1 , without stalling the GPU. 
+
+a) Stage 1: Background sampler.: A dedicated thread runs DGL’s DistSampler , producing complete mini-batches into a lock-free shared buffer ahead of the training loop. Running ahead of the GPU absorbs the variance of distributed sampling latency without introducing backpressure on training. 
+
+b) Stage 2: Double-buffered cache builder.: Two feature buffers, active and pending, each hold a fixed-capacity set of cached node features with O(1) index lookups. While the training loop reads from the active buffer, the cache-builder thread examines the next W batches in the shared 
+
+Algorithm 2 AdaptiveController called at each cache rebuild boundary 
+
+Input: fetch-time deque D, cache statistics C, Q-network Qθ ,baseline ˆTbase , previous action (Wprev , ωprev )
+
+Output: next rebuild window W ∗ and per-owner allocation weights ω∗ 
+
+> 1:
+
+Congestion estimation  
+
+> 2:
+
+˜Trecent ← median( D[−30 :])  
+
+> 3:
+
+Compute ˆδ via Eq. (8) and clamp to [0 , 20] ms  
+
+> 4:
+
+Estimate σo per owner by inverting Eq. (4) on the owner-partitioned slice of D 
+
+> 5:
+
+State construction  
+
+> 6:
+
+Assemble s ∈ R23 from congestion signals 
+
+(σ1, . . . , σ P −1), hit rates C, load ratios 
+
+(Tstep /T base , f rebuild , f miss , E step /E baseline , b rem ), and 
+
+onehot( Wprev , ωprev ) 
+
+> 7:
+
+Policy inference  
+
+> 8:
+
+a∗ ← arg max a Qθ (s, a ) 
+
+> 9:
+
+Decode a∗ to obtain W ∗ ∈ { 1, 2, 4, 8, 16 , 32 , 64 , 128 } and 
+
+ω∗ 
+
+> 10:
+
+Prefetcher update  
+
+> 11:
+
+Set rebuild window to W ∗ and update per-owner cost weights to ω∗ in the Stage 2 cache builder  
+
+> 12:
+
+return (W ∗, ω∗)
+
+buffer, counts per-remote-node access frequencies weighted by the RL agent’s per-owner cost weights, selects the top-
+
+k hot nodes, and fetches their features into the pending buffer through bulk RPCs. Features that persist from the previous hot set are copied in memory, avoiding redundant network transfers. At the window boundary, the buffers are atomically swapped and the RL agent is invoked for the next decision. Because the active buffer remains immutable during training, no synchronization is required between the training and builder threads. 
+
+c) Stage 3: Feature resolver.: A third thread resolves the features for each batch. Cache hits are served from the active buffer. Misses trigger batched RPCs whose round-trip times are appended to the fetch-time deque that feeds the RL state. Resolved batches are placed into an asynchronous queue of depth Q for the GPU training loop. 
+
+B. Congestion Detection and Runtime Control 
+
+The fetch-time deque maintained by Stage 3 serves two purposes: it provides the raw signal for RL state construction and supports the congestion-estimation subroutine that com-putes per-owner multipliers σo. During the first two warm-up epochs, the controller records an uncongested baseline 
+
+ˆTbase as the 15th percentile of observed fetch times. At each later rebuild boundary, the congestion delay is estimated by inverting Eq. (4): 
+
+ˆδ =
+
+  ˜Trecent / ˆTbase − 1 · βγc
+
+, ˆδ ∈ [0 , 20] ms , (8) DGL 
+
+> BGL
+> RapidGNN
+> GreenDyGNN
+> 0
+> 80
+> 160
+> 240
+> 320
+> Total Energy (kJ)
+> −28%
+> OGBN-Products
+> DGL
+> BGL
+> RapidGNN
+> GreenDyGNN
+> −42%
+> Reddit
+> DGL
+> BGL
+> RapidGNN
+> GreenDyGNN
+> −32%
+> OGBN-Papers100M
+
+Fig. 4: Total energy (GPU + CPU, all nodes) at B=2000 un-der congestion. Annotations show GreenDyGNN’s reduction relative to Default DGL. where ˜Trecent is the median of the 30 most recent fetch times. If ˜Trecent / ˆTbase ≤ 1.1, then ˆδ is clamped to zero. The estimate requires only O(1) arithmetic per decision and is passed directly to the RL state constructor. Algorithm 2 gives the complete per-boundary control loop. Policy inference overhead is negligible relative to a single RPC round-trip, so adaptation imposes no measurable cost on the training pipeline. The 400 KB checkpoint is loaded once at startup and consumes no GPU resources. 
+
+a) Cluster execution: GreenDyGNN is implemented on top of DGL [31] and PyTorch [13] DDP. Training is launched across P nodes through a custom launcher that initializes the distributed graph store, the process group, and NVML/RAPL energy monitors on each rank. Each rank loads its local METIS partition from an NFS-shared workspace and opens DistTensor handles for remote feature access. Per-link delays are injected using Linux tc netem with u32 filters targeting the DGL RPC port, leaving management traffic unaffected. Each rank logs per-epoch GPU energy, CPU energy, cache hit rate, RL actions, and inferred congestion level to structured JSON. VI. E VALUATION 
+
+We evaluate GreenDyGNN against three baselines across three datasets, three batch sizes, and two network conditions (clean and congested), measuring total system energy, wall-clock time, cache behavior, and model accuracy. 
+
+A. Experimental Setup 
+
+Platform. All experiments run on a 4-node Chameleon Cloud cluster. Each node has an Intel Xeon CPU, two NVIDIA P100 GPUs, and 25 Gbps Ethernet. Each graph is METIS-partitioned into 4 parts, one per node. All systems train a 2-layer GraphSAGE model with 16 hidden units, fan-out 
+
+{10 , 25 }, learning rate 0.003, dropout 0.5, and 30 epochs. We evaluate batch sizes B ∈ { 1000 , 2000 , 3000 } and report 
+
+B=2000 as the default unless noted otherwise. 
+
+Baselines. We compare against Default DGL (vanilla distributed GraphSAGE with on-demand feature fetching), DGL 
+
+> BGL
+> RapidGNN
+> GreenDyGNN
+> 0
+> 10
+> 20
+> 30
+> 40
+> Energy Overhead (%)
+> 15%
+> OGBN-Products
+> DGL
+> BGL
+> RapidGNN
+> GreenDyGNN
+> 5%
+> Reddit
+> DGL
+> BGL
+> RapidGNN
+> GreenDyGNN
+> 19%
+> OGBN-Papers100M
+
+Fig. 5: Energy overhead from congestion (percentage increase over each method’s own clean baseline) at B=2000 . Lower is better. BGL [11] (GPU-efficient I/O with prefetch-during-sampling overlap), and RapidGNN [7] (epoch-level static caching with a cache capacity of 100,000 nodes). GreenDyGNN uses the same underlying distributed training substrate but extends static caching with fine-grained window-based rebuilds inside each epoch. At every rebuild boundary, the RL controller described in Section IV-C selects both the rebuild window 
+
+W and the per-owner cache allocation at runtime. 
+
+Datasets. Reddit (233K nodes, 114M edges), OGBN-Products (2.4M nodes, 61.9M edges), and OGBN-Papers100M (111M nodes, 1.6B edges). 
+
+Congestion injection. We inject realistic time-varying con-gestion using Linux tc netem on the DGL RPC port (30050), leaving gradient synchronization traffic on port 29500 unaffected. The pattern cycles through clean and congested phases: epochs 0–2 run clean as a warmup, epochs 3–9 introduce 15–25 ms of additional one-way delay on one or two nodes at a time, the pattern repeats every 7 epochs, and the final epoch is forced clean. All four methods experience identical congestion. 
+
+Measurement. CPU energy is read via Intel RAPL and GPU energy via NVML, both sampled at every training step. We report the sum across all four nodes over the full 30-epoch run. Each of the 36 clean-baseline runs and 36 congestion runs completed successfully with per-step profiles on all four partitions. 
+
+B. Energy Under Congestion 
+
+Figure 4 compares total system energy at B=2000 under congestion. GreenDyGNN achieves the lowest energy on all three datasets: 203.9 kJ on OGBN-Products (28% below Default DGL), 189.4 kJ on Reddit (42% below DGL), and 307.2 kJ on OGBN-Papers100M (32% below DGL). BGL pro-vides modest benefit over Default DGL. RapidGNN’s epoch-level static cache delivers substantial savings over DGL but consistently trails GreenDyGNN by 4–21%. GPU energy is comparable between RapidGNN and GreenDyGNN because both methods use caching and there-fore reduce GPU idle time relative to uncached execution. The larger gap appears in CPU energy: GreenDyGNN reduces communication overhead by adapting both rebuild timing and cache allocation to the current congestion pattern, which lowers the number and cost of expensive remote fetches. This targeted reduction in network activity accounts for most of the total energy advantage over static caching. Figure 5 isolates the effect of congestion by measuring each method’s energy increase relative to its own clean baseline. Default DGL suffers a 30% overhead on Products, 45% on Reddit, and 50% on Papers100M. BGL, which lacks adaptive caching, shows similar overhead (27%, 36%, 48%). RapidGNN’s static cache absorbs a portion of the congestion impact, reducing overhead to 18%, 31%, and 45% respectively. GreenDyGNN reduces the overhead further to 15%, 5%, and 19%, the lowest across all methods on every dataset. The largest gap between GreenDyGNN and RapidGNN occurs on Reddit and Papers100M (26 percentage points each), where GreenDyGNN eliminates 26 percentage points of congestion overhead that static caching cannot absorb. This improvement arises because the RL controller steers cache capacity toward congested owners and shortens the rebuild window when miss cost rises, a joint rebalancing that no fixed policy can perform. 
+
+C. Energy Under Clean Conditions 
+
+Figure 6 compares total energy at B=2000 without conges-tion. Under clean conditions, GreenDyGNN closely matches the strongest static baseline: the gap between GreenDyGNN and RapidGNN stays within 2% on every dataset (178.0 vs. 180.0 kJ on Products, 180.0 vs. 182.0 kJ on Reddit, 258.0 vs. 262.0 kJ on Papers100M). This is the expected behavior. GreenDyGNN is designed to adapt when network conditions change; when the network remains stable, the controller settles on a near-optimal operating regime and introduces no mean-ingful penalty. These results show that the adaptive controller does not cause unnecessary cache churn or poor rebuild decisions when the system is uncongested. Combined with the congestion results in Section VI-B, they show that GreenDyGNN pre-serves the benefits of static caching under clean conditions while providing additional gains when the network becomes dynamic. 
+
+D. RL Agent Adaptation 
+
+Figure 7 shows how the RL agent responds to the congestion pattern on OGBN-Papers100M at B=2000 . The top panel plots the mean rebuild window selected by GreenDyGNN at each epoch. During the clean warmup (epochs 0–2), the controller settles near W =16 . When congestion begins at epoch 3, it reduces W toward 8–10. This matches the behavior predicted by the cost model in Section IV-A: as miss latency rises, more frequent rebuilds become preferable because they trade some rebuild overhead for fewer expensive remote misses. DGL 
+
+> BGL
+> RapidGNN
+> GreenDyGNN
+> 0
+> 60
+> 120
+> 180
+> 240
+> Total Energy (kJ)
+> OGBN-Products
+> DGL
+> BGL
+> RapidGNN
+> GreenDyGNN
+> Reddit
+> DGL
+> BGL
+> RapidGNN
+> GreenDyGNN
+> OGBN-Papers100M
+
+Fig. 6: Total energy (GPU + CPU, all nodes) at B=2000 under clean (no congestion) conditions. 0        
+
+> 20
+> 40
+> Window Size W  GreenDyGNN Static baseline
+> 0510 15 20 25 30
+> Epoch
+> 0
+> 25
+> 50
+> 75
+> 100
+> Cache Hit (%)  GreenDyGNN RapidGNN
+
+Fig. 7: RL agent behavior on OGBN-Papers100M. Top: re-build window W chosen by GreenDyGNN (adaptive) vs. fixed static baseline. Bottom: per-epoch cache hit rate. The bottom panel shows the corresponding cache hit rates for all four methods. Default DGL and BGL have no cache and therefore remain at 0%. RapidGNN and GreenDyGNN both fluctuate as the access pattern shifts across epochs, but GreenDyGNN reaches higher hit-rate peaks during several congested phases because its per-owner allocation bias directs more cache space toward the owners whose links are slowest. RapidGNN’s hit rate drops more sharply during the worst congestion bursts because its epoch-level cache cannot be retuned inside the epoch. 
+
+E. Simulator Validation 
+
+Because GreenDyGNN’s RL agent is trained entirely in the calibrated simulator, the fidelity of that simulator is critical. Figure 8 validates the cost model by comparing predicted step time against real cluster measurements across a grid of rebuild windows ( W ∈ { 1, 2, 4, 8, 16 , 32 , 64 }) and congestion delays (0 to 25 ms). These measurements come from the one-time calibration phase (Algorithm 1) and are independent of the RL policy. 1 2 4 8 16 32 64                                       
+
+> Window W
+> 0
+> 4
+> 8
+> 15
+> 25
+> Delay (ms)
+> 2.9 2.0 3.0 4.1 5.1 3.4 6.2
+> 0.4 0.7 2.1 1.0 1.6 1.5 3.3
+> 4.7 1.4 0.4 0.2 4.2 2.4 2.3
+> 0.3 4.8 5.4 4.8 3.5 2.0 0.0
+> 1.9 3.7 2.6 3.8 2.3 2.5 0.2
+> Error (%)
+> 124816 32 64
+> Window W
+> 15
+> 20
+> 25
+> 30
+> 35
+> Step time (ms)
+> Sim (line) vs Real (sq.)
+> ms
+> 0
+> 4
+> 8
+> 15
+> 25
+
+Fig. 8: Simulator validation across a grid of window sizes and congestion delays. Left: prediction error (%), mean 2.8%. Right: predicted (lines) vs. measured (squares) step time for five delay levels. The left panel shows prediction error as a heatmap. Errors stay below 5% across the full operating range, with a mean of 2.8%. The right panel overlays predicted step-time curves (lines) against real measurements (squares) for each conges-tion level. The model captures both the U-shaped cost profile across W and its upward shift under congestion, confirming that the calibrated cost model provides a reliable training substrate for the RL agent. 
+
+F. Convergence Analysis 
+
+Figure 9 tracks cumulative energy over epochs under con-gestion across all three datasets. On every dataset, Default DGL and BGL accumulate energy at the highest rates. RapidGNN reduces the rate substantially through epoch-level static caching, but GreenDyGNN diverges further during congested epochs thanks to adaptive rebuild windows and congestion-aware allocation. The gap widens as training pro-gresses: on OGBN-Papers100M, GreenDyGNN saves 73.2 kJ over RapidGNN by epoch 30, nearly all of it from congested phases. On Reddit, where GreenDyGNN’s per-epoch savings are proportionally larger, the cumulative advantage is visible from the first congested epoch onward. Figure 10 shows accuracy as a function of wall time under congestion across all three datasets. GreenDyGNN reaches a given accuracy target sooner than all baselines on every dataset because each epoch finishes faster when expensive remote misses are reduced. On Reddit and OGBN-Products, where final accuracies are high (84–91%), both caching methods converge much faster than DGL and BGL, but GreenDyGNN maintains a consistent lead. On OGBN-Papers100M, where the lightweight model configuration limits accuracy to ap-proximately 49%, GreenDyGNN still converges fastest. These trajectories confirm that the energy gains in Section VI-B translate directly into faster end-to-end training. 0 20   
+
+> Epoch
+> 0
+> 80
+> 160
+> 240
+> Cumulative Energy (kJ)
+> OGBN-Products
+> DGL
+> BGL
+> RapidGNN
+> GreenDyGNN
+> 020
+> Epoch
+> Reddit
+> 020
+> Epoch
+> OGBN-Papers100M
+
+Fig. 9: Cumulative energy under congestion across all three datasets. GreenDyGNN accumulates less energy than all base-lines, with the gap widening during congested epochs. 0 100   
+
+> Wall Time (s)
+> 0
+> 20
+> 40
+> 60
+> 80
+> Accuracy (%)
+> OGBN-Products
+> DGL
+> BGL
+> RapidGNN
+> GreenDyGNN
+> 0200
+> Wall Time (s)
+> Reddit
+> 0500
+> Wall Time (s)
+> OGBN-Papers100M
+
+Fig. 10: Accuracy vs. wall time under congestion across all three datasets. GreenDyGNN converges faster than all baselines. 
+
+G. Comprehensive Results 
+
+Table I consolidates GPU energy, CPU energy, total energy, and mean epoch time for all four methods across every dataset and batch size under congestion. GreenDyGNN achieves the lowest total energy in 8 of 9 configurations and the fastest epoch time in all 9. The single exception is OGBN-Papers100M at B=1000 , where BGL’s multi-tier cache hierarchy achieves slightly lower total energy; however, GreenDyGNN still delivers 22% faster epoch time on that configuration. Savings over Default DGL range from 27% (Products, B=1000 ) to 43% (Reddit, B=2000 ). RapidGNN’s epoch-level cache delivers substantial savings over DGL and BGL, but GreenDyGNN consistently outperforms it by 4–24% in total energy. The GPU energy gap between GreenDyGNN and RapidGNN is small (1–3%), which indicates that both caching strategies reduce GPU idle time relative to uncached execution. The dominant contributor to GreenDyGNN’s ad-vantage is CPU energy: by reducing costly remote fetches under congestion, GreenDyGNN lowers the communication-side overhead associated with RPC processing, socket activity, TABLE I: Comprehensive results under congestion across all datasets and batch sizes. Energy (GPU, CPU, and Total) is the sum across all four nodes over 30 epochs; ET is mean epoch time. Bold marks the best (lowest) per configuration. All energy in kJ.                                                                                                                                                                          
+
+> GPU Energy (kJ) CPU Energy (kJ) Total Energy (kJ) ET (s) Dataset BDGL BGL Rapid Ours DGL BGL Rapid Ours DGL BGL Rapid Ours DGL BGL Rapid Ours Products 1000 20.7 16.3 13.3 13.1 273.2 219.5 215.5 202.3 293.8 235.8 228.8 215.4 4.26 3.98 3.13 2.97
+> 2000 19.2 14.5 12.2 12.0 265.1 204.2 200.8 191.8 284.3 218.8 213.0 203.9 3.80 3.58 2.90 2.77
+> 3000 16.2 13.2 10.1 10.3 256.4 200.2 196.9 186.1 272.6 213.4 207.0 196.3 3.20 3.25 2.40 2.35
+> Reddit 1000 41.2 38.2 13.1 12.9 331.2 288.4 267.0 199.7 372.4 326.6 280.1 212.6 9.20 9.68 2.75 2.68
+> 2000 30.2 29.4 9.0 8.8 296.6 248.6 230.0 180.6 326.8 278.0 239.0 189.4 6.84 7.47 1.90 1.77
+> 3000 25.8 22.8 7.8 7.6 281.9 228.3 220.2 177.5 307.7 251.1 228.0 185.1 5.67 5.77 1.72 1.62
+> Papers 1000 89.5 53.4 44.8 43.2 395.5 273.0 387.2 299.9 484.9 326.3 432.0 343.1 15.78 13.35 12.50 10.24
+> 2000 82.6 44.6 39.2 38.0 369.6 298.1 341.2 269.2 452.2 342.7 380.4 307.2 12.66 11.08 10.60 8.95
+> 3000 71.2 44.6 35.2 34.4 422.7 295.9 320.8 255.9 494.0 340.6 356.0 290.3 11.09 11.09 9.50 8.09 No RL No CW Full
+> 0
+> 60
+> 120
+> 180
+> 240
+> Total Energy (kJ)  6.9%
+
+Products   
+
+> No RL No CW Full
+> 7.2%
+
+Reddit   
+
+> No RL No CW Full
+> 8.6%
+
+Papers100M 
+
+Fig. 11: Ablation study under congestion. Removing RL adaptation increases energy on all datasets, with the largest impact on Papers100M (8.6%). and protocol handling. On Reddit at B=2000 , for example, GreenDyGNN’s CPU energy is 180.6 kJ versus RapidGNN’s 230.0 kJ, a 21% reduction, while GPU energy differs by only 2%. Accuracy is comparable across all methods (within 1–3 percentage points of run-to-run variance). GreenDyGNN does not modify the model architecture, sampling logic, or gradient computation, so convergence behavior remains consistent with baseline DistDGL. 
+
+H. Ablation Study 
+
+To isolate the contribution of each component, we evalu-ate two ablated variants under the same congestion pattern: 
+
+w/o RL , which fixes W =16 and disables the RL controller, yielding a static version of GreenDyGNN’s window-based rebuild mechanism; and w/o Cost Weights , which enables RL adaptation of W but uses a uniform cache allocation instead of per-owner cost weighting. Table II and Figure 11 show the results at B=2000 . Both components contribute to GreenDyGNN’s energy savings, with RL-based rebuild-window adaptation providing the larger share. On OGBN-Papers100M, disabling RL increases energy from 307.2 kJ to 336.1 kJ (8.6%), confirming that the con-troller’s ability to reduce W during congested phases translates directly into lower miss cost. Adding per-owner cost weighting on top of RL adaptation provides an additional 3.4% reduction (from 318.0 to 307.2 kJ), because biasing cache capacity TABLE II: Ablation study under congestion at B=2000 . Each row removes one component. Bold marks the lowest energy.               
+
+> Variant Products (kJ) Reddit (kJ) Papers100M (kJ)
+> w/o RL (static W=16 )218.9 204.2 336.1 w/o Cost Weights 210.0 195.8 318.0 GreenDyGNN (full) 203.9 189.4 307.2
+
+toward congested owners further reduces the most expensive remote fetches. On Reddit, RL adaptation saves 7.2% and cost weighting adds another 3.3%. On OGBN-Products the gains are smaller (6.9% from RL, 2.9% from cost weighting), because the graph is small enough that even a fixed windowed policy operates near the optimum. The consistent pattern across all three datasets confirms that both components contribute positively: RL adaptation captures the dominant gain by tracking the shifting energy-optimal rebuild window, while per-owner cost weighting provides complementary savings by directing cache capacity where it is most valuable under asymmetric congestion. VII. C ONCLUSION 
+
+We presented GreenDyGNN, a runtime-adaptive system for energy-efficient distributed GNN training. The core insight is that the cache window size is a control variable that must be adapted online as network conditions evolve, not a hyperpa-rameter to be tuned offline. GreenDyGNN formalizes this as a sequential decision problem and solves it with a Double-DQN agent trained via sim-to-real transfer under domain-randomized congestion. An asynchronous double-buffered pipeline makes adaptation overhead-free. Under realistic time-varying congestion the learned policy consistently outperforms every static configuration, absorbing up to 26 percentage points of congestion overhead on the largest graph tested. Under clean conditions it converges to the static optimum. Future work includes extending the formulation to het-erogeneous hardware (mixed GPUs, RDMA), adding GPU frequency scaling as an action dimension, and online fine-tuning of the simulator from production telemetry. ACKNOWLEDGMENTS 
+
+An AI writing assistant (Claude, Anthropic) [32] was used to improve grammar and readability across all sections of this paper. All technical content, experimental design, implemen-tation, and results were produced entirely by the authors, who verified the final text for accuracy. REFERENCES [1] T. N. Kipf and M. Welling, “Semi-supervised classification with graph convolutional networks,” in Proceedings of the 5th International Con-ference on Learning Representations (ICLR) , 2017. [2] W. L. Hamilton, R. Ying, and J. Leskovec, “Inductive representation learning on large graphs,” in Advances in Neural Information Processing Systems 30 (NeurIPS) , 2017. [3] D. Zheng, C. Ma, M. Wang, J. Zhou, Q. Su, X. Song, Q. Gan, Z. Zhang, and G. Karypis, “DistDGL: Distributed graph neural network training for billion-scale graphs,” in 10th IEEE/ACM Workshop on Irregular Applications: Architectures and Algorithms (IA3) , 2020, pp. 36–44, https://doi.org/10.1109/IA351965.2020.00011. [4] S. Gandhi and A. P. Iyer, “P3: Distributed deep graph learning at scale,” in 15th USENIX Symposium on Operating Systems Design and Implementation (OSDI) , 2021, pp. 551–568. [5] Z. Jia, S. Lin, M. Gao, M. Zaharia, and A. Aiken, “Improving the accuracy, scalability, and performance of graph neural networks with Roc,” Proceedings of Machine Learning and Systems , vol. 2, pp. 187– 198, 2020. [6] C. Zheng, H. Chen, Y. Cheng, Z. Song, Y. Wu, C. Li, J. Cheng, H. Yang, and S. Zhang, “ByteGNN: Efficient graph neural network training at large scale,” Proceedings of the VLDB Endowment , vol. 15, no. 6, pp. 1228–1242, 2022, https://doi.org/10.14778/3514061.3514069. [7] A. Niam, T. Kosar, and M. Nine, “Rapidgnn: Energy and communication-efficient distributed training on large-scale graph neural networks,” arXiv preprint arXiv:2509.05207 , 2025. [8] A. Sarkar, S. Ghosh, N. R. Tallent, and A. Jannesari, “MassiveGNN: Efficient training via prefetching for massively connected distributed graphs,” in 2024 IEEE International Conference on Cluster Comput-ing (CLUSTER) , 2024, https://doi.org/10.1109/CLUSTER59578.2024. 00013. [9] Z. Lin, C. Li, Y. Miao, Y. Liu, and Y. Xu, “PaGraph: Scaling GNN training on large graphs via computation-aware caching,” in Proceedings of the 11th ACM Symposium on Cloud Computing (SoCC) , 2020, pp. 401–415, https://doi.org/10.1145/3419111.3421281. [10] T. Kaler, A.-S. Iliopoulos, P. Murzynowski, T. B. Schardl, C. E. Leiserson, and J. Chen, “Communication-efficient graph neural networks with probabilistic neighborhood expansion analysis and caching,” in 
+
+Proceedings of Machine Learning and Systems , vol. 5, 2023. [11] T. Liu, Y. Chen, D. Li, C. Wu, Y. Zhu, J. He, Y. Peng, H. Chen, H. Chen, and C. Guo, “BGL: GPU-efficient GNN training by optimizing graph data I/O and preprocessing,” in 20th USENIX Symposium on Networked Systems Design and Implementation (NSDI) , 2023, pp. 103–118. [12] K. Keahey, P. Riteau, D. Stanzione, T. Cockerill, J. Mambretti, P. Rad, and P. Ruth, “Chameleon: a scalable production testbed for computer sci-ence research,” in Contemporary High Performance Computing . CRC Press, 2019, pp. 123–148. [13] A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan, T. Killeen, Z. Lin, N. Gimelshein, L. Antiga, A. Desmaison, A. Köpf, E. Yang, Z. DeVito, M. Raison, A. Tejani, S. Chilamkurthy, B. Steiner, L. Fang, J. Bai, and S. Chintala, “PyTorch: An imperative style, high-performance deep learning library,” in Advances in Neural Information Processing Systems 32 (NeurIPS) , 2019, pp. 8024–8035. [14] C. Wan, Y. Li, A. Li, N. S. Kim, and Y. Lin, “BNS-GCN: Efficient full-graph training of graph convolutional networks with partition-parallelism and random boundary node sampling,” Proceedings of Machine Learn-ing and Systems , vol. 4, pp. 673–693, 2022. [15] J. Yang, D. Tang, X. Song, L. Wang, Q. Yin, R. Chen, W. Yu, and J. Zhou, “GNNLab: A factored system for sample-based GNN training over GPUs,” in Proceedings of the 17th European Conference on Computer Systems (EuroSys) , 2022, pp. 417–434, https://doi.org/10. 1145/3492321.3519557. [16] X. Zhang, Y. Shen, Y. Shao, and L. Chen, “DUCATI: A dual-cache training system for graph neural networks on giant graphs with the GPU,” Proceedings of the ACM on Management of Data , vol. 1, no. 2, pp. 166:1–166:24, 2023, https://doi.org/10.1145/3589311. [17] Z. Cai, X. Yan, Y. Wu, K. Ma, J. Cheng, and F. Yu, “DGCL: An efficient communication library for distributed GNN training,” in Proceedings of the 16th European Conference on Computer Systems (EuroSys) , 2021, pp. 130–144, https://doi.org/10.1145/3447786.3456233. [18] E. Strubell, A. Ganesh, and A. McCallum, “Energy and policy consid-erations for deep learning in NLP,” in Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics (ACL) , 2019, pp. 3645–3650, https://doi.org/10.18653/v1/P19-1355. [19] R. Schwartz, J. Dodge, N. A. Smith, and O. Etzioni, “Green AI,” 
+
+Communications of the ACM , vol. 63, no. 12, pp. 54–63, 2020, https: //doi.org/10.1145/3381831. [20] D. Patterson, J. Gonzalez, U. Hölzle, Q. Le, C. Liang, L.-M. Munguia, D. Rothchild, D. So, and M. Texier, “The carbon footprint of machine learning training will plateau, then shrink,” IEEE Computer , vol. 55, no. 7, 2022, https://doi.org/10.1109/MC.2022.3148714. [21] J. You, J.-W. Chung, and M. Chowdhury, “Zeus: Understanding and optimizing GPU energy consumption of DNN training,” in 20th USENIX Symposium on Networked Systems Design and Implementation (NSDI) ,2023, pp. 119–139. [22] J.-W. Chung, Y. Gu, I. Jang, L. Meng, N. Bansal, and M. Chowdhury, “Reducing energy bloat in large model training,” in ACM SIGOPS 30th Symposium on Operating Systems Principles (SOSP) , 2024, https://doi. org/10.1145/3694715.3695970. [23] S. Choi, I. Koo, J. Ahn, M. Jeon, and Y. Kwon, “EnvPipe: Performance-preserving DNN training framework for saving energy,” in 2023 USENIX Annual Technical Conference (USENIX ATC) , 2023, pp. 851–864. [24] H. Mao, R. Netravali, and M. Alizadeh, “Neural adaptive video stream-ing with Pensieve,” in Proceedings of the ACM Special Interest Group on Data Communication (SIGCOMM) , 2017, https://doi.org/10.1145/ 3098822.3098843. [25] H. Mao, M. Schwarzkopf, S. B. Venkatakrishnan, Z. Meng, and M. Al-izadeh, “Learning scheduling algorithms for data processing clusters,” in 
+
+Proceedings of the ACM Special Interest Group on Data Communication (SIGCOMM) , 2019, https://doi.org/10.1145/3341302.3342080. [26] A. Mirhoseini, H. Pham, Q. V. Le, B. Steiner, R. Larsen, Y. Zhou, N. Kumar, M. Norouzi, S. Bengio, and J. Dean, “Device placement optimization with reinforcement learning,” in Proceedings of the 34th International Conference on Machine Learning (ICML) , 2017, pp. 2430– 2439. [27] J. Tobin, R. Fong, A. Ray, J. Schneider, W. Zaremba, and P. Abbeel, “Domain randomization for transferring deep neural networks from simulation to the real world,” in 2017 IEEE/RSJ International Con-ference on Intelligent Robots and Systems (IROS) , 2017, pp. 23–30, https://doi.org/10.1109/IROS.2017.8202133. [28] OpenAI, M. Andrychowicz, B. Baker, M. Chociej, R. Jozefowicz, B. McGrew, J. Pachocki, A. Petron, M. Plappert, G. Powell, A. Ray, J. Schneider, S. Sidor, J. Tobin, P. Welinder, L. Weng, and W. Zaremba, “Learning dexterous in-hand manipulation,” The International Journal of Robotics Research , vol. 39, no. 1, pp. 3–20, 2020, https://doi.org/10. 1177/0278364919887447. [29] G. Karypis and V. Kumar, “A fast and high quality multilevel scheme for partitioning irregular graphs,” SIAM Journal on Scientific Com-puting , vol. 20, no. 1, pp. 359–392, 1998, https://doi.org/10.1137/ S1064827595287997. [30] H. van Hasselt, A. Guez, and D. Silver, “Deep reinforcement learning with double Q-learning,” in Proceedings of the 30th AAAI Conference on Artificial Intelligence (AAAI) , 2016, pp. 2094–2100, https://doi.org/ 10.1609/aaai.v30i1.10295. [31] M. Wang, D. Zheng, Z. Ye, Q. Gan, M. Li, X. Song, J. Zhou, C. Ma, L. Yu, Y. Gai, T. Xiao, T. He, G. Karypis, J. Li, and Z. Zhang, “Deep graph library: A graph-centric, highly-performant package for graph neural networks,” arXiv preprint arXiv:1909.01315 , 2019. [32] Anthropic, “Claude,” https://www.anthropic.com/claude, 2024, aI assis-tant used for grammar and readability improvements.

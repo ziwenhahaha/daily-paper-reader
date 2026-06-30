@@ -1,0 +1,321 @@
+Title: ResBM: Residual Bottleneck Models for Low-Bandwidth Pipeline Parallelism
+
+URL Source: https://arxiv.org/pdf/2604.11947v1
+
+Published Time: Wed, 15 Apr 2026 00:08:53 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# ResBM: Residual Bottleneck Models for Low-Bandwidth Pipeline Parallelism 
+
+Alan Aboudib ∗ Rodrigo Lopez Portillo A. Kalei Brady Steffen Cruz 
+
+Macrocosmos AI 
+
+{firstname}@macrocosmos.ai 
+
+> ∗
+
+Corresponding author 
+
+# Abstract 
+
+Unlocking large-scale low-bandwidth decentralized training has the potential to utilize otherwise untapped compute resources. In centralized settings, large-scale multi-node training is primarily enabled by data and pipeline parallelism, two techniques that require ultra-high-bandwidth communication. While efficient methods now exist for decentralized data parallelism, pipeline parallelism remains the primary challenge. Recent efforts, such as Subspace Models (SM), have claimed up to 100 × activation compression but rely on complex constrained optimization and diverge from true end-to-end training. In this paper, we propose a different approach, based on an architecture designed from the ground up to be native to low-bandwidth communication environments while still applicable to any standard transformer-based architecture. We call this architecture the Residual Bottleneck Model or ResBM, it introduces a residual encoder-decoder bottleneck module across pipeline boundaries that can be trained end-to-end as part of the model’s parameters while preserving an explicit low-rank identity path. We show that ResBMs achieve state-of-the-art 128 × activation compression without significant loss in convergence rates and without significant memory or compute overhead. 
+
+Keywords: Residual Bottleneck Models, Decentralized Training, Pipeline Paral-lelism, Activation Compression, Identity Path, End-to-End Training 
+
+# 1 Introduction 
+
+Training frontier large language models (LLMs) requires distributing computation across hundreds or thousands of accelerators. As models grow beyond the memory capacity of individual devices, two complementary parallelism strategies become necessary: data parallelism (DP), which replicates the model across workers that process different data shards, and pipeline parallelism (PP), which partitions the model’s layers across devices and streams activations forward and gradients backward [Narayanan et al., 2021, Huang et al., 2019]. Both strategies depend on high-bandwidth interconnects, NVLink for intra-node communication and InfiniBand for inter-node transfers, making large-scale training feasible only in tightly controlled datacenter environments with specialized, expensive infrastructure. The high cost and limited availability of such clusters has motivated interest in decentralized training, where geographically distributed devices connected over the public internet collaborate to train a single model [Diskin et al., 2021, Yuan et al., 2022, Ryabinin et al., 2023]. While low-communication data parallelism is now relatively mature, methods such as DeMo [Peng et al., 2026], DiLoCo and its variants [Douillard et al., 2023, 2025, Sarfi et al., 2025] reduce DP synchronization overhead by up to 500 ×, pipeline parallelism remains the primary bottleneck. In datacenter environments, PP communication traverses InfiniBand links operating at approximately 300 Gb/s, whereas consumer 1
+
+> arXiv:2604.11947v1 [cs.LG] 13 Apr 2026
+
+internet connections typically offer around 1 Gb/s, implying that activations and their corresponding gradients must be compressed by roughly 300 × to achieve comparable transfer times [Sevilla, 2025]. This 300 × figure is, however, a rough upper bound. As observed by [Ryabinin et al., 2023], com-putation in pipeline-parallel training scales as O(n3) with the hidden dimension n while inter-stage communication scales only as O(n2)—a relationship they term the square-cube law of distributed training. Consequently, as models grow larger, the ratio of useful compute to network transfer increases, and opportunities to overlap communication with computation become more favourable, reducing the effective compression requirement. The exact trade-off depends on model architecture, pipeline depth, and hardware capabilities, but the general principle implies that the bandwidth gap narrows at scale, making extreme compression rates more attainable than the naive bandwidth ratio suggests. Compressing activations for pipeline-parallel training is fundamentally more difficult than compress-ing weight gradients for data parallelism. Weight gradients are computed independently at each replica and exhibit exploitable redundancy, whereas activations propagate sequentially through layers, causing compression errors to accumulate with depth [Bian et al., 2024, Rudakov et al., 2023]. Naive compression strategies offer limited relief: 8-bit quantization provides only a 2× reduction relative to half-precision, while inserting autoencoder-like bottleneck layers between transformer blocks has been shown to severely degrade convergence [Bian et al., 2024]. This suggests that where compres-sion is applied matters more than the magnitude of compression itself; in particular, compressing the identity connections may destabilize optimization. Residual connections are essential for stable gradient propagation in deep networks [He et al., 2015], and placing compression layers on the identity path could destablize training and potentially reintroduce the vanishing gradient problem that residual architectures were designed to eliminate [He et al., 2015, Xie et al., 2026]. Recently, Subspace Models (SM) were proposed in [Ramasinghe et al., 2025] claiming to achieve up to 100 × activation compression without convergence degradation. Their approach constrains the projection matrices of each transformer layer to a shared low-rank subspace, decomposing activations into a dynamic low-rank component and a static high-rank component so that the low-rank part can be transmitted and the full activation reconstructed at the receiving node. While effective, this method requires solving a constrained optimization problem: the shared subspace itself must be periodically updated via optimization on the Grassmann manifold. These requirements represent a departure from standard end-to-end training and introduce additional engineering complexity. In this paper, we take a different approach. Rather than retrofitting compression into architectures designed for centralized training, we propose the Residual Bottleneck Model (ResBM), an architecture designed specifically for low-bandwidth pipeline parallelism. ResBMs introduce learnable subspace projection layers that reduce the dimensionality of communicated activations while preserving a low-rank identity path through the network. Because the bottleneck operates alongside, rather than on, the residual stream, these projection layers are trained end-to-end as ordinary model parameters with off-the-shelf optimizers. 
+
+Contributions. 
+
+• We introduce ResBM, the first end-to-end trainable architecture that achieves state-of-the-art 128 ×
+
+activation compression with no degradation in convergence rate relative to uncompressed baselines, and with negligible memory and compute overhead. • We provide an empirical spectral analysis of the interaction between optimizer choice and com-pression. Our results show that models trained with Muon are less compressible than those trained with AdamW: Muon induces higher-rank activation subspaces, reducing the headroom available to any compression method that relies on low-rank structure. AdamW remains the primary target for activation compression in theis paper. 
+
+# 2 Related Work 
+
+Decentralized training. Decentralized training distributes computation across autonomous, geo-graphically dispersed devices that communicate over heterogeneous networks with variable bandwidth and latency [Diskin et al., 2021]. SWARM parallelism [Ryabinin et al., 2023] addresses the schedul-ing and fault-tolerance challenges of decentralized pipeline parallelism through stochastic routing of 2pipeline stages across unreliable nodes, dynamically balancing workloads by directing activations to faster peers. While SWARM demonstrates that pipeline-parallel training can tolerate node failures and heterogeneous hardware, it does not solve the communication bandwidth bottleneck: activations and gradients are still transmitted at full precision between pipeline stages. Tasklets [Yuan et al., 2022] similarly treat decentralized training as a scheduling problem in heterogeneous environments, but inherits the same bandwidth limitations. 
+
+Communication compression for pipeline parallelism. Compressing activations for model-parallel training is fundamentally harder than compressing weight gradients for decentralized data parallelism. [Bian et al., 2024] show that lossy activation compression accumulates errors across lay-ers, causing convergence degradation that worsens with model depth, an effect absent in data-parallel compression where each replica’s gradients are independent. [Rudakov et al., 2023] reach similar conclusions, noting the lack of exploitable structure in activations and activation gradients compared to weight gradients. Early attempts at activation compression for pipeline parallelism include insert-ing autoencoder-like layers between transformer blocks and applying standard techniques such as top-k sparsification, low-rank SVD projection, or quantization. However, at aggressive compression rates these lossy methods fail to converge [Ramasinghe et al., 2025]. [Wang et al., 2021] proposed low-rank communication for model parallelism, but their approach requires significant architectural modifications that prevent training from scratch. The SM of [Ramasinghe et al., 2025] represent the most significant advance to date, claiming to achieve up to 100 × lossless activation compression. Their method constrains the projection matrices of each transformer layer to a shared low-rank subspace, enabling activations to be decomposed into a compressible low-rank dynamic component and a locally reconstructible high-rank static component. According to the authors, this formulation guarantees exact reconstruction at the receiving node, avoiding the error accumulation that plagues lossy schemes. However, maintaining the subspace constraint requires a modified AdamW optimizer that enforces row-wise constant adaptive learning rates on the projection matrices, as well as periodic subspace updates via Riemannian gradient descent on the Grassmann manifold, deviating from a pure end-to-end training paradigm. Our approach differs in that the compression is achieved through learned bottleneck layers that are trained end-to-end as standard model parameters, without requiring any optimizer modifications or a separate manifold optimization. 
+
+Residual connections and identity preservation. The residual connection, introduced by [He et al., 2015], is a cornerstone of modern deep network design. By providing a direct shortcut for gradient propagation, it mitigates vanishing gradients and enables training of substantially deeper architectures. In transformer-based LLMs, the residual stream carries information across all layers and is essential for stable optimization. Recent work by [Xie et al., 2026] has shown that dimensionality-changing operations can be safely introduced along the residual path provided they preserve the identity property of the connection. Our architecture builds on this insight: the bottleneck projection operates alongside the residual stream rather than on it, ensuring that a low-rank identity path remains uninterrupted even as the communicated activation dimensionality is reduced. 
+
+# 3 Residual Bottleneck Models 
+
+3.1 Notation 
+
+Modern Large Language Models (LLMs) are typically implemented as a stack of Transformer blocks, as originally proposed by [Vaswani et al., 2023]. Two fundamental components of the Transformer block are the residual connection and the self-attention mechanism. The residual connection enables stable information and gradient flow across layers; its introduction in deep architectures [He et al., 2015] made it possible to train substantially deeper networks. The formulation of a single layer in transformer-based LLMs can be written as follows: 
+
+xl+1 = xl + F (xl, W l) (1) where xl ∈ RL×H denotes the input for layer l, with L the sequence length and H the hidden dimension. The residual function F (·, W l) typically corresponds to either a self-attention or a feed-forward sublayer parameterized by weights Wl. In the standard Transformer formulation [Vaswani 3et al., 2023], the hidden dimensionality is preserved across layer boundaries, so both xl and F (xl, W l)
+
+as well as the output xl+1 lie in RL×H .More generally, if the hidden dimensionality is allowed to change across layers, the residual connec-tion must account for this mismatch. Let xl ∈ RL×h and suppose F (xl, W l) ∈ RL×H , where h and 
+
+H are not necessarily equal. We introduce a projection operator Pid  
+
+> l
+
+: RL×h → RL×H that maps the identity branch to the appropriate dimensionality. The generalized residual update then becomes 
+
+xl+1 = xlPid  
+
+> l
+
++ F (xl, W l). (2) The recursively extended transformer equation that describes multiple layers can then be given by: 
+
+xL = xl
+
+> L−1
+
+Y
+
+> i=l
+
+Pid 
+
+> i
+
+!
+
++
+
+> L−1
+
+X
+
+> i=l
+
+F (xi, W i)
+
+
+
+> L−1
+
+Y
+
+> j=i+1
+
+Pid 
+
+> j
+
+ (3) The identity (residual) connection was originally introduced to accelerate optimization and stabilize deep network training by providing a direct shortcut for gradient propagation. This pathway enables more parallel layer-wise optimization and mitigates vanishing and exploding gradients, which become particularly severe in very deep architectures. Introducing transformations such as Pid  
+
+> l
+
+along the identity branch may compromise these benefits. In particular, modifying the identity path can distort gradient flow and potentially reintroduce instability if the transformation does not preserve appropriate structural properties. As shown by [Xie et al., 2026], dimensionality-changing operations can be incorporated safely provided that the identity property of the residual connection is preserved. In the following sections, we show how this generalized Transformer formulation enables controlled dimensionality variation across layers. In particular, we define projection operators Pid  
+
+> l
+
+that allow the dimensionality of xl to differ between the bottleneck output—which represents the communicated activation—and the intermediate activation produced by the self-attention layers. This construction preserves the structural role of the residual pathway while permitting compression within the network. 
+
+3.2 The Bottleneck Layer 
+
+The bottleneck layer is introduced after the feed-forward layer within each Transformer block. It follows an autoencoder architecture composed of an encoder and a decoder. In our implementation, both the encoder and decoder consist of two linear layers with a non-linearity applied between them. The encoder maps the hidden representation to a lower-dimensional bottleneck space, while the decoder reconstructs it back to the target dimensionality. Formally, let zl ∈ RL×H denote the activation at the output of the feed-forward layer of layer l. The encoder El maps this activation to a compressed representation 
+
+bl = El(zl), bl ∈ RL×h, h < H, 
+
+and the decoder Dl reconstructs it as 
+
+˜zl = Dl(bl), ˜zl ∈ RL×H .
+
+Placement under pipeline parallelism. In a pipeline-parallel setting, the encoder and decoder are placed on opposite sides of the communication boundary between layers l and l + 1 . The encoder resides at the end of layer l, and only the compressed activation bl is transmitted across devices. The decoder is placed at the beginning of layer l + 1 , reconstructing the activation before it enters the subsequent attention block. As a result, communication bandwidth scales with h rather than H.
+
+Preserving the identity path. Crucially, the encoder and decoder are positioned so as to preserve the structural role of the residual pathway. When placed around the communication boundary between layers l and l + 1 , the encoder in layer l becomes part of the residual function of that layer, together with the feed-forward layer. Symmetrically, the decoder in layer l + 1 is incorporated into the local residual branch preceding the attention layer. 4Let xAttn  
+
+> l
+
+denote the output of the attention layer at layer l. The skip connection associated with this activation is transformed via the projection operator Pid  
+
+> l
+
+to match the dimensionality of the reconstructed bottleneck activation, and the generalized residual update follows Equation 2. At layer 
+
+l + 1 , the skip connection from the received activation is projected using Pid  
+
+> l+1
+
+and summed with the output of the attention layer of layer l + 1 , ensuring consistent dimensional alignment across the boundary. Figure C.1 provides a schematic illustration of this construction and its placement relative to the communication boundary. 
+
+3.3 The identity path 
+
+Recent work on activation compression, including SM [Ramasinghe et al., 2025] and related studies on optimizer-induced rank dynamics [Kaushik et al., 2025, Liu et al., 2025], observes that AdamW exhibits a progressive rank collapse in the column space of output projection matrices. These findings suggest that both forward activations and backward gradients concentrate in a low-dimensional subspace during training. Building upon this observation, prior approaches propose aggressively compressing activations at the output of projection layers under the hypothesis that most task-relevant information resides within a small number of effective dimensions. We begin from the same empirical observation and extend it to the residual (identity) pathway itself. If the effective rank of the projection matrices is low, then the signals transmitted through the identity path, and the gradients flowing backward along it, should also concentrate within a similarly low-dimensional subspace. This suggests that the identity branch may be compressible with minimal or no degradation of optimization dynamics. We further extend this observation to the proposed ResBM, where intermediate activations are intentionally compressed. Suppose a residual addition occurs between tensors of dimensions L × h
+
+and L×H, with h < H , in this case we define the skip connection to operate in the lower-dimensional space h, projecting the identity branch accordingly. If no compression is applied in a given block (i.e., h = H), the original full-dimensional skip connection is preserved. Formally, let Ic×C ∈ Rc×C denote the rectangular identity matrix defined elementwise as 
+
+[Ic×C ]i,j =
+
+1, if i = j, 
+
+0, otherwise . (4) We define the identity projection operator as 
+
+Pid  
+
+> l
+
+(xl) = xlIc×C , xl ∈ RL×c. (5) This single definition naturally handles all dimensionality cases: • If c < C , the operator zero-pads the identity branch, appending C − c zero columns. • If c > C , it truncates the last c − C columns. • If c = C, it reduces to the standard identity matrix Ic.Substituting this definition into the recursively extended Transformer equation (Eq. 2), the product of identity projections simplifies to a single projection; for any sequence of dimensions c0, c 1, . . . , c D ,the composition satisfies the property: 
+
+> D−1
+
+Y
+
+> i=0
+
+Ici×ci+1 = Ic0×cD . (6) x where Ic0×cL is a rectangular identity matrix with rank k = min( c0, c 1, . . . , c L). In the case of a vanilla Transformer, where no compression is applied and all intermediate dimensions ci are equal to the hidden dimension H, this operator becomes a full-rank identity matrix IH , and Equation 2 reduces exactly to the standard Transformer residual update. When compression is applied, this formulation ensures that the identity property, and thus the unim-peded flow of gradients, is guaranteed along the k most expressed hidden dimensions. By preserving these primary coordinates, the identity path maintains its structural role in stabilizing optimization, even as the network undergoes dimensionality changes at the communication boundaries. 5Figure 1: Singular value analysis of projection matrices. AdamW exhibits rapid singular value decay (low-rank structure), while Muon maintains larger singular values across more dimensions, preserving a higher-rank activation subspace. 
+
+3.4 Choosing the Optimizers 
+
+In this section, we establish the optimization framework for our experiments. Our goal is twofold: first, to select an optimizer for the baseline model that provides a fair target for comparison, and second, to identify an optimizer for the proposed ResBM models that can maintain high information flow through restricted dimensions. To do so, we analyze the spectral properties of the output projection tensors of each feed-forward network (FFN), aligning our study with previous observations on the subspace rank dynamics of Transformer representations [Liu et al., 2025, Ramasinghe et al., 2025]. 
+
+3.4.1 Baseline Model Optimizer 
+
+To define a representative target, we examine how the choice of optimizer shapes the spectral structure of learned representations in baseline (uncompressed) architectures. We compute the singular value spectrum of FFN output projection layers following the protocol of [Liu et al., 2025], comparing baseline models trained with AdamW and Muon. As shown in Figure 1, AdamW produces activations with rapid singular value decay, concentrating representational energy into a low-dimensional subspace. This confirms the findings of [Ramasinghe et al., 2025], which identified performance of AdamW-trained baselines as the target to be matched by compressed models because its inherent rank collapse provides a natural opportunity for dimen-sionality reduction. In contrast, and consistent with [Liu et al., 2025], our analysis shows that Muon maintains significantly higher effective rank throughout training; this structural difference has a direct impact on optimization dynamics, with Muon’s rank-preserving property leading to faster training convergence as experimentally demonstrated in Figure C.2. We therefore choose to stick with the AdamW baseline as our primary target performance. This ensures a more faithful comparison with previous works and accounts for the fact that the low-rank redundancy exploited by most compression methods is, in part, a specific property of AdamW-induced optimization dynamics. 
+
+3.4.2 ResBM Optimizer 
+
+Prior work on SM [Ramasinghe et al., 2025] utilized the AdamW-induced rank collapse in baseline models as an opportunity for introducing their compression method, while attempting to avoid such collapse in the compressed models by initializing subspace projection matrices to an orthonormal distribution, employing a modified version of AdamW that restricts the row space of FFN output projection layers to the column space of the subspace projection layers to preserve the rank structure, and applying Grassmann manifold updates to the subspace projection layers independently from the end-to-end training of the model parameters. The authors argued that this approach maximizes 6information flow through the subspace projection layers, unlocking lossless compression of the original activations. While we share the goal of maximizing information flow through the bottleneck, our approach differs by maintaining a fully end-to-end training regime where all parameters are updated at the same frequency, including the subspace projection layers (bottleneck weights); to mitigate the risk of rank collapse within the bottleneck layers, we recognize Muon as a viable off-the-shelf solution. Muon can be interpreted as promoting information flow by design; it updates matrix parameters with orthogonalized gradient momentum using Newton-Schulz iteration[Liu et al., 2025]. This has a conceptual similarity with the orthonormal initialization of subspace projection layers in SM combined with manifold-constrained updates, the difference being that in ResBM all layers are trained end-to-end. However, both our approach and SM keep a vanilla AdamW-optimized model as the baseline. A detailed spectral analysis of the ResBM bottleneck weights under different optimizers is provided in Appendix B.1. 
+
+# 4 Experiments 
+
+4.1 Experimental setup 
+
+We conduct a series of experiments to evaluate the pretraining convergence behavior of the proposed architecture. Unless otherwise stated, all experiments use a baseline transformer model with approxi-mately 2B parameters, based on the Llama-3 architecture with qk-norm applied to the attention heads. This baseline consists of 8 transformer blocks and is trained under the configuration summarized in Table 1. 
+
+Hidden Dimension 4096 
+
+Vocabulary Size 50K 
+
+Context Length 1024 
+
+Weight Decay 0.01 
+
+Peak Learning Rate 2e-4 
+
+Warmup Steps 500 
+
+Batch Size 32 
+
+Dataset C4 
+
+Optimizer AdamW Table 1: Baseline model and training configuration used across experiments unless otherwise speci-fied. The proposed residual bottleneck model builds upon the baseline architecture by introducing a bottleneck layer after each transformer block, except the last one, resulting in seven bottleneck layers in total. These layers reduce the dimensionality of communicated activations and their corresponding gradients by a factor equal to the specified compression rate. For example, a compression rate of 
+
+128 × reduces the activation dimensionality from the baseline hidden size of 4096 to 32. Unless otherwise specified, all bottleneck models are trained using the Muon optimizer. In all experiments, the learning rate is linearly warmed up for 500 steps to a peak value of 2 × 10 −4,followed by cosine decay. The final learning rate is set to 1% of the peak value for AdamW and 10% 
+
+for Muon. 
+
+4.2 Performance under extreme compression 
+
+To evaluate the performance of the ResBM architecture, we first conduct a comparative study under extreme compression ratios of 100 × and 128 ×, corresponding to bottleneck dimensions of 40 and 32, respectively. We compare ResBM against our implementation of SM proposed by [Ramasinghe et al., 2025] since no official implementation is available at the time of writing. We evaluate both architectures under two optimization regimes: standard AdamW and the rank-stabilizing Muon optimizer. Figures 2a and 2b illustrate these dynamics. From this initial study, we draw two primary observations: 7(a) 100 × compression comparison. (b) 128 × compression comparison. 
+
+Figure 2: Comparative performance on C4. We evaluate ResBM and SM with 2B parameters each across both AdamW and Muon optimizers against uncompressed baselines. 1. ResBM outperforms SM: In both 100 × and 128 × regimes, ResBM consistently outper-forms SM when controlling for the optimizer. 2. Muon outperforms AdamW for compressed models: ResBM paired with Muon sig-nificantly outperforms ResBM with AdamW. As detailed in Section 3.4, we attribute this to Muon’s ability to maximize information flow through the bottleneck by maintaining a high-rank representation, whereas AdamW-induced rank collapse effectively further reduces the usable capacity of the already narrow bottleneck. Based on these results, we identified the ResBM-Muon configuration as the most promising candidate for long-scale training. We extended the pretraining of the 100 × and 128 × ResBM-Muon variants to 26 B tokens on the C4 dataset. Table 2 summarizes the final perplexity compared to the standard AdamW baseline. 
+
+Model Optimizer Compression Bottleneck Dim ( h) Final PPL 
+
+Baseline AdamW 1× 4096 21.75 
+
+ResBM (Ours) Muon 100 × 40 21.60 
+
+ResBM (Ours) Muon 128 × 32 21.77 
+
+Table 2: Final perplexity after 26B training tokens on C4. Compressed models utilize the Muon optimizer to maintain subspace rank. The training loss curves in Figure 3 demonstrate that while the uncompressed baseline converges faster in the very early stages, both compressed ResBM variants eventually match or surpass the baseline performance at 26B tokens (roughly 65% of the compute optimal training budget of 40B tokens). This indicates that the proposed bottleneck architecture remains effective even under aggressive compression ratios exceeding 100 ×.
+
+4.3 Throughput analysis 
+
+The previous experiments evaluated the convergence behavior of ResBM in isolation, training on a single GPU to measure perplexity independent of communication overhead. We now assess end-to-end training throughput under realistic pipeline-parallel settings to determine whether the compression gains translate into wall-clock speedups. All throughput experiments use 8 × NVIDIA A10G GPUs with GPipe-style pipeline parallelism implemented via PyTorch distributed over NCCL. Each transformer block is assigned to a separate GPU, and inter-stage activations are transmitted over the network link between pipeline stages. We compare two baselines—the uncompressed 2B model over a 10 Gbps datacenter link ( centralized )and the same model over an 80 Mbps consumer-grade link ( decentralized )—against four ResBM variants at 80 Mbps, crossing two optimizers (AdamW, Muon) with two compression ratios ( 100 ×,
+
+128 ×). 8(a) 100 × ResBM (Muon) vs. Baseline. (b) 128 × ResBM (Muon) vs. Baseline. 
+
+Figure 3: Pretraining loss on C4 over 26B tokens. Compressed ResBM variants ( 100 × and 
+
+128 ×) optimized with Muon match the final performance of the uncompressed AdamW baseline, demonstrating the effectiveness of the identity-preserving bottleneck. 
+
+Configuration Bandwidth Compression TPS Final Loss 
+
+Centralized baseline 10 Gbps 1× 7530 3.86 
+
+Decentralized baseline 80 Mbps 1× 609 5.28 ResBM AdamW ( 100 ×) 80 Mbps 100 × 7681 4.10 ResBM Muon ( 100 ×) 80 Mbps 100 × 6795 4.03 ResBM AdamW ( 128 ×) 80 Mbps 128 × 7837 4.05 ResBM Muon ( 128 ×) 80 Mbps 128 × 6795 3.98 Table 3: Training throughput (tokens per second) and final training loss on C4 for the 2B model under pipeline parallelism across 8 A10G GPUs after 12 hours of training. All six configurations use the same 2B-parameter architecture and training hyperparameters from Table 1, except for the batch size, which is reduced to 16 to reduce the memory footprint of our GPipe implementation. Because these experiments are designed to measure steady-state throughput and convergence trends rather than final model quality, we train on a relatively small token budget; an extended training run evaluating convergence dynamics and pretraining loss under extreme compression is presented in Section 4.2. Table 3 reports the measured throughput in tokens per second and the final training loss after 12 hours of training on C4. The uncompressed decentralized baseline suffers a dramatic throughput collapse at 80 Mbps, while ResBM recovers nearly all of the centralized throughput despite operating over a 
+
+125 × slower link. Wall-clock convergence curves confirm that these throughput gains translate into faster training are presented in Appendix A.1. We additionally measure the throughput gain of ResBM across a range of bandwidth settings from consumer-grade to datacenter-grade links in Appendix A.2. The bottleneck architecture introduces a modest parameter overhead of approximately 3.3% (63.4M parameters) for the 2B model, while reducing per-step inter-stage communication from 112 MiB to 896 KiB at 128 × compression. A detailed breakdown is provided in Appendix A.3. 
+
+# 5 Conclusion 
+
+We introduced Residual Bottleneck Models (ResBM), an architecture designed natively for low-bandwidth pipeline parallel training. Unlike prior subspace-based compression approaches, ResBM preserves an explicit identity pathway while learning communication bottlenecks end-to-end with stan-dard training pipelines and off-the-shelf optimizers. We show that even under aggressive compression regimes, ResBM establishes a new state of the art for activation and activation-gradient compres-sion, reaching 128 × compression with no degradation in convergence rate relative to uncompressed baselines. 9Importantly, we empirically show that ResBM consistently outperforms prior Subspace Models (SM) at similar compression levels, and remains effective in realistic decentralized settings; on 2B-parameter LLM pretraining over internet-grade links, ResBM recovers near-centralized throughput under severe bandwidth constraints. These results suggest that decentralized pipeline-parallel pretraining is no longer fundamentally limited by inter-stage communication, and that architecture-level design for communication efficiency is a practical path to scaling training beyond datacenter-grade networks. More broadly, our findings position ResBM as a strong foundation for future low-bandwidth training research: the model architecture combines extreme communication reduction, end-to-end trainability, and robust convergence without specialized optimization constraints. An important next direction is to validate these gains at larger parameter scales and across broader architecture families and downstream tasks. Our preliminary experiments suggest that ResBM can achieve similar performance on larger models and across broader architecture families, but we leave this to future work. 10 Acknowledgments 
+
+The authors would like to thank Brian McCrindle and Felix Quinque for their insightful feedback on this manuscript and for their ongoing efforts in leading the integration of this architecture into the IOTA production framework with Szymon Fonau and Nicholas Miller and the rest of the IOTA team. Their work in evaluating ResBM within trustless, decentralized environments is providing invaluable insights that will inform future iterations and advancements of the model. 
+
+# References 
+
+Song Bian, Dacheng Li, Hongyi Wang, Eric Xing, and Shivaram Venkataraman. Does compressing activations help model parallel training? In Proceedings of Machine Learning and Systems ,volume 6, pages 239–252, 2024. Michael Diskin, Alexey Bukhtiyarov, Max Ryabinin, Lucile Saulnier, Anton Sinitsin, Dmitry Popov, Dmitry V. Pyrkin, Maxim Kashirin, Alexander Borzunov, Albert Villanova del Moral, et al. Distributed deep learning in open collaborations. In Advances in Neural Information Processing Systems , volume 34, pages 7879–7897, 2021. Arthur Douillard, Qixuan Feng, Andrei A. Rusu, Rachita Chhaparia, Yani Donchev, Adhiguna Kuncoro, Marc’Aurelio Ranzato, Arthur Szlam, and Jiajun Shen. DiLoCo: Distributed low-communication training of language models, 2023. Arthur Douillard, Yanislav Donchev, Keith Rush, Satyen Kale, Zachary Charles, Zachary Gar-rett, Gabriel Teston, Dave Lacey, Ross McIlroy, Jiajun Shen, Alexandre Ramé, Arthur Szlam, Marc’Aurelio Ranzato, and Paul Barham. Streaming diloco with overlapping communication: Towards a distributed free lunch, 2025. URL https://arxiv.org/abs/2501.18512 .Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. Deep residual learning for image recognition, 2015. URL https://arxiv.org/abs/1512.03385 .Yanping Huang, Youlong Cheng, Ankur Bapna, Orhan Firat, Dehao Chen, Mia Chen, HyoukJoong Lee, Jiquan Ngiam, Quoc V Le, Yonghui Wu, et al. GPipe: Efficient training of giant neural networks using pipeline parallelism. In Advances in Neural Information Processing Systems ,volume 32, 2019. Prakhar Kaushik, Shravan Chaudhari, Ankit Vaidya, Rama Chellappa, and Alan Yuille. The universal weight subspace hypothesis, 2025. URL https://arxiv.org/abs/2512.05117 .Jingyuan Liu, Jianlin Su, Xingcheng Yao, Zhejun Jiang, Guokun Lai, Yulun Du, Yidao Qin, Weixin Xu, Enzhe Lu, Junjie Yan, Yanru Chen, Huabin Zheng, Yibo Liu, Shaowei Liu, Bohong Yin, Weiran He, Han Zhu, Yuzhi Wang, Jianzhou Wang, Mengnan Dong, Zheng Zhang, Yongsheng Kang, Hao Zhang, Xinran Xu, Yutao Zhang, Yuxin Wu, Xinyu Zhou, and Zhilin Yang. Muon is scalable for llm training, 2025. URL https://arxiv.org/abs/2502.16982 .Deepak Narayanan, Mohammad Shoeybi, Jared Casper, Patrick LeGresley, Mostofa Patwary, Vijay Korthikanti, Dmitri Vainbrand, Prethvi Kashinkunti, Julie Bernauer, Bryan Catanzaro, et al. Efficient large-scale language model training on GPU clusters using Megatron-LM. In Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis , pages 1–15, 2021. Bowen Peng, Lizhang Chen, Baiyu Su, Jeffrey Quesnelle, Diederik P. Kingma, and Qiang Liu. Demo: Decoupled momentum optimization, 2026. URL https://arxiv.org/abs/2411.19870 .Sameera Ramasinghe, Thalaiyasingam Ajanthan, Gil Avraham, Yan Zuo, and Alexander Long. Protocol models: Scaling decentralized training with communication-efficient model parallelism, 2025. URL https://arxiv.org/abs/2506.01260 .Mikhail I. Rudakov, Aleksandr Nikolaevich Beznosikov, Ya A. Kholodov, and Alexan-der Vladimirovich Gasnikov. Activations and gradients compression for model-parallel training. In Doklady Mathematics , volume 108, pages S272–S281. Springer, 2023. Max Ryabinin, Eduard Gorbunov, Vsevolod Plokhotnyuk, and Gennady Pekhimenko. SWARM parallelism: Training large models can be surprisingly communication-efficient. In International Conference on Machine Learning , 2023. URL https://arxiv.org/abs/2301.11913 .Amir Sarfi, Benjamin Thérien, Joel Lidin, and Eugene Belilovsky. Communication efficient llm pre-training with sparseloco, 2025. URL https://arxiv.org/abs/2508.15706 .11 Jaime Sevilla. How far can decentralized training over the internet scale? Epoch AI, Gradient Updates newsletter, 2025. Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin. Attention is all you need, 2023. URL https://arxiv.org/ abs/1706.03762 .Yue Wang, Jianqiao Lu, Tao Lin, Zhichao Lu, and Yingyan Lin. Pufferfish: Communication-efficient models at no extra cost. Proceedings of Machine Learning and Systems , 3, 2021. Zhenda Xie, Yixuan Wei, Huanqi Cao, Chenggang Zhao, Chengqi Deng, Jiashi Li, Damai Dai, Huazuo Gao, Jiang Chang, Kuai Yu, Liang Zhao, Shangyan Zhou, Zhean Xu, Zhengyan Zhang, Wangding Zeng, Shengding Hu, Yuqing Wang, Jingyang Yuan, Lean Wang, and Wenfeng Liang. mhc: Manifold-constrained hyper-connections, 2026. URL https://arxiv.org/abs/ 2512.24880 .Binhang Yuan, Yongjun He, Jared Quincy Davis, Tianyi Zhang, Tri Dao, Beidi Chen, Percy Liang, Christopher Ré, and Ce Zhang. Decentralized training of foundation models in heterogeneous environments. In Advances in Neural Information Processing Systems , volume 35, 2022. 12 A Appendix 
+
+A.1 Wall-clock convergence 
+
+Beyond raw throughput, we compare training loss as a function of wall-clock time to assess whether the compression-induced throughput gains translate into faster convergence in practice. Figure A.1 plots the training loss against elapsed time for all six configurations. Each curve shows the loss over the first 35M tokens. With a bandwidth of 80 Mbps, the ResBM AdamW variant with 128 ×
+
+activation compression exceeds the token throughput of the centralized baseline. Profiling shows that both communication and compute are faster under 128 × activation compression, likely because the compressed tensors are much smaller and cheaper to move through memory and across the network. The lower throughput of the Muon variant relative to the AdamW variant is attributable to Muon’s higher per-step compute cost, which does not affect communication volume. The uncompressed decentralized baseline converges significantly slower as the pipeline stall induced by transmitting full-rank activations over the restricted link reduces throughput. 
+
+Figure A.1: Training loss versus wall-clock time on C4 over the first 35M tokens for all runs. ResBM at 80 Mbps closely matches the centralized baseline at 10 Gbps, while the uncompressed decentralized configuration converges substantially slower and with greater instability. 
+
+A.2 Throughput gain as a function of bandwidth 
+
+To characterize the regime in which activation compression provides the greatest benefit, we measure the throughput gain of ResBM relative to the uncompressed baseline across a range of inter-node bandwidth settings spanning consumer-grade to datacenter-grade links. Figure A.2 plots this gain factor for both the AdamW and Muon ResBM variants. At high bandwidths (800 Mbps–10 Gbps), both ResBM variants achieve approximately 1× throughput relative to the uncompressed baseline, confirming that when communication is not the bottleneck, compression neither helps nor hurts. The gain remains flat across this regime because GPU compute dominates pipeline latency and the communication overhead of even the uncompressed activations is negligible. Below this threshold, however, the picture changes sharply: at 80 Mbps, AdamW+ResBM achieves a ≈12 .8× throughput gain and Muon+ResBM achieves ≈11 .2×, both relative to the uncompressed AdamW baseline at the same bandwidth. The slight gap between the two variants reflects Muon’s additional per-step compute cost, which partially offsets the communication savings at extreme bandwidth constraints. Together, these results show that ResBM’s benefit is strongly regime-dependent: it is most effective precisely in the low-bandwidth settings that define decentralized training, with negligible overhead when deployed over high-speed interconnects. 
+
+A.3 Memory and communication overhead details 
+
+The bottleneck architecture introduces seven additional projection layer pairs (down-projection and up-projection) relative to the baseline. For the 2B model spread across 8 pipeline stages with one transformer block per stage, this increases total parameter count from 1,896,751,104 to 1,960,157,184 — an overhead of approximately 63.4M parameters (3.3%). The primary benefit lies in inter-stage communication. Without bottleneck layers, each pipeline boundary transfers a 1 × 1024 × 4096 activation tensor (8 MiB in bf16) per direction. At 128 ×
+
+13 Figure A.2: Throughput gain of ResBM ( 128 × compression) relative to the uncompressed AdamW baseline as a function of inter-node bandwidth. Gains are negligible at high bandwidths where com-pute dominates, and rise sharply below ∼800 Mbps where communication becomes the bottleneck, reaching ≈12 .8× (AdamW) and ≈11 .2× (Muon) at 80 Mbps. compression, this reduces to 1 × 1024 × 32 (64 KiB in bf16) — a 128 × reduction in per-boundary transfer volume for both forward activations and backward gradients. Across the 7 stage boundaries in an 8-stage pipeline, this translates from 112 MiB to 896 KiB of total per-step communication, making the architecture practical for low-bandwidth interconnects. 14 B Appendix 
+
+B.1 Bottleneck weight subspace analysis 
+
+This appendix provides the full per-layer spectral analysis of the bottleneck output projections summarised in Section 3.4. 
+
+Methodology. We apply SVD to each bottleneck output projection Wfc5 ∈ Rb×d at layers 1–7 (the final transformer block uses a standard FFN and is excluded). For each decomposition we compute the effective rank reff = P 
+
+> i
+
+σ2 
+
+> i
+
+/ max i σ2 
+
+> i
+
+, which equals 1 when a single singular value dominates and equals the full bottleneck dimension b when all singular values are equal. 
+
+Experimental setup. We analyse checkpoints from two training runs of the same 2B-parameter ResBM at 128 × compression ( b = 32 ), varying only the optimizer (Muon vs. AdamW), as described in Section 4.1. The comparison is closely token-matched ( ∼12.87B vs. ∼12.90B, a 0.25% gap). 
+
+Proposed interpretation. The per-layer singular value spectrum analysis in figure B.1 and the effective rank summary in table B.1 identify similar patterns between optimizers with some key differences. While these patterns are robust across the configurations we tested, particularly regarding how each optimizer allocates representational capacity across layers, our interpretation should be considered preliminary. Further experiments with additional architectures, scales, and training token budgets are needed to confirm the generality of these findings.                       
+
+> 128 ×(b= 32 )
+> Layer Muon reff AdamW reff
+> 119.95 10.26 211.66 14.97 316.11 14.24 412.41 14.19 512.12 11.94 613.20 13.21 712.26 13.72
+> Mean 13.96 13.22
+
+Table B.1: SVD effective rank ( reff ) of the bottleneck output projection Wfc5 at each layer, for Muon and AdamW at 128 × compression. The most striking finding is at layer 1: Muon achieves an effective rank of 19.95 (out of 32), compared to AdamW’s 10.26, a nearly 2× gap. Muon’s first-layer spectrum is remarkably flat, distributing energy uniformly across bottleneck dimensions rather than collapsing into a subspace, precisely the behaviour needed when communication bandwidth is the binding constraint. Meanwhile, the mean 
+
+effective rank across all seven layers is similar for both optimizers (13.96 vs. 13.22), indicating that the key difference is not in total subspace utilisation but in its distribution: Muon front-loads capacity at the network’s entry point, where information loss through the bottleneck is irrecoverable. 1 While these spectral patterns are robust across the configurations tested, more extensive experiments are needed to confirm these observations. 
+
+> 1The observed per-layer asymmetry could also suggest that a non-uniform bottleneck design, allocating more dimensions to early layers, could improve the efficiency–quality trade-off. We leave this to future work.
+
+15 Figure B.1: Normalised SVD singular value spectra for Muon vs. AdamW at 128 × compression (Wfc5 , layers 1–7). Each subplot shows one layer; the x-axis is the singular value index and the y-axis is the singular value normalised by σ1.16 C Appendix 
+
+C.1 Figures 
+
+17 Figure C.1: Bottleneck layer placement across a pipeline-parallel communication boundary. The bottleneck follows the feed-forward (FF) layer and is implemented as an autoencoder with an encoder 
+
+El and decoder Dl+1 placed on opposite sides of the boundary between layers l and l + 1 . Only the compressed activation bl = El(·) is transmitted, reducing communication from H to h ≪ H. In the figure, H is set to 2048 and h is referred to as x. Identity pathways are preserved by incorporating the encoder into the residual function of layer l (together with FF), and the decoder into the local residual branch of layer l + 1 (preceding attention). Projection operators Pid  
+
+> l
+
+and Pid  
+
+> l+1
+
+align dimensionalities on the identity paths so that residual additions remain well-defined under the generalized update in Equation 2. 18 Figure C.2: Muon baseline outperforms AdamW baseline. Consistent with state-of-the-art findings, the Muon-optimized baseline (no compression) outperforms the AdamW baseline. We maintain the AdamW baseline as our primary target performance for comparison, as discussed in Section 3.4. As observed, the Muon baseline undergoes a lower level of rank collapse; while this yields superior full-rank performance, it arguably makes the model less compressible, as the features do not naturally concentrate into the low-dimensional subspace favored by the bottleneck. 19

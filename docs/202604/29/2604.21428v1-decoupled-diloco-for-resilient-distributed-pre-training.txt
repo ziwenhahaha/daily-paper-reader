@@ -1,0 +1,1462 @@
+Title: Decoupled DiLoCo for Resilient Distributed Pre-training
+
+URL Source: https://arxiv.org/pdf/2604.21428v1
+
+Published Time: Fri, 24 Apr 2026 00:46:12 GMT
+
+Number of Pages: 38
+
+Markdown Content:
+# Decoupled DiLoCo for Resilient Distributed Pre-training  
+
+> Decoupled DiLoCo Team 1,2
+> 1Google DeepMind, 2Google Research
+
+Modern large-scale language model pre-training relies heavily on the single program multiple data (SPMD) paradigm, which requires tight coupling across accelerators. Due to this coupling, transient slowdowns, hardware failures, and synchronization overhead stall the entire computation, wasting significant compute time at scale. While recent distributed methods like DiLoCo reduced communication bandwidth, they remained fundamentally synchronous and vulnerable to these system stalls. To address this, we introduce Decoupled DiLoCo, an evolution of the DiLoCo framework designed to break the lock-step synchronization barrier and go beyond SPMD to maximize training goodput. Decoupled DiLoCo partitions compute across multiple independent “learners” that execute local inner optimization steps. These learners asynchronously communicate parameter fragments to a central synchronizer, which circumvents failed or straggling learners by aggregating updates using a minimum quorum, an adaptive grace window, and dynamic token-weighted merging. Inspired by “chaos engineering”, we achieve significantly improved training efficiency in failure-prone environments with millions of simulated chips with strictly zero global downtime, while maintaining competitive model performance across text and vision tasks, for both dense and mixture-of-expert architectures. 
+
+## 1. Introduction 
+
+Modern LLM pre-training relies on the tightly coupled single program, multiple data (SPMD) paradigm (e.g., data, tensor, and sequence par-allelism) that requires global synchronization at every step. This “monolithic” approach creates a major reliability bottleneck: a single hardware failure or straggler can stall the entire system. As compute scales, the sheer number of components transforms rare hardware failures into routine occurrences. This is exacerbated by the long du-ration of pre-training regimes, where frequent interruptions lead to significant downtime and wasted compute. Framing this analogously to the CAP theo-rem (Brewer, 2000), we argue the primary bottle-neck of modern pre-training is a rigid adherence to parameter consistency. To reason about this trade-off, we define an analog of the “CAP prop-erties” for the pre-training setting as follows: 
+
+• Consistency (C): Every accelerator maintains a view of a globally synchronized set of model weights. 
+
+• Availability (A): Training continues in the pres-ence of hardware failures. 
+
+• Partition Tolerance (P): Training continues de-spite interconnect instability or communication delays. Under this view, SPMD pre-training prioritizes consistency over all else: it sacrifices availabil-ity and partition tolerance to ensure every ac-celerator maintains a view of the global model state. While recent slice-granular “elastic” meth-ods (Gemini Team, Google, 2025) can reconfig-ure the SPMD computation to run on a smaller subset of healthy accelerators, the global over-head of fault detection and cluster-wide resizing still incurs significant downtime, as illustrated in Figure 1 (top). Recent distributed alternatives like DiLoCo (Douillard et al., 2024) and its streaming variant (Douillard et al., 2025) have successfully addressed communication bottlenecks by reducing bandwidth requirements through intermittent synchronization. However, because previous iterations of DiLoCo remained fundamentally synchronous, they still enforced strict consistency across the cluster, leaving the system just as vulnerable to localized hardware failures and straggler penalties. Inspired by the Pathways vision (Barham et al., 2022), we argue that pre-training should priori- 
+
+> ©2026 Google. All rights reserved
+> arXiv:2604.21428v1 [cs.CL] 23 Apr 2026
+
+Decoupled DiLoCo 💣   
+
+> Stepping Stepping with fewer slices Stepping
+> Step
+> Slices
+> (data replicas)  Elastic Data-Parallel
+> Decoupled DiLoCo M=4
+
+💣   
+
+> Learner
+> Stopped Stopped
+> Stepping Stepping Stepping with fewer slices
+
+Figure 1 | Slice-granularity elasticity vs decoupling : the system continues training with fewer “slices” of TPU chips when there is a localized failure. When a failure occurs affecting 1 of the 𝑀 
+
+replicas, the decoupling approach allows the other 𝑀 −1/𝑀 replicas in the system to continue stepping. tize availability and partition tolerance over con-sistency by moving beyond the present tightly-coupled paradigm. We propose Decoupled DiLoCo, a distributed training framework that de-composes a global cluster into independent, asyn-chronous “learners”. By evolving DiLoCo’s inter-mittent synchronization into a fully asynchronous communication protocol, we limit the “blast ra-dius” of a hardware failure to a single learner. This allows the majority of the system to con-tinue training uninterrupted during local failures or reconfigurations (Figure 1). Through careful system and algorithm co-design, we demonstrate that maximum training goodput can be achieved in chaotic environments without sacrificing final model quality. 
+
+Contributions Our core contributions are: 
+
+• Decoupled DiLoCo: We introduce a dis-tributed training framework that evolves pre-vious bandwidth-focused methods by decom-posing monolithic SPMD clusters into inde-pendent, asynchronous learners. This priori-tizes availability and partition tolerance over strict consistency. 
+
+• Scalable System Architecture: We design a system architecture featuring a central syn-chronizer to facilitate asynchronous param-eter reconciliation, enabling the framework to operate efficiently at pre-training scales. 
+
+• Empirical Validation: We provide extensive empirical evidence that Decoupled DiLoCo achieves comparable downstream perfor-mance to standard data-parallel training across various model and compute scales for both dense and Mixture-of-Experts (MoE) architectures on text and multi-modal evalu-ations. Moreover we show that pre-training with our asynchronous framework doesn’t hinder later post-training capabilities. 
+
+• Robustness via Chaos Engineering: We ap-ply chaos engineering (Basiri et al., 2016) principles to LLM pre-training, demonstrat-ing that our framework maintains high avail-ability and model quality, even under aggres-sive, continuous hardware failures. 2Decoupled DiLoCo 
+
+## 2. Preliminaries 
+
+Let 𝜃 (𝑡 ) denote the model parameters at step 𝑡 .We wish to train a model across 𝑀 compute clus-ters (called learners for brevity), each of which has its own model replica 𝜃 (𝑡 ) 
+
+> 𝑚
+
+, for 𝑚 ∈ [ 𝑀 ]. In SPMD data-parallel training, each learner com-putes a batched gradient, and a global gradient is aggregated across learners. This requires synchro-nization across the learners at every step, incur-ring potentially high amounts of communication and bandwidth. It also means that a slowdown in a single learner delays the entire computation, and a failure requires, in principle, a replay of the partially-completed step. In DiLoCo (Douillard et al., 2024), each of the 
+
+𝑀 learners trains in parallel using an inner opti-mizer (e.g. AdamW) on distinct data shards, and only synchronize weights every 𝐻 steps. Rather than averaging the weights, DiLoCo applies an 
+
+outer optimization step (Reddi et al., 2021) when 
+
+𝑡 mod 𝐻 = 0 by treating differences in parameter space as gradient estimates: 
+
+Δ(𝑡 ) = 1
+
+𝑀 
+
+> 𝑀
+
+∑︁ 
+
+> 𝑚 =1
+
+Δ(𝑡 ) 
+
+> 𝑚
+
+= 1
+
+𝑀 
+
+> 𝑀
+
+∑︁ 
+
+> 𝑚 =1
+
+
+
+𝜃 (𝑡 −𝐻 ) 
+
+> 𝑚
+
+− 𝜃 (𝑡 )
+
+> 𝑚
+
+
+
+𝜃 (𝑡 ) 
+
+> 𝑚
+
+= OuterOpt (𝜃 (𝑡 −𝐻 ) 
+
+> 𝑚
+
+, Δ(𝑡 ) )
+
+(1) We refer to Δ(𝑡 ) 
+
+> 𝑚
+
+as an outer gradient . Douil-lard et al. (2024) found that letting OuterOpt be SGD with Nesterov momentum (Sutskever et al., 2013) greatly improves model quality compared to weight averaging (which corresponds to an outer optimizer of SGD with learning rate 1). While DiLoCo reduces total bandwidth us-age by a factor of 𝐻 , it does not reduce peak bandwidth. This can be achieved by Stream-ing DiLoCo (Douillard et al., 2025). Partition the model weights 𝜃 into 𝑃 sets (called frag-ments ), and let 𝜃 (𝑡 ) 
+
+> 𝑚,𝑝
+
+denote the 𝑝 -th fragment held by learner 𝑚 at step 𝑡 . Let 𝑡 1, 𝑡 2, . . . , 𝑡 𝑃 ∈{0, . . . , 𝐻 − 1} be distinct offsets. Then, at step 𝑡 
+
+we only synchronize a fragment 𝑝 if 𝑡 mod 𝐻 = 𝑡 𝑝 .Since (1) requires no actual gradient, the outer gradients can be computed fragment-wise. For 
+
+𝑡 mod 𝐻 = 𝑡 𝑝 , we compute 
+
+Δ(𝑡 ) 
+
+> 𝑝
+
+= 1
+
+𝑀 
+
+> 𝑀
+
+∑︁ 
+
+> 𝑚 =1
+
+Δ(𝑡 ) 
+
+> 𝑚,𝑝
+
+= 1
+
+𝑀 
+
+> 𝑀
+
+∑︁ 
+
+> 𝑚 =1
+
+
+
+𝜃 (𝑡 −𝐻 ) 
+
+> 𝑚,𝑝
+
+− 𝜃 (𝑡 )
+
+> 𝑚,𝑝
+
+
+
+𝜃 (𝑡 ) 
+
+> 𝑚,𝑝
+
+= OuterOpt (𝜃 (𝑡 −𝐻 ) 
+
+> 𝑚,𝑝
+
+, Δ(𝑡 ) 
+
+> 𝑝
+
+)
+
+(2) As written, (2) is blocking - the learners can’t continue training until they send Δ(𝑡 ) 
+
+> 𝑚,𝑝
+
+and re-ceive Δ(𝑡 ) 
+
+> 𝑝
+
+. However, Douillard et al. (2025) show that this communication and training can be over-lapped - the learners can send Δ(𝑡 ) 
+
+> 𝑚,𝑝
+
+and receive 
+
+Δ(𝑡 ) 
+
+> 𝑝
+
+𝜏 steps later with little change in model qual-ity for small values of 𝜏 .Streaming DiLoCo offers a number of benefits, including significant reductions in bandwidth us-age (total and peak) and the ability to make com-munication across steps asynchronous. However, Streaming DiLoCo still requires lock-step train-ing across learners. Thus, when using Streaming DiLoCo with all-reduce, issues such as stragglers and learner failures can significantly slow down or halt training entirely. 
+
+## 3. Decoupled DiLoCo 
+
+To break this lock-step barrier, we completely de-couple the learners from one another. We now describe Decoupled DiLoCo in full. We train across 𝑀 learners, each with their own model copy 𝜃 𝑚 . As in Streaming DiLoCo, we parti-tion the model across non-overlapping fragments 
+
+{𝜃 𝑚,𝑝 }𝑝 ∈ P , where 𝑃 = |P | . We employ the same fragment-wise outer optimization as in (2) . How-ever, instead of a blocking global exchange, this optimization is performed by a central synchro-nizer (the syncer ), which asynchronously receives and sends updates to learners. We discuss the learners and syncer in detail below. 
+
+3.1. The Learner: Local Optimization 
+
+In Algorithm 1, each learner 𝑚 operates indepen-dently on its own data shard D𝑚 (L8 ), without waiting for its peers. A learner continuously ex-ecutes inner optimization steps ( L11) using its inner optimizer (e.g., AdamW). Because learners are decoupled, they operate at varying speeds and may encounter transient failures. To account for 3Decoupled DiLoCo 
+
+Figure 2 | Decoupled DiLoCo . For illustrative purposes, a simple example with 𝑀 = 2 learners, 𝑃 = 3
+
+fragments, synchronized at every step ( 𝐻 = 3), and overlapped over 𝜏 = 2 steps. The second learner stalls for three steps, but the overall training never stops. All missed updates are applied to the faulty learner’s state once it continues training. this, we track the local progress by maintaining local counters for the number of steps 𝑡 𝑚 taken by the learner, the number of steps 𝑐 steps  
+
+> 𝑚,𝑝
+
+taken since it received an update to fragment 𝑝 , and the number of tokens 𝑐 tokens  
+
+> 𝑚,𝑝
+
+processed since it received an update to fragment 𝑝 .At each step, the learner sends its metadata 
+
+(𝑡 𝑚 , {𝑐 steps  
+
+> 𝑚,𝑝
+
+}𝑝 ∈ P , {𝑐 tokens  
+
+> 𝑚,𝑝
+
+}𝑝 ∈ P ) to the syncer ( L13 ). The syncer uses this to drive the merging of fragments across learners, pulling fragments as needed. Crucially, this communication occurs in the background, while the learner continues to perform optimization steps. By never waiting for the syncer or its peers, the learner maintains high local goodput and completely isolates the blast radius of any localized hardware failure. Concur-rently, the learner listens for updates from the syncer. Upon receiving an updated fragment Θ𝑝 
+
+(L15 ), the learner overwrites its local weights for that fragment and resets 𝑐 steps  
+
+> 𝑚,𝑝
+
+and 𝑐 tokens  
+
+> 𝑚,𝑝
+
+(L16 ), partially resynchronizing with the global trajec-tory without halting its progress. To determine when training is complete, the learner uses a global step count 𝑡 that is updated by the syncer (L17 ). This is necessary because learners may proceed at variable speeds, so by the time the desired number of global steps is reached, the learners will have completed different numbers of local steps. 
+
+3.2. The Syncer: Global Aggregation 
+
+The syncer is responsible for reconciling the di-vergent states of the asynchronous learners via an outer optimization step. Crucially, this is where our approach diverges from standard data-parallel or synchronous DiLoCo methods: to guar-antee high availability and maximize global good-put, the syncer does not wait for a synchronized consensus from all 𝑀 learners. We outline the syncer’s operations in Algo-rithm 2. The syncer maintains a global step count 
+
+> 𝑡
+
+. As in (2) , when 𝑡 matches a predetermined offset 𝑡 𝑝 mod 𝐻 for fragment 𝑝 (L2 ), it will aggre-gate this fragment across learners and apply outer optimization. Rather than waiting for all 𝑀 learn-ers, the syncer only waits for a minimum thresh-old 𝐾 ≤ 𝑀 learners that successfully send their metadata ( L4 ). Let M𝑡 denote the subset of learn-ers that successfully reported. The syncer then pulls the corresponding model fragment from all learners in M𝑡 . Any offline or straggling learners are excluded from the aggregation for that step, ensuring that localized hardware failures do not stall global training progress. In a fully asynchronous system, fast learn-ers naturally process more data between syncs than slow or recovering learners. To prevent the outer optimization from being disproportionately 4Decoupled DiLoCo 
+
+Algorithm 1 Decoupled DiLoCo: Learner 
+
+Require: Fragmented initial weights {Θ(0) 
+
+> 𝑝
+
+}𝑝 ∈ P , Data shard D𝑚 
+
+Require: Per-fragment sync interval 𝐻 , Offsets 𝑡 𝑝 
+
+Require: Optimizer InnerOpt 
+
+1: ∀𝑝 : 𝜃 (0) 
+
+> 𝑚,𝑝
+
+← Θ(0)
+
+> 𝑝
+
+2: ∀𝑝 : 𝑐 steps  
+
+> 𝑚,𝑝
+
+← 0, 𝑐 tokens  
+
+> 𝑚,𝑝
+
+← 0
+
+3: 𝑡 𝑚 = 0
+
+4: 𝑡 = 0
+
+5: while step 𝑡 ≤ 𝑇 do 
+
+6: ⊲ 1. Inner optimization 
+
+7: 𝑡 𝑚 = 𝑡 𝑚 + 1
+
+8: 𝑥 ∼ D 𝑚 
+
+9: ∀𝑝 : 𝑐 steps  
+
+> 𝑚,𝑝
+
+← 𝑐 steps  
+
+> 𝑚,𝑝
+
++ 1, 𝑐 tokens  
+
+> 𝑚,𝑝
+
+← 𝑐 tokens  
+
+> 𝑚,𝑝
+
++ | 𝑥 |
+
+10: L ← 𝑓 (𝑥, 𝜃 (𝑡 𝑚 −1) 
+
+> 𝑚
+
+)
+
+11: 𝜃 (𝑡 𝑚 ) 
+
+> 𝑚
+
+← InnerOpt (𝜃 (𝑡 𝑚 −1) 
+
+> 𝑚
+
+, ∇L )
+
+12: ⊲ 2. Metadata learner → syncer 
+
+13: Send (Syncer , 𝑡 𝑚 , {𝑐 steps  
+
+> 𝑚,𝑝
+
+}𝑝 ∈ P , {𝑐 tokens  
+
+> 𝑚,𝑝
+
+}𝑝 ∈ P )
+
+14: ⊲ 3. Communication syncer → learner 
+
+15: for (Θ𝑝 , 𝑡 𝑠 ) ∈ RecvAllPending (Syncer ) do 
+
+16: 𝜃 (𝑡 ) 
+
+> 𝑚,𝑝
+
+← Θ𝑝 
+
+17: 𝑐 steps  
+
+> 𝑚,𝑝
+
+← 0, 𝑐 tokens  
+
+> 𝑚,𝑝
+
+← 0
+
+18: 𝑡 = 𝑡 𝑠 
+
+19: end for 
+
+20: end while 
+
+skewed by slower learners, the syncer calculates a dynamic weight 𝑤 𝑚,𝑝 for each learner using a weighting function Weight , derived from the re-ported per-learner 𝑐 steps and 𝑐 tokens . Throughout, we use the following weighting function 
+
+Weight (𝑐 tokens  
+
+> 𝑚,𝑝
+
+, 𝑐 steps  
+
+> 𝑚,𝑝
+
+) = 𝑐 tokens  
+
+> 𝑚,𝑝
+
+× 𝑐 tokens 
+
+> 𝑚,𝑝
+
+𝑐 steps 
+
+> 𝑚,𝑝
+
+!
+
+.
+
+Intuitively, this corresponds to 𝑤 𝑚,𝑝 =
+
+(quantity) × (quality) , where a learner’s contribution is of higher quality if it is amor-tized over fewer steps. The syncer then computes the outer gradient Δ(𝑡 ) 
+
+> 𝑝
+
+using a merge function (mergeFn , L11 ). This function determines the aggregated shift by comparing the previous global state Θ(𝑡 −𝐻 ) 
+
+> 𝑝
+
+against the weighted combination of the newly received learner fragments {𝜃 (𝑡 ) 
+
+> 𝑚,𝑝
+
+}𝑚 ∈ M 𝑡 .Finally, the syncer applies the outer optimizer (e.g., SGD with Nesterov momentum, L13 ) to de-
+
+Algorithm 2 Decoupled DiLoCo: Syncer 
+
+Require: Fragmented initial weights {Θ(0) 
+
+> 𝑝
+
+}𝑝 ∈ P , 𝑀 
+
+learners 
+
+Require: Per-fragment sync interval 𝐻 
+
+Require: Minimum learners 𝐾 
+
+Require: Optimizer OuterOpt 
+
+1: for step 𝑡 = 1 . . . 𝑇 do 
+
+2: if ∃𝑝 s.t. 𝑡 mod 𝐻 = 𝑡 𝑝 then 
+
+3: ⊲ 1. Communication learner → syncer 
+
+4: U𝑡 ← Recv (Learners , at least 𝐾 )
+
+5: {𝑡 𝑚 , 𝑐 steps  
+
+> 𝑚,𝑝
+
+, 𝑐 tokens  
+
+> 𝑚,𝑝
+
+}𝑚 ∈ M 𝑡 ← U 𝑡 
+
+6: for 𝑚 ∈ M 𝑡 do 
+
+7: 𝜃 (𝑡 ) 
+
+> 𝑚,𝑝
+
+= Pull (Learner 𝑚 , 𝑡 𝑚 , 𝑝 )
+
+8: end for 
+
+9: 𝑤 𝑚,𝑝 ← Weight ({ 𝑐 steps  
+
+> 𝑚,𝑝
+
+, 𝑐 tokens  
+
+> 𝑚,𝑝
+
+}𝑚 ∈ M 𝑡 )
+
+10: ⊲ 2. All-reduce across syncer shards 
+
+11: Δ(𝑡 ) 
+
+> 𝑝
+
+← Merge 
+
+
+
+{𝜃 (𝑡 )
+
+> 𝑚,𝑝
+
+, 𝑤 𝑚,𝑝 }𝑚 ∈ M 𝑡 , Θ(𝑡 −𝐻 )
+
+> 𝑝
+
+
+
+12: ⊲ 3. Outer optimization 
+
+13: Θ(𝑡 ) 
+
+> 𝑝
+
+← OuterOpt (Θ(𝑡 −𝐻 ) 
+
+> 𝑝
+
+, Δ(𝑡 ) 
+
+> 𝑝
+
+)
+
+14: ⊲ 4. Communication syncer → learner 
+
+15: Send (Learners , Θ(𝑡 ) 
+
+> 𝑝
+
+, 𝑡 )
+
+16: end if 
+
+17: end for 
+
+rive an updated global fragment Θ(𝑡 ) 
+
+> 𝑝
+
+which is asynchronously broadcasted back to the active learners ( L15 ). 
+
+Adaptive Quorum Window. When syncer op-erations outpace learner compute steps, over-lapping communication and computation over 
+
+𝜏 steps creates a natural slack . Instead of pro-ceeding immediately once the minimum quorum 
+
+𝐾 is met, we use this idle time to introduce an adaptive grace window , 𝜉 grace . This purposefully trades available network slack for improved sam-ple efficiency by incorporating more learners into the global update, all without stalling the system or degrading goodput. In our setting, setting 𝐻 = 𝑃 and 𝜏 = 2 effec-tively double-buffers the training process. Our primary constraint is that gathering a quorum, the grace window, and synchronizing a fragment must fit within 𝜏 compute steps. The available 5Decoupled DiLoCo slack is defined as: 
+
+𝜉 slack = 𝜏 × 𝜉 step − ( 𝜉 quorum + 𝜉 sync ) (3) where 𝜉 step , 𝜉 quorum , and 𝜉 sync are the durations for a compute step, reaching quorum, and syn-chronization, respectively. To prevent bottlenecks, the grace window 𝜉 grace ≤ 𝛾 ·𝜉 slack is bounded by a safety margin 𝛾 < 1. In practice, 𝜉 step and 𝜉 quorum 
+
+can be tracked via exponential moving averages to adapt to changing speeds and bandwidth.                  
+
+> Step 𝑇 =0
+> 𝜉 step
+> Step 𝑇 =1
+> 𝜉 step
+> Step 𝑇 =2
+> 𝜉 step
+> 𝜉 quorum
+> 𝐾 ready
+> 𝜉 grace
+> +𝐾 Δready
+> 𝜉 sync Slack
+> Frag 1 Received
+> 𝜉 quorum
+> 𝐾 ready
+> 𝜉 grace
+> +𝐾 Δready
+> 𝜉 sync Slack
+> Frag 2 Received
+> 𝜉 quorum
+> 𝐾 ready
+> 𝜉 grace
+> +𝐾 Δready
+> Learners
+> Syncer (Frag 1)
+> Syncer (Frag 2)
+> Syncer (Frag 3)
+
+Figure 3 | Illustration of the adaptive quorum grace window fitting within the available slack. Illustrated in Figure 3, this brief wait trades excess bandwidth for sample efficiency by incor-porating more learners. Combined with token-based weighting 𝑤 𝑚,𝑝 , slightly delayed updates can still contribute to the global update, reducing outer gradient variance while naturally handling hardware speed discrepancies. We also found that in practice, when learner steps vary in speed or are not aligned, an adaptive grace window works better than setting higher 𝐾 for maintaining a con-sistent sync frequency without introducing gaps in utilization. 
+
+3.3. Chaos engineering for LLMs 
+
+Chaos engineering (Basiri et al., 2016) tests sys-tem resilience by simulating failures, a practice originally designed for general infrastructure. We apply this principle to LLM training, anchoring in the observation that determinism and repro-ducibility are critical for enhancing system re-silience, debugging, and algorithmic scaling prop-erties. We distill the wide range of possible hardware failures during LLM training (Llama Team, Meta, 2024) into five key parameters: the mean time be-tween interruptions ( MTBI ) per chip ( MTBI chip ), the total number of simulated chips ( 𝑁 chip ), the processing speed variance per chip, the duration required for elastic downscaling and upscaling, and the time needed for a failed chip to return online. Crucially, for a fixed interruption rate per chip, the mean time between failures (MTBF) of the entire cluster decreases proportionally as the number of chips increases: 
+
+MTBF cluster = MTBI chip 
+
+𝑁 chip 
+
+. (4) We experiment with strategies for resilience by generating tapes of events that would be logged during a system execution that encountered the failures of interest (detailed in Section E.1). The number of chips failing at any given step is sam-pled from a Poisson distribution parameterized by the inverse of MTBF cluster . When a chip fails, its entire slice is temporarily removed and only returns after a delay sampled from an exponenti-ated Weibull distribution. The subsequent elastic downscaling and upscaling operations consume a user-configurable, fixed amount of time. This simulation yields a goodput metric (Wong-panich et al., 2025): the percentage of allocated cluster time actually spent executing useful steps; a training run that executes some of the steps with less slices available than expected will have lower goodput. While we omit Model Flops Utilization (MFU) for simplicity, our decoupled framework introduces no MFU regression. Table 1 reports goodput across 𝑀 ∈{1, 2, 4, 8, 16 } learners (where 𝑀 = 1 is standard data parallelism) under various amount of simulated chips. Assuming an MTBI chip of 1 year and a number of chips 𝑁 chip chosen arbitrarily for this paper and reconfiguration times of tens of seconds, standard data-parallel training without elasticity responds poorly to failures. Even with elasticity, goodput plummets to 40% for 𝑁 chip = 2.4m chips. Conversely, decoupling training across multiple learners (𝑀 > 1) maintains consistently high goodput. We also report in Table 1b, the system uptime (e.g. how often the system is stepping): notably, with sufficiently large 𝑀 , the uptime can be 100%, with not a single downtime. 6Decoupled DiLoCo                                        
+
+> Goodput Number of chips 𝑁 chip
+> # Learners 𝑀 150k 300k 600k 1.2m 2.4m
+> (no elasticity) 172% 57% 38% 27% 18%
+> 188% 80% 69% 58% 40%
+> 294% 88% 80% 70% 54%
+> 496% 93% 89% 82% 73%
+> 898% 96% 94% 88% 80%
+> 16 99% 98% 96% 93% 86%
+
+(a) Goodput : % of the cluster doing useful work.                                        
+
+> System Uptime Number of chips 𝑁 chip
+> # Learners 𝑀 150k 300k 600k 1.2m 2.4m
+> (no elasticity) 172% 57% 38% 27% 18%
+> 188% 81% 69% 59% 42%
+> 2100% 97% 96% 90% 80%
+> 4100% 100% 99% 99% 99%
+> 8100% 100% 100% 100% 99%
+> 16 100% 100% 100% 100% 99%
+
+(b) System Uptime : % of the time a cluster is stepping. 
+
+Table 1 | Modeled goodput and system uptime for hypothetical configurations across number of decoupled learners 𝑀 and number of simulated chips 𝑁 chip for a fixed MTBI chip = 1 year level of simulated hardware failures. Here we assume all chips have constant speed. Note that 𝑀 = 1 learner is equivalent to data-parallel. 
+
+Goodput Rule of Thumb: An 𝑀 -learner sys-tem matches the goodput of a single-learner system using 𝑀 times fewer chips. 
+
+goodput (𝑀, 𝑁 chip ) ≈ goodput (𝑘 × 𝑀, 𝑘 × 𝑁 chip )
+
+For simulation purposes, we simulate a signifi-cantly larger number of chips ( O( 1m)) than we physically deploy ( O( 1k)). When a simulated chip fails, its corresponding slice is discarded, re-ducing the effective batch size, similar to the slice-granularity elasticity described by Gemini Team, Google (2025). During our ML experiments, we proportionally scale down our real batch size to match what would occur at the larger simulated scale. 
+
+## 4. System design 
+
+Current model pretraining relies on a globally syn-chronized execution model. While devices contin-uously execute computation and communication primitives, they are bound by strict synchroniza-tion barriers: a failure or slowdown in any single device stalls the entire cluster. The outermost parallelism level in standard pretraining is dis-tributed data parallelism (DP), where multiple model replicas compute gradients with respect to the shared parameters, which are then averaged via collective communication. A critical constraint of this paradigm is that all replicas must succeed and participate on every step. Our system design removes this tight coupling by allowing replicas to take steps independently of one another. This naturally leads to a parameter server architecture, inspired by (Dean et al., 2012). All workers are orchestrated by Path-ways (Barham et al., 2022), which manages the resource allocation, device mesh construction, and inter-worker dataflow. Each of the workers described in the following section is driven by a separate Pathways client, in order to prevent a single multi-threaded client from becoming a bottleneck. 
+
+Learner workers. The system consists of 𝑀 
+
+learner workers , each of which runs an indepen-dent training loop. A learner worker can be viewed as a scaled-down version of a conventional DP job: if the full cluster provides capacity for 
+
+𝑅 data-parallel replicas, each learner worker op-erates with 𝑅 /𝑀 replicas. Each learner worker independently compiles and initializes its model, loads training data from its assigned shard, and executes inner optimization steps (e.g., AdamW) without coordination with the other learners. Cru-cially, the learner workers are isolated from one another —they share no accelerator resources and do not communicate directly except in the spe-cial case of recovery, the process by which one learner obtains up-to-date state from another learner in order to rejoin after a long failure (see Section E.3). This isolation is the foundation for both decoupling and failure domain containment: a hardware failure or straggler machine in one learner has no effect on the others. 7Decoupled DiLoCo Learners states live here         
+
+> TPUs
+> HBM
+> CPUs (hosts)
+> TPUs
+> HBM
+> CPUs (hosts)
+> Learner #0 Learner #1 Learner #2
+> Synchronizer state lives here
+> Synchronizer runs here CPUs
+> RAM
+> CPUs
+> RAM
+> CPUs
+> RAM
+> Learners run here
+
+Figure 4 | Overview of the Decoupled DiLoCo system architecture . Each learner worker runs an independent data-parallel training loop on a partition of the accelerator mesh. Learner workers communicate with the syncer by sending parameter fragments and receiving outer-optimized updates over the data-center network (DCN). The syncer is 𝑀 -way sharded across CPU-only replicas and performs the outer optimization step. Learner workers may be temporarily absent (here learner #2), but their corresponding syncer shards persist, enabling dynamic adjustment of the number of active learners. After each step, the updated learner model is copied to RAM of the host CPUs colocated with learner TPUs. This allows the syncer to select the fragment to transmit over the data-center network while the learner continues performing inner optimization steps, without requiring extra model copies on HBM. 
+
+Syncer worker. The learner workers are con-nected to a syncer worker, which instantiates the role described in Section 3.2. The syncer worker maintains the global model parameters and outer optimizer state, and is responsible for aggregat-ing the learner updates and broadcasting the outer-optimized parameters back to the learners. Since it only holds parameters and optimizer state (no activations) and performs relatively simple element-wise operations, its computational and memory footprint is significantly smaller than that of any learner worker. Accordingly, the syncer worker runs on CPU-only resources, partitioned into 𝑀 shards—one corresponding to each learner worker. As illustrated in Figure 4, a learner worker may be temporarily absent (e.g., due to a hardware failure), yet its corresponding syncer shard per-sists. Thus, when a learner is unavailable, the syncer worker can execute the same Merge com-putation as usual, with that learner’s weight set to 0. This design enables the system to dynami-cally adjust the number of active learners without modifying the syncer worker’s configuration or requiring a restart. 
+
+State coordination. Each worker locally main-tains a vector clock (Mattern, 1989) keeping track of its own step as well as its latest knowledge of the step for each of the other workers in the sys-tem. Learner and syncer workers communicate training progress via message passing over FIFO channels where the sender attaches its current vector clock to each message, as shown in Fig-ure 11. These vector clocks are the basis for many operations critical to reliable system operation, including watermarking of channels to garbage-collect old state, creating consistent global check-points via the Chandy-Lamport distributed snap-shotting algorithm (Chandy and Lamport, 1985) as discussed in Section E.2, and logging of a non-deterministic training run to enable deterministic replay as discussed in Section E.1. 
+
+Summary of benefits. This architecture yields several advantages over monolithic data-parallel training. First, it ensures a reduced synchronous footprint with isolated failure domains : by par-titioning the cluster into 𝑀 smaller accelerator groups, the MTBF of each group improves propor-tionally (see Table 1), and the blast radius of any 8Decoupled DiLoCo hardware failure is strictly contained, preventing it from propagating to the rest of the system. Sec-ond, it enables resilient coordination by running the syncer worker on highly stable, CPU-only re-sources with a minimal failure surface. While not the primary objective of this design, the system inherently retains the massive bandwidth re-duction properties of its predecessor, Streaming DiLoCo (Douillard et al., 2025), due to the fact that learners and syncer exchange parameter frag-ments over the data-center network, and at each outer optimization step the syncer shards perform an all-reduce over only a single fragment rather than the whole model (see Section E.4). Finally, training across heterogeneous resources (e.g. chips of different generations) becomes straight-forward in this setting: the decoupled learners are free to choose their own hardware, and the loose nature of the synchronization mitigates speed differences inherent from attempts to balance workload across heterogeneous compute. A com-bination of all those advantages also enables us to scavenge pre-emptible heterogeneous compute resources distributed across far apart locations. 
+
+## 5. Experiments 
+
+We now detail the experiments we conducted to validate our framework. For all experiments, we use Gemma 4 (Google DeepMind, 2026) cus-tomized for a lighter training footprint, and train on a mixture of text and vision data. 
+
+5.1. Experimental Setup 
+
+In all experiments, we use 𝑃 = 24 fragments. Each fragment is synchronized once every 𝐻 = 24 
+
+steps. The synchronization is overlapped over 
+
+𝜏 = 2 steps. As a consequence, at every step a fragment is sent and received, and there are two fragments in flight. Unless stated otherwise, we use the minimal quorum size 𝐾 = 1 and use a grace window (see Section 3.2) that can extend up to a step. We form the fragments via a greedy bin-packing algorithm, applied to individual tensors in the model. This results in approximately bal-anced fragments. We found that this strategy, Elastic DP Decoupled 𝑀 = 8     
+
+> # chips –150k 1.2m –150k 1.2m
+
+MTBI chip +∞ 1y 1y +∞ 1y 1y Goodput 100% 88% 58% 100% 98% 88%                                                                                                 
+
+> Text (Avg) 70.1 70.1 69.7 69.8 70.1 69.8 Arc-Chall. 61.2 60.4 60.4 59.0 60.3 59.2 Arc-Easy 81.9 81.2 80.9 81.2 81.4 81.6 BoolQ 76.8 78.7 78.4 76.8 79.4 78.1 HellaSwag 74.4 74.40 73.7 74.2 74.5 74.2 Piqa 79.8 79.5 79.2 79.9 79.5 79.1 Siqa 50.3 50.7 49.6 49.9 49.9 49.5 Winogrande 66.6 65.6 65.5 67.7 65.6 67.2
+> Vision (Avg) 58.7 58.5 59.4 58.8 59.4 58.6 MMMU 33.9 32.4 36.2 33.4 32.4 33.2 COCO-Cap. 90.1 89.9 92.2 88.2 90.8 89.5 ChartQA 25.1 25.0 26.6 24.8 24.8 27.4
+> DocVQA 79.6 78.3 77.8 80.9 80.0 76.7 DocVQA-Hard 56.6 56.9 56.9 59.7 59.8 55.7 InfographicVQA 48.3 48.5 47.7 48.1 50.4 48.9 TextVQA 77.0 78.4 78.3 76.7 77.6 78.4
+
+Table 2 | Simulated hardware failure impact on ML performance of a 5B dense with 1T tokens. Given a fixed MTBI per chip, we increase the number of simulated chips, lowering the cluster MTBF and leading to more frequent hardware failures. Decoupled DiLoCo’s ML performance is not degraded by the algorithmic changes to achieve significantly higher goodput. which we refer to as balanced tensor fragmen-tation , maintained model quality compared to layer-based fragmentation strategies (Douillard et al., 2025), while significantly reducing peak bandwidth. See Section C for details. We do not just use direct averaging for the 
+
+Merge operation in Algorithm 2. We propose a modified merging operation, Radial-Directional Averaging (RDA) in which we separately average the norms and directions of outer gradients. This leads to greater hyperparameter stability in the outer optimizer and boosts performance when scaling the number of learners 𝑀 . For details, see Section D.2. 
+
+5.2. Resilience to hardware failures 
+
+In order to test the ML performance of Decoupled DiLoCo under heavy rates of failure, we simulate different scenarios. We choose to set an aggres-9Decoupled DiLoCo 
+
+Figure 5 | Hardware failures resilience of Decoupled DiLoCo vs elastic data-parallel with a dense 5B model trained on 1T tokens. Compared to elastic data-parallel, Decoupled DiLoCo requires two orders of magnitude less bandwidth, observes significantly superior goodput under a heavy rate of hardware failures, and yet performs equivalently on pure ML performance. Elastic DP Decoupled 𝑀 = 8                                                         
+
+> # chips ––1.2m
+> MTBI chip +∞ +∞ 1y Goodput 100% 100% 88%
+> Text (Avg) 68.4 67.9 68.4 Arc-Chall. 59.1 55.5 59.4
+> Arc-Easy 81.7 80.6 81.4 BoolQ 71.1 72.5 71.8 HellaSwag 73.5 73.4 73.1 Piqa 79.8 79.3 79.8
+> Siqa 49.1 50.3 49.3 Winogrande 64.6 63.7 64.2
+> Vision (Avg) 54.9 55.1 54.3 MMMU 30.4 29.8 31.1
+> COCO-Cap. 89.0 84.5 84.9 ChartQA 20.9 21.9 20.6 DocVQA 74.7 76.9 74.0 DocVQA-Hard 51.1 51.6 51.3 InfographicVQA 43.4 46.9 43.1 TextVQA 74.8 74.2 75.0
+
+Table 3 | Simulated hardware failures impact 
+
+on ML performance of a 2.8B activated Mixture-of-Experts model trained on 170B tokens, using the same setup as in Table 2. sive MTBI chip = 1 year and we vary the amount of chips from 𝑁 chip = 150 k (1×) to 𝑁 chip = 1.2m(8×). The latter leads to a MTBF cluster of less than a minute. We display in Figure 5 the downstream performance of both Data-Parallel (DP) and De-coupled DiLoCo 𝑀 = 8 on text and vision tasks alongside the observed goodput at various hard-ware failures rate. We also detailed the individual evaluation results in Table 2. Note that in the elastic data-parallel baseline, ML performance remains invariant to the hard-ware failure rate, but goodput degrades drasti-cally, resulting in significantly longer wall-clock training times. The impact of hardware failures on training dynamics is twofold: (1) for both data-parallel and Decoupled DiLoCo, the loss of chips and their corresponding slices reduces the effective batch size, and (2) specific to Decou-pled DiLoCo, recovering learners rejoin the sys-tem with stale parameters and optimizer states. Notice that with 𝑀 = 8, the goodput degrades gracefully as the number of chips is increased (and thus the cluster MTBF is lowered) up to 88% while data-parallel, even with elasticity, reaches 58% goodput. The downstream evaluations on both text and vision remain competitive, showing both the resiliency to hardware failures and ML robustness of our framework. We also validate that the downstream perfor-mance, in the event of frequent hardware failures, has similar impacts on mixture-of-experts models. In Table 3, we compare downstream performance of Data-Parallel and Decoupled DiLoCo 𝑀 = 8
+
+with no hardware failures to that of Decoupled DiLoCo with MTBI chip = 1 year and 𝑁 chip = 1.2m(8×). We find that the evaluation results are all essentially comparable, with minor differences likely attributable to an ambient noise floor ver-10 Decoupled DiLoCo sus any algorithmic or system issue. Model Scavenging Text (Avg) Vision (Avg) Train Time DP                               
+
+> +0% 60 .146 .41.00 ×+25% 60 .546 .61.07 ×+50% 60 .045 .91.09 ×+100% 60 .147 .01.02 ×+300% 60 .446 .40.80 ×
+> DiLoCo
+> +0% 60 .646 .21.00 ×+25% 60 .847 .20.90 ×+50% 61 .345 .20.83 ×+100% 60 .746 .40.75 ×+300% 60 .746 .10.62 ×
+
+Table 4 | Iso-FLOPs scavenging experiments with a 2B dense trained on 128B tokens as more TPUs are scavenged across distributed locations for De-coupled DiLoCo and data-parallel. All runs share the same flops & token budget, thus scavenging allows finishing earlier. Scavenged compute is available for half the FLOPS in each run, so the lower bound on relative training time is 0.5×.
+
+5.3. Scavenging 
+
+We exploit our decoupled framework to dynami-cally add compute resources, “ scavenge ”, on the fly during training. While slice-granular elasticity (Gemini Team, Google, 2025) allows for scaling up the slice count, it incurs a non-negligible good-put penalty during system reconfiguration. De-coupled DiLoCo, however, seamlessly integrates any temporarily available extra FLOPS by dynam-ically acquiring (and releasing) extra learners us-ing the learner recovery procedure described in Section E.3 . For the duration that more learners are avail-able the system runs with a temporarily higher 
+
+𝑀 than baseline training. In these experiments we use 𝑀 = 4 learners as a base level of always available compute, and increase the number of learners to 𝑀 = 5, 6, 8 or 16 intermittently during training to simulate a day-night cycle of increased availability. For a point of comparison we simu-late Data-Parallel training being used in identical scavenging patterns, by increasing the batch size during periods of high 𝑀 to match Decoupled DiLoCo’s step-by-step compute and token usage. This gives a strong baseline for an ML perfor-mance target but incurs the practical downsides of using distributed DP training for scavenging, such as the time taken to transfer the current model state to the new learners during batch upsize, and the increased step time when all-reducing gradients over increasingly geo-separated com-pute that has no pre-allocated bandwidth due to the opportunistic nature of scavenging. We run our experiments in an iso-FLOPs regime where total compute usage is fixed; the goal of this style of scavenging is therefore to accelerate training by reducing steps taken and wall-clock time. Table 4 shows Decoupled DiLoCo is able to reap the benefits of ad hoc training acceler-ation without degrading ML performance, and does so more time-efficiently than the DP baseline which needs to more than double the number of learners to see any benefit. Section F.4 contains a full breakdown of the downstream performance metrics. 
+
+5.4. Heterogeneous hardware 
+
+We evaluate Decoupled DiLoCo on a heteroge-neous cluster comprising four learners on TPUv5e and four on TPUv5p, adjusting the device count 
+
+Quorum ( 𝐾 ) 8 1 1Grace Window ( 𝜉 grace ) Off Off On Goodput 84% 100% 100% 
+
+Text (avg) 54.4 51.4 55.3 Arc-Challenge 36.3 31.6 35.6 Arc-Easy 64.0 60.2 65.3 
+
+BoolQ 55.8 59.8 61.3 
+
+HellaSwag 51.4 42.6 51.8 
+
+Piqa 72.5 69.3 72.0 Siqa 46.5 44.7 46.0 Winogrande 54.1 51.9 55.2 
+
+Vision (avg) 37.6 25.7 37.0 COCO-Captions 62.9 43.4 62.6 ChartQA 13.3 8.4 13.6 
+
+DocVQA 48.1 33.0 50.6 
+
+DocVQA-Hard 30.8 18.5 32.6 
+
+InfographicVQA 24.4 19.4 24.4 
+
+MMMU 19.3 9.4 12.2 TextVQA 64.5 47.9 63.2 
+
+Table 5 | Heterogeneous hardware ML perfor-mance of a 2B dense model with 26B tokens using Decoupled DiLoCo ( 𝑀 = 8) with a mix of TPUv6e and TPUv5p. 11 Decoupled DiLoCo 
+
+Figure 6 | XLA operations when learners have varying step times for quorum sizes of 𝐾 = 8, 𝐾 = 1,and 𝐾 = 1 with an adaptive grace window. Notice that despite variable bandwidth and hardware heterogeneity there is always a learner stepping, achieving maximum availability. per learner to account for differences in HBM size. Due to these hardware and scaling differences, the slowest learners natively trailed the fastest by 
+
+18% . To rigorously stress-test the system, we fur-ther artificially injected an additional 10% speed variance across all learners. By employing a min-imal quorum size ( 𝐾 = 1) alongside the adaptive grace window, we maximized compute utiliza-tion while matching the machine learning perfor-mance of a fully blocking, synchronous training setup ( 𝐾 = 𝑀 = 8). Table 5 compares the downstream performance of this asynchronous, low-quorum approach ( 𝐾 =
+
+1) against the fully synchronous baseline ( 𝐾 = 8). We demonstrate that the adaptive quorum and its grace window effectively mask the speed dis-crepancies between the two TPU architectures. Consequently, the system achieves the same ML performance as a synchronous baseline without being bottlenecked by the speed of its slowest chips. Moreover, we display the XProf (OpenXLA Contributors, 2026) of the XLA operations of train-ing on learners of heterogeneous speeds in Fig-ure 6. On the top row, notice that with a quorum of 𝐾 = 𝑀 = 8 the decoupled algorithm becomes blocking, resulting in gap where learners are idle. On the middle row, with a minimal quorum of  
+
+> 𝐾
+
+= 1, there is no gap, but more often than not, the syncer only collects a quorum of 1 learner at a time. This results in the syncer performing much more frequent synchronizations as each learner finishes its step (bearing similarity with Liu et al. (2024)’s setting). On the bottom row, we use the minimal quorum 𝐾 = 1 but with the adaptive grace window, which allows the syncer to fetch a significant number of learners on each synchronization round despite learners running at different speeds. Overall, by seamlessly integrating heteroge-neous hardware into a single training run, Decou-pled DiLoCo empowers practitioners to scavenge older chip generations for extra compute and en-ables smoother transitions during new hardware rollouts. 
+
+5.5. Scalability 
+
+Building on Bergsma et al. (2025); Qiu et al. (2025), we tune to ensure predictable scaling of Decoupled DiLoCo across model scales. Cru-cially, mirroring the observations of Charles et al. (2025), we observe that Decoupled DiLoCo exhibits predictable, improved performance as model size, batch size, and token budgets in-crease. Aligning with the “bitter lesson” (Sut-ton, 2019), that methods designed to exploit mas-sive compute will prevail, our algorithm is ideally suited for large-scale pre-training environments where robust fault tolerance is a critical necessity. Figure 7a reports the downstream performance of a standard data-parallel (DP) baseline versus 12 Decoupled DiLoCo 
+
+(a) Dense : 2B, 5B, and 9B parameters models using 26B, 72B, and 141B tokens. Arc-Easy 
+
+> Piqa
+> HellaSwag
+> BoolQ
+> Winogrande
+> Arc-Challenge
+> Siqa
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Accuracy (%)
+> 83.0
+> 80.6
+> 75.9
+> 75.2
+> 66.9
+> 62.1
+> 50.2
+> 83.3
+> 80.6
+> 75.5
+> 73.9
+> 66.8
+> 60.9
+> 50.2
+> 81.7
+> 79.8
+> 73.5
+> 71.1
+> 64.6
+> 59.1
+> 49.1
+> 80.6
+> 79.3
+> 73.4
+> 72.5
+> 63.7
+> 55.5
+> 50.3
+
+Text Benchmarks 
+
+> COCO-Captions
+> DocVQA
+> TextVQA
+> DocVQA-Hard
+> InfographicVQA
+> MMMU
+> ChartQA
+> 95.7
+> 78.2
+> 76.0
+> 56.8
+> 48.2
+> 34.3
+> 23.5
+> 91.1
+> 78.8
+> 75.6
+> 56.4
+> 48.6
+> 35.2
+> 22.9
+> 89.0
+> 74.7
+> 74.8
+> 51.1
+> 43.4
+> 30.4
+> 20.9
+> 84.5
+> 76.9
+> 74.2
+> 51.6
+> 46.9
+> 29.8
+> 21.9
+
+Vision Benchmarks  
+
+> Data-Parallel (3.8B, 2.8B) Decoupled DiLoCo (3.8B, 2.8B)
+
+(b) Mixture-of-Experts : 2.8B and 3.8B activated parameters models, using 170B and 233B tokens. 
+
+Figure 7 | Downstream performances for Dense (a) and Mixture-of-Experts (b) architectures. Decoupled DiLoCo ( 𝑀 = 8 learners) at scales of 2B, 5B, and 9B parameters dense models, trained for 26B, 72B, and 141B tokens, respectively. At every scale, Decoupled DiLoCo matches the per-formance of the centralized monolithic DP base-line. Figure 7b extends this evaluation to a Mixture-of-Experts (MoE) architecture (Fedus et al., 2022; Shazeer et al., 2017) with 2.8B and 3.8B active parameters trained on 170B and 233B tokens, re-spectively, once again demonstrating comparable downstream performance. We note that the suc-cess in this setting is potentially surprising - the learners use a load-balancing loss (Shazeer et al., 2017), but can only optimize this loss locally, not globally. Despite this, with sufficient scale we see that Decoupled DiLoCo with 𝑀 = 8 performs comparably to SPMD data-parallel training. 
+
+## 6. Conclusion 
+
+Decoupled DiLoCo allows us to decompose mono-lithic SPMD pre-training into independent asyn-chronous learners coordinated by a lightweight synchronizer. By using minimum-quorum ag-gregation, token-weighted merging via Radial-13 Decoupled DiLoCo Directional Averaging, balanced tensor fragmen-tation, and an adaptive grace window, the sys-tem prioritizes availability and partition toler-ance without sacrificing downstream model qual-ity. Our extensive experiments above show that Decoupled DiLoCo matches data-parallel perfor-mance on text and vision benchmarks across dense and MoE architectures at scales up to 9B parameters, while maintaining 88% goodput un-der aggressive simulated failures (versus 58% for elastic data-parallel) and perfect uptime. The framework further enables seamless scavenging of opportunistic compute and integration of het-erogeneous hardware, unlocking the next frontier of cluster, distributed across geo-locations and chip generations. We believe that Decoupled DiLoCo points at a new direction that upends the SPMD pre-training paradigm. If we relax model synchronization re-quirements, we can extract more useful computa-tion from failure-prone hardware. This vision for non-SPMD pre-training mirrors that presented by Pathways (Barham et al., 2022), and in fact uses the capabilities of Pathways to make it a reality. Decoupled DiLoCo performs better with scale relative to data-parallel training in both model quality and goodput. This observation is cru-cial: the pre-training settings that most benefit from Decoupled DiLoCo for system reasons (band-width and hardware reliability, exacerbated by the number of chips involved) are exactly the set-tings in which model quality is most comparable to SPMD training. As pre-training expands to geo-distributed clusters and environments where both band-width and hardware reliability are severely con-strained (Agüera y Arcas et al., 2025), we believe availability-first training will shift from advanta-geous to necessary. 14 Decoupled DiLoCo 
+
+## Acknowledgements 
+
+This work was done by a team of members across Google DeepMind and Google Research. 
+
+Leads 
+
+Arthur Douillard Keith Rush Yani Donchev Zachary Charles 
+
+Core Contributors 
+
+Ayush Dubey Blake Woodworth Ionel Gog Jenny Bishop Josef Dean Nate Keating Nova Fallen Zachary Garrett 
+
+Partial Contributors 
+
+Arthur Szlam Edouard Yvinec Henry Prior 
+
+Advisors & Sponsors 
+
+Brendan McMahan Chase Hensel Daniel Ramage Jeff Dean Lechao Xiao Marc’Aurelio Ranzato Michael Isard Paul Barham Raia Hadsell Zoltan Egyed 
+
+## References 
+
+A. Acker, S. Becker, S. Nedelkoski, D. Scheinert, O. Kao, and P. Wiesner. What happens when nanochat meets diloco?, 2025. URL https: //arxiv.org/abs/2511.13761 . (Cited on page 24.) B. Agüera y Arcas, T. Beals, M. Biggs, J. V. Bloom, T. Fischbacher, K. Gromov, U. Köster, R. Prava-han, and J. Manyika. Towards a future space-based, highly scalable ai infrastructure system design, 2025. URL https://arxiv.org/ abs/2511.19468 . (Cited on page 14.) K. Ahn and B. Myung. Dion: A communication-efficient optimizer for large models. arXiv preprint arXiv:2504.05295 , 2025. URL https: //arxiv.org/abs/2504.05295 . (Cited on page 23.) T. Ajanthan, S. Ramasinghe, G. Avraham, Y. Zuo, and A. Long. Momentum look-ahead for asynchronous distributed low-communication training. In ICLR 2025 Workshop on Modularity for Collaborative, Decentralized, and Continual Deep Learning ,2025. URL https://openreview.net/ forum?id=4O8nzTkHPI . (Cited on page 24.) D. Alistarh, D. Grubic, J. Li, R. Tomioka, and M. Vojnovic. Qsgd: Communication-efficient sgd via gradient quantization and encod-ing. Neural information processing systems (NeurIPS) , 2017. URL https://arxiv.org/ abs/1610.02132 . (Cited on page 23.) P. Barham, A. Chowdhery, J. Dean, S. Ghemawat, S. Hand, D. Hurt, M. Isard, H. Lim, R. Pang, S. Roy, et al. Pathways: Asynchronous dis-tributed dataflow for ml. Proceedings of Ma-chine Learning and Systems , 2022. URL https: //arxiv.org/abs/2203.12533 . (Cited on pages 1, 7, and 14.) A. Basiri, N. Behnam, R. de Rooij, L. Hochstein, L. Kosewski, J. Reynolds, and C. Rosen-thal. Chaos engineering. IEEE Software ,2016. URL https://arxiv.org/abs/1702. 05843 . (Cited on pages 2 and 6.) S. Bergsma, B. C. Zhang, N. Dey, S. Muhammad, G. Gosal, and J. Hestness. Scaling with col-lapse: Efficient and predictable training of llm families, 2025. URL https://arxiv.org/ abs/2509.25087 . (Cited on page 12.) M. Beton, S. Howes, A. Cheema, and M. Baioumy. Improving the efficiency of distributed train-ing using sparse parameter averaging. In ICLR 2025 Workshop on Modularity for Collabora-tive, Decentralized, and Continual Deep Learn-ing , 2025. URL https://openreview.net/ forum?id=stFPf3gzq1 . (Cited on page 23.) 15 Decoupled DiLoCo Y. Bisk, R. Zellers, J. Gao, and Y. Choi. Piqa: Rea-soning about physical commonsense in natural language. In Proceedings of the AAAI conference on artificial intelligence , 2020. URL https: //arxiv.org/abs/1911.11641 . (Cited on page 35.) K. Bonawitz, H. Eichner, W. Grieskamp, D. Huba, A. Ingerman, V. Ivanov, C. Kiddon, J. Konečn `y, S. Mazzocchi, B. McMahan, et al. Towards federated learning at scale: System design. 
+
+Proceedings of machine learning and systems ,2019. URL https://arxiv.org/abs/1902. 01046 . (Cited on page 23.) A. Borzunov, M. Ryabinin, A. Chumachenko, D. Baranchuk, T. Dettmers, Y. Belkada, P. Samy-gin, and C. A. Raffel. Distributed inference and fine-tuning of large language models over the internet. In Advances in Neural Informa-tion Processing Systems , 2023. URL https: //arxiv.org/abs/2312.08361 . (Cited on page 23.) E. A. Brewer. Towards robust distributed sys-tems. In PODC , 2000. URL https://dl.acm. org/doi/10.1145/343477.343502 . (Cited on page 1.) S. R. Buss and J. P. Fillmore. Spherical averages and applications to spherical splines and inter-polation. ACM Transactions on Graphics (TOG) ,20(2):95–126, 2001. URL https://dl.acm. org/doi/10.1145/502122.502124 . (Cited on page 28.) K. M. Chandy and L. Lamport. Distributed snapshots: Determining global states of a distributed system. ACM Transactions on Computer Systems , 3(1):63–75, 1985. URL https://dl.acm.org/doi/10.1145/ 214451.214456 . (Cited on pages 8, 31, and 32.) Z. Charles, G. Teston, L. Dery, K. Rush, N. Fallen, Z. Garrett, A. Szlam, and A. Douillard. Communication-efficient language model train-ing scales reliably and robustly: Scaling laws for diloco. In NeurIPS , 2025. URL https: //arxiv.org/abs/2503.09799 . (Cited on pages 12 and 23.) M. Chen, J. Tworek, H. Jun, Q. Yuan, H. P. de Oliveira Pinto, J. Kaplan, H. Edwards, Y. Burda, N. Joseph, G. Brockman, A. Ray, R. Puri, G. Krueger, M. Petrov, H. Khlaaf, G. Sastry, P. Mishkin, B. Chan, S. Gray, N. Ry-der, M. Pavlov, A. Power, L. Kaiser, M. Bavar-ian, C. Winter, P. Tillet, F. P. Such, D. Cum-mings, M. Plappert, F. Chantzis, E. Barnes, A. Herbert-Voss, W. H. Guss, A. Nichol, A. Paino, N. Tezak, J. Tang, I. Babuschkin, S. Balaji, S. Jain, W. Saunders, C. Hesse, A. N. Carr, J. Leike, J. Achiam, V. Misra, E. Morikawa, A. Radford, M. Knight, M. Brundage, M. Murati, K. Mayer, P. Welinder, B. McGrew, D. Amodei, S. McCandlish, I. Sutskever, and W. Zaremba. Evaluating large language models trained on code. 2021. URL https://arxiv.org/abs/ 2107.03374 . (Cited on page 24.) X. Chen, H. Fang, T.-Y. Lin, R. Vedantam, S. Gupta, P. Dollár, and C. L. Zitnick. Mi-crosoft coco captions: Data collection and eval-uation server. arXiv preprint arXiv:1504.00325 ,2015. URL https://arxiv.org/abs/1504. 00325 . (Cited on page 35.) C. Clark, K. Lee, M.-W. Chang, T. Kwiatkowski, M. Collins, and K. Toutanova. Boolq: Exploring the surprising difficulty of natural yes/no ques-tions. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers) ,2019. URL https://arxiv.org/abs/1905. 10044 . (Cited on page 35.) P. Clark, I. Cowhey, O. Etzioni, T. Khot, A. Sab-harwal, C. Schoenick, and O. Tafjord. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457 , 2018. URL https:// arxiv.org/abs/1803.05457 . (Cited on page 34.) K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser, M. Plappert, J. Tworek, J. Hilton, R. Nakano, C. Hesse, and J. Schul-man. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 ,2021. URL https://arxiv.org/abs/2110. 14168 . (Cited on page 24.) 16 Decoupled DiLoCo J. Dean, G. Corrado, R. Monga, K. Chen, M. Devin, M. Mao, A. Senior, P. Tucker, K. Yang, Q. V. Le, and A. Y. Ng. Large scale distributed deep networks. In Advances in Neural Information Processing Systems , 2012. URL https://dl.acm.org/doi/10.5555/ 2999134.2999271 . (Cited on pages 7, 23, and 24.) A. Douillard, Q. Feng, A. A. Rusu, R. Chhaparia, Y. Donchev, A. Kuncoro, M. Ranzato, A. Szlam, and J. Shen. DiLoCo: Distributed low-communication training of language models. 
+
+arXiv preprint arXiv:2311.08105 , 2023. URL 
+
+https://arxiv.org/abs/2311.08105 .(Cited on page 23.) A. Douillard, Q. Feng, A. A. Rusu, R. Chha-paria, Y. Donchev, A. Kuncoro, M. Ranzato, A. Szlam, and J. Shen. Diloco: Distributed low-communication training of language mod-els. In ICML workshop , 2024. URL https: //arxiv.org/abs/2311.08105 . (Cited on pages 1, 3, and 27.) A. Douillard, Y. Donchev, K. Rush, S. Kale, Z. Charles, Z. Garrett, G. Teston, D. Lacey, R. McIlroy, J. Shen, A. Ramé, A. Szlam, M. Ranzato, and P. Barham. Streaming diloco with overlapping communication: To-wards a distributed free lunch. In COLM ,2025. URL https://arxiv.org/abs/2501. 18512 . (Cited on pages 1, 3, 9, 23, 25, 27, 29, and 33.) E. Elnozahy, L. Alvisi, Y.-m. Wang, and D. John-son. A survey of rollback-recovery protocols in message-passing systems. ACM Computing Surveys , 34, 06 2002. doi: 10.1145/568522. 568525. URL https://dl.acm.org/doi/ 10.1145/568522.568525 . (Cited on page 31.) FairScale authors. Fairscale: A general purpose modular pytorch library for high performance and large scale training. https://github. com/facebookresearch/fairscale ,2021. (Cited on page 23.) S. Fan and Z. Zhang. Pier: Efficient large language model pretraining with relaxed global com-munication. arXiv preprint arXiv:2511.17849 ,2025. URL https://arxiv.org/abs/2511. 17849 . (Cited on page 23.) W. Fedus, B. Zoph, and N. Shazeer. Switch trans-formers: Scaling to trillion parameter models with simple and efficient sparsity. Journal of Machine Learning Research , 2022. URL https: //arxiv.org/abs/2101.03961 . (Cited on page 13.) Gemini Team, Google. Gemini 2.5: Pushing the frontier with advanced reasoning, multimodal-ity, long context, and next generation agen-tic capabilities, 2025. URL https://arxiv. org/abs/2507.06261 . (Cited on pages 1, 7, and 11.) Google DeepMind. Gemma 4, 2026. URL 
+
+https://deepmind.google/models/ gemma/gemma-4/ . Accessed: 2026-04-21. (Cited on page 9.) R. L. Graham. Bounds on multiprocessing timing anomalies. SIAM journal on Applied Mathemat-ics , 1969. URL https://www.jstor.org/ stable/2099572 . (Cited on page 25.) J. Hoffmann, S. Borgeaud, A. Mensch, E. Buchatskaya, T. Cai, E. Rutherford, D. de Las Casas, L. A. Hendricks, J. Welbl, A. Clark, T. Hennigan, E. Noland, K. Millican, G. van den Driessche, B. Damoc, A. Guy, S. Osindero, K. Simonyan, E. Elsen, J. W. Rae, O. Vinyals, and L. Sifre. Training compute-optimal large language models, 2022. URL 
+
+https://arxiv.org/abs/2203.15556 .(Cited on page 34.) T.-M. H. Hsu, H. Qi, and M. Brown. Measur-ing the effects of non-identical data distribu-tion for federated visual classification. arXiv preprint arXiv:1909.06335 , 2019. URL https: //arxiv.org/abs/1909.06335 . (Cited on page 23.) Y. Huang, Y. Cheng, A. Bapna, O. Firat, M. X. Chen, D. Chen, H. Lee, J. Ngiam, Q. V. Le, Y. Wu, et al. GPipe: Easy scaling with micro-batch pipeline parallelism. proceeding of Computer Science Computer Vision and Pattern Recogni-tion , 2019. URL https://arxiv.org/abs/ 1811.06965 . (Cited on page 23.) 17 Decoupled DiLoCo D. Huba, J. Nguyen, K. Malik, R. Zhu, M. Rab-bat, A. Yousefpour, C.-J. Wu, H. Zhan, P. Usti-nov, H. Srinivas, et al. Papaya: Practical, pri-vate, and scalable federated learning. Pro-ceedings of Machine Learning and Systems ,2022. URL https://arxiv.org/abs/2111. 04877 . (Cited on page 23.) I. Jang, Z. Yang, Z. Zhang, X. Jin, and M. Chowd-hury. Oobleck: Resilient distributed training of large models using pipeline templates. In 
+
+Proceedings of the 29th Symposium on Oper-ating Systems Principles , 2023. URL https: //arxiv.org/abs/2309.08125 . (Cited on page 23.) A. Jovanović, A. Iacob, M. Safaryan, I.-V. Modor-anu, L. Sani, W. F. Shen, X. Qiu, D. Alistarh, and N. D. Lane. Lordo: Distributed low-rank opti-mization with infrequent communication. arXiv preprint arXiv:2602.04396 , 2026. URL https: //arxiv.org/abs/2602.04396 . (Cited on page 23.) S. Kale, A. Douillard, and Y. Donchev. Ea-ger updates for overlapped communication and computation in diloco. arXiv preprint arXiv:2502.12996 , 2025. URL https:// arxiv.org/abs/2502.12996 . (Cited on page 23.) G.-W. Kim, J. Li, S. Gandham, O. Baldonado, A. Gangidi, P. Balaji, Z. Wang, and A. Akella. Halos: Hierarchical asynchronous local sgd over slow networks for geo-distributed large language model training. arXiv preprint arXiv:2506.04531 , 2025. URL https:// arxiv.org/abs/2506.04531 . (Cited on pages 23 and 24.) D. P. Kingma and J. Ba. Adam: A method for stochastic optimization. International Con-ference on Learning Representations (ICLR) ,2015. URL https://arxiv.org/abs/1412. 6980 . (Cited on page 23.) J. Kolehmainen, N. Blagoev, J. Donaghy, O. Er-soy, and C. Nies. Noloco: No-all-reduce low communication training method for large models. arXiv preprint arXiv:2506.10911 ,2025. URL https://arxiv.org/abs/2506. 10911 . (Cited on page 23.) V. A. Korthikanti, J. Casper, S. Lym, L. McAfee, M. Andersch, M. Shoeybi, and B. Catanzaro. Reducing activation recomputation in large transformer models. Proceedings of Machine Learning and Systems , 2023. URL https: //arxiv.org/abs/2205.05198 . (Cited on page 23.) D. Lepikhin, H. Lee, Y. Xu, D. Chen, O. Firat, Y. Huang, M. Krikun, N. Shazeer, and Z. Chen. Gshard: Scaling giant models with conditional computation and automatic sharding. In In-ternational Conference on Learning Representa-tions , 2021. URL https://arxiv.org/abs/ 2006.16668 . (Cited on page 23.) S. Li, Y. Zhao, R. Varma, O. Salpekar, P. Noord-huis, T. Li, A. Paszke, J. Smith, B. Vaughan, P. Damania, et al. PyTorch distributed: Expe-riences on accelerating data parallel training. 
+
+Very Large Data Base (VLDB) , 2020. URL 
+
+https://www.vldb.org/pvldb/vol13/ p3005-li.pdf . (Cited on page 23.) J. Lidin, A. Sarfi, E. Miahi, Q. Anthony, S. Chauhan, E. Pappas, B. Thérien, E. Belilovsky, and S. Dare. Covenant-72b: Pre-training a 72b llm with trustless peers over-the-internet, 2026. URL https://arxiv.org/abs/2603. 08163 . (Cited on page 23.) B. Liu, R. Chhaparia, A. Douillard, S. Kale, A. A. Rusu, J. Shen, A. Szlam, and M. Ran-zato. Asynchronous local-sgd training for lan-guage modeling. In ICML 2024 Workshop ,2024. URL https://arxiv.org/abs/2401. 09135 . (Cited on pages 12, 23, and 24.) Llama Team, Meta. The llama 3 herd of mod-els. arXiv , 2024. URL https://arxiv.org/ abs/2407.21783 . (Cited on page 6.) O. L. Mangasarian and M. V. Solodov. Back-propagation convergence via deterministic non-monotone perturbed minimization. Advances in Neural Information Processing Systems , 1993. URL https://dl.acm.org/doi/10.5555/ 2987189.2987238 . (Cited on page 23.) D. Marczak, S. Magistri, S. Cygert, B. Twar-dowski, A. D. Bagdanov, and J. van de Wei-jer. No task left behind: Isotropic model merg-ing with common and task-specific subspaces. 18 Decoupled DiLoCo 
+
+International Conference on Machine Learning ,2025. URL https://arxiv.org/abs/2502. 04959 . (Cited on page 28.) A. Masry, D. X. Long, J. Q. Tan, S. Joty, and E. Hoque. Chartqa: A benchmark for ques-tion answering about charts with visual and logical reasoning. In Findings of the Associa-tion for Computational Linguistics: ACL 2022 ,2022. URL https://arxiv.org/abs/2203. 10244 . (Cited on page 35.) M. Mathew, D. Karatzas, and C. Jawahar. Docvqa: A dataset for vqa on docu-ment images. In Proceedings of the IEEE/CVF winter conference on applica-tions of computer vision , 2021. URL https: //openaccess.thecvf.com/content/ WACV2021/papers/Mathew_DocVQA_ A_Dataset_for_VQA_on_Document_ Images_WACV_2021_paper.pdf . (Cited on page 35.) M. Mathew, V. Bagal, R. Tito, D. Karatzas, E. Valveny, and C. Jawahar. Infographicvqa. In Proceedings of the IEEE/CVF Winter Con-ference on Applications of Computer Vision ,2022. URL https://arxiv.org/abs/2104. 12756 . (Cited on page 35.) F. Mattern. Virtual time and global states of distributed systems. In Parallel and Distributed Algorithms , 1989. URL https: //homes.cs.washington.edu/~arvind/ cs425/doc/mattern89virtual.pdf .(Cited on pages 8, 30, and 31.) B. McMahan, E. Moore, D. Ramage, S. Hampson, and B. A. y Arcas. Communication-efficient learning of deep networks from decentralized data. In Artificial intelligence and statistics .PMLR, 2017. URL https://arxiv.org/ abs/1602.05629 . (Cited on page 23.) D. Narayanan, A. Harlap, A. Phanishayee, V. Seshadri, N. R. Devanur, G. R. Ganger, P. B. Gibbons, and M. Zaharia. PipeDream: Gener-alized pipeline parallelism for DNN training. In Proceedings of the 27th ACM symposium on operating systems principles , 2019. URL https: //people.eecs.berkeley.edu/~matei/ papers/2019/sosp_pipedream.pdf .(Cited on page 23.) D. Narayanan, M. Shoeybi, J. Casper, P. LeGres-ley, M. Patwary, V. Korthikanti, D. Vainbrand, P. Kashinkunti, J. Bernauer, B. Catanzaro, et al. Efficient large-scale language model training on gpu clusters using megatron-lm. In Proceed-ings of the international conference for high per-formance computing, networking, storage and analysis , 2021. URL https://arxiv.org/ abs/2104.04473 . (Cited on page 23.) F. Niu, B. Recht, C. Re, and S. J. Wright. HOG-WILD: A lock-free approach to parallelizing stochastic gradient descent, 2011. URL https: //arxiv.org/abs/1106.5730 . (Cited on page 24.) OpenXLA Contributors. Xprof: A profiling and performance analysis tool for machine learning. https://github.com/openxla/ xprof , 2026. (Cited on pages 12 and 34.) A. Petrowski, G. Dreyfus, and C. Girault. Perfor-mance analysis of a pipelined backpropagation parallel algorithm. IEEE Transactions on Neural Networks , 1993. URL https://ieeexplore. ieee.org/document/286892/ . (Cited on page 23.) J. Qi, W. Zhu, L. Li, M. Wu, Y. Wu, W. He, X. Gao, J. Zeng, and M. Heinrich. Dilo-cox: A low-communication large-scale train-ing framework for decentralized cluster. arXiv preprint arXiv:2506.21263 , 2025. URL https: //arxiv.org/abs/2506.21263 . (Cited on page 23.) S. Qiu, L. Xiao, A. G. Wilson, J. Pennington, and A. Agarwala. Scaling collapse reveals universal dynamics in compute-optimally trained neural networks, 2025. URL https://arxiv.org/ abs/2507.02119 . (Cited on page 12.) S. Rajbhandari, J. Rasley, O. Ruwase, and Y. He. Zero: Memory optimizations toward training trillion parameter models. In SC20: Interna-tional Conference for High Performance Comput-ing, Networking, Storage and Analysis , 2020. URL https://dl.acm.org/doi/10.5555/ 3433701.3433727 . (Cited on page 23.) 19 Decoupled DiLoCo A. Ramé, J. Ferret, N. Vieillard, R. Dadashi, L. Hussenot, P.-L. Cedoz, P. G. Sessa, S. Gir-gin, A. Douillard, and O. Bachem. Warp: On the benefits of weight averaged rewarded poli-cies, 2024. URL https://arxiv.org/abs/ 2406.16768 . (Cited on page 28.) S. J. Reddi, Z. Charles, M. Zaheer, Z. Garrett, K. Rush, J. Konečn ’y, S. Kumar, and H. B. McMahan. Adap-tive federated optimization. In Interna-tional Conference on Learning Representations ,2021. URL https://openreview.net/ forum?id=LkFG3lB13U5 . (Cited on pages 3 and 23.) J. Ren, S. Rajbhandari, R. Y. Aminabadi, O. Ruwase, S. Yang, M. Zhang, D. Li, and Y. He. {Zero-offload }: Democratizing {billion-scale } model training. In 2021 USENIX An-nual Technical Conference (USENIX ATC 21) ,2021. URL https://arxiv.org/abs/2101. 06840 . (Cited on page 23.) M. Ryabinin, E. Gorbunov, V. Plokhotnyuk, and G. Pekhimenko. Moshpit sgd: Communication-efficient decentralized training on heteroge-neous unreliable devices. Advances in Neural Information Processing Systems , 2021. URL 
+
+https://arxiv.org/abs/2103.03239 .(Cited on page 24.) M. Ryabinin, T. Dettmers, M. Diskin, and A. Borzunov. Swarm parallelism: Training large models can be surprisingly communication-efficient. In International Conference on Ma-chine Learning , pages 29416–29440. PMLR, 2023. URL https://arxiv.org/abs/2301. 11913 . (Cited on page 23.) K. Sakaguchi, R. L. Bras, C. Bhagavatula, and Y. Choi. Winogrande: An adversarial wino-grad schema challenge at scale. In Proceedings of the AAAI conference on artificial intelligence ,2020. URL https://arxiv.org/abs/1907. 10641 . (Cited on page 35.) O. Salpekar, R. Varma, K. Yu, V. Ivanov, Y. Wang, A. Sharif, M. Si, S. Xu, F. Tian, S. Zheng, et al. Training llms with fault tolerant hsdp on 100,000 gpus. arXiv preprint arXiv:2602.00277 ,2026. URL https://arxiv.org/abs/2602. 00277 . (Cited on page 24.) L. Sani, A. Iacob, Z. Cao, R. Lee, B. Marino, Y. Gao, D. Cai, Z. Li, W. Zhao, X. Qiu, et al. Photon: Federated LLM pre-training. arXiv preprint arXiv:2411.02908 , 2024. URL https: //arxiv.org/abs/2411.02908 . (Cited on page 23.) M. Sap, H. Rashkin, D. Chen, R. Le Bras, and Y. Choi. Social iqa: Commonsense reasoning about social interactions. In Proceedings of the 2019 Conference on Empirical Methods in Nat-ural Language Processing and the 9th Interna-tional Joint Conference on Natural Language Pro-cessing (EMNLP-IJCNLP) , 2019. URL https: //arxiv.org/abs/1904.09728 . (Cited on page 35.) A. Sarfi, B. Thérien, J. Lidin, and E. Belilovsky. Communication efficient llm pre-training with sparseloco. arXiv preprint arXiv:2508.15706 ,2025. URL https://arxiv.org/abs/2508. 15706 . (Cited on page 23.) N. Shazeer, A. Mirhoseini, K. Maziarz, A. Davis, Q. Le, G. Hinton, and J. Dean. Outrageously large neural networks: The sparsely-gated mixture-of-experts layer, 2017. URL https:// openreview.net/forum?id=B1ckMDqlg .(Cited on page 13.) N. Shazeer, Y. Cheng, N. Parmar, D. Tran, A. Vaswani, P. Koanantakool, P. Hawkins, H. Lee, M. Hong, C. Young, et al. Mesh-TensorFlow: Deep learning for supercomputers. 
+
+Advances in neural information processing sys-tems , 31, 2018. URL https://arxiv.org/ abs/1811.02084 . (Cited on page 23.) K. Shoemake. Animating rotation with quater-nion curves. In Proceedings of the 12th an-nual conference on Computer graphics and in-teractive techniques , pages 245–254, 1985. URL https://dl.acm.org/doi/10.1145/ 325165.325242 . (Cited on page 28.) A. Singh, R. Hu, V. Goswami, G. Couprie, W. Galuba, M. Rohrbach, and D. Kiela. Towards vqa models that can read. In 
+
+Proceedings of the IEEE/CVF conference on 
+
+20 Decoupled DiLoCo 
+
+computer vision and pattern recognition , 2019. URL https://openaccess.thecvf.com/ content_CVPR_2019/papers/Singh_ Towards_VQA_Models_That_Can_Read_ CVPR_2019_paper.pdf . (Cited on page 35.) S. Singh, A. Romanou, C. Fourrier, D. I. Adelani, J. G. Ngui, D. Vila-Suero, P. Limkonchotiwat, K. Marchisio, W. Q. Leong, Y. Susanto, R. Ng, S. Longpre, W.-Y. Ko, M. Smith, A. Bosselut, A. Oh, A. F. T. Martins, L. Choshen, D. Ippolito, E. Ferrante, M. Fadaee, B. Ermis, and S. Hooker. Global mmlu: Understanding and addressing cultural and linguistic biases in multilingual evaluation, 2024. URL https://arxiv.org/ abs/2412.03304 . (Cited on page 24.) S. U. Stich. Local SGD converges fast and commu-nicates little. International Conference on Learn-ing Representations (ICLR) , 2018. URL https: //arxiv.org/abs/1805.09767 . (Cited on page 23.) F. Strati, Z. Zhang, G. Manos, I. S. Périz, Q. Hu, T. Chen, B. Buzcu, S. Han, P. Delgado, and A. Klimovic. Sailor: Automating distributed training over dynamic, heterogeneous, and geo-distributed clusters, 2025. URL https: //arxiv.org/abs/2504.17096 . (Cited on page 23.) I. Sutskever, J. Martens, G. Dahl, and G. Hin-ton. On the importance of initialization and momentum in deep learning. Interna-tional Conference on Machine Learning (ICML) ,2013. URL https://proceedings.mlr. press/v28/sutskever13.html . (Cited on page 3.) R. S. Sutton. The bitter lesson. 
+
+http://www.incompleteideas.net/ IncIdeas/BitterLesson.html , 2019. Incomplete Ideas (blog). (Cited on page 12.) B. Thérien, X. Huang, I. Rish, and E. Belilovsky. Muloco: Muon is a practical inner optimizer for diloco. arXiv preprint arXiv:2505.23725 ,2025. URL https://arxiv.org/abs/2505. 23725 . (Cited on pages 23 and 29.) J. Wang, Q. Liu, H. Liang, G. Joshi, and H. V. Poor. Tackling the objective inconsistency problem in heterogeneous federated optimization. Ad-vances in neural information processing systems ,2020. URL https://arxiv.org/abs/2007. 07481 . (Cited on page 23.) J. Wang, Z. Charles, Z. Xu, G. Joshi, H. B. McMa-han, M. Al-Shedivat, G. Andrew, S. Avestimehr, K. Daly, D. Data, et al. A field guide to federated optimization. arXiv preprint arXiv:2107.06917 ,2021. URL https://arxiv.org/abs/2107. 06917 . (Cited on page 23.) J. Wang, Y. Lu, B. Yuan, B. Chen, P. Liang, C. De Sa, C. Re, and C. Zhang. CocktailSGD: fine-tuning foundation models over 500mbps networks. International Conference on Machine Learning (ICML) , 2023. URL https:// openreview.net/forum?id=w2Vrl0zlzA .(Cited on page 23.) Y. Wang, X. Ma, G. Zhang, Y. Ni, A. Chandra, S. Guo, W. Ren, A. Arulraj, X. He, Z. Jiang, T. Li, M. Ku, K. Wang, A. Zhuang, R. Fan, X. Yue, and W. Chen. Mmlu-pro: A more ro-bust and challenging multi-task language un-derstanding benchmark, 2024. URL https: //arxiv.org/abs/2406.01574 . (Cited on page 24.) A. Wongpanich, T. Oguntebi, J. B. Paredes, Y. E. Wang, P. M. Phothilimthana, R. Mitra, Z. Zhou, N. Kumar, and V. J. Reddi. Machine learn-ing fleet efficiency: Analyzing and optimizing large-scale google tpu systems with ml produc-tivity goodput, 2025. URL https://arxiv. org/abs/2502.06982 . (Cited on page 6.) M. Wortsman, G. Ilharco, S. Y. Gadre, R. Roelofs, R. Gontijo-Lopes, A. S. Morcos, H. Namkoong, A. Farhadi, Y. Carmon, S. Kornblith, and L. Schmidt. Model soups: averaging weights of multiple fine-tuned models improves accu-racy without increasing inference time. In-ternational Conference on Machine Learning ,2022. URL https://arxiv.org/abs/2203. 05482 . (Cited on page 29.) P. Yadav, D. Tam, L. Choshen, C. A. Raffel, and M. Bansal. Ties-merging: Resolving interfer-ence when merging models. Advances in neu-ral information processing systems , 36:7093– 7115, 2023. URL https://openreview. 
+
+21 Decoupled DiLoCo 
+
+net/forum?id=xtaX3WyCj1 . (Cited on page 28.) X. Yue, Y. Ni, K. Zhang, T. Zheng, L. Ruoqi, G. Zhang, S. Stevens, D. Jiang, W. Ren, Y. Sun, et al. Mmmu: A massive multi-discipline mul-timodal understanding and reasoning bench-mark for expert agi. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2024. URL https:// arxiv.org/abs/2410.19168 . (Cited on page 35.) R. Zellers, A. Holtzman, Y. Bisk, A. Farhadi, and Y. Choi. Hellaswag: Can a machine really fin-ish your sentence? In Proceedings of the 57th Annual Meeting of the Association for Computa-tional Linguistics , 2019. URL https://arxiv. org/abs/1905.07830 . (Cited on page 35.) W. Zhang, S. Gupta, X. Lian, and J. Liu. Staleness-aware async-sgd for distributed deep learning. In Proceedings of the Twenty-Fifth International Joint Conference on Artificial Intelligence , IJ-CAI’16, page 2350–2356. AAAI Press, 2016. ISBN 9781577357704. (Cited on page 24.) Y. Zhao, A. Gu, R. Varma, L. Luo, C.-C. Huang, M. b. Xu, L. Wright, H. Shojanazeri, M. Ott, S. Shleifer, et al. Pytorch FSDP: experiences on scaling fully sharded data parallel. Very Large Data Base (VLDB) , 2023. URL https: //arxiv.org/abs/2304.11277 . (Cited on page 23.) M. Zinkevich, M. Weimer, L. Li, and A. Smola. Par-allelized stochastic gradient descent. Advances in neural information processing systems , 2010. URL https://dl.acm.org/doi/10.5555/ 2997046.2997185 . (Cited on page 23.) 22 Decoupled DiLoCo 
+
+## A. Related Work 
+
+Distributed training at scale. The scale of LLM pre-training has necessitated advancements in distributed training methods. One such line of work focuses on more efficient ways to shard data-parallel training across large numbers of accelerators. This includes work on distributed data-parallel training (Li et al., 2020; Shazeer et al., 2018), ZeRO and fully-sharded data par-allelism (FairScale authors, 2021; Rajbhandari et al., 2020; Ren et al., 2021; Zhao et al., 2023), pipeline parallelism (Huang et al., 2019; Narayanan et al., 2019; Petrowski et al., 1993), model parallelism (Dean et al., 2012), tensor parallelism (Korthikanti et al., 2023; Narayanan et al., 2021), sequence parallelism (Korthikanti et al., 2023), and (for mixture-of-experts mod-els) expert parallelism (Lepikhin et al., 2021). To adapt these synchronous methods to heteroge-neous hardware, systems like Sailor (Strati et al., 2025) automate the search for load-balanced par-allelization configurations. 
+
+DiLoCo and related methods. An alternative approach to pre-training involves using periodic synchronization across accelerators, reducing net-work bottlenecks in training. This idea has existed for decades (Mangasarian and Solodov, 1993), and has been periodically re-purposed (or re-discovered) in a variety of settings, including fed-erated learning (McMahan et al., 2017; Stich, 2018; Zinkevich et al., 2010). The use of inner and outer optimizers was first proposed by Hsu et al. (2019) and Reddi et al. (2021) in the con-text of federated learning, focusing on SGD as the inner optimizer and SGDM or Adam (Kingma and Ba, 2015) as the outer optimizer. This type of approach was used by Douillard et al. (2023) for language model pre-training, where it was adapted specifically for this setting by using Adam as the inner optimizer and SGDM with Nesterov momentum in the outer. Since then, there has been a large amount of work building on this, including versions of DiLoCo with better system properties (Kale et al., 2025; Kim et al., 2025; Liu et al., 2024; Qi et al., 2025), variants of DiLoCo that further reduce bandwidth consump-tion (Beton et al., 2025; Douillard et al., 2025; Sarfi et al., 2025), empirical scaling-oriented anal-yses of DiLoCo (Charles et al., 2025; Thérien et al., 2025), and other algorithmic variants of DiLoCo (Fan and Zhang, 2025; Kolehmainen et al., 2025; Lidin et al., 2026; Sani et al., 2024; Sarfi et al., 2025; Thérien et al., 2025). As discussed above, DiLoCo shares a conceptu-ally similar underpinning to many optimization algorithms in federated learning, especially the FedOpt framework (Reddi et al., 2021). While we defer to (Wang et al., 2021) for an overview of federated optimization, we highlight a num-ber of connections particularly relevant to De-coupled DiLoCo. First, we note that our token-based weighting strategy to account for variable speeds is similar to the step-weighting schema proposed by Wang et al. (2020). Second, we note that the idea of minimum quorum is analogous to over-provisioning client sampling in federated learning, something used in production settings by Bonawitz et al. (2019). Last, we note that many of the asynchrony-aware techniques used by Decoupled DiLoCo are conceptually similar to the Papaya framework (Huba et al., 2022) for federated learning. DiLoCo shares many similarities with work on communication-efficient training and optimiza-tion methods for LLMs. These include techniques like quantization (Alistarh et al., 2017), sparsifi-cation (Wang et al., 2023), and communication-efficient optimizers (Ahn and Myung, 2025; Jo-vanović et al., 2026) though these approaches are typically orthogonal and can be combined with DiLoCo (Douillard et al., 2025). 
+
+Asynchrony and fault-tolerance at LLM scales. 
+
+Parallel to DiLoCo, there are a number of works that that provide robustness to hardware fail-ures and stragglers at LLM scales by employing forms of asynchrony and fault tolerance. There are largely two axes to parallelize over when employing such techniques: the layer/pipeline axis, or the data axis. For the former, Borzunov et al. (2023) and Ryabinin et al. (2023) train LLMs over unreliable networks by dynamically re-routing computations through the model in the event of stragglers and failures. Similarly, Jang et al. (2023) provide resilience by reconfig-23 Decoupled DiLoCo uring pipeline templates in after node failures. Such approaches have also sparked research on designing optimizers for asynchronous pipeline parallelism (Ajanthan et al., 2025). On the data axis, much of the work (includ-ing our own) is similar in spirit to Hogwild! (Niu et al., 2011). Building on the parameter server based formulation of asynchronous stochastic gra-dient descent in Dean et al. (2012), Zhang et al. (2016) adapt learning rates based on staleness metrics. Unlike variants of asynchronous SGD, the Decoupled DiLoCo approach to asynchrony never requires updating the model using a stale gradient computed on a previous version of the parame-ters. Other works introduce fault-tolerant imple-mentations of all-reduce. Ryabinin et al. (2021) utilize a butterfly all-reduce to handle unreliable devices, and more recently, Salpekar et al. (2026) use fault-tolerant sharded data-parallelism for re-silience in large-scale distributed jobs. The use of asynchrony in tandem with DiLoCo was first pro-posed by Liu et al. (2024), and was extended to reduce inter-region communication by Kim et al. (2025). 
+
+## B. Post-training 
+
+To ensure that the benefits of Decoupled DiLoCo during pre-training do not come at the cost of downstream capabilities, we evaluate the impact of our framework on the post-training phase. We take the 5B parameter models trained on 1T to-kens from our experiments with simulated hard-ware failures (see subsection 5.2) and subject them to an identical post-training pipeline, which is a light version of Gemma 4 recipe. Specifically, we compare three pre-training se-tups: a standard Data-Parallel (DP) baseline in an ideal environment with no failures, Decoupled DiLoCo in an ideal environment, and Decoupled DiLoCo trained under heavy simulated hardware failures ( MTBI chip = 1 year, 𝑁 chip = 1.2m). We apply the same light version of the Gemma 4 post-training recipe to all three pre-trained check-points to observe how they adapt. The results, presented in Table 6, demonstrate that Decoupled DiLoCo maintains highly compet-itive post-training performance. We note that this finding is contrary to that of Acker et al. (2025), where their iteration on DiLoCo was worse than data-parallel training even in the pre-training phase. We believe that this indicates the impor-tance of making DiLoCo work as well as data-parallel in pre-training phases, and that post-training does not close any gaps in model quality at this phase. Across evaluations spanning knowledge (MMLU-Pro (Wang et al., 2024)), multi-lingual understanding (GMMLU-lite (Singh et al., 2024)), mathematical reasoning (GSM8K (Cobbe et al., 2021)), and coding (HumanEval (Chen et al., 2021)), the models pre-trained with Decoupled DiLoCo perform comparably to, and in several cases, noticeably exceed, the monolithic DP baseline. Crucially, this parity holds even for the model pre-trained under chaotic, asynchronous hardware failures, confirming that the relaxed synchronization and failure recovery mechanisms of Decoupled DiLoCo do not compromise the model’s capacity for post-training. 
+
+## C. Fragmentation strategies 
+
+Recall the fragmented nature of Algorithm 1 and Algorithm 2. Communication to and from the syncer operates on fragments of the model. Thus, the fragmentation strategy (how we partition the model weights into 𝑃 fragments) has two distinct potential forms of impact on the performance of these algorithms. 1. The fragmentation strategy can impact the 
+
+model performance (measured via various downstream tasks). 2. The fragmentation strategy can impact the 
+
+system performance , (by changing the bandwidth requirement of different commu-nication steps). Perhaps surprisingly, we find that downstream model performance is quite robust to fragmenta-tion strategy, and therefore we opt for fragmen-tation strategies that have maximally beneficial bandwidth usage profiles. To illustrate this, we describe the various fragmentation strategies we tried. 24 Decoupled DiLoCo 
+
+Simulated MMLU-Pro GMMLU GSM8K HumanEval Pre-training Method HW Fails? knowledge multi-lingual math code 
+
+Data-Parallel No 21.4 42.3 23.8 22.0 Decoupled DiLoCo No 18.6 43.3 35.4 22.6 
+
+Decoupled DiLoCo Yes 18.3 42.4 28.7 22.0 Table 6 | Post-training results for Gemma 5B models, pretrained on 1T tokens. All models were pre-trained under their respective setups and subsequently fine-tuned using the same light Gemma 4 post-training recipe. Results indicate that Decoupled DiLoCo pre-training does not degrade post-training performance, even when subjected to hardware failures. 
+
+Layer fragmentation The first strategy is that proposed by Douillard et al. (2025). In this, we split a model into fragments according to its layer structure. First, we have a single fragment for all non-transformer layers. Let 𝐿 denote the number of transformer layers. For 𝑃 − 1 ≤ 𝐿 , we form the remaining 𝑃 − 1 fragments by strided selec-tion. For example, if 𝐿 = 6 and 𝑃 − 1 = 3, then transformer layers 1 and 4 form a fragment, as do transformer layers 2 and 5, and 3 and 6. While this strategy yields good training perfor-mance (Douillard et al., 2025), layer fragmen-tation has system drawbacks. If the number of transformer layers 𝑄 is less than 𝐻 , then there will necessarily be some steps at which we do not communicate with the syncer. This means that the communication incurred can be quite bursty. See Figure 8a for a simple example of this. 
+
+Tensor fragmentation To remedy this, we can instead partition model at the level of individual tensors (as opposed to transformer layers, which typically contain multiple tensors). In this strat-egy, we put all non-transformer tensors in the first fragment. The remaining tensors (say there are 𝑆 of them) are bucketed into 𝑃 − 1 fragments in a strided manner by their index in some or-dering of the tensors. For example, if 𝑆 = 9 and  
+
+> 𝑃
+
+− 1 = 3, then (in addition to the fragment with non-transformer tensors), the first fragment will have tensors 1, 4, 7, the second will have tensors 
+
+2, 5, 8, and the third will have tensors 3, 6, 9.While this allows us to communicate smaller fragments more often (avoiding the extremely bursty communication patterns of layer fragmen-tation), the fragments may still be of very differ-ent sizes, meaning that bandwidth usage is still uneven. See Figure 8b for an example. 
+
+Balanced tensor fragmentation The last strat-egy we examine attempts to make the fragments as evenly balanced, in terms of total size, as pos-sible. To do so we use a greedy bin-packing algo-rithm to pack the 𝑄 tensors in the model into 𝑃 
+
+buckets. Specifically, we sort the tensors by their total size (measured in bits), and pack them into bins according via greedy number partitioning, where we iterate over the tensors in descending order of size, and put each successive tensor in the fragment whose total size is the smallest. This has many beneficial system properties. First, as long as 𝑄 ≥ 𝐻 , we are always guaran-teed to have 𝑃 = 𝐻 , so that we communicate a fragment at every step. Moreover, the greedy al-gorithm is well-known to be no more than 4/3
+
+times worse than the optimal packing strategy, measured in terms of the maximum size of any fragment (Graham, 1969). This means that the peak bandwidth usage of balanced tensor frag-mentation is at most 4/3 of the minimum possible peak bandwidth of any fragmentation strategy. See Figure 8c for an example. 
+
+Sub-tensor fragmentation In preliminary in-vestigations, we also evaluated a sub-tensor frag-mentation strategy, where we would split individ-ual tensors across fragments. These were essen-tially split across the output of the tensor (e.g. the columns of the embedding layer), to guarantee that inputs were not effectively partitioned across 25 Decoupled DiLoCo Embedding Tensor(1)     
+
+> Tensor(3)
+> Tensor(4)
+> Tensor(5)
+> Tensor(6)
+> t=0 t=1 t=3 t=4 t=2
+> Tensor(7)
+> Tensor(9)
+> Tensor(10)
+> Tensor(11)
+> Tensor(12)
+> Tensor(2) Tensor(8)
+
+(a) Layer Fragmentation. Because 𝐻 is larger than the number of layers, when 𝑡 = 2, 4, we do not send any fragment to the syncer, resulting in bursty communication with potentially high peak bandwidth usage. Embedding     
+
+> t=0 t=1 t=2 t=3 t=4
+> Tensor(1)
+> Tensor(2)
+> Tensor(3)
+> Tensor(4)
+> Tensor(5)
+> Tensor(6)
+> Tensor(7)
+> Tensor(8)
+> Tensor(9)
+> Tensor(10)
+> Tensor(11)
+> Tensor(12)
+
+(b) Tensor Fragmentation. We send a fragment to the syncer at every step, but the fragments have drastically different sizes, so the peak bandwidth usage might still be high. Embedding         
+
+> t=0 t=1 t=2 t=3 t=4
+> Tensor(1) Tensor(7)
+> Tensor(2)
+> Tensor(4) Tensor(5)
+> Tensor(6)
+> Tensor(8) Tensor(9)
+> Tensor(10) Tensor(11)
+> Tensor(12)
+> Tensor(3)
+
+(c) Balanced Tensor Fragmentation. This sends a fragment to the syncer at every step, with approximately equal sizes, reducing peak bandwidth and avoiding bursty communication. 
+
+Figure 8 | Layer, tensor, and balanced tensor fragmentation applied to a model with an embedding layer and 2 transformer layers, each containing 6 tensors. We set 𝐻 = 5, and visualize which fragment is sent from the learner to the syncer at every step. fragments. By construction, this yields fragments of even more balanced size than the balanced ten-sor strategy above. While we found it competitive with other schemes, we opted not to use it in final experiments due to implementation complexity and to aid in debugging. 
+
+C.1. Fragment Size Comparison 
+
+We now compare the size of fragments created by applying the above strategies to various models. Here we set 𝑃 = 24 for all three methods, and record the total size (in bytes) of each fragment. This is simply the sum of the size of each tensor that is grouped under the same fragment. We show the results for the 5B and 9B dense models in Figure 9. 
+
+C.2. Evaluation Results 
+
+We compare the three strategies on a 2B param-eter model, setting 𝐻 = 𝑃 = 24 , and 𝑀 = 8. See Table 7 for the results. We find that the meth-ods all perform quite comparably on downstream evaluations. This is potentially surprising - tensor and balanced tensor fragmentation do not respect 26 Decoupled DiLoCo 0 5 10 15 20  
+
+> Fragment Index
+> 1.2
+> 1.4
+> 1.6
+> 1.8
+> 2.0
+> 2.2
+> 2.4
+> Size (Bytes)
+> 1e8 Fragment Sizes on Gemma 5b (Excluding Embedding)
+> Strategy
+> Layer
+> Tensor
+> Balanced Tensor
+
+(a) Gemma 5B. 0 5 10 15 20   
+
+> Fragment Index
+> 2.0
+> 2.5
+> 3.0
+> 3.5
+> 4.0
+> Size (Bytes)
+> 1e8 Fragment Sizes on Gemma 9b (Excluding Embedding)
+> Strategy
+> Layer
+> Tensor
+> Balanced Tensor
+
+(b) Gemma 9B. 
+
+Figure 9 | Comparison of fragment sizes on dense 5B and 9B models. Here we omit the embedding layer for visual clarity, as in all three cases it is in its own fragment that is significantly larger. 0 5 10 15 20  
+
+> Fragment Index
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> 1.1
+> 1.2
+> 1.3
+> Size (Bytes)
+> 1e9 Fragment Sizes on Gemma 2.8B
+> Strategy
+> Layer
+> Tensor
+> Balanced Tensor
+
+(a) Gemma 2.8B MoE. 0 5 10 15 20   
+
+> Fragment Index
+> 0.8
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> Size (Bytes)
+> 1e9 Fragment Sizes on Gemma 3.8B
+> Strategy
+> Layer
+> Tensor
+> Balanced Tensor
+
+(b) Gemma 3.8B MoE. 
+
+Figure 10 | Comparison of fragment sizes on Mixture-of-Experts models with 2.8B and 3.8B activated parameters. the layer structure of the model, but this does not reduce model quality. Thus, the only factor that is important then is their system performance. Because balanced tensor fragmentation has the lowest peak bandwidth and most consistent band-width usage across fragments, we use this strategy for all other experiments. 
+
+## D. Algorithmic Ablations 
+
+Below we briefly detail various design choices we made when concretizing Algorithm 1 and Algo-rithm 2. 
+
+D.1. Mixing learner and syncer params 
+
+In Algorithm 1, upon receiving Θ(𝑡 −𝜏 )
+
+𝑝 from the syncer, a learner simply sets their local fragment 
+
+𝜃 (𝑡 )
+
+𝑝 to this value. We could instead interpolate via 
+
+𝜃 (𝑡 )
+
+𝑝 ← 𝛼𝜃 (𝑡 )
+
+𝑝 + ( 1 − 𝛼 )Θ(𝑡 )
+
+𝑝 . (5) While Douillard et al. (2025) showed that 𝛼 = 0.5
+
+was useful for 𝑀 = 2 and 𝜏 ≥ 10 , we found that at larger 𝑀 𝛼 = 0 is optimal. Intuitively, with more learners 𝑀 , each learner contribution 𝜃 (𝑡 )
+
+𝑚,𝑝 
+
+is less informative, and thus the global update 
+
+Θ(𝑡 )
+
+𝑝 yields better performance. 
+
+D.2. Merging methods 
+
+In Algorithm 2, the syncer is responsible for merg-ing the per-fragment learner updates. Here we discuss two methods for doing this merging, and how they compare. 
+
+Direct averaging One option for the Merge 
+
+function in Algorithm 2 is to mirror (Douil-lard et al., 2024) and directly average the per-27 Decoupled DiLoCo                                                                  
+
+> Text Benchmarks Vision Benchmarks Method Avg Arc-C Arc-E BoolQ Hella Piqa Siqa Wino Avg COCO Chart Doc Doc-H Info MMMU TextVQA Balanced 54.4 36.3 64.0 55.8 51.4 72.5 46.5 54.1 37.6 62.9 13.3 48.1 30.8 24.4 19.3 64.5
+> Layer 55.3 36.5 64.6 59.1 52.0 71.5 46.5 56.7 35.5 59.5 12.4 46.7 28.7 24.9 14.9 61.1 Tensor 55.4 35.8 65.8 61.6 51.8 72.0 46.5 54.5 35.8 57.1 15.0 48.8 30.6 24.1 13.9 61.2
+
+Table 7 | Downstream evaluations of Gemma 2B trained on 26B tokens with Decoupled DiLoCo using M = 8 learners and various fragmentation strategies. fragment outer gradients Δ(𝑡 ) 
+
+> 𝑚,𝑝
+
+from (2) . Ignoring weighting, we would therefore define 
+
+Merge 
+
+
+
+{𝜃 (𝑡 ) 
+
+> 𝑚,𝑝
+
+}𝑖 ∈ M 𝑡 , Θ(𝑡 −𝐻 )
+
+> 𝑝
+
+
+
+= 1
+
+|M 𝑡 |∑︁ 𝑖 ∈ M 𝑡 
+
+Δ(𝑡 ) 
+
+> 𝑚,𝑝
+
+= 1
+
+|M 𝑡 |∑︁ 𝑖 ∈ M 𝑡 
+
+
+
+Θ(𝑡 −𝐻 ) 
+
+> 𝑝
+
+− 𝜃 (𝑡 )
+
+> 𝑚,𝑝
+
+
+
+The weighted version is defined analogously via 
+
+Merge 
+
+
+
+{𝜃 (𝑡 )
+
+> 𝑚,𝑝
+
+, 𝑤 𝑚,𝑝 }𝑖 ∈ M 𝑡 , Θ(𝑡 −𝐻 )
+
+> 𝑝
+
+
+
+=
+
+Í𝑖 ∈ M 𝑡 𝑤 𝑚,𝑝 
+
+
+
+Θ(𝑡 −𝐻 ) 
+
+> 𝑝
+
+− 𝜃 (𝑡 )
+
+> 𝑚,𝑝
+
+Í𝑖 ∈ M 𝑡 𝑤 𝑚,𝑝 
+
+Radial-directional averaging. Empirically, the per-learner outer gradients Δ(𝑡 ) 
+
+> 𝑚,𝑝
+
+are almost pair-wise orthogonal. Thus, if they are all of norm 𝑅 ,their average has norm of approximately 𝑅 /√𝑀 .Hence, we generally need to re-tune the outer optimizer when we merge via averaging. To mitigate this, we can instead attempt to merge in a way that the output norm is essentially invariant to 𝑀 . We propose our own lightweight merging method, Radial-Directional Averaging (RDA), which separately averages the norm and direction of the vectors. Formally, RDA operates as follows. Define 
+
+𝜙 : ℝ𝑛 \{ 0} → ℝ𝑛 , 𝑥 ↦ → 𝑥 
+
+∥𝑥 ∥2
+
+.
+
+For a set of non-zero vectors 𝑣 1, . . . , 𝑣 𝑀 we de-fine the function RDA via: 
+
+RDA (𝑣 1, . . . , 𝑣 𝑀 ) = 1
+
+𝑀 
+
+> 𝑀
+
+∑︁ 
+
+> 𝑖 =1
+
+∥𝑣 𝑖 ∥2
+
+!
+
+𝜙 1
+
+𝑀 
+
+> 𝑀
+
+∑︁ 
+
+> 𝑖 =1
+
+𝜙 (𝑣 𝑖 )
+
+!
+
+.
+
+That is, we average the norm and direction of the vectors separately, projecting the aver-age direction to be a unit vector, and multiply them. Note that if ∥𝑣 𝑖 ∥ = 𝑅 for all 𝑖 , then 
+
+∥ RDA (𝑣 1, . . . , 𝑣 𝑀 )∥ = 𝑅 . We define a weighted version of RDA completely analogously. Let 
+
+𝑤 1, . . . , 𝑤 𝑀 denote the weights for each vector. Then 
+
+RDA  {( 𝑣 𝑖 , 𝑤 𝑖 )} 𝑀 𝑖 =1
+
+ =
+
+Í𝑀 𝑖 =1 𝑤 𝑖 𝑣 𝑖 
+
+Í𝑀 𝑖 =1 𝑤 𝑖 
+
+!
+
+𝜙 
+
+Í𝑀 𝑖 =1 𝑤 𝑖 𝜙 (𝑣 𝑖 )
+
+Í𝑀 𝑖 =1 𝑤 𝑖 
+
+!
+
+To specify the corresponding Merge function in 2, we apply RDA to the (weighted) per-learner outer gradients, as when we do direct averaging. Note that at first glance, RDA requires two all-reduces while direct averaging only one. However, the magnitude tensors are less than 0.05% of the size of the direction tensors, making the overhead negligible. 
+
+Other options For 𝑀 = 2 one can use SLERP (Shoemake, 1985), but it is unclear how best to generalize this to 𝑀 > 2. While (Buss and Fillmore, 2001) develop a generalization for 
+
+𝑀 > 2, it involves least-squares minimization, and as such incurs more computational overhead than methods like direct averaging. Ramé et al. (2024) propose an iterative version of SLERP to merge 𝑀 > 2 tensors, but we found that RDA performed comparably if not better, with reduced complexity. We also evaluated other merging schemes, such as TIES-MERGING (Yadav et al., 2023), Iso-C (Marczak et al., 2025), and sparsity-aware merging schemes, but found that direct averaging and RDA outperformed such methods in our setting. This is potentially due to the fact that much of the work on such merging meth-ods has focused on merging after large numbers 28 Decoupled DiLoCo of steps (Wortsman et al., 2022) on non-IID dis-tributions, while we do partial model merging essentially every step. 
+
+Results We compare direct averaging (Avg) and RDA on a 2B parameter model. Qualitatively, we find that the outer gradients corresponding to the embedding component of the model often did not have the “near-orthogonality” property described above. Therefore, we compared the use of Avg and RDA separately on the embedding component and on the rest of the model. We compare this for 𝑀 = 8 learners (Table 8) and  
+
+> 𝑀
+
+= 16 learners (Table 9). For 𝑀 = 8, there is no entirely consistent method that outperforms the others. However, we find that on nearly all tasks, applying RDA to the model and Avg to the embedding performs comparably or better to the other methods. For  
+
+> 𝑀
+
+= 16 , we find that applying RDA to the non-embedding component of the model drastically improves performance. Moreover, applying Avg to the embedding generally (though not uniformly) boosts performance slightly over RDA. Therefore, for all of our primary experiments we apply Avg to the embedding component, and RDA to the remaining parts of the model. 
+
+D.3. Outer gradients compression 
+
+Similarly to Streaming DiLoCo (Douillard et al., 2025), we can compress outer gradients from bf16 (16 bits) to int4 (4 bits) to minimize band-width constraint when doing the all-reduce syn-chronization. We display in Table 10 the per-formance of a 2B dense model trained with high level of simulated hardware failures ( MTBI chip = 1
+
+year, and using 𝑁 chip = 1.2m simulated chips). We found that compressing the outer gradients before their all-reduce (in the Merge , L11 of Al-gorithm 2) to int4 yields comparable performance to bf16, even in the asynchronous case with heavy rate of hardware failures. We also noticed that using 2 bits or 1 bit resulted in unacceptable performance regression. More exploration could be done to exploit more advanced compression scheme such as MuLoCo (Thérien et al., 2025). 
+
+D.4. Number of learners impact on asyn-chronous resiliency 
+
+In Table 11, we compare the ML performance on text and vision benchmark without simulated hardware failures and with ( 𝑁 chip = 1.2m to  
+
+> 𝑁 chip
+
+= 2.4m simulated chips and MTBI chip =1y, as in subsection 5.2. Note that lower values of number of learners 𝑀 result in lower goodput because the blast radius is larger: for 𝑀 = 2, the radius is half of the total chips. Larger numbers of learners significantly improves goodput, here up to 𝑀 = 16 with 93% goodput at 𝑁 chip = 1.2mchips. We show neutral ML performance from  
+
+> 𝑀
+
+= 2 to 𝑀 = 8, and slightly degraded perfor-mance at 𝑀 = 16 but that can be mitigated by multiple aspects, including training larger models with larger token budget. 
+
+D.5. Token budget impact 
+
+We showcase in Table 12 the results of a 2B dense model trained with data-parallel and Decoupled DiLoCo methods with increasing token budget, at 26B tokens, 260B tokens ( 10 ×), and 1.3T tokens (50 ×). Notice that while Decoupled DiLoCo can be slightly weaker at low token budget, its per-formance surpasses data-parallel as the budget increases. 
+
+## E. Infrastructure Details 
+
+E.1. Deterministic Replay via Event Tapes Non-Determinism and Event Logging. Decou-pled DiLoCo’s availability in the event of failures is based on allowing bounded levels of nondeter-minism in the training algorithm. Because the syncer aggregates updates as soon as a minimum quorum 𝐾 is reached (see Algorithm 2), the exact subset of learners used in any given outer opti-mization step depends entirely on unpredictable wall-clock timing, network jitter, and hardware failures. Additionally, the exact step on which a learner applies a global fragment update to its local model depends on both random failures and the relative speed of the learner and syncer steps at that moment. To isolate algorithmic behav-ior from this system noise, the syncer records an 
+
+event tape , T , during training. This tape captures 29 Decoupled DiLoCo                                                                                 
+
+> Merge Method Text Benchmarks Vision Benchmarks Model Embed Avg Arc-C Arc-E BoolQ Hella Piqa Siqa Wino Avg COCO Chart Doc Doc-H Info MMMU TextVQA Avg Avg 54.1 35.8 63.1 58.0 50.5 71.1 46.3 54.2 34.2 58.8 11.9 46.1 27.2 22.9 13.8 58.7 Avg RDA 53.3 34.6 59.7 59.8 48.3 71.2 45.2 54.5 32.9 53.7 12.1 40.7 24.8 20.7 19.2 59.0 RDA Avg 54.4 36.3 64.0 55.8 51.4 72.5 46.5 54.1 37.6 62.9 13.3 48.1 30.8 24.4 19.3 64.5
+> RDA RDA 55.1 34.7 63.6 62.8 50.9 72.3 46.2 55.1 35.6 59.4 12.6 46.0 28.4 24.6 16.1 62.2
+
+Table 8 | Downstream evaluations of Gemma 2B trained on 26B tokens with Decoupled DiLoCo using 
+
+𝑀 = 8 learners and various merging methods.                                                                                  
+
+> Merge Method Text Benchmarks Vision Benchmarks Model Embed Avg Arc-C Arc-E BoolQ Hella Piqa Siqa Wino Avg COCO Chart Doc Doc-H Info MMMU TextVQA Avg Avg 52.7 35.1 60.9 56.5 47.7 70.5 45.4 53.0 28.2 54.1 10.3 36.6 21.0 19.6 5.4 50.7 Avg RDA 49.3 29.7 52.3 56.6 40.6 68.7 45.3 51.8 22.4 31.6 9.7 26.4 15.6 15.2 14.0 44.4 RDA Avg 54.5 35.0 63.1 59.5 50.2 72.0 45.7 55.6 33.6 58.4 13.4 43.2 26.5 21.3 11.8 60.9
+> RDA RDA 52.7 35.6 60.9 53.3 48.6 71.4 46.3 52.8 33.9 56.6 12.2 43.3 26.2 24.2 15.3 59.2
+
+Table 9 | Downstream evaluations of Gemma 2B trained on 26B tokens with Decoupled DiLoCo using 
+
+𝑀 = 16 learners and various merging methods. # bits / value 16 bits 4 bits 2 bits 1 bit Relative val loss — +0.09% +32% +83% 
+
+Text (avg) 55.4 55.3 42.6 37.3 Arc-C 36.5 35.7 22.9 20.6 Arc-Easy 64.2 64.9 35.9 32.5 BoolQ 62.0 62.2 61.8 39.0 HellaSwag 51.8 51.5 27.2 25.4 Piqa 71.6 71.4 57.8 56.4 Siqa 45.8 46.6 40.7 37.1 Winogrande 55.6 54.8 51.7 50.4 
+
+Vision (avg) 36.6 34.4 5.3 0.0 COCO-Captions 61.5 60.4 3.5 0.0 ChartQA 12.7 11.8 2.8 0.1 DocVQA 47.7 45.3 2.2 0.0 DocVQA-Hard 29.9 27.9 0.9 0.0 InfographicVQA 24.4 24.3 4.6 0.0 MMMU 18.0 9.9 17.6 0.1 TextVQA 62.0 61.3 5.8 0.0 Table 10 | Outer gradients compression impact on ML performance for a 2B model trained on 26B tokens, while injecting hardware failures at the MTBI chip = 1 year and 𝑁 chip = 1.2m simulated chips. the full causal state of the system by logging the following metadata on each worker at each local step: a vector clock (Mattern, 1989) which en-codes the exact communication pattern between workers as described in Section 4, per-learner token counters, and failure/recovery events. 
+
+Deterministic Replay. Given a recorded tape 
+
+T , the syncer and learners can completely bypass the dynamic quorum logic. By reading the tape, the syncer deterministically executes the exact same sequence of synchronization decisions, par-ticipant subsets, and token weightings, and each learner applies fragment updates from the syncer and fails or recovers on the same local steps. This mechanism guarantees bitwise-identical training trajectories regardless of the actual hardware con-ditions during the replay run. 
+
+Synthetic Tape Generation. Beyond replaying historical runs, we built a discrete-event simulator to generate synthetic tapes for controlled “what-if ” experiments such as chaos engineering for LLMs as described in Section 3.3. The generator models the learners and syncer as state machines advanc-ing through virtual time, allowing us to inject configurable disruptions. These include constant speed heterogeneity, transient slowdowns, and 30 Decoupled DiLoCo No HW failures With 𝑁 chip = 1.2m and 
+
+MTBI chip = 1y With 𝑁 chip = 2.4m and 
+
+MTBI chip = 1y # learners 𝑀 2 4 8 16 2 4 8 16 2 4 8 16 Goodput 100% 100% 100% 100% 70% 82% 88% 93% 54% 73% 80% 86% 
+
+Text (avg) 55.1 55.9 54.4 54.5 54.4 55.0 55.4 53.9 54.4 54.5 54.6 53.4 Arc-Challenge 37.1 36.0 36.3 35.0 35.7 36.9 36.5 34.4 35.4 35.5 35.1 35.8 Arc-Easy 64.1 65.2 64.0 63.1 64.2 63.5 64.2 63.5 61.1 63.0 64.4 62.6 BoolQ 58.2 61.2 55.8 59.5 59.4 60.2 62.0 59.8 59.2 60.2 60.2 54.1 HellaSwag 52.7 52.9 51.4 50.2 51.4 51.9 51.8 50.0 51.6 51.5 50.9 49.7 Piqa 72.4 72.2 72.5 72.0 71.9 71.5 71.6 71.0 71.8 71.7 70.9 71.2 Siqa 46.3 47.2 46.5 45.7 45.4 46.0 45.8 46.1 45.9 45.5 45.4 44.6 Winogrande 54.8 56.2 54.1 55.6 53.0 55.1 55.6 52.6 55.8 54.3 55.1 56.0 
+
+Vision (avg) 36.8 36.8 37.6 33.6 35.8 35.6 36.6 35.1 37.2 35.3 37.3 34.3 COCO-Captions 62.8 58.6 62.9 58.4 59.5 61.8 61.5 56.8 59.0 59.8 63.1 55.0 ChartQA 12.0 14.0 13.3 13.4 14.1 13.4 12.7 13.6 13.5 12.4 13.5 12.5 DocVQA 47.9 50.8 48.1 43.2 48.1 47.9 47.7 47.1 47.8 48.3 50.4 46.8 DocVQA-Hard 28.6 31.1 30.8 26.5 28.5 28.7 29.9 26.8 30.8 25.6 30.7 28.2 InfographicVQA 26.4 24.9 24.4 21.3 23.8 24.0 24.4 23.2 24.2 23.8 25.1 23.0 MMMU 17.6 14.8 19.3 11.8 14.0 13.8 18.0 19.0 22.0 16.2 18.8 17.4 TextVQA 62.6 63.6 64.5 60.9 62.6 60.0 62.0 59.2 63.0 61.0 59.9 57.0 Table 11 | Simulated hardware failures impact for a 2B model trained on 26B tokens across different numbers of learners 𝑀 , from 2 to 16 for 1.2 and 2.4 million simulated chips. realistic large-scale hardware failures modeled either on arbitrarily chosen values as in this pa-per, or calibrated on production cluster data. Us-ing the deterministic replay execution mode in which each worker faithfully follows the synthetic tapes, we can rigorously evaluate the system’s goodput and algorithmic resilience under specific, perfectly reproducible chaotic conditions. 
+
+E.2. Consistent distributed checkpointing 
+
+One of the challenges of moving from a single-controller programming model to a model in which multiple workers execute independently is creation of consistent checkpoints. Although the resilience of Decoupled DiLoCo makes a full system restart less likely, resuming from a check-point remains an important fallback strategy in extreme failure scenarios outside the bounds de-fined by the algorithm. Additionally, in the case of deterministic replay where a specific set of learn-ers must participate in each outer optimization, resuming from a checkpoint remains the main resilience strategy in the case of a failure. Checkpointing must not block training progress, so each of the workers in the system checkpoints its own state asynchronously to its own directory. One naive strategy would be for each worker to checkpoint independently when its local step meets the criteria 𝑡 𝑤 mod 𝑇 𝑐 = 0.Unfortunately, this strategy provides no guar-antee of capturing training progress, because if the causal dependencies between worker states are not captured in the set of checkpoints, resuming from these checkpoints could put the system in an invalid state. Finding a set of uncoordinated checkpoints from all workers that form a consistent global state (Mattern, 1989) can require rolling back all the way to the initial state of the system (Elnozahy et al., 2002). To prevent losing an unbounded amount of progress when a failure occurs, the workers fol-low a version of the Chandy-Lamport distributed snapshotting algorithm (Chandy and Lamport, 1985), as shown in Figure 11. The syncer be-31 Decoupled DiLoCo Data-Parallel Decoupled DiLoCo 𝑀 = 8
+
+# tokens 26B 260B 1.3T 26B 260B 1.3T 
+
+Text (avg) 55.1 61.8 64.5 54.4 62.1 64.9 Arc-Challenge 36.2 46.2 51.1 36.3 48.1 51.5 Arc-Easy 65.1 73.2 75.5 64.0 73.8 77.0 BoolQ 58.8 66.1 72.2 55.8 66.1 71.6 HellaSwag 52.1 63.1 66.8 51.4 62.7 66.8 Piqa 71.8 76.6 77.3 72.5 76.0 77.8 Siqa 46.0 48.1 47.6 46.5 48.3 48.7 Winogrande 55.6 59.0 61.4 54.1 59.6 60.6 
+
+Vision (avg) 38.2 47.8 50.6 37.6 47.4 52.1 COCO-Captions 63.8 75.2 78.5 62.9 74.2 83.7 ChartQA 12.2 17.4 19.3 13.3 17.4 18.1 DocVQA 50.9 65.6 70.3 48.1 63.3 71.3 DocVQA-Hard 30.9 45.3 46.1 30.8 41.6 48.5 InfographicVQA 25.8 35.5 40.3 24.4 38.8 40.6 MMMU 21.1 24.6 26.6 19.3 24.9 29.0 TextVQA 62.9 71.1 73.4 64.5 71.5 73.2 Table 12 | Token budget for a 2B model trained on 26B to 1.3T tokens for data-parallel and Decoupled DiLoCo 𝑀 = 8. Our method assimilates better than the baseline increased amount of tokens during its training. gins a snapshot when its local step 𝑡 𝑠 mod 𝑇 𝑐 = 0,recording its current model parameters and outer optimizer state. The syncer proceeds with train-ing as usual, sending messages that include its current vector clock to the learner workers. When a learner receives a vector clock from the syncer for which the syncer step meets the condition  
+
+> 𝑡 𝑠
+
+mod 𝑇 𝑐 = 0, this message serves as the snapshot marker (Chandy and Lamport, 1985). Receiving this snapshot marker indicates to learner workers that they should checkpoint their own model pa-rameters and inner optimizer state. Since learner workers update their own vector clocks with the latest syncer step, the next message sent from each learner to the syncer serves to return the snapshot marker, communicating to the syncer that the learner has taken its own snapshot. For each learner, there may have been some messages that were not yet received by the syncer at the time that the syncer started its snapshot, which have vector clocks that happen before the marker that the learner recorded its own snapshot. As the syncer receives these messages, it records them in the snapshot. Upon resuming from checkpoint, these messages are replayed by the syncer as if they were resent from the learners, in order to prevent deadlocks which could otherwise occur. The syncer declares its local snapshot complete and writes the snapshot state to the checkpoint directory when it has received a returned marker from every learner. To avoid the scenario where a checkpoint can-not complete because some learners fail and never send back the snapshot marker, the syncer omits failed learners from the checkpoint. Upon re-sumption, instead of loading state from the check-point, these failed learners are directed by the syncer to go through the learner recovery process detailed in Section E.3. 
+
+E.3. Distributed Learner Recovery 
+
+When a learner is slow or temporarily interrupted from training, Decoupled DiLoCo allows it to re-sume stepping with slightly stale local state and be brought back up to date with the rest of the system through the normal cycle of fragment syn-chronization. However, when a learner is inter-32 Decoupled DiLoCo              
+
+> Learner 0 Syncer Learner 1
+> ⟨L0: 10, L1: 8, S: 8 ⟩⟨L0: 9, L1: 9, S: 9 ⟩⟨L0: 8, L1: 10, S: 8 ⟩
+> ⟨L0: 10, L1: 10, S: 10 ⟩⟨L0: 9, L1: 11, S: 9 ⟩
+> Start Snapshot
+> ⟨L0: 11, L1: 10, S: 10 ⟩⟨L0: 10, L1: 11, S: 11 ⟩⟨L0: 9, L1: 12, S: 10 ⟩
+> Save Checkpoint Save Checkpoint
+> ⟨L0: 12, L1: 11, S: 11 ⟩⟨L0: 11, L1: 12, S: 12 ⟩⟨L0: 10, L1: 13, S: 11 ⟩
+> Save Checkpoint
+
+Figure 11 | Using vector clocks to communicate training progress and coordinate checkpointing. The arrows shown in blue represent messages that will be saved in the syncer’s checkpoint and replayed, which may be a different number of messages from each learner when 𝐾 < 𝑀 .rupted for too long, completely fails and restarts, or is newly introduced during compute scaveng-ing as in Section 5.3, resuming contribution to the system requires it to first acquire a recent copy of the model parameters and inner optimizer state. This process is called learner recovery. The syncer has no special logic to coordinate the recovery of learners - it simply always broad-casts the most recently synchronized fragment to all connected learners. When a recovering learner restarts, it connects to the syncer and waits for the first fragment sync to arrive, stamped with the syncer’s latest vector clock 𝑡 𝑠 . It then connects to a healthy peer learner and sends 𝑡 𝑠 as part of a recovery request. The peer will respond with a copy of its local model parameters and inner op-timizer state, but only once it has itself observed the same vector clock 𝑡 𝑠 coming from the syncer. Until that has happened, it continues training and syncing as normal, leaving the recovery request in a pending state. The transfer of model state from peer learner to recovering learner happens asynchronously but may take significant time, es-pecially if the two learners are geographically distant. During this time the recovering learner buffers any fragment update messages it receives from the syncer, such that when the transfer fin-ishes they can be replayed locally to bring the new learner up to date and able to immediately participate in training. The set of messages re-ceived after 𝑡 𝑠 is guaranteed to be sufficient to fully synchronize the recovering learner, thanks to the peer learner using 𝑡 𝑠 as a threshold before initiating the transfer. We apply an upper bound on the number of syncer steps a recovery is allowed to take, equal to the synchronization cycle length 𝐻 . This en-sures that the staleness of any fragment and opti-mizer state in the recovered learner has the same bounds as in any other learner in the system, pre-venting recovery events from becoming an unpre-dictable source of instability. As shown in Figure 12, the asynchronous de-sign of the learner recovery protocol gives De-coupled DiLoCo an advantage when scavenging with limited bandwidth between compute nodes. Elastic data-parallel training must block on the transmission of the current model parameters and momentum buffers to the new replica before train-ing, meaning that every upsize event (when a faulty slice has been repaired or replaced), incurs downtime lower-bounded by the time to transmit 
+
+3× the model parameters to the new replica. In contrast, Decoupled DiLoCo training is tolerant of the new replica using state up to 𝐻 steps stale, and transmission of state to the new replica does not block the rest of the system until this limit is reached. As long as there is enough bandwidth available to transmit an additional 3×𝑁 𝐻 model parameters per step, Decoupled DiLoCo will not incur any downtime on an upsize event. 
+
+E.4. Bandwidth profile Simulated bandwidth profile Following Douil-lard et al. (2025), we define “compute utilization” as the percentage of time doing computation vs doing communication during the all-reduce of the (inner/outer) gradients: 𝑇 math /𝑇 math +𝑇 comm. . We show in Table 13 and Figure 13 the required bandwidth in Gbits/s to reach a certain level of compute uti-lization, across two step times (1s and 5s) and two cluster sizes (2 datacenters and 8 datacen-33 Decoupled DiLoCo 
+
+Figure 12 | Downtime incurred for elastic data-parallel vs Decoupled DiLoCo due to data transmission when upsizing a new replica. 
+
+Elastic data-parallel always incurs some over-head for transmitting the most recent model copy, while the overhead for Decoupled DiLoCo is null until the time to transmit a model copy over the available bandwidth increases above 6× the step time (with 𝐻 = 24 ). When transmission of a sin-gle model copy takes 𝐻 = 24 steps, Decoupled DiLoCo upsize downtime will catch up to data-parallel. ters). Longer step time 𝑇 math mechanically im-proves the compute utilization of all methods, and further allows Decoupled DiLoCo to overlap its communication over the computation. More dat-acenters on which to perform the ring all-reduce will increase the required bandwidth too by a fac-tor of 2( | DCs | − 1)/|DCs| with DCs| being the number of datacenters on the ring. In these simulations, Decoupled DiLoCo, with either bf16 (16 bits) or int4 (4 bits) communica-tion size, requires orders of magnitude less band-width than its data-parallel counterpart. This massively less need of bandwidth is a critical property for scavenging new resources (see Sec-tion 5.3) which can now exploit crumbs of com-pute in location where bandwidth was not prop-erly allocated beforehand. 
+
+Non-collocated Learners We now perform for real a distributed experiment on a custom Chinchilla-like (Hoffmann et al., 2022) dense ar-chitecture with 12B parameters. We distribute this experiment with 𝑀 = 8 learners across the USA, one in the Midwest, two in the South, three out West, and two in the Great Plains. We display in Figure 14 the step time, normalized by the speed of a collocated Decoupled DiLoCo experi-ment (e.g. all learners in the same datacenter). While Decoupled DiLoCo with non-collocated compute (in orange) is around the same speed as its counterpart with collocated compute (in blue), data-parallel with non-collocated compute (in green) is significantly slower (>10-20x), to the point of being unusable. Note that in this experiment, we didn’t make any effort to allo-cate more bandwidth than the base minimum available and is a somewhat contrived compari-son not representative of large-scale effort where proper allocation of bandwidth would be ensured in advance. It is, however, clear evidence that De-coupled DiLoCo can enable more flexible training, for example to scavenge compute across regions. We also show in Figure 15 a XProf (OpenXLA Contributors, 2026), representing the real XLA operations done by Decoupled DiLoCo with non-collocated compute (top) vs with collocated-compute (bottom). When compute is collocated, available bandwidth is significantly higher, and thus the syncer time (in shaded blue, at the bot-tom row) is smaller than with non-collocated com-pute. However, even in the distributed case, that synchronization time can reliably fit under an en-tire compute step, and be therefore fully hidden, leading to optimal compute utilization. 
+
+## F. Evaluation Benchmarks 
+
+To provide a comprehensive assessment of our models, we evaluate performance across a diverse suite of text and vision benchmarks. The datasets used are detailed below. 
+
+F.1. Text Benchmarks 
+
+Our text evaluation suite targets reasoning, com-monsense, and reading comprehension capabili-ties: 
+
+• ARC (Challenge and Easy): Evaluates question-answering capabilities using grade-school science questions (Clark et al., 2018). 34 Decoupled DiLoCo   
+
+> (a) 1s compute step time, 2 datacenters (b) 5s compute step time, 2 datacenters
+> (c) 1s compute step time, 8 datacenters (d) 5s compute step time, 8 datacenters
+
+Figure 13 | Compute utilization for the 5B parameter model across varying compute step times and datacenters over a range of bandwidth values in Gbits/s. 
+
+• BoolQ: Tests reading comprehension with yes/no questions derived from search queries (Clark et al., 2019). 
+
+• HellaSwag: Assesses commonsense natural language inference and the ability of models to choose the most logical continuation of a text (Zellers et al., 2019). 
+
+• PIQA: Focuses on physical commonsense rea-soning, testing a model’s understanding of physical interactions (Bisk et al., 2020). 
+
+• SIQA (SocialIQA): Measures commonsense reasoning specifically regarding social in-teractions and human behavior (Sap et al., 2019). 
+
+• WinoGrande: An adversarial benchmark de-signed to test pronoun resolution and general commonsense reasoning (Sakaguchi et al., 2020). 
+
+F.2. Vision Benchmarks 
+
+To measure multimodal understanding, we utilize the following vision-based evaluation datasets: 
+
+• ChartQA: Tests visual and logical reason-ing capabilities through question answering based on charts and graphs (Masry et al., 2022). 
+
+• COCO-Captions: Assesses the model’s abil-ity to generate accurate and descriptive captions for everyday images (Chen et al., 2015). 
+
+• DocVQA: Evaluates visual question answer-ing specifically on images of document pages (Mathew et al., 2021). 
+
+• InfographicVQA: A benchmark focused on visual question answering based on complex infographics (Mathew et al., 2022). 
+
+• MMMU: A massive multi-discipline multi-modal evaluation benchmark designed to test expert-level artificial general intelli-gence (Yue et al., 2024). 
+
+• TextVQA: Tests the ability of models to read and reason about text explicitly present within an image (Singh et al., 2019). 
+
+F.3. Full results 
+
+We display in this section all the results shown in the main paper as figures. Find in Table 14 the 35 Decoupled DiLoCo                     
+
+> Method 50% CU 75% CU 90% CU 95% CU 99% CU
+> Data-Parallel 49 81 104 113 195 Decoupled DiLoCo M=8 0.58 1.2 1.7 1.9 2.2 Decoupled DiLoCo M=8 with int4 comm. 0.15 0.29 0.43 0.49 0.53
+
+(a) 1s compute step time, 2 datacenters                     
+
+> Method 50% CU 75% CU 90% CU 95% CU 99% CU
+> Data-Parallel 9.5 16 21 23 49 Decoupled DiLoCo M=8 0.12 0.23 0.34 0.39 0.43 Decoupled DiLoCo M=8 with int4 comm. 0.03 0.06 0.08 0.10 0.11
+
+(b) 5s compute step time, 2 datacenters                     
+
+> Method 50% CU 75% CU 90% CU 95% CU 99% CU
+> Data-Parallel 85 140 183 198 391 Decoupled DiLoCo M=8 1.0 2.0 3.0 3.3 3.8 Decoupled DiLoCo M=8 with int4 comm. 0.26 0.51 0.75 0.84 0.94
+
+(c) 1s compute step time, 8 datacenters                     
+
+> Method 50% CU 75% CU 90% CU 95% CU 99% CU
+> Data-Parallel 17 28 37 40 49 Decoupled DiLoCo M=8 0.21 0.40 0.59 0.68 0.75 Decoupled DiLoCo M=8 with int4 comm. 0.05 0.10 0.15 0.17 0.19
+
+(d) 5s compute step time, 8 datacenters 
+
+Table 13 | Bandwidth requirements in Gbits/s to reach a certain level of compute utilization for the 5B parameter model under varying pure compute step times and datacenter scales. 
+
+Figure 14 | Normalized step time and step count to completion of a non-collocated data-parallel vs with Decoupled DiLoCo 𝑀 = 8 both non-collocated and collocated. table results from Figure 7a across three scales. 
+
+F.4. Scavenging full results 
+
+The full downstream evaluation results from the experiments in Section 5.3 are shown in Ta-ble 15b. Additionally, whilst those experiments detail an iso-FLOPs regime where total compute spent per run was fixed, Table 15a shows results from an alternative evaluation setting where the total number of steps is fixed instead, and scav-enged compute is used to opportunistically im-prove downstream task performance given a set time budget. In total, 50% of the steps in each run under the iso-step regime had compute in-creased by the scavenging factor. We observed that validation loss improved predictably at this scale when increasing the available compute dur-ing scavenging windows, and Table 15a shows that these gains translated to real improvements on downstream vision tasks. Text tasks did not on average appear to benefit from the increased com-pute, but this trend is reflected in the DP baseline, so is likely a property not of DiLoCo but of this model scale, dataset and task set more generally. 36 Decoupled DiLoCo 
+
+Figure 15 | Visualization of the XLA operations done for Decoupled DiLoCo 𝑀 = 8 in both non-collocated (top) and collocated (bottom) situations. Gemma 2B Gemma 5B Gemma 9B Benchmark DP DiLoCo DP DiLoCo DP DiLoCo       
+
+> Text benchmarks (avg) 52.3 51.6 62.5 62.8 67.8 68.0
+
+Arc-Challenge 36.2 36.3 47.3 47.2 56.1 56.1 
+
+Arc-Easy 65.1 64.0 73.6 73.8 81.6 80.4 BoolQ 58.8 55.8 65.5 68.8 71.3 74.7 
+
+HellaSwag 52.1 51.4 65.8 64.9 72.1 72.0 Piqa 71.8 72.5 76.5 76.4 79.3 78.9 Siqa 46.0 46.5 48.9 46.9 49.8 50.4 
+
+Winogrande 55.6 54.1 59.6 61.3 64.2 63.8       
+
+> Vision benchmarks (avg) 44.1 43.3 49.3 47.2 56.2 55.3
+
+COCO-Captions 63.8 62.9 78.9 74.7 87.5 86.8 ChartQA 12.2 13.3 19.0 17.3 21.6 23.0 
+
+DocVQA 50.9 48.1 65.6 64.0 76.1 75.1 DocVQA-Hard 30.9 30.8 45.5 44.9 53.2 52.3 InfographicVQA 25.8 24.4 37.2 36.2 45.9 44.8 MMMU 21.1 19.3 26.2 24.8 32.9 31.3 TextVQA 62.9 64.5 72.8 68.7 76.2 73.7 Table 14 | Performance comparison of data-parallel (DP) vs. Decoupled DiLoCo ( 𝑀 = 8) across model scales (2B, 5B, 9B). 37 Decoupled DiLoCo Metric Data Parallel (DP) DiLoCo Scavenging Scavenging +25% +50% +100% +300% +25% +50% +100% +300% 
+
+Text Benchmarks (Avg) 60.7 60.9 60.8 52.3 61.0 61.3 61.1 60.8 Arc-Chall. 43.9 45.6 44.5 31.9 46.3 45.4 43.8 44.0 Arc-Easy 70.6 70.7 71.8 57.9 73.2 72.2 72.5 70.9 BoolQ 65.6 65.8 65.7 61.9 63.5 66.6 66.9 66.1 HellaSwag 61.3 61.9 62.5 46.3 62.0 62.3 62.7 61.9 Piqa 75.6 75.4 75.4 69.2 76.1 75.6 75.6 75.1 Siqa 48.3 48.0 47.5 45.0 48.1 47.6 47.9 48.0 Winogrande 59.4 59.0 58.2 54.1 58.0 59.2 58.5 59.6 
+
+Vision Benchmarks (Avg) 46.3 47.4 48.3 30.6 45.9 46.7 48.8 47.2 MMMU 22.7 22.8 25.2 11.7 21.8 25.9 24.2 25.3 COCO-Cap. 74.8 75.7 75.0 52.0 71.9 73.3 77.6 76.7 ChartQA 16.5 18.2 16.6 9.8 16.2 18.6 17.3 15.6 DocVQA 63.3 65.5 67.3 41.1 64.4 63.0 67.4 63.6 DocVQA-Hard 41.1 43.8 45.9 22.8 42.5 40.4 44.7 44.8 InfographicVQA 34.2 34.6 36.9 20.3 34.6 35.5 38.1 34.3 TextVQA 71.7 71.4 71.4 56.7 70.1 70.5 72.2 70.3 
+
+Validation loss delta −0.22% −0.47% −0.79% −1.41 % −0.17% −0.42% −0.78% −1.30% 
+
+(a) Iso-step scavenging performance. All runs take the same number of steps, so higher scavenging factors translate to greater FLOPs and tokens seen. 
+
+Metric Data Parallel (DP) DiLoCo Scavenging Scavenging +25% +50% +100% +300% +25% +50% +100% +300% 
+
+Text (Avg) 60.5 60.0 60.1 60.4 60.8 60.7 60.9 60.7 Arc-Chall. 42.7 44.0 43.9 43.0 44.0 44.8 44.1 43.1 Arc-Easy 70.2 70.0 72.0 71.5 70.9 72.8 70.5 72.0 BoolQ 66.8 63.4 64.6 66.1 66.1 67.2 66.4 67.7 
+
+HellaSwag 60.9 60.7 61.2 60.2 61.9 61.0 61.2 60.9 Piqa 75.1 75.8 75.7 75.2 75.1 75.7 75.1 74.4 Siqa 48.6 47.5 46.9 48.1 48.0 48.2 47.5 48.2 Winogrande 59.1 58.6 56.6 58.6 59.6 59.1 60.1 58.4 
+
+Vision (Avg) 46.6 45.9 47.0 46.4 47.2 45.2 46.4 46.1 MMMU 23.8 22.2 25.3 25.4 25.3 25.3 22.8 20.3 COCO-Cap. 76.6 73.4 71.8 71.7 76.7 74.4 71.6 74.6 ChartQA 14.8 16.0 16.8 17.3 15.6 16.2 16.3 14.1 DocVQA 62.9 64.1 66.1 64.2 63.6 60.0 65.2 66.8 
+
+DocVQA-Hard 42.4 42.6 43.8 43.7 44.8 37.9 44.5 42.3 InfographicVQA 35.9 33.7 35.2 33.4 34.3 32.6 33.6 34.6 TextVQA 69.8 69.5 70.1 69.1 70.3 70.1 70.4 70.1 
+
+Validation loss delta +0.02% −0.04 % −0.02% +0.07% +0.09% −0.01% +0.08% +0.23% 
+
+(b) Iso-FLOPs scavenging performance. All runs share identical total tokens and theoretical FLOPs. 
+
+Table 15 | Scavenging experiment downstream performance in iso-steps and iso-FLOPs regimes. 38

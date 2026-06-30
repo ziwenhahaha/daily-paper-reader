@@ -1,0 +1,434 @@
+Title: Resource-aware Computation-Communication Overlap for multi-GPU ML Workloads
+
+URL Source: https://arxiv.org/pdf/2606.09200v1
+
+Published Time: Tue, 09 Jun 2026 02:29:31 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# Resource-aware Computation-Communication Overlap for multi-GPU ML Workloads 
+
+Minyu Cui and Miquel Pericàs 
+
+Chalmers University of Technology and University of Gothenburg, Gothenburg, Sweden 
+
+{minyu, miquelp}@chalmers.se 
+
+Abstract. The rapid growth of large-scale machine learning (ML) has made distributed training across multiple GPUs a fundamental compo-nent of modern ML systems. As model sizes and computational through-put continue to increase, communication overhead has become a dom-inant bottleneck in multi-GPU training, particularly when computa-tion and communication are executed sequentially. This work explores concurrent execution of computation and collective communication us-ing two portable runtime controls: shared-memory–driven occupancy shaping for computation kernels and elevated scheduling priority for communication kernels. Our approach regulates computation-kernel res-idency through per-block shared-memory allocation, leaving sufficient on-chip resources for communication kernels to make progress. In addi-tion, assigning higher priority to communication streams ensures steady communication progress once resources become available. Experiments on NVIDIA A40, A100, H100, and AMD MI250X GPUs demonstrate that the proposed method enables effective computation–communication overlap and reduces total execution time by up to 25.5%, without mod-ifying vendor libraries or kernel implementations. 
+
+Keywords: Multi-GPU ML Workloads · Compute–communication over-lap · Concurrent kernel execution · GPU resource utilization. 
+
+1 Introduction 
+
+The computational demands of modern ML models continue to grow rapidly, driven by increasing model sizes and longer sequence lengths during training. For example, Meta recently unveiled Llama 4 Behemoth [16], with up to 2 trillion parameters. At this scale, distributed execution across multiple GPUs is essen-tial, and collective communications (e.g., allreduce and alltoall) can account for a substantial portion of the total runtime. This bottleneck is especially visible in transformer-based model training, where compute-heavy matrix multiplications and bandwidth-intensive synchronization must both be sustained [12, 18, 19]. As computational throughput has outpaced interconnect bandwidth, minimizing communication stalls through computation–communication overlap has become essential for scalable training.  
+
+> arXiv:2606.09200v1 [cs.DC] 8 Jun 2026 2M. Cui et al.
+
+Current ML frameworks typically decouple computation and communication by executing them as separate GPU kernels or runtime phases, with limited co-ordination. While this modular design simplifies development, it often leads to partial serialization and underutilized GPU resources. In modern large language model training, communication can account for up to half of the total execution time [5], making effective overlap critical. Existing overlap techniques include concurrent execution of computation and communication kernels [1, 8–10, 20] and combining them into fused kernels [4, 5, 13, 14]. However, concurrent ker-nels compete for compute units, cache, and memory bandwidth, and the result-ing interference often diminishes the realized overlap [8]. Decomposition-based strategies mitigate contention by splitting operators into finer-grained pieces, but at the cost of additional kernel launch and synchronization overheads [9]. Many methods require intrusive hardware/software changes or specialized runtime fea-tures [8, 10, 13, 14, 20]; others depend on domain-specific languages or custom code generation, which complicates adoption in mainstream frameworks [20]. These limitations motivate a portable approach that improves overlap without modifying hardware, vendor libraries, or framework internals. We target compu-tation paired with collective communication as performance-critical patterns in distributed training. Our contributions are: 
+
+– Resource-aware and Priority-aware Overlap. We combine occupancy shaping through per-block shared-memory allocation with higher schedul-ing priority for collective communication kernels. This design preserves cor-rectness, avoids kernel modification, and improves communication progress during overlap. 
+
+– Cross-vendor Evaluation and Actionable Insights. We evaluate the approach on NVIDIA A40, A100, H100, and AMD MI250X across four repre-sentative workloads combining compute-bound and memory-bound GEMM with allreduce and alltoall collectives. Priority-aware overlap consistently im-proves upon the baseline and reduces execution time by up to 25.5%. The experimental analysis characterizes the interactions among resource alloca-tion, scheduling priority, and communication progress, providing actionable guidelines for portable overlap in multi-GPU ML workloads. In the remainder of this paper, Section 2 introduces background, Section 3 describes the proposed approach, Section 4 presents experimental results, Sec-tion 5 reviews related work, followed by the conclusion in Section 6. 
+
+2 Background 
+
+The performance of distributed GPU training is largely determined by the in-teraction between compute-intensive GEMM kernels and bandwidth-intensive collective communication. 1, GEMM in ML Workloads. Linear layers in transformer-based mod-els are commonly implemented as GEMM operations, which account for Resource-aware Computation-Communication Overlap 3
+
+a large share of training and inference time. A standard GEMM computes 
+
+C = α·op (A)·op (B)+ β·C, where A ∈ RM ×K , B ∈ RK×N , C ∈ RM ×N . Opti-mized implementations exploit tiling and shared-memory reuse to maximize arithmetic intensity and GPU occupancy. In distributed settings, GEMM kernels execute repeatedly as part of iterative training, and their effective performance is increasingly shaped by the cost of synchronizing intermediate results across devices. 2, Multi-GPU Collective Communication. Multi-GPU systems distribute computation across devices using data or model parallelism. Collective oper-ations such as allreduce, allgather, and alltoall are used to synchronize gradi-ents, exchange activations, and aggregate parameters across GPUs through highly optimized libraries like NCCL and RCCL. For example, in data-parallel training, GEMM kernels compute local gradients, which are then ag-gregated across all GPUs using allreduce; similarly, expert-parallel workloads rely on alltoall to route tokens between devices. This inter-GPU communi-cation can become a significant bottleneck. Because the GEMM–collective sequences recur at every training iteration, even modest per-iteration com-munication overhead can accumulate into a substantial end-to-end cost. Con-sequently, we focus on optimizing GEMM–allreduce and GEMM–alltoall pat-terns as representative targets in this work. 3, Shared Memory in GPU Architectures. Shared memory is a key on-chip resource for GEMM and directly affects occupancy. Increasing shared-memory allocation per thread block reduces the number of blocks that can reside concurrently on a compute unit, while smaller allocations allow higher residency. We exploit this relationship to leave controlled resource slack for communication kernels without modifying kernel logic. 
+
+3 Resource-aware Computation-Communication Overlap 
+
+To address the limitations of complex hardware/software modifications and re-source contention associated with fine-grained overlap, this section presents a lightweight, portable, resource-aware approach for overlapping computation and communication. Our goal is to transform the conventional sequential execution of computation followed by communication into an overlapped execution pattern, as illustrated in Figs. 1a and 1b. Fig. 1c demonstrates the practical application of the proposed overlap strategy using mb-ar workload described in Section 4.1. In Fig. 1c, longer rectangles represent computation operations, while smaller rect-angles denote communication operations, visually highlighting how communica-tion is effectively overlapped with computation. As NVIDIA and AMD GPUs employ different terminologies for analogous architectural concepts, we adopt CUDA terminology throughout the remainder of this paper for clarity, except where AMD-specific distinctions are required. 4 M. Cui et al.   
+
+> (a) Sequential (b) Proposed overlapping
+> (c) Overlapped mb-ar
+
+Fig. 1: Overview of proposed overlapped execution 
+
+3.1 Resource Residency Control via Shared Memory Allocation 
+
+GPU occupancy is limited by registers, shared memory (or local data share on AMD), and the maximum number of resident thread blocks per compute unit. Communication kernels are intentionally lightweight and low-occupancy [17], while GEMM kernels often aggressively claim substantial shared memory to maximize data reuse. We use that asymmetry to shape residency: by tuning the GEMM tile sizes, we exploit the amount of shared memory allocated per block and therefore the number of resident GEMM blocks. For a tiled GEMM kernel, the shared memory allocated per block, S_blk ,is proportional to T ILE M · T ILE K + T ILE K · T ILE N . By adjusting T ILE M ,
+
+T ILE N , and T ILE K , we limit occupancy without changing kernel logic, leav-ing enough SM resources for communication kernels to co-reside with GEMM. This resource control is architecture-agnostic and forms the foundation for the scheduling strategies described in the following sections, enabling effective over-lap of computation and communication. 
+
+3.2 Baseline Overlap with Multi-Stream Scheduling 
+
+To overlap computation with communication, we assign each device two GPU streams [21]: a compute stream for GEMM kernels and a communication stream for collectives. Inter-stream dependencies are enforced through lightweight CUDA (or HIP) events: a communication kernel is launched only after its correspond-ing GEMM kernel signals completion, while subsequent GEMM kernels may execute concurrently with earlier communication. This event-driven, pipelined schedule is portable across vendors, requires no modification to NCCL/RCCL or GEMM kernel code, and exposes concurrency whenever the GPU runtime can co-schedule both kernel types on the available compute units. 
+
+3.3 Optimized Overlap with Higher Scheduling Priority for Collective Communication 
+
+GPU architectures rely on internal hardware schedulers to dynamically allocate compute and memory resources among concurrently executing kernels. While this design generally achieves high utilization, it can lead to performance im-balances in heterogeneous workloads where computation-intensive GEMM ker-nels co-exist with latency-sensitive communication kernels. Under the baseline Resource-aware Computation-Communication Overlap 5
+
+overlap mechanisms of multi-stream scheduling and resource residency control, we observe that GEMM kernels from different iterations tend to be scheduled first. As a result, the GPU scheduler may allocate the majority of resources to these kernels, potentially starving collective communication kernels and increas-ing overall iteration latency. This observation is consistent with recent work [8]. To address this limitation, we extend our baseline overlap mechanisms with an optimized strategy that leverages GPU stream scheduling priorities. Specifi-cally, we assign communication kernels a higher scheduling priority than GEMM kernels from overlapping iterations. This prioritization ensures that communica-tion operations can make forward progress whenever resources become available, while still respecting all intra-iteration dependencies. This effectively overlaps data transfers with matrix multiplication, which is critical for sustaining high throughput in pipelined iterative workloads. Formally, let Kig and Kic denote the GEMM and the collective communication kernel of iteration i. Correctness re-quires the dependency Kig → Kic. Across iterations, we explicitly allow the sched-uler to prioritize Kic ≻ Ki+1  
+
+> g
+
+where ≻ denotes higher scheduling priority specified by cudaStreamCreateWithPriority or hipStreamCreateWithPriority . The priori-tization affects only inter-iteration concurrency, allowing communication kernels from earlier iteration to run concurrently with computation kernels from later iterations when possible, without violating correctness or data consistency. Our evaluation demonstrates that this priority-aware scheduling approach improves overall execution efficiency. We present experimental results illustrating these benefits in the following section. 
+
+4 Experimental Results 
+
+This section evaluates our approach on four modern multi-GPU platforms us-ing representative ML workloads. Due to page limitations, we present a subset of results that illustrate key trends. The complete set of results across all con-figurations is consistent with the observations reported here, and any notable deviations are explicitly discussed. After confirming that the baseline overlap achieves effective concurrency, we examine the optimized, priority-aware overlap and analyze its impact on execution time, kernel concurrency, and the degree of communication–computation overlap across architectures and workloads. 
+
+4.1 Experimental Setup 
+
+Table 1 provides an overview of the hardware platforms, workload configurations, and tile size settings employed in our evaluation. 
+
+Multi-GPU Platforms. The NVIDIA-based platforms (A40, A100, and H100) each contain four GPUs, while the AMD-based platform consists of eight MI250X GPUs. These counts reflect the standard single-node configuration of each testbed. Since our overlap mechanism operates at the per-device level (via occupancy 6 M. Cui et al. 
+
+Table 1: Summary of platforms, workloads, and tile configurations.                                               
+
+> Platforms
+> A40 A100 H100 MI250X #GPUs 4448#SMs/CUs 84 108 132 110 L2 6 MB 40 MB 50 MB 8 MB HBM 48 GB 40 GB 80 GB 64 GB L1+SMEM 128 KB 192 KB 256 KB 80 KB
+> Workloads and tile configurations
+> Workloads Tile configurations GEMM ( M×N×K)Coll. data T ILE mT ILE nT ILE k
+> cb-ar 8192 ×8192 ×8192 896 MB opt1 64 64 32
+> mb-ar 8192 ×57344 ×8192 896 MB opt2 64 64 64
+> cb-a2a 8192 ×8192 ×8192 896 MB
+> mb-a2a 8192 ×57344 ×8192 896 MB
+
+shaping and stream priorities), GPU count affects only the collective scale, which we fix at 896 MB across platforms to keep the comparison controlled. Together, these systems represent a diverse set of architectural designs, including NVIDIA’s Ampere and Hopper families and AMD’s CDNA2 architecture, providing a rep-resentative testbed for evaluating our approach. 
+
+Representative ML Workloads. The evaluated GEMM dimensions are de-rived from LLaMA model training [15] with a sequence length of 8192 tokens, capturing realistic compute patterns of large-scale transformer-based models. Following prior work [8], we pair two GEMM categories, compute-bound ( cb ) and memory-bound ( mb ), with two collective communication operations, each trans-ferring 896 MB of data. For allreduce ( ar ), we construct cb-ar and mb-ar con-figurations to represent computation-dominant and communication-dominant training phases, respectively. For alltoall ( a2a ), we model MoE-style expert-parallel communication patterns using the identical GEMM dimensions, result-ing in cb-a2a and mb-a2a configurations. 
+
+GEMM Tile-size Configurations. We test two tile-size configurations: opt1 
+
+(T ILE k=32 ) and opt2 (T ILE k=64 ), both with T ILE m=T ILE n=64 . The larger tile size increases arithmetic intensity of GEMM but also increases shared-memory usage. This setup allows us to study the trade-off between GEMM performance potential and communication–computation overlap opportunity. For each experiment, the first one-third of runs are treated as warm-up and excluded from analysis; the remaining runs are used for measurement. Each reported value is the mean across the runs. The observed run-to-run variance is small and does not affect the qualitative trends we discuss. We first evaluate the effectiveness of the proposed resource-aware overlap strategy and then analyze how GEMM tile-size configurations interact with overlap behavior. 
+
+4.2 Resource-aware Computation-Communication Overlap Baseline Computation-Communication Overlap We begin by confirming that the baseline implementation enables effective computation–communication Resource-aware Computation-Communication Overlap 72                                                                                          
+
+> 4
+> 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> 0.30 0.29 0.35 0.43 0.61 0.77 0.79 0.79 0.79 0.78
+> 0.29 0.36 0.43 0.58 0.78 0.77 0.87 0.87 0.87 0.87
+> 0.35 0.43 0.60 0.76 0.75 0.85 0.91 0.92 0.92 0.92
+> 0.43 0.60 0.76 0.75 0.83 0.91 0.94 0.94 0.94 0.95
+> 0.62 0.77 0.75 0.83 0.88 0.95 0.95 0.95 0.95 0.95
+> 0.81 0.74 0.83 0.88 0.92 0.97 0.95 0.94 0.95 0.95
+> 0.74 0.83 0.89 0.92 0.93 0.98 0.95 0.95 0.95 0.96
+> 0.74 0.84 0.89 0.91 0.94 0.97 0.95 0.95 0.95 0.96
+> 0.73 0.83 0.88 0.92 0.93 0.99 0.94 0.95 0.95 0.96
+> 0.74 0.84 0.89 0.92 0.94 1.00 0.95 0.95 0.95 0.95
+
+(a) A40                                                                                           
+
+> 0.30 0.29 0.29 0.33 0.48 0.70 0.88 0.88 0.88 0.86
+> 0.30 0.29 0.33 0.50 0.72 0.88 0.89 0.89 0.89 0.89
+> 0.29 0.34 0.50 0.74 0.87 0.90 0.89 0.89 0.90 0.89
+> 0.34 0.49 0.73 0.86 0.89 0.90 0.94 0.94 0.93 0.94
+> 0.49 0.73 0.87 0.88 0.89 0.93 0.95 0.95 0.94 0.94
+> 0.72 0.86 0.87 0.89 0.93 0.95 0.95 0.94 0.93 0.94
+> 0.87 0.88 0.89 0.93 0.95 0.95 0.95 0.95 0.95 0.94
+> 0.88 0.87 0.91 0.92 0.96 0.95 0.93 0.95 0.96 0.94
+> 0.88 0.87 0.89 0.92 0.96 0.95 0.96 0.94 0.95 0.94
+> 0.88 0.87 0.89 0.92 0.96 0.96 0.95 0.94 0.96 0.94
+
+(b) A100                                                                                                    
+
+> 24816 32 64 128 256 512 1024
+> 2
+> 4
+> 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> 0.29 0.29 0.29 0.29 0.42 0.58 0.78 0.75 0.74 0.75
+> 0.29 0.28 0.29 0.44 0.60 0.81 0.77 0.78 0.77 0.77
+> 0.30 0.30 0.44 0.59 0.84 0.78 0.90 0.90 0.89 0.90
+> 0.30 0.44 0.60 0.84 0.78 0.89 0.90 0.91 0.91 0.91
+> 0.43 0.61 0.84 0.79 0.88 0.88 0.93 0.93 0.93 0.93
+> 0.60 0.84 0.79 0.89 0.88 0.92 0.95 0.94 0.94 0.94
+> 0.84 0.79 0.88 0.89 0.92 0.94 0.95 0.94 0.94 0.94
+> 0.75 0.78 0.88 0.89 0.92 0.93 0.94 0.93 0.95 0.94
+> 0.75 0.79 0.89 0.89 0.92 0.93 0.94 0.94 0.94 0.95
+> 0.75 0.78 0.89 0.89 0.92 0.93 0.94 0.94 0.95 0.94
+
+(c) H100                                                                                                    
+
+> 24816 32 64 128 256 512 1024
+> 0.55 0.56 0.56 0.58 0.58 0.67 0.75 0.74 0.66 0.66
+> 0.57 0.59 0.59 0.58 0.70 0.75 0.78 0.70 0.69 0.80
+> 0.60 0.60 0.58 0.66 0.74 0.80 0.91 0.88 0.93 0.91
+> 0.59 0.59 0.65 0.76 0.79 0.92 0.97 0.97 0.97 0.97
+> 0.60 0.63 0.75 0.78 0.91 0.98 0.97 0.98 0.98 0.98
+> 0.62 0.76 0.79 0.92 0.97 0.98 0.98 0.99 0.98 0.99
+> 0.77 0.81 0.92 0.97 0.98 0.99 0.99 1.00 1.00 0.98
+> 0.74 0.81 0.91 0.97 0.98 0.98 0.99 0.99 0.99 0.97
+> 0.75 0.81 0.92 0.97 0.98 0.99 0.98 1.00 0.99 0.96
+> 0.75 0.82 0.92 0.96 0.98 0.98 0.99 1.00 0.95 0.95
+
+(d) MI250X 
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+Block count (X = Y = value shown) 
+
+Fig. 2: TimeRatio of baseline overlap for cb-ar .overlap across the four evaluated platforms. To quantify overlap effectiveness, we define: T imeRatio = toverlap 
+
+tsequential , where tsequential is the execution time when computation and communication are executed sequentially, and toverlap is the execution time when overlap is enabled. A lower ratio indicates more effective overlap. Across all platforms, the baseline mechanism is most effective when thread-block counts are highly constrained to leave sufficient resource slack for kernel co-residency, as shown in Fig. 2. In this regime, T imeRatio drops to approximately 0.3. However, such configurations generally do not yield optimal GEMM performance, as the reduced number of resident thread-blocks limits par-allelism and lowers compute unit utilization. As the thread-block count increases, pressure on shared memory, registers, and warp slots reduces the scheduler’s ability to co-locate GEMM and communication kernels. Consequently, the over-lapped execution time converges toward sequential execution ( T imeRatio ≈ 1). These results highlight that effective overlap requires sufficient resource slack to enable kernel co-residency, which depends on the interplay between thread-block configuration, on-chip resource contention, and hardware scheduling decisions. Among the four platforms, MI250X shows the weakest benefit. In some cases of 
+
+mb-ar (not shown here), the overlapped execution even becomes slightly slower than sequential execution. This behavior likely stems from the smaller per-CU shared memory and L2 cache capacity on MI250X, which leave limited resources for kernel co-residency. Overall, these results confirm that the baseline mechanism can enable overlap but also expose its key limitation: communication progress becomes fragile under resource contention. To address this limitation, we next evaluate the optimized, priority-aware strategy. We report two metrics: normalized execution time (re-ferred as Norm. time), and overlap rate, defined as the fraction of communication that executes concurrently with computation. 
+
+Priority-aware Scheduling across Platforms and Workloads. We com-pare the optimized priority-aware strategy against the baseline across evaluated platforms and workloads in Fig. 3. Overall, prioritizing communication kernels 8 M. Cui et al. 2 4 8 
+
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> Norm. time  (a) A40
+> 2 4 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> (b) A100
+> 2 4 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> (c) H100
+> 2 4 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> (d) MI250X
+> baseline optimized
+
+Fig. 3: Norm. time (optimized overlap normalized to the baseline) for cb-ar .Block count (X = Y = value shown). This convention applies to subsequent bar plots) 2
+
+> 4
+> 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> Block count (X = Y = value shown)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> overlap rate
+> cb-ar
+> mb-ar
+
+(a) A40 2 
+
+> 4
+> 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> Block count (X = Y = value shown)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> overlap rate
+> cb-ar
+> mb-ar
+
+(b) A100 2 
+
+> 4
+> 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> Block count (X = Y = value shown)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> overlap rate
+> cb-ar
+> mb-ar
+
+(c) H100 2 
+
+> 4
+> 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> Block count (X = Y = value shown)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> overlap rate  cb-ar
+> mb-ar
+
+(d) MI250X 
+
+Fig. 4: The overlap rate. improves overlap efficiency, although the degree of improvement depends on both GPU architecture and workload characteristics. On NVIDIA GPUs, the optimized strategy produces notable reductions in total execution time, partic-ularly when the baseline already enables partial concurrency. Taking cb-ar for example, the optimized overlap allows communication kernels to make progress earlier, mitigating the tail effect observed in the baseline. The improvement is es-pecially pronounced at medium to high thread-block counts. When thread-block counts are small, contention is low and the baseline already captures most of the achievable benefit; as the block count increases, however, GEMM kernels com-pete more aggressively for shared resources, and the baseline may allow them to delay or starve communication progress. Prioritizing communication mitigates this interference, enabling higher-priority communication operations to advance steadily even under substantial GEMM activity. As a result, execution time is reduced by up to 25.5% for cb-ar on A40. Similar trends are observed for the remaining workloads, where the optimized strategy reliably prevents communi-cation from being stalled behind long-running GEMM operations. On MI250X, the optimized overlap can occasionally underperform baseline at higher thread-block counts (Fig.3(d)). This is primarily attributed to its multi-chip architecture: each Graphics Compute Die (GCD) offers less per-CU shared memory than its NVIDIA counterparts. As the block count grows, the per-block resource allocation enforced by optimized scheduling saturates shared resources more quickly, reducing block co-residency on a GCD. Although communication kernels receive higher priority, the resulting reduction in GEMM concurrency limits effective overlap, and the loss in computational throughput outweighs the benefit gained from prioritized communication. Fig. 4 further quantifies the achieved overlap rate. On NVIDIA platforms, the optimized strategy reaches up to 90% overlap rate, which represents the practi-Resource-aware Computation-Communication Overlap 92 4 8 
+
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> Norm. time  (a) cb-ar on A100
+> 2 4 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> (b) mb-ar on A100
+> 2 4 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> (c) cb-ar on H100
+> 2 4 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> (d) mb-ar on H100
+> tile opt1 tile opt2
+
+Fig. 5: Norm. time (tile configuration opt2 normalized to opt1 ). 2 4 8 
+
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> Norm. time  (a) cb-a2a on A40
+> 2 4 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> (b) mb-a2a on A40
+> 2 4 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> (c) cb-a2a on A100
+> 2 4 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> 512
+> 1024
+> (d) mb-a2a on A100
+> tile opt1 tile opt2
+
+Fig. 6: Norm. time (tile configuration opt2 normalized to opt1 ). cal upper bound, since the intra-iteration dependency Kig → Kic forces the last communication kernel to complete only after its corresponding GEMM kernel finishes (seen in Fig. 1c). On MI250X, the overlap rate remains notably lower, consistent with the architectural constraints discussed above. In summary, pri-oritizing communication kernels significantly enhances overlap efficiency across diverse platforms and workloads, yielding substantial execution-time reductions. However, the benefits are sensitive to architecture and workload characteristics, with MI250X’s design limiting the effectiveness of this strategy at higher block counts. Next, we examine how tile-size tuning interacts with the effectiveness of the optimized overlap strategy. 
+
+4.3 Impact of GEMM Tile Sizes on Overlap Efficiency 
+
+In this section, we examine how tile size interacts with the priority-aware overlap strategy. Fig. 5 and 6 report the execution time of the larger tile configuration (opt2 ) normalized to opt1 . Due to limited platform access, allreduce ( ar ) com-parison is conducted on A100 and H100, while alltoall ( a2a ) comparison is con-ducted on A40 and A100. Overall, opt2 achieves lower execution times across a wide range of thread-block counts, indicating that the larger tiles benefit more from communication prioritization when overlap is present. This effect is partic-ularly pronounced for memory-bound workload mb-ar , where the GEMM kernel spends a substantial fraction of time waiting on data. In this case, increasing 
+
+T ILE k enlarges the amount of computation performed per tile, extending the compute phase. The larger computation window provides additional opportu-nity for the communication stream, boosted by higher scheduling priority, to make forward progress while GEMM continues in parallel. Similar trends hold for a2a : opt2 generally matches or outperforms opt1 , with the most noticeable gains appearing for mb-a2a . A minor exception occurs for mb-a2a on A40 at thread-block counts of 16 and 32 (Fig.6(b)), where opt2 is marginally slower. The relative advantage of opt2 also depends on the thread-block count. At low to moderate counts, the GPU retains sufficient headroom to schedule both 10 M. Cui et al. 
+
+GEMM and collective kernels concurrently; the larger T ILE k produces longer computation phases per tile, increasing the compute-to-communicate ratio and enabling the prioritized scheduler to hide communication latency more effec-tively. At very high block counts, the two tile configurations converge in perfor-mance, as occupancy saturation limits the scheduler’s ability to exploit prioriti-zation. These results suggest that larger GEMM tiles can moderately enhance the effectiveness of priority-based overlap, particularly for memory-bound work-loads. However, fully characterizing the interaction between tile size, resource utilization, and priority-aware scheduling requires a broader exploration of the tile-size design space, which we leave for future work. 
+
+5 Related work 
+
+Prior work on computation–communication overlap falls into two broad cate-gories: concurrent kernel scheduling and kernel fusion. 
+
+Concurrent Kernel Scheduling. Several approaches overlap separate com-putation and communication kernels through scheduling policies or operator de-composition. ConCCL [8] studies interference between concurrent kernels and offloads communication to DMA engines to reduce contention. Centauri [9] de-composes operators at configurable granularity and searches for an efficient com-munication schedule. NanoFlow [2] combines resource partitioning with multi-dataflow scheduling to sustain overlap across pipeline stages. FlashOverlap [1] introduces a signaling mechanism that enables interference-free, tile-wise over-lap without being tied to specific communication primitives. Compiler-driven methods [10, 20] transform execution order and generate specialized kernels to coordinate overlap at compile time. Other work [11] applies runtime concur-rency control and operation reordering to reduce inter-kernel interference dur-ing training. While effective, these approaches often require custom runtimes, domain-specific compilers, or hardware extensions that limit portability. 
+
+Kernel Fusion. Another line of work fuses communication and computa-tion into a single kernel [3–5,13,14]. Fused kernels can eliminate launch overhead and improve data locality, but typically depend on invasive kernel modifications, specialized compilers, or hardware-specific intrinsics. Works targeting MoE mod-els [5–7] further exploit model-specific dataflow to overlap expert dispatch with computation. These methods achieve strong performance within their target sce-narios but are difficult to generalize across vendors and workload types. In contrast, our approach requires no modifications to vendor libraries, kernel source code, or compiler toolchains. It relies solely on two portable runtime con-trols, i.e., shared-memory-driven occupancy shaping and stream-priority schedul-ing, and has been validated on four GPU architectures spanning two vendors. 
+
+6 Conclusion 
+
+We present a lightweight approach for overlapping computation and communi-cation for multi-GPU ML workloads without modifying kernel logic or vendor li-Resource-aware Computation-Communication Overlap 11 
+
+braries. The approach uses two portable runtime controls: shared-memory-driven occupancy shaping for GEMM operations and higher scheduling priority for com-munication kernels. Evaluated on NVIDIA A40, A100, H100, and AMD MI250X across both allreduce and alltoall collective patterns, the results show that the key challenge is not merely enabling concurrency, but sustaining communica-tion progress under resource contention. The resource-aware baseline provides the necessary kernel co-residency, and priority-aware scheduling design further reduces total execution time, up to 25.5%, by ensuring that collective operations advance promptly. Future work includes exploring adaptive runtime policies that automatically tune occupancy and priority settings across diverse workloads, and conducting end-to-end distributed training performance evaluations. 
+
+References 
+
+1. Ke, H., Li, X., Liu, M., Mao, Q., Wu, T., Huang, Z., Chen, L., Wang, Z., Zhang, Y., Zhu, Z., Dai, G., Wang, Y.: Efficient and adaptable overlapping for computation and communication via signaling and reordering. arXiv preprint arXiv:2504.19519 (2025) 2. Zhu, K., Gao, Y., Zhao, Y., Zhao, L., Zuo, G., Gu, Y., Xie, D., Tang, T., Xu, Q., Ye, Z., Kamahori, K.: NanoFlow: Towards optimal large language model serving throughput. arXiv preprint arXiv:2408.12757 (2024) 3. Zheng, S., Fang, J., Zheng, X., Hou, Q., Bao, W., Zheng, N., Jiang, Z., Wang, D., Ye, J., Lin, H., Chang, L.-W., Liu, X.: TileLink: Generating efficient compute-communication overlapping kernels using tile-centric primitives. arXiv preprint arXiv:2503.20313 (2025) 4. Chang, L.-W., Bao, W., Hou, Q., Jiang, C., Zheng, N., Zhong, Y., Zhang, X., Song, Z., Yao, C., Jiang, Z., Lin, H., Jin, X., Liu, X.: FLUX: Fast software-based commu-nication overlap on GPUs through kernel fusion. arXiv preprint arXiv:2406.06858 (2024) 5. Zhang, S., Zheng, N., Lin, H., Jiang, Z., Bao, W., Jiang, C., Hou, Q., Cui, W., Zheng, S., Chang, L.-W., Chen, Q., Liu, X.: Comet: Fine-grained computation-communication overlapping for mixture-of-experts. arXiv preprint arXiv:2502.19811 (2025) 6. He, J., Zhai, J., Antunes, T., Wang, H., Luo, F., Shi, S., Li, Q.: FasterMoE: Model-ing and optimizing training of large-scale dynamic pre-trained models. In: Proceed-ings of the 27th ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming, pp. 120–134 (2022). https://doi.org/10.1145/3503221.3508418 7. Jiang, C., Tian, Y., Jia, Z., Zheng, S., Wu, C., Wang, Y.: Lancet: Accelerating mixture-of-experts training via whole graph computation-communication overlap-ping. arXiv preprint arXiv:2404.19429 (2024) 8. Agrawal, A., Aga, S., Pati, S., Islam, M.: ConCCL: Optimizing ML concurrent computation and communication with GPU DMA engines. In: 2025 IEEE Inter-national Symposium on Performance Analysis of Systems and Software (ISPASS), pp. 1–11 (2025). https://doi.org/10.1109/ISPASS64960.2025.00018 9. Chen, C., Li, X., Zhu, Q., Duan, J., Sun, P., Zhang, X., Yang, C.: Centauri: En-abling efficient scheduling for communication-computation overlap in large model training via communication partitioning. In: Proceedings of the 29th ACM Inter-national Conference on Architectural Support for Programming Languages and Operating Systems, Volume 3, pp. 178–191 (2024) 12 M. Cui et al. 10. Wang, S., Wei, J., Sabne, A., Davis, A., Ilbeyi, B., Hechtman, B., Chen, D., Murthy, K.S., Maggioni, M., Zhang, Q., Kumar, S., Guo, T., Xu, Y., Zhou, Z.: Overlap com-munication with dependent computation via decomposition in large deep learning models. In: Proceedings of the 28th ACM International Conference on Architec-tural Support for Programming Languages and Operating Systems, Volume 1, pp. 93–106 (2023). https://doi.org/10.1145/3567955.3567959 11. Liu, J., Li, D., Kestor, G., Vetter, J.: Runtime concurrency control and operation scheduling for high performance neural network training. In: 2019 IEEE Inter-national Parallel and Distributed Processing Symposium (IPDPS), pp. 188–199 (2019). https://doi.org/10.1109/IPDPS.2019.00029 12. Pati, S., Aga, S., Islam, M., Jayasena, N., Sinclair, M.D.: Tale of two Cs: Compu-tation vs. communication scaling for future transformers on future hardware. In: 2023 IEEE International Symposium on Workload Characterization (IISWC), pp. 140–153 (2023). https://doi.org/10.1109/IISWC59245.2023.00026 13. Pati, S., Aga, S., Islam, M., Jayasena, N., Sinclair, M.D.: T3: Transparent track-ing & triggering for fine-grained overlap of compute & collectives. In: Proceed-ings of the 29th ACM International Conference on Architectural Support for Pro-gramming Languages and Operating Systems, Volume 2, pp. 1146–1164 (2024). https://doi.org/10.1145/3620665.3640410 14. Punniyamurthy, K., Hamidouche, K., Beckmann, B.M.: Optimizing distributed ML communication with fused computation-collective operations. In: SC24: Inter-national Conference for High Performance Computing, Networking, Storage and Analysis, pp. 1–17 (2024). https://doi.org/10.1109/SC41406.2024.00094 15. Llama Team, AI @ Meta: The Llama 3 herd of models. https://arxiv.org/pdf/2407.21783 (2024). Accessed 2025-09-02 16. Llama Team, AI @ Meta: The Llama 4 herd: The beginning of a new era of na-tively multimodal AI innovation. https://ai.meta.com/blog/llama-4-multimodal-intelligence/ (2025). Accessed 2025-12-12 17. NVIDIA Corporation: Fast multi-GPU collectives with NCCL. https://developer.nvidia.com/blog/fast-multi-gpu-collectives-nccl/ (2016) 18. Klenk, B., Jiang, N., Thorson, G., Dennison, L.: An in-network architecture for accelerating shared-memory multiprocessor collectives. In: 2020 ACM/IEEE 47th Annual International Symposium on Computer Architecture (ISCA), pp. 996–1009 (2020). https://doi.org/10.1109/ISCA45697.2020.00085 19. Moolchandani, D., Kundu, J., Ruelens, F., Vrancx, P., Evenblij, T., Pe-rumkunnil, M.: AMPeD: An analytical model for performance in distributed training of transformers. In: 2023 IEEE International Symposium on Per-formance Analysis of Systems and Software (ISPASS), pp. 306–315 (2023). https://doi.org/10.1109/ISPASS57527.2023.00037 20. Jangda, A., Huang, J., Liu, G., Sabet, A.H.N., Maleki, S., Miao, Y., Musu-vathi, M., Mytkowicz, T., Saarikivi, O.: Breaking the computation and com-munication abstraction barrier in distributed machine learning workloads. In: Proceedings of the 27th ACM International Conference on Architectural Sup-port for Programming Languages and Operating Systems, pp. 402–416 (2022). https://doi.org/10.1145/3503222.3507778 21. NVIDIA Corporation: CUDA C++ Programming Guide. https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html (2025). Accessed 2025-12-09

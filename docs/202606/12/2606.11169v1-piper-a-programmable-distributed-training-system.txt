@@ -1,0 +1,598 @@
+Title: Piper: A Programmable Distributed Training System
+
+URL Source: https://arxiv.org/pdf/2606.11169v1
+
+Published Time: Wed, 10 Jun 2026 01:24:44 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# Piper: A Programmable Distributed Training System 
+
+## Megan Frisella 
+
+University of Washington Seattle, WA, USA 
+
+## Shubham Tiwari 
+
+University of Washington Seattle, WA, USA 
+
+## Andy Ruan 
+
+University of Washington Seattle, WA, USA 
+
+## Yi Pan 
+
+University of Washington and Shanghai Jiao Tong University Seattle, WA, USA 
+
+## Parker Gustafson 
+
+University of Washington Seattle, WA, USA 
+
+## Mat Jacob 
+
+University of Washington Seattle, WA, USA 
+
+## Gilbert Bernstein 
+
+University of Washington Seattle, WA, USA 
+
+## Stephanie Wang 
+
+University of Washington Seattle, WA, USA 
+
+## Abstract 
+
+Large-scale model training increasingly relies on composing multiple parallelism strategies, such as data, pipeline, and ex-pert parallelism, together with memory-saving optimizations like ZeRO. Deployed systems for foundation model pretrain-ing often rely on human experts to manually design a high-level parallelism strategy then implement the corresponding low-level execution strategy, making it difficult to adapt the system to new strategies. Meanwhile, many general-purpose frameworks are more flexible but their implementations are still tied to a fixed set of common parallelism strategies, mak-ing it challenging to integrate state-of-the-art strategies. We present Piper, a user-controllable distributed training system that decouples the strategy from the runtime imple-mentation. Piper allows users to declare a comprehensive distributed training strategy with a small set of model anno-tations and scheduling directives. Each directive applies a transformation on Piper’s intermediate representation (IR), a unified global training DAG that represents all computation and communication. Using this IR, Piper compiles per-device execution plans and executes them with a distributed run-time agnostic to the strategy. We show that the combined system maintains performance parity on commonly available strategies such as ZeRO, while also enabling additional per-formance and memory efficiency gains through joint schedul-ing of compute and communication in composed parallelism strategies such as DeepSeek-V3’s DualPipe. 
+
+## 1 Introduction 
+
+As machine learning (ML) models have increased in size, pre-training now requires scaling across hundreds to thousands of accelerators. This is challenging because there are many ways to shard and replicate the model, and each introduces different and possibly interacting communication overheads. For example, modern workloads now use combinations of data (DP), tensor (TP), expert (EP), context (CP) and pipeline (PP) parallelism together with memory-saving optimizations such as ZeRO [ 38 ]. There is no one-size fits-all solution, as the right strategy depends on the workload and hardware. A workload’s distributed training strategy can be decom-posed into: (1) the high-level parallelism strategy, such as the dimensions along which to shard and replicate the model and activations, and (2) each device’s low-level strategy for exe-cuting the compute and communication operations dictated by the high-level parallelism strategy. The former strategy determines the minimum memory, compute, and commu-nication load per-device, which in turn upper-bounds the overall system throughput. The latter strategy determines how close the system can get to the upper bound by effec-tively scheduling each device’s resources. The two strategies together determine the workload’s actual throughput. The sheer size of the combined space of strategies has so far made full automation intractable. Thus, while some solutions can find an optimal strategy within a particular subspace [ 9 , 33 ], the systems deployed in practice still rely overwhelmingly on human experts. For example, DeepSeek-V3 introduced DualPipe, a custom PP schedule that when composed with EP enables each device to use local micro-batch overlapping to hide EP communication overheads [ 12 ]. This solution required human-engineered codesign of the high-level parallelism strategy with a hand-implemented per-device execution strategy to manage intra-GPU resources, such as the streaming multiprocessors (SMs) allocated to compute vs. communication. Such systems require high ef-fort; experts must design and implement a fixed strategy that is specialized to a particular model and cluster. This results in a system that is hard to adapt to new strategies. On the other hand, general-purpose frameworks such as Megatron [ 40 ], DeepSpeed [ 1 ], and TorchTitan [ 23 ] offer a more flexible and model-agnostic interface, with knobs for tuning the distributed training strategy. However, these frameworks eagerly dispatch operations for each high-level parallelism dimension as if the dimensions are independent, making it challenging to jointly schedule operations from composed strategies. For example, conceptually DualPipe shares a GPU between two PP microbatches; this is challeng-ing to implement in existing frameworks that assume that 
+
+> arXiv:2606.11169v1 [cs.DC] 9 Jun 2026
+
+each microbatch is allocated the full GPU. While compiler-based frameworks such as JAX/XLA present a more generic tensor placement abstraction [ 49 ] instead of a fixed set of knobs, they cannot easily support arbitrary PP schedules nor control over each device’s resources. Thus, again it requires high effort to introduce novel strategies such as DualPipe. The key problem we address is extensibility in distributed training systems. Our goal is to build a system that minimizes the effort needed to specify and implement an arbitrary dis-tributed training strategy. Thus, we build a system that pro-vides good performance for common strategies and control when needed for higher performance, making it amenable to both expert engineering and automated search. Our key insight is to decouple what the overall execution strategy should be from how it is realized by the runtime. The challenges are to: (1) design a user scheduling API that enables simple specification yet sufficient control over the distributed training strategy, (2) design an intermediate representation (IR) to interface between the user API and system runtime, and (3) build an efficient system runtime to execute an arbitrary strategy. Inspired by previous works on SPMD-style tensor anno-tations [ 49 ] and PP scheduling [ 13 , 39 , 48 ], we first propose an API for placing different tensors in an arbitrary PyTorch model. This can be used to specify high-level parallelism strategies such as the pipeline-parallel stage boundaries or whether to use expert parallelism. Next, we design an API for specifying the corresponding low-level execution strategy for the execution order of all operators on each device. A strawman solution is to ask the user to fully specify the strategy by writing their own sched-uler for operators over intra-GPU resources such as CUDA streams. This provides users with full control but is imprac-tical. On the other hand, the API must also be expressive enough to capture novel strategies for intra-GPU resource allocation such as DualPipe. To address this challenge, we expose a set of directives for lowering the system’s IR to a per-device execution strategy. We design an IR that captures all compute and communica-tion operations in a global training DAG. The compiler begins by extracting a non-distributed DAG from the model code. Then, each directive specified by the user transforms the IR. Directives include transforms such as splitting batches into microbatches to increase overlap opportunity and assigning resources such as device streams to chunks. To provide the user more control when needed, we allow the user to specify ordering constraints between compute nodes. We then use a generic scheduling policy to decide the execution order on each device. This enables the user to control the granularity of scheduling and make some decisions while the systems fills in the rest. We guarantee the safety of transformations, i.e. each user directive should be compatible with the original high-level strategy. layer 1                 
+
+> layer 2
+> layer 3
+> layer 4
+> layer 8
+> layer 7
+> layer 6
+> layer 5
+> Attn
+> exp0 exp1 exp2
+> Attn
+> alltoall
+> alltoall
+> exp3 exp4 exp5
+> rDP/EP =0
+> rPP =0
+> rPP =2
+> rDP/EP =1
+> allreduce
+> rPP =3
+> rPP =1
+
+Figure 1. DualPipe example combining PP-4 across layers with EP-2 for the expert layer and DP-2 for the non-expert attention layer. This placement uses PP stage interleaving; PP rank 0 gets the first and last layers, etc. We show a variant of DualPipe known as DualPipeV [ 35 ] that places each layer on one PP rank instead of two. Finally, we build an efficient and flexible distributed run-time to execute the combined strategy. We use a centralized scheduler to produce and distribute each device’s local execu-tion strategy. Each worker loads its associated model weights, then performs local scheduling to allocate shared device re-sources such as memory, communicators, and GPU streams. Compared to the original model definition, the resulting ex-ecution of tensor operators may be distributed, overlapped, out-of-order, etc.; Piper guarantees that the global execu-tion plan still respects the data and temporal dependencies specified by the model definition and user directives. Thus, we present Piper. We implement Piper as a torch.compile [ 4 ] backend and use Ray to implement the distributed runtime. We show that Piper can match the per-formance of generic training frameworks on widely sup-ported strategies, while further enabling concise expression of novel strategies such as DualPipe, producing an overall 6-30% improvement in throughput across baselines including Megatron and TorchTitan. We also demonstrate that Piper can better support arbitrary parallelism strategies through a case study combining PP with different ZeRO levels. While other generic training frameworks fail to support certain combinations, Piper can support all strategies, enabling 3-8x larger batch sizes. Our contributions include 
+
+• A user scheduling interface for controlling the high-and low-level execution strategy for inter- and intra-device parallelism. 
+
+• A unified IR for global training DAGs that enables joint scheduling of communication and computation inserted by different parallelism strategies. 
+
+• An efficient distributed runtime that is strategy-agnostic. 
+
+• Our end-to-end evaluation shows that Piper matches the performance of general-purpose frameworks on widely supported strategies, while improving perfor-mance and memory efficiency on composed strategies. 
+
+## 2 Background 
+
+We first overview some possible choices in high-level paral-lelism strategy. 
+
+> 2
+
+DP and ZeRO. In DP [ 3, 22 ], each worker holds a replica of the model weights, computes a local gradient, then aver-ages the gradients across all replicas using an allreduce (or allgather and reduce-scatter). ZeRO [ 38 ], also known as fully sharded DP [ 55 ], is a DP variant that reduces redundant state across workers by sharding the optimizer, gradients, and/or the model weights across DP ranks. States are rematerial-ized with allgather when needed, and resharded by either dropping the remote shards or reduce-scatter in the case of gradients. Communication operations can be overlapped with computation of the preceding or following compute operations. 
+
+TP, EP, and CP. Each worker holds a shard of either the model weights, e.g., a subset of experts in EP [ 21 ] or a subset of rows/columns in TP [ 40 ], or the activations, e.g., a subsequence of the context in CP [ 50 ]. Workers execute collective communication according to the sharding plan and tensor operations to ensure that all activations are correctly aggregated. Compared to DP, these collectives execute on the critical path of a batch’s computations. 
+
+PP. Each worker holds a shard of the model layers. Be-cause of the sequential dependency between model layers, PP schedules use multiple microbatches to overlap execution across devices. The performance of a PP strategy depends on a complex set of factors including bubbles between devices and the amount of communication overhead. Thus, many PP schedules have been proposed to balance between such fac-tors [ 17 , 29 , 34 ]. PP adds send-receive communications when activations are passed between “stages”, i.e. shards placed on different devices. Unlike the above parallelism strategies, PP is most easily executed with an MPMD (multiple program multiple data) approach due to each rank needing to execute a different set and order of operations. 
+
+Composition. Given the need to scale distributed training to larger models and clusters, common practice uses multi-ple parallelism dimensions to ensure that models can fit in memory and maximize hardware bandwidth. For example, Figure 1 shows a DualPipe-like placement that combines PP across layers with EP for the expert layer and DP for the non-expert attention layer. The PP schedule (Figure 2) is carefully designed to enable overlapping of pairs of forwards and backwards microbatches (Figure 3b). This strategy is a variant of DualPipe known as DualPipeV [ 35 ]; it uses micro-batch overlapping as in DualPipe but places each stage on one PP rank instead of two. As models are becoming more heterogeneous [ 52 ], the need to be able to specify different strategies per submodule is also becoming critical. For example, the Qwen3-Next mod-els use diverse attention layers [ 7], and multimodal models use modality-specific encoders/decoders composed with the transformer backbone [27, 36, 53]. A2A Attn MLP A2A LN                                                                   
+
+> A2A A2A LN
+> Forward
+> microbatch
+> Backward
+> microbatch MLP(B)
+> MLP(W)
+> Attn(B)
+> Attn(W)
+> LN …
+> Attn …
+> AR
+> 456
+> 5
+> 4
+> 5
+> 4
+> 6
+> 7
+> 7
+> 75
+> 5
+> 5
+> 6
+> 7
+> 77
+> 7
+> 6
+> 6
+> 6
+> 6
+> 7
+> 74
+> 5
+> 5
+> 5
+> 66
+> 6
+> 6
+> 6
+> 7
+> 77
+> 7
+> 7
+> 76
+> 4
+> 5
+> 542370415637
+> 0
+> 00
+> 012
+> 11
+> 00
+> 22
+> 3
+> 012
+> 0123
+> 3
+> 456001112223
+> 405
+> 1
+> 100
+> 24
+> 33
+> 2113
+> 0
+> 3
+> 4
+> 620415372637
+> 437150415263726
+> 4043015152626377
+> 1
+> 1forward 1
+> 1full backward 1
+> 1backward for input 1
+> 1backward for weights
+
+Figure 2. DualPipeV schedule [ 35 ] for 4-way PP, 8 micro-batches, 8 layers. The placement is shown in Figure 1. Com-bined forward-backward microbatches in bolded boxes get overlapped. A2A                  
+
+> Attn MLP
+> A2A
+> LN
+> A2A A2A
+> LN
+> Compute stream
+> Comm stream
+> MLP(B) MLP(W) Attn(B) Attn(W)
+> A2A Attn MLP A2A LN A2A A2A LN
+> Compute stream MLP(B) MLP(W) Attn(B) Attn(W)
+> A2A
+> Attn MLP
+> A2A
+> LN
+> Compute stream
+> Comm stream A2A
+> Attn MLP
+> A2A
+> LN
+
+(a) 
+
+(b) 
+
+(c)      
+
+> A2A A2A LN MLP(B) MLP(W) Attn(B) Attn(W)
+
+Figure 3. Different strategies for applying intra-device paral-lelism. (a) Serial forward-backward execution. (b) Interleav-ing a forward and backward microbatch can effectively hide all-to-alls. (c) Further microbatching within the forwards enables overlapping but reduces hardware efficiency. AR                       
+
+> A2A
+> Attn MLP
+> A2A
+> LN
+> A2A A2A AR
+> LN
+> Compute stream
+> Comm stream
+> MLP(B) MLP(W) Attn(B) Attn(W)
+> AR
+> A2A
+> Attn MLP
+> A2A
+> LN
+> A2A A2A
+> LN
+> Compute stream
+> Comm stream 1
+> MLP(B) MLP(W) Attn(B) Attn(W)
+> AR
+> Comm stream 2 interference
+> A2A
+> Attn MLP
+> A2A
+> LN
+> A2A A2A
+> LN
+> Compute stream
+> Comm stream 1
+> MLP(B) MLP(W) Attn(B) Attn(W)
+> AR 1AR 2AR 1
+
+…
+
+(a) 
+
+(b) 
+
+(c)  
+
+> AR 3
+
+Figure 4. Different low-level execution strategies corre-sponding to an overlapped microbatch pair in DualPipe (Fig-ures 1 and 2), now including the allreduce from using DP for Attn (dark blue AR boxes). (a) Using a separate stream for DP communication can add interference to all-to-alls. (b) 
+
+Scheduling DP communication on the stream delays EP all-to-alls. (c) Partitioning DP communication into finer-grained operations and scheduling on the same stream as EP all-to-alls can produce the best run time. 
+
+> 3
+
+## 3 Challenges 
+
+High-level parallelism strategy. Previous work address-ing the problem of expressing high-level parallelism strate-gies includes GSPMD [ 49 ] for composed tensor sharding and replication plans (Figure 1) and complementary solu-tions [ 13 , 39 , 48 ] for the inter-device PP schedule (Figure 2). We additionally observe that as communication overheads increase with larger models, the need for intra-device paral-lelism has become critical. This is commonly done by over-lapping communication with compute. This can be done across distinct microbatches, as seen in DualPipeV (bolded boxes in Figure 2), as well as other systems that apply local microbatching for specific operators [8, 18, 46, 47]. However, the decision of when to apply intra-device par-allelism is nontrivial. For example, overlapping forwards and backwards microbatches improves throughput in the DualPipeV schedule (Figure 2), but overlapping forwards with forwards or backwards with backwards could intro-duce bubbles that outweigh the gains in pairwise microbatch throughput, as shown in Figure 3c. Recent work further shows that for heterogeneous models in particular, the intra-device parallelism strategy needs to be codesigned with the PP placement [ 16 ]; optimal overlapping would thus require extensive profiling of the different scheduling options. Thus, we advocate for an abstraction that allows users to flexibly specify the high-level inter- and intra-device plan, allowing both human users and automated systems to easily control the system’s behavior. 
+
+Low-level execution strategy. Once the high-level par-allelism strategy has been decided, the corresponding work must be efficiently scheduled onto each accelerator’s re-sources: compute, memory, and network. For GPU-based programming models, this requires allocating streams and 
+
+communicators to enable concurrent execution of different kernels and communication operations, respectively. In simple cases, such as when the model and activations fit comfortably in memory or when using only one parallelism dimension, scheduling is straightforward. For example, DP only adds communication off of the critical path of execution, so achieving good utilization requires only: (1) using one stream each for compute and communication, (2) choosing a communication bucket size that is large enough to ensure good network utilization but small enough to enable overlap-ping with compute, and (3) minimizing additional memory usage from allreduce buffers. However, when multiple parallelism dimensions are used, each can add operations that may contend for the same resources, such as communication operations contending on network bandwidth or intermediate buffers contending for GPU memory. Resource contention can produce perfor-mance behaviors that are hard to predict. For example, Figure 4 shows different low-level execution strategies corresponding to an overlapped microbatch pair in DualPipe (Figures 1 and 2), now including the allreduce from using DP for Attn. Figure 4a shows the simplest and common case, which uses a separate stream for DP communi-cation. This avoids sequential execution, which would delay the EP all-to-alls (Figure 4b). However, because all-to-all and allreduce both use network resources, Figure 4a can also ex-hibit unpredictable interference. For example, we measured a 1.46 × slowdown in EP communications due to background allreduces from DP in a DualPipe strategy. Partitioning into smaller all-reduces could reduce interference (Figure 4c) but in other cases could increase overall run time due to lower communication efficiency. We aim to design an abstraction that allows the user to easily control this behavior, and in the future generalize to let the user control tradeoffs between interference and maxi-mizing communication bandwidth. The goal is to concisely capture the low-level execution strategies shown in Figures 3 and 4, among others. In particular, we focus on expression of scheduling decisions on the tensor operator graph, which is compatible with lower-level optimizations such as kernel fusion that can further boost performance. 
+
+Distributed runtime. The distributed runtime is respon-sible for executing the compiled low-level execution strategy on each device. Thus, it must: (1) remain agnostic to the strat-egy, (2) add minimal scheduling overhead, to avoid blocking accelerators on CPU-based scheduling, and (3) allocate the shared resources of each accelerator efficiently, without need-ing to ask the user to specify the exact schedule of low-level tensor operators. Critically, the system should be able to jointly schedule 
+
+all of the communication operations introduced by different high-level parallelism dimensions, instead of simply sched-uling each as if they were independent. This is critical for overall throughput, especially when resources are contended. For example, we observed that when near capacity, the PyTorch memory allocator can introduce expensive device stalls waiting for in-flight work to finish so it can reclaim memory [ 24 ]. Thus, memory-saving sharding techniques such as ZeRO can also significantly improve throughput, not just memory efficiency. Meanwhile, we also found that existing general-purpose training frameworks do not in fact fully support all ZeRO levels when used in combination with other parallelism strategies such as PP. We believe this is due to interactions between the pre- and post-layer hooks that ZeRO introduces and PP execution, which runs each layer multiple times for one global batch. We show that by using a unified abstraction that can correctly capture and schedule these interactions with higher memory efficiency, we can support 3-8 × larger batch sizes (Section 6.2). 
+
+## 4 Design 
+
+Piper has two components (Figure 5). First, the compiler translates annotated user models and user scheduling intent                        
+
+> 4Distributed runtime Worker
+> Annotated model
+> Compiler
+> IR: Training DAG
+> User schedule
+> GPU GPU GPU GPU
+> Workers
+> rDP/EP =0
+> rPP =0 rPP =0
+> rDP/EP =1
+> rPP =1
+> rDP/EP =0 rDP/EP =1
+> rPP =1
+> Scheduler Sub-DAG
+> GPU streams
+> Comm1
+> Comm2
+> Comp
+> PP comm
+> DP/EP comm
+> Chunk (comp)
+> Microbatch
+> Data dep
+> Temporal dep
+> Legend
+
+Figure 5. Piper overview. White rounded boxes are user inputs. Grey areas are system. into a distributed execution plan. Second, the runtime exe-cutes the plan on distributed workers in a way that is agnostic to the specific execution strategy. Together, these compo-nents let Piper represent and realize a rich set of training schedules without hard-coding specific parallelism strategy compositions or optimizations into the runtime. In the rest of this section, we use a simplified example based on DeepSeek-V3’s DualPipe schedule applied to an MoE transformer model. In this example, the user combines PP=2 and EP/DP=2 and uses microbatch overlap to hide EP all-to-all latency. 
+
+4.1 API 
+
+The API exposes the parts of execution that users may want to control, such as device placement, communication granu-larity, and operator ordering, while leaving the remaining low-level decisions to the system. Each API translates to a transformation on Piper’s intermediate representation (IR). The Piper IR is the global training DAG, a unified abstraction for distributed training that encodes computation, commu-nication, and resource assignment, i.e. a GPU stream. Piper realizes the API through two components: 1. Annotations let users identify schedulable regions of model computation, which later become compute nodes in the training DAG. 2. Scheduling directives transform the training DAG. 
+
+IR. To show how Piper’s user scheduling APIs are imple-mented, we first describe the IR, the global training DAG (Fig-ure 6). Nodes represent coarse-grained compute or commu-nication units and data flows along edges. Piper manages memory for the data along the edges. All communication is explicit in the graph. This allows the compiler and runtime to reason about communication, computation, and resources such as GPU memory in a unified way. Each node in the DAG is one of the following: (1) a Chunk :the most basic unit of compute with no interleaved commu-nication, or (2) a Comm node, which can be a point-to-point or collective operation. Nodes have a device or device mesh placement. Except for p2p Comm nodes, all nodes must have the same placement as their inputs and outputs. BF                
+
+> PP 0Fs/r PP 1FPP 1BPP 0Bs/r
+> a2a EP 2a2a
+> ar
+> PP 0MB 1Fs/r PP 1MB 1FPP 1MB 1BPP 0MB 1Bs/r
+> PP 0MB 0FPP 0MB 1FPP 0MB 0B
+> PP 1MB 0FPP 1MB 1FPP 1MB 1B
+> PP 0MB 1B
+> PP 1MB 0B
+> a2a EP 3a2a
+> 4
+> 1
+> 3
+> 5
+> 2
+> Optimizer
+> device=[0,1]
+> device=[2,3]
+
+Figure 6. Transformations on the DAG IR. Each rounded box is a Chunk . Boxes with corners are Comm s. Thin arrows are data dependencies. Wide arrows are transforms correspond-ing to scheduling directives. The schedule at the bottom shows the execution order once all data dependencies speci-fied by the model and temporal dependencies specified by 
+
+Order have been applied. Each Chunk and Comm node has an associated exec func-tion to run upon dispatch by the runtime. This is a PyTorch 
+
+fx.Graph of tensor operators for forwards passes, an opaque graph inserted by the PyTorch autograd engine for back-wards passes, or a NCCL communication kernel inserted by Piper. Chunk and Comm nodes also have an assigned log-ical GPU stream to run on, which the Piper runtime later translates to a physical GPU stream (Section 4.3). Conceptually, the compiler begins with a single-device DAG with a single Chunk , extracted from the model defini-tion. The single node has all model operators for a forwards-backwards pass as one Chunk , with no communication (the large F|B Chunk in Figure 6). The user’s annotated regions of the model replace the single chunk with smaller chunks. Each directive in the user’s schedule then repeatedly transforms the DAG, until we have the lowered distributed training DAG to pass to the runtime (Figure 5). 
+
+Annotations. Piper’s annotation API lets the user tag parts of the model for later identification during scheduling. An annotation identifies a semantically meaningful region of computation, such as a pipeline stage or an expert MLP block. These annotations are translated by the compiler into 
+
+Chunk s that can later be reordered, replicated, sharded, or otherwise transformed. The annotation API takes in a string dim to allow users to add new parallelism dimensions and refer to them in schedul-ing directives. For example, in Listing 1, we create a wrapper around an MoE transformer model that annotates PP stages with the PP dimension tag and expert-MLP components with the EP dimension tag. Piper infers indices for repeated an-notations based on the order in the model’s dataflow. For example, the first PP annotation gets index 0 and the second 
+
+PP annotation gets index 1.                                              
+
+> 51PP =" pp_tag "; EP =" ep_tag "
+> 2class TransformerModel :
+> 3def forward ( self , x) ->
+> 4with sys . annotate ( PP ):
+> 5h=self . embeddings (x)
+> 6h=self . layer2 ( self . layer1 (x))
+> 7with sys . annotate ( PP ):
+> 8h=self . layer4 ( self . layer3 (x))
+> 9h=self . output (h)
+> 10 return h
+> 11 12 class MoELayer :
+> 13 def forward ( self , x):
+> 14 x=self . router (x)
+> 15 with sys . annotate ( EP ):
+> 16 x=self . experts (x)
+> 17 return x
+
+Listing 1. MoE model annotated with PP and EP components. 
+
+Scheduling directives . Piper exposes a small set of sched-uling directives for controlling placement, communication granularity, and operator overlapping and ordering. We use filters to allow users to apply directives to one or multiple 
+
+Chunk s at a time. A filter can include zero to multiple dimen-sion names, plus a value to filter on for the dimension index. For example, (PP=0) refers to the first PP stage and (EP=3) 
+
+refers to the MoELayer in layer 3. “ ∗” pattern-matches on all cases and “ −” excludes all cases of a tag. For example, (PP=1, EP=-) matches on all non-expert components of PP stage 1 in Listing 1. For shorthand, omitting a tag from the filter entirely will match on all occurrences of that tag. By default, the system also supports a dimension named 
+
+PASS , to indicate a specific part of the forwards-backwards pass for the same Chunk . Valid values are F for forwards, B
+
+for full backwards, Bi for backwards for inputs and Bw for backwards for weights. This is useful for cases like ZeroBub-ble [ 34 ], a PP schedule that splits the backwards pass into two stages for better pipelining across devices. The placement directives are Place , Replicate , and Shard ,as described next. Placement directives take in a device mesh (an N-D array of devices) which represents devices with unique integers. Placement filters must have PASS=* (in-cluded by default), i.e. we cannot have different placements for the forwards and backwards passes of the same Chunk .Placement directives may add communication nodes to the training DAG. Thus, we also allow these directives to pass a logical GPU stream that any inserted communication operations should execute on. During execution, the runtime will create one physical stream per logical stream on the participating devices. If no stream was provided, then the system uses the default stream, the same stream on which the compute operators run. This allows users to have full control over stream execution without having to manage streams themselves. Next we describe each directive in terms of how it trans-forms the training DAG (Figure 6). 
+
+Place (filters, devices, stream=None) . A placement directive that updates the device placement of matched nodes. If multiple devices are passed, then additional placement directives are needed to determine the concrete device map-ping for each Chunk . If a matched node is adjacent to an-other node that has a different device placement, add a P2P send/recv Comm ((1) in Figure 6) assigned to stream .
+
+Replicate (filter, devices, gather_stream=None, reduce_stream=None, shard_params=False, shard_grads=False, bucket_sz=None) . A placement di-rective that replicates the matched nodes across devices. In-sert a collective Comm after the backward pass (or backward for weights pass) for each matched Chunk to synchronize gra-dients among the replicas of the Chunk ((2) in Figure 6). The operation is all-reduce by default, and alternatively reduce-scatter when shard_grads=True . When shard_params=True ,insert an all-gather Comm before every matched node. New gather Comm s are assigned to gather_stream and new re-duce Comm s are assigned to reduce_stream for fine-grained control over overlappable Comm s. The user can optionally pass in a bucket_size , and the Piper runtime will attempt to bucket communications to not exceed this size. If the bucket size is smaller than the weights for a Chunk , the system transforms the DAG by breaking each 
+
+Chunk into smaller Chunk s. If the user wants more control over buckets, they can use multiple Replicate rules. For example, to ensure that each model layer is launched as one bucket, the user could annotate each layer of the model with 
+
+dim=layer , then run Replicate on each layer index. 
+
+Shard (filter, devices, stream=None) . A placement directive that shards the weights associated with matched 
+
+Chunk s along dimension 0. Currently, this requires that the preceding or subsequent Chunk has the same devices but with the Replicate rule. Inserts an all-to-all Comm before and after each matched Chunk and updates upstream/down-stream data dependencies to flow through the new Comm s ((3) in Figure 6). This directive combined with Replicate can be used to represent EP with DP/ZeRO. In future work, we will generalize our approach and infer communication for arbitrary combinations of these direc-tives, e.g., by incorporating GSPMD-style sharding [49]. 
+
+Split (filter, dim, num_microbatches) . Replicate the matched nodes num_microbatches many times ((4) in Fig-ure 6). This adds a new dimension with the user-provided name. For example, Listing 2 shows an example where the user specifies 2 PP microbatches under the dimension name 
+
+MB . MB =0 and MB =1 refer to the first and second microbatches, respectively. This rewrite requires that the filtered nodes form a contiguous sub-DAG. 
+
+Order (filter_list) . Add a dependency between each pair of adjacent filters. For example, if two adjacent filters match sub-DAGs 𝐴 and 𝐵 respectively, then this adds a temporal edge from the topologically last node(s) in 𝐴 and the topologically first node(s) in 𝐵 to enforce an ordering 
+
+> 6
+
+between the two sub-DAGs. This requires that each filter matches a contiguous sub-DAG. This directive can be use-ful for expressing arbitrary PP schedules as well as other ordering dependencies. To express overlapped execution of different microbatches, the user can pass in a nested list of filters. For example, in Listing 2, line 11 specifies that the forwards for microbatch 0 of PP stage 1 should execute before an overlapped pair comprising the forwards for microbatch 1 of PP stage 1 and the backwards for microbatch 0 of PP stage 1. In this case, the Piper runtime will interleave the two sub-DAGs of matched 
+
+Chunk s and Comm s (Section 4.3). Specifying PP schedules manually can be burdensome. Thus, in practice, we expect that users would use functions that build the orders for a given PP schedule.            
+
+> 1PPStr, EPStr, DPStr = sys.stream(), sys.stream(), sys.stream()
+> 2Place((PP=0), device=[0,2], stream=PPStr)
+> 3Place((PP=1), device=[1,3], stream=PPStr)
+> 4Replicate((PP=0, EP=-), devices=[0,2], reduce_stream=DPStr)
+> 5Replicate((PP=1, EP=-), devices=[1,3], reduce_stream=DPStr)
+> 6Shard((PP=0, EP=*), devices=[0,2], stream=EPStr)
+> 7Shard((PP=1, EP=*), devices=[1,3], stream=EPStr)
+> 8MB = "microbatch"
+> 9Split((), dim=MB, num_microbatches=2)
+> 10 Order([(PP=0, MB=0, PASS=F), (PP=0, MB=1, PASS=F), (PP=0, MB=0, PASS=B), (PP=0, MB=1, PASS=B)])
+> 11 Order([(PP=1, MB=0, PASS=F), [(PP=1, MB=1, PASS=F), (PP=1, MB=0, PASS=B)], (PP=1, MB=1, PASS=B)])
+
+Listing 2. A simplified user schedule for DualPipe. Next, we put the directives together to walk through the example user program in Listing 2, which shows a simpli-fied DualPipe-like schedule [ 35 ]. Line 1 creates one logical stream each for PP, DP, and EP communication. Lines 2-3 place the Chunk s for pipeline stages 0 and 1 on different de-vices, applying the transformation in (1) in Figure 6 to insert P2P operators at cross-device boundaries. Lines 4-5 apply DP to all non-expert weights, across devices [0, 2] for pipeline stage 0 and devices [1, 3] for pipeline stage 1. This appends an allreduce per PP stage to the backwards Chunk s, as shown in (2) in Figure 6. Lines 6-7 shard the experts over the same devices as the DP replicas, which inserts an all-to-all collec-tive before and after each expert chunk, as shown in (3) in Figure 6. Line 9 splits the model into two microbatches ((4) in Fig-ure 6). Split duplicates the entire DAG because its filter matches everything, assigning each DAG copy a unique in-dex within the new MB dimension. Line 10 assigns the micro-batch ordering depicted in (5) in Figure 6. Line 11 designates that 𝑃𝑃 1𝑀𝐵 1𝐹 and 𝑃𝑃 1𝑀𝐵 0𝐵 are overlappable by passing them together in a nested list. The schedule also expresses intent about resource assign-ment. Communication originating from the PP rewrite gets its own PPStream , meaning that send/recv operations be-tween PP stages are overlappable with compute. DP and EP also use separate streams, so they also will not synchronize with each other. This will yield the execution plan shown in Figure 4a. Using the same stream for DP and EP would yield Figure 4b. Figure 4c could be supported by using the same stream for DP and EP and a smaller communication bucket size for Replicate . Currently, the Piper scheduler may still schedule allreduces even though they would de-lay the critical path. In the future, we plan to additionally support more control via Order for specific communication operations and/or smarter system scheduling. 
+
+4.2 Piper Compiler 
+
+The Piper compiler translates the user’s annotated model and scheduling directives into the DAG IR. The compiled DAG specifies a partial ordering of Chunk s and Comm s that includes data dependencies from the model dataflow and tem-poral dependencies from the Order directive. Each Chunk 
+
+and Comm is also assigned a stream but not yet an order in the stream. The goal is to produce a plan that can be me-chanically executed by the distributed runtime with simple heuristics (Section 4.3). Compilation proceeds in two phases. First, Piper extracts user-annotated model regions as coarse-grained Chunk s and builds an initial single-device training DAG. Second, it ap-plies the user’s scheduling directives as graph rewrites to produce a distributed training DAG with explicit communi-cation and finer-grained execution. 
+
+Phase 1: Model annotations and chunk extraction. 
+
+Piper first extracts the dataflow graph of tensor operators. Currently this is done using TorchDynamo [ 4 ], a PyTorch JIT compiler which uses symbolic tracing to build fx.Graph smade up of PyTorch tensor operators. Initially, all tensor operators are put into one forwards-backwards Chunk (the large F|B chunk in Figure 6). Next, Piper splits the full-model operator graph at anno-tation boundaries (Listing 1) to produce an operator sub-graph per finer-grained chunk. This sub-fx.Graph serves as a forward Chunk ’s exec function, and the PyTorch auto-grad engine implicitly adds the executable graph for back-wards Chunk s. Piper encodes forward Chunk dependencies according to the data dependencies extracted from the model definition. Backward Chunk dependencies follow in reverse order. The PyTorch tensor operator graph also determines model weight dependencies for each Chunk . Piper uses this to as-sociate a bucket of model state (parameters, gradients, and optimizer state) with each Chunk . After this initial pass, the compiler will have produced a single-device training DAG split into the user-annotated Chunk s. 
+
+Phase 2: DAG transformations. Next, Piper mechani-cally applies the DAG rewrites as directed by the user sched-ule (Listing 2). Piper may insert new Comm nodes during the rewrite process; Piper assigns the exec function for Comm sto the communication kernel to execute, e.g., all-to-all or allreduce. 
+
+> 7
+
+Currently, we require that a model state bucket can only be associated with Chunk s that have the same placement. Associating a single bucket with Chunk s that have different placements (e.g., tied embeddings) could be supported by inserting additional gradient synchronization between the 
+
+Chunk s’ backward passes. After applying user transforms, the compiler applies a pass to elide unnecessary communication from parameter bucket rematerialization. In particular, the Replicate di-rective naively inserts an allgather before each Chunk that consumes the data. In cases where two consecutive Chunk suse the same weights, Piper collapses these into one allgather. Similarly, for ZeRO-2 gradient sharding, if two consecutive 
+
+Chunk s accumulate to the same gradient bucket, then Piper collapses the reduce-scatter into one operation. These eli-sions do not add any memory overhead and reduce unneces-sary communication time. The final output of this pass is a global training DAG that reflects communication and inter- and intra-device place-ment. It captures data dependencies from the model defini-tion and temporal dependencies introduced by Order . Each 
+
+Chunk has a device and stream assignment. Piper validates that all device assignments are present; future work could automatically propagate from adjacent nodes to fill in miss-ing assignments, similar to GSPMD [ 49 ]. Missing stream assignments are assigned to the default compute stream. 
+
+4.3 Piper Runtime 4.3.1 Centralized scheduler. The Piper runtime executes arbitrary training DAGs on a set of distributed workers. Exe-cution starts at the centralized scheduler, which takes in the transformed training DAG that provides a partial ordering and resource assignment (device and stream) for Chunk s and 
+
+Comm s. The goal is to produce a partial ordering per device. The ordering is partial because Chunk s and Comm s on the same stream are totally ordered, while Chunk s and Comm son different streams are only ordered if they have a data or temporal dependency. First, the scheduler decomposes the training DAG into one unique sub-DAG per PP rank. Workers with the same PP rank execute with SPMD so they receive the same sub-DAG. For example with PP-2 x EP-2, we use 4 workers and 2 unique sub-DAGs (Figure 5). Decomposing the DAG simply involves gathering the sub-DAG of nodes for each device. Compute operators that ex-ecute on different devices are connected by a send-recv 
+
+node; this decomposes into a send for the sending rank and a recv for the receiving rank. Ranks with the same PP stage replicate all communication operations within that stage. The sub-DAG includes only the data dependencies be-tween the worker’s local compute and communication op-erators, as well as any temporal dependencies specified by Order rules. The centralized scheduler resolves the order-ing between any Chunk s and Comm s that do not depend on each other (i.e. there is no path between them) and that are assigned the same stream. For example, these can originate from the nested filters in the Order directive, which indicates the user’s intent to overlap sub-DAGs. We describe the algorithm for scheduling across indepen-dent Chunk s and Comm s. For simplicity, we use task to refer to either a Chunk or Comm . To decide how to interleave two sub-DAGs, the scheduler begins by creating one queue per stream and initializing the set of ready tasks, which are tasks with no upstream dependencies. Then, Piper performs the following resource scheduling algorithm: 1. Pick the ready task 𝑡 (all upstream tasks scheduled) with the most downstream dependencies. 2. Add the task to the queue corresponding to 𝑡 .𝑠𝑡𝑟𝑒𝑎𝑚 .3. Mark the task as ready to unblock downstream adja-cent tasks. This simple policy works well for the DualPipe-style over-lapping depicted in Figure 3b where the forward-backward microbatches are symmetric, meaning that each has the same number and pattern of Comm s and Chunk s. It could perform poorly in cases where there are many small tasks in a sub-graph that is not on the critical path, or in cases where critical and non-critical path Comm s are on the same stream (Figure 4b). For example, we could leverage profile-guided optimization to measure actual run times and resource usage. After this process, each worker will have an ordered list of Chunk s and Comm s per stream, plus all cross-stream data and temporal dependencies. Then, once before execution, the centralized scheduler dispatches each device’s sub-DAG to the corresponding worker. The dispatch to a worker also includes the model weights to load for Chunk s and Comm s. 
+
+4.3.2 Worker execution. Each worker loads its shard of model weights then executes the compute and communica-tion operators according to the order determined by the cen-tralized scheduler. The worker is responsible for managing the GPU’s local resources that may be shared between tasks: GPU streams, communicators, and memory. We rely on the GPU to allocate the shared physical resources such as SMs and HBM or network bandwidth between concurrent kernels. Our approach is complementary to other approaches that provide more precise control over physical resources [ 32 , 54 ], e.g., adding an SM limit on specific Chunk s. The worker’s scheduling loop repeats the following: 1. Pick a task t from the tasks whose dependencies have been scheduled. 2. If t.stream is different from a dependency’s stream 
+
+t.args[i].stream , synchronize by having t.stream wait on t.args[i].event .3. Dispatch t to t.stream . This launches all kernels in the task’s exec function. 4. Free any of t.args that have no more downstream tasks. Store t.outputs in local intermediate storage for later consumption. If t has an output with a downstream 
+
+> 8
+
+task that runs on a different stream, record an event on t.stream and store in t.outputs[i].event .Note that when using multiple streams, there will often be multiple tasks that are ready for dispatch. This is because the compiler produces a total ordering of tasks per stream, but only a partial ordering across streams based on data and temporal dependencies. When tasks could be scheduled in any order, the worker must make a local decision about dispatch order. Although individual kernels execute asynchronously on the GPU, the dispatch order of tasks is still important be-cause dispatch time on the CPU can delay critical GPU ker-nels, especially when there are many kernels to dispatch in a single task. For example, when using gradient sharding in ZeRO-2 [ 38 ], prioritizing gradient reduction could free memory sooner by shortening the lifetime of full gradient state. On the other hand, prioritizing all-to-all communica-tion over gradient reductions may reduce latency along the critical path. Piper currently prioritizes send communication first, defers receive communication last to reduce point-to-point communication interference, and among remaining communication tasks prioritizes critical-path over reduction operators. The prioritization is deterministic, to ensure that all ranks in a collective group dispatch communications in the same order. Future work could include other heuristics and/or online profiling to more precisely determine the best dispatch order. 
+
+Stream management. As shown in the above scheduling loop, the worker dispatches each task’s operator(s) on the stream associated with that task’s logical resource. Tasks are dispatched asynchronously, as soon as their upstream tasks have been scheduled, to avoid blocking the GPU on CPU scheduling. When two adjacent tasks execute on different streams, Piper inserts synchronization between their streams to preserve correctness using CUDA events and stream-wait. This lets the runtime support arbitrary execution patterns without hard-coding a fixed mapping from operator type to stream. For example, for overlapping PP communication, send and receive operators should be assigned a different stream from their upstream and downstream compute operators. In this case, the communication stream must synchronize with the producer node’s stream before issuing the send, and the downstream compute node must synchronize with the receive node’s stream before consuming the communicated value. Although Piper must insert synchronization to preserve correctness, it inserts synchronization only when required by inter-task dependencies across different streams, allowing tasks without data dependencies running on independent resources to proceed concurrently. This also minimizes CPU overhead from scheduling and CUDA event creation. 
+
+Communication management. Avoiding bubbles from unnecessary synchronization can be challenging due to com-plex interactions between inter- and intra-device depen-dencies. GPU collective communication typically requires a “communicator”, which represents one rank’s context in a given collective group. Communication operations must be executed in the same order on all ranks’ communicators in the same group, or else the device may hang because GPU collective communications are synchronous [31]. The inter-device communication order can create bubbles when combined with the intra-device dependencies created by shared CUDA streams. For example, in PP, most workers are continually sending and receiving microbatches to and from another worker. Thus, if we use one collective group for a PP schedule, then the send and receive operations need to be globally ordered across all workers’ communicators. How-ever, choosing an optimal serial order at compile time is hard because it would require exact predictions of the execution time per microbatch stage as well as communication time. For example, when choosing between sending and receiving, a worker needs to choose whether to send first, which would unblock the downstream worker’s compute, or receive first, which would unblock communication operations queued after the upstream worker’s send. To resolve this problem, Piper allocates separate streams for point-to-point communications, one for sending and one for receiving. To avoid deadlock, Piper also allocates one communicator per stream. Using separate communicators reduces scheduling burden. Instead of requiring that all P2P operations are ordered consistently for every pair of workers, the system only needs to guarantee that P2P operations in each direction are ordered consistently for every pair of workers. This does not require knowing actual run times and is already naturally satisfied by common PP schedules. In particular, the requirement on the PP schedule is that downstream workers process data in the same order that it is produced by upstream workers, e.g., if rank 0 executes microbatch 1 before 2, then rank 1 also executes microbatch 1 before 2. Piper currently rejects schedules that do not meet this requirement. 
+
+Memory management. Piper manages GPU memory stor-age for all model state buckets along with all activations sent between Chunk s. Thus, GPU memory is shared by compute 
+
+Chunk s as well as Comm s that gather or reduce model state during execution. For each bucket, Piper allocates one flat buffer each for parameters and gradients, concatenating all parameter and gradient tensors in the bucket into their re-spective flat tensor; copies to/from the flat buffer are elided where possible. Piper also manages memory for ZeRO-style [ 38 ] gradi-ent/parameter sharding where states must be materialized before computation and sharded after. In such cases, Piper 
+
+> 9
+
+uses persistent buffers to store the sharded states and allo-cates temporary full buffers for the rematerialized states. For example, in ZeRO-2 gradient sharding, Piper stores persis-tent buffers for gradient shards and allocates a temporary full gradient buffer at the beginning of each backward task. To precisely control buffer release, Piper waits in a background thread for the event corresponding to the last consumer task’s completion, then resizes the buffer’s storage to zero. Piper also manages intermediate tensors that will later be consumed by downstream tasks. These include in-flight forward activations that must be retained for later back-propagation, activations waiting to be sent to a downstream worker, and intermediate autograd tensors that will later be used to compute model gradients. Once the last consumer task is scheduled, Piper frees the corresponding tensor. 
+
+## 5 Implementation 
+
+Piper is implemented as a TorchDynamo [ 4] backend, al-lowing it to hook into arbitrary PyTorch code. Although TorchDynamo supports non-static behavior by combining compiled- and eager-model execution, Piper currently re-quires models to be fully traceable. This allows Piper to partition an fx.Graph into sub-graphs at compile time. An-notations are implemented as Python context managers that attach metadata to regions of the model during execution. During graph capture, these annotations are recorded and used to segment the fx.Graph into Chunk s. Piper’s runtime is built on top of Ray. The Piper compiler and centralized scheduler (Section 4.3) run together in a “driver” process. Each worker is implemented as a Ray actor. 
+
+## 6 Evaluation 
+
+We evaluate Piper against the general-purpose training frame-works Megatron-LM 0.18.0 [ 40 ], DeepSpeed 0.18.9 [ 1] and TorchTitan 0.2.2 [23]. We address the following questions. 1. Does Piper perform as well as existing systems on commonly supported strategies? 2. What benefits in strategy flexibility and performance does Piper provide? Here, we evaluate performance and memory efficiency of various combinations of PP and ZeRO [ 38 ], along with PP and EP, including the DualPipeV schedule [35]. 3. How well does Piper scale? We run our evaluation on 4 AWS EC2 NVIDIA 8xA100 nodes with NVLink intra-node interconnect and Elastic Fab-ric Adapter (EFA) enabled for inter-node networking. 
+
+6.1 Common PP strategies 
+
+We evaluate Piper’s support for common PP schedules against Megatron and TorchTitan, which both provide out-of-the-box support for the 1F1B schedule [ 15 ] and its interleaved 
+
+Figure 7. PP x EP throughput for 1F1B, Interleaved 1F1B and DualPipeV schedules. variant [ 30 ]. Interleaved 1F1B can improve training through-put for large models compared to 1F1B due to better micro-batch overlapping from finer-grained interleaved stages. TorchTitan allows users to provide a PP schedule, similar to Piper, and provides generic PP schedule-builders for 1F1B and interleaved 1F1B. We adapt the 1F1B and interleaved 1F1B schedule builders from TorchTitan to the Piper API in 29 LoC and 38 LoC, respectively. We distribute the Qwen3 1B model with PP-8 x DP/EP-4 across 32 A100 GPUs and the Qwen3 9B model with PP-4 x DP/EP-4 across 16 A100 GPUs. We make DP the outer di-mension to simulate larger-scale settings where cross-node DP is required. Megatron requires placing PP as the outer-most dimension, so we route intra-node traffic over PCIe to simulate lower inter-node bandwidth for Megatron. TorchTitan’s performance suffers due to a larger memory footprint compared to the other systems, leading to CPU-side delays inserted by the PyTorch CUDA allocator. The memory footprint is caused by memory buffers needed by TorchTi-tan’s DP implementation. Additionally, TorchTitan’s inter-leaved schedule does 14% worse than its own 1F1B schedule. This is due to sends and recvs executing on the same stream, creating bubbles across ranks in the interleaved schedule. Meanwhile, Piper-interleaved-1F1B achieves 5% higher throughput than Piper-1F1B, as expected. This is due to a lower memory footprint and use of dual P2P streams and communicators, one for sending and one for receiving. Piper’s performance is comparable with Megatron’s. We note that Megatron often uses hand-tuned fused kernels tar-geted to transformer operators, enabling faster single-device execution time: on a single device, one microbatch forward pass of a single PP stage takes about 30 ms in Megatron vs 40 ms in Piper for Qwen3 1B. In general, Piper is orthogonal to approaches like kernel fusion which apply to the low-level operator graph contained within a Piper Chunk .exec 
+
+function. Thus, we believe that the two approaches could be combined to further improve performance gains. 
+
+6.2 PP x ZeRO 
+
+Table 1 shows the current support for PP x ZeRO variations in Megatron-LM, DeepSpeed and TorchTitan. All systems support PP x ZeRO-1, which is an optimization of DP where redundant optimizer state is deduplicated across DP replicas. To evaluate basic PP x ZeRO-1 support in all systems, we distribute the Qwen3 1B model with DP-2 across 2 A100 
+
+> 10
+
+Framework ZeRO-1 ZeRO-2 ZeRO-3 DeepSpeed ✓ ✗ ✗
+
+Megatron-LM ✓ ✗ ✗
+
+TorchTitan ✓ ∗ ∗
+
+Piper ✓ ✓ ✓
+
+Table 1. PP x ZeRO support in the evaluated systems. TorchTitan claims to support ZeRO-2 and ZeRO-3 composed with PP [ 23 ], but we found that in practice gradient and weight states do not get resharded between all microbatches, so the memory savings is significantly less than expected. Piper supports all combinations of PP with ZeRO memory optimizations. Framework Piper TT DeepSpeed Megatron Tokens/s 8641 8637 9352 9942 
+
+± 701 977 52 1106 
+
+Table 2. DP ZeRO-1 throughput on all systems. GPUs and evaluate training throughput with ZeRO-1 opti-mizer state sharding. Table 2 shows that all systems perform similarly, as expected. Differences in execution time are likely due to differences in low-level kernel implementations. While all systems support ZeRO variants 1-3, the sup-port for ZeRO 2 (parameter sharding) and 3 (weights shard-ing) when combined with PP is incomplete. Megatron and DeepSpeed do not support either when combined with PP. TorchTitan supports the variants but the rematerialized buffers are not resharded between all PP microbatches. This reduces communication overhead but also defeats the purpose of ZeRO sharding, which is to save per-device memory from redundant states. We believe that this uneven support for ZeRO-2 and ZeRO-3 is due to the fact that gradient and weights sharding requires careful management of pre- and post-layer hooks, whereas ZeRO-1 only operates on the opti-mizer states. Meanwhile, Piper correctly supports all combi-nations of PP x ZeRO; it simply adds the proper allgather, re-shard, and reduce-scatter operations to the matched Chunk sin the DAG IR, irrespective of the PP strategy. We validate the implications of this compatibility matrix by evaluating peak memory of composed PP x ZeRO strate-gies. We distribute Qwen3 9B with 8-way PP and 4-way DP across 32 A100 GPUs. We expect peak training memory to decrease from ZeRO-2 to ZeRO-3, as the latter introduces parameter sharding in addition to gradient state sharding. Figure 8 shows the results. Megatron, DeepSpeed, and other PP x ZeRO-1 variants OOM in all cases because they cannot fit even the smallest batch size. TorchTitan can fit the smaller batch sizes but has higher memory consumption than Piper because it does not properly re-shard weights and gradients, despite setting the provided flag for weights re-sharding after forwards. As a result, TorchTitan maintains a 
+
+Figure 8. Peak Memory consumption of ZeRO-2 and ZeRO-3 sharding strategies for Piper and TorchTitan. full copy of parameters and gradients across multiple micro-batches and OOMs at batch size 8 for ZeRO-2 and batch size 16 for ZeRO-3. TorchTitan’s PP x ZeRO-3 implementation also does not save significant memory compared to ZeRO-2. For Piper, we achieve correct resharding by reducing gra-dients after every backward pass instead of accumulating gradients between PP microbatches. This adds communica-tion time compared to TorchTitan but achieves the full ZeRO memory savings. As a result, Piper is able to execute with much higher batch sizes than TorchTitan without OOM: 8x higher for ZeRO-2 (up to batch size 32) and 3.3x higher for ZeRO-3 (up to batch size 40). 
+
+6.3 PP x EP and DualPipe 
+
+We compare system support for DualPipe-like schedules across Megatron, TorchTitan, and Piper. Megatron provides custom schedules for 1F1B and interleaved 1F1B but not DualPipe, likely due to the need to overlap between mi-crobatches. TorchTitan allows users to provide a PP sched-ule, similar to Piper, and provides a DualPipeV schedule builder [ 35 ]. DualPipeV (and DualPipe) also uses interleav-ing, so we use each system’s interleaved-1F1B implementa-tion as its respective baseline; the expected performance gain in each case is from overlapping of some EP communica-tion. TorchTitan’s DualPipeV implementation uses separate threads to dispatch the overlapped forward and backward microbatches to two streams, one for compute and one for EP communication. We adapt the DualPipeV schedule-builder from TorchTi-tan to the Piper API in 63 LoC. We use the Order directive to specify microbatch overlapping. Similar to TorchTitan, the runtime also uses a background stream for EP communi-cation, but the tasks from the overlapped microbatches are scheduled jointly by a single thread. We use the same experiment setup as in Figure 7a. In the 1B setting, Piper-DualPipeV improves 13% over Piper-1F1B schedule, while TorchTitan-DualPipeV improves only 3% over TorchTitan-1F1B. We believe that TorchTitan’s lack of improvement is due to a lack of synchronization between the forwards and backwards dispatch threads, which leads to unintended serialization of the GPU’s compute and com-munication streams. For the 9B model, we were not able to run TorchTitan due to OOM. Piper-DualPipeV improves 10% over its interleaved 
+
+> 11
+
+Figure 9. Piper PP x DP Scalability. schedule and 6% over Megatron’s interleaved schedule (Fig-ure 7b. In this case, Megatron-Interleaved-1F1B’s improve-ment over Piper-Interleaved-1F1B comes from fused kernels. Note that Megatron does not fuse the EP all-to-all; thus we expect that Megatron’s fused kernels could be directly inte-grated into Piper for additional gains. 
+
+6.4 Scalability 
+
+We evaluate Piper’s PP and DP scalability by distributing Qwen3 1B with 2-, 4- and 8-way PP and 2- and 4-way DP We scale the global batch size linearly with the PP and DP degrees and plot the curve representing linear scaling. We show that Piper scales reasonably. 
+
+## 7 Related Work 
+
+General-purpose training frameworks. Most general-purpose training frameworks [ 1, 23 , 40 ] for PyTorch imple-ment a fixed set of parallelism strategies. DP/ZeRO strate-gies are model-agnostic and implemented with pre- and post-layer hooks. Megatron-LM and DeepSpeed implement custom-built layers for TP/EP/CP and schedules for PP. TorchTi-tan supports more general strategies by using DTensor [ 2 ]for sharding, an API inspired by GSPMD [ 49 ], and PiPPy [ 39 ]for PP schedules. However, in all systems, each parallelism dimension dispatches its compute and communication oper-ations eagerly with little to no synchronization with other operations, making it difficult to jointly schedule shared GPU resources such as communication bandwidth or memory. Compiler-based systems such as JAX/XLA [ 6 ] provide high-level tensor sharding and replication annotations based on GShard [ 21 ] and GSPMD [ 49 ]. Piper’s API is inspired by these works. The annotations allow the compiler to in-sert the necessary communications and lower to a per-device program, although it is limited to homogeneous SPMD strate-gies. Later work extended the API and runtime to support arbitrary PP schedules [ 48 ] and heterogeneous strategies or clusters [ 5]. However, JAX/XLA does not support user scheduling of the low-level execution strategy; per-device resources such as GPU streams are opaque to the user and changes to the low-level execution strategy would require modifications deep within the XLA compiler. 
+
+DSLs. Besides GSPMD, many other works have combined user-facing tensor annotations with compiler support to en-able flexible distributed training strategies. These include CoCoNeT [ 18 ] for automatic computation-communication fusion, AutoSP [ 14 ] for automatic sequence parallelism, and DynaFlow for controlling intra-device parallelism [ 32 ]. Inte-gration of these works is an interesting line of future work. Slapo [ 10 ] shares a similar motivation of user scheduling for distributed training. However, it does not consider intra-device parallelism and lacks a flexible runtime, offloading execution to general-purpose frameworks [ 1 , 40 ]. TVM [ 11 ], inspired by Halide [ 37 ], supports user scheduling and auto-tuning of tensor programs; we are inspired by these works and extend them to support distributed tensor programs. 
+
+Auto-parallelism. There have been numerous systems that aim to automatically find an optimal strategy [ 19 , 20 ,25 , 26 , 28 , 41 , 43 –45 , 51 , 56 , 57 ]. To make the search problem tractable, many of these systems focus on a subset of strate-gies. They may not support execution of strategies that fall outside the search space and may thus miss opportunities such as fully overlapping communication and computation, as noted by [ 57 ]. ByteScheduler [ 33 ] and Centauri [ 9 ] do consider communication scheduling and Centauri addition-ally provides communication partitioning primitives, similar to Piper. However, in general, these systems are still lim-ited to the dimensions chosen by their developers and lack a unified IR for jointly scheduling the operations inserted by composed high-level strategies, such as in DualPipe. We hope Piper can serve as a common runtime for these auto-parallelism systems. nnScaler [ 25 ] is the closest in approach. It allows the user to specify generic constraints that are similar to Piper direc-tives. However, it does not support intra-device parallelism. Many systems use profile-guided optimization to identify a good strategy. Notable examples include DeepCompile [ 42 ]which searches over ZeRO and other memory optimizations, and Tessera [ 16 ] which co-optimizes the PP partitioning and microbatch overlapping schedule and dynamically schedules backwards passes. In future work, we also plan to integrate these works’ dynamic approaches. 
+
+## 8 Conclusion 
+
+We present Piper, a distributed training system for PyTorch that decouples the distributed execution strategy specifica-tion from the model and runtime using a unified IR: the global training DAG. By making the placement, granularity, and ordering of computation and communication operations explicit, Piper allows users to express a wide range of dis-tributed training strategies combining PP, DP, and EP with arbitrary ZeRO memory optimizations. Piper provides a use-ful interface for encoding both expert-designed schedules and future automated search over a rich space of composed strategies. 
+
+> 12
+
+## References 
+
+[1] 2025. DeepSpeed: Extreme-scale model training for every-one. https://www.microsoft.com/en-us/research/blog/deepspeed-extreme-scale-model-training-for-everyone .[2] 2025. torch.distributed.tensor. https://docs.pytorch.org/docs/stable/ distributed.tensor.html . Package. [3] Martín Abadi, Paul Barham, Jianmin Chen, Zhifeng Chen, Andy Davis, Jeffrey Dean, Matthieu Devin, Sanjay Ghemawat, Geoffrey Irv-ing, Michael Isard, Manjunath Kudlur, Josh Levenberg, Rajat Monga, Sherry Moore, Derek G. Murray, Benoit Steiner, Paul Tucker, Vijay Vasudevan, Pete Warden, Martin Wicke, Yuan Yu, and Xiaoqiang Zheng. 2016. TensorFlow: a system for large-scale machine learning. In Proceedings of the 12th USENIX Conference on Operating Systems Design and Implementation (Savannah, GA, USA) (OSDI’16) . USENIX Association, USA, 265–283. [4] Jason Ansel, Edward Yang, Horace He, Natalia Gimelshein, Animesh Jain, Michael Voznesensky, Bin Bao, Peter Bell, David Berard, Evgeni Burovski, Geeta Chauhan, Anjali Chourdia, Will Constable, Alban Desmaison, Zachary DeVito, Elias Ellison, Will Feng, Jiong Gong, Michael Gschwind, Brian Hirsh, Sherlock Huang, Kshiteej Kalam-barkar, Laurent Kirsch, Michael Lazos, Mario Lezcano, Yanbo Liang, Jason Liang, Yinghai Lu, C. K. Luk, Bert Maher, Yunjie Pan, Christian Puhrsch, Matthias Reso, Mark Saroufim, Marcos Yukio Siraichi, Helen Suk, Shunting Zhang, Michael Suo, Phil Tillet, Xu Zhao, Eikan Wang, Keren Zhou, Richard Zou, Xiaodong Wang, Ajit Mathews, William Wen, Gregory Chanan, Peng Wu, and Soumith Chintala. 2024. Py-Torch 2: Faster Machine Learning Through Dynamic Python Bytecode Transformation and Graph Compilation. In Proceedings of the 29th ACM International Conference on Architectural Support for Program-ming Languages and Operating Systems, Volume 2 (La Jolla, CA, USA) 
+
+(ASPLOS ’24) . Association for Computing Machinery, New York, NY, USA, 929–947. doi: 10.1145/3620665.3640366 
+
+[5] Paul Barham, Aakanksha Chowdhery, Jeff Dean, Sanjay Ghemawat, Steven Hand, Dan Hurt, Michael Isard, Hyeontaek Lim, Ruom-ing Pang, Sudip Roy, Brennan Saeta, Parker Schuh, Ryan Sepa-ssi, Laurent El Shafey, Chandramohan A. Thekkath, and Yonghui Wu. 2022. Pathways: Asynchronous Distributed Dataflow for ML. arXiv:2203.12533 [cs.DC] https://arxiv.org/abs/2203.12533 
+
+[6] James Bradbury, Roy Frostig, Peter Hawkins, Matthew James Johnson, Chris Leary, Dougal Maclaurin, George Necula, Adam Paszke, Jake VanderPlas, Skye Wanderman-Milne, et al . 2021. Jax: Autograd and xla. Astrophysics Source Code Library (2021), ascl–2111. [7] Ruisheng Cao, Mouxiang Chen, Jiawei Chen, Zeyu Cui, Yunlong Feng, Binyuan Hui, Yuheng Jing, Kaixin Li, Mingze Li, Junyang Lin, Zeyao Ma, Kashun Shum, Xuwu Wang, Jinxi Wei, Jiaxi Yang, Jiajun Zhang, Lei Zhang, Zongmeng Zhang, Wenting Zhao, and Fan Zhou. 2026. Qwen3-Coder-Next Technical Report. arXiv:2603.00729 [cs.CL] https: //arxiv.org/abs/2603.00729 
+
+[8] Li-Wen Chang, Wenlei Bao, Qi Hou, Chengquan Jiang, Ningxin Zheng, Yinmin Zhong, Xuanrun Zhang, Zuquan Song, Chengji Yao, Ziheng Jiang, et al . 2024. Flux: Fast software-based communication overlap on gpus through kernel fusion. arXiv preprint arXiv:2406.06858 (2024). [9] Chang Chen, Xiuhong Li, Qianchao Zhu, Jiangfei Duan, Peng Sun, Xingcheng Zhang, and Chao Yang. 2024. Centauri: Enabling efficient scheduling for communication-computation overlap in large model training via communication partitioning. In Proceedings of the 29th ACM International Conference on Architectural Support for Program-ming Languages and Operating Systems, Volume 3 . 178–191. [10] Hongzheng Chen, Cody Hao Yu, Shuai Zheng, Zhen Zhang, Zhiru Zhang, and Yida Wang. 2024. Slapo: A schedule language for progres-sive optimization of large deep learning model training. In Proceedings of the 29th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 . 1095–1111. [11] Tianqi Chen, Thierry Moreau, Ziheng Jiang, Haichen Shen, Eddie Q. Yan, Leyuan Wang, Yuwei Hu, Luis Ceze, Carlos Guestrin, and Arvind Krishnamurthy. 2018. TVM: End-to-End Optimization Stack for Deep Learning. CoRR abs/1802.04799 (2018). arXiv:1802.04799 http://arxiv. org/abs/1802.04799 
+
+[12] DeepSeek-AI, Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Chenggang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, Damai Dai, Daya Guo, Dejian Yang, Deli Chen, Dongjie Ji, Erhang Li, Fangyun Lin, Fucong Dai, Fuli Luo, Guangbo Hao, Guanting Chen, Guowei Li, H. Zhang, Han Bao, Hanwei Xu, Haocheng Wang, Haowei Zhang, Honghui Ding, Huajian Xin, Huazuo Gao, Hui Li, Hui Qu, J. L. Cai, Jian Liang, Jianzhong Guo, Jiaqi Ni, Jiashi Li, Jiawei Wang, Jin Chen, Jingchang Chen, Jingyang Yuan, Junjie Qiu, Junlong Li, Junxiao Song, Kai Dong, Kai Hu, Kaige Gao, Kang Guan, Kexin Huang, Kuai Yu, Lean Wang, Lecong Zhang, Lei Xu, Leyi Xia, Liang Zhao, Litong Wang, Liyue Zhang, Meng Li, Miaojun Wang, Mingchuan Zhang, Minghua Zhang, Minghui Tang, Mingming Li, Ning Tian, Panpan Huang, Peiyi Wang, Peng Zhang, Qiancheng Wang, Qihao Zhu, Qinyu Chen, Qiushi Du, R. J. Chen, R. L. Jin, Ruiqi Ge, Ruisong Zhang, Ruizhe Pan, Runji Wang, Runxin Xu, Ruoyu Zhang, Ruyi Chen, S. S. Li, Shanghao Lu, Shangyan Zhou, Shanhuang Chen, Shaoqing Wu, Shengfeng Ye, Shengfeng Ye, Shirong Ma, Shiyu Wang, Shuang Zhou, Shuiping Yu, Shunfeng Zhou, Shuting Pan, T. Wang, Tao Yun, Tian Pei, Tianyu Sun, W. L. Xiao, Wangding Zeng, Wanjia Zhao, Wei An, Wen Liu, Wenfeng Liang, Wenjun Gao, Wenqin Yu, Wentao Zhang, X. Q. Li, Xiangyue Jin, Xianzu Wang, Xiao Bi, Xiaodong Liu, Xiaohan Wang, Xiaojin Shen, Xiaokang Chen, Xiaokang Zhang, Xiaosha Chen, Xiaotao Nie, Xiaowen Sun, Xiaoxiang Wang, Xin Cheng, Xin Liu, Xin Xie, Xingchao Liu, Xingkai Yu, Xinnan Song, Xinxia Shan, Xinyi Zhou, Xinyu Yang, Xinyuan Li, Xuecheng Su, Xuheng Lin, Y. K. Li, Y. Q. Wang, Y. X. Wei, Y. X. Zhu, Yang Zhang, Yanhong Xu, Yanhong Xu, Yanping Huang, Yao Li, Yao Zhao, Yaofeng Sun, Yaohui Li, Yaohui Wang, Yi Yu, Yi Zheng, Yichao Zhang, Yifan Shi, Yiliang Xiong, Ying He, Ying Tang, Yishi Piao, Yisong Wang, Yixuan Tan, Yiyang Ma, Yiyuan Liu, Yongqiang Guo, Yu Wu, Yuan Ou, Yuchen Zhu, Yuduan Wang, Yue Gong, Yuheng Zou, Yujia He, Yukun Zha, Yunfan Xiong, Yunxian Ma, Yuting Yan, Yuxiang Luo, Yuxiang You, Yuxuan Liu, Yuyang Zhou, Z. F. Wu, Z. Z. Ren, Zehui Ren, Zhangli Sha, Zhe Fu, Zhean Xu, Zhen Huang, Zhen Zhang, Zhenda Xie, Zhengyan Zhang, Zhewen Hao, Zhibin Gou, Zhicheng Ma, Zhigang Yan, Zhihong Shao, Zhipeng Xu, Zhiyu Wu, Zhongyu Zhang, Zhuoshu Li, Zihui Gu, Zijia Zhu, Zijun Liu, Zilin Li, Ziwei Xie, Ziyang Song, Ziyi Gao, and Zizheng Pan. 2025. DeepSeek-V3 Technical Report. arXiv:2412.19437 [cs.CL] 
+
+https://arxiv.org/abs/2412.19437 
+
+[13] Megan Frisella, Arvin Oentoro, Xiangyu Gao, Gilbert Bernstein, and Stephanie Wang. 2025. Piper: Towards Flexible Pipeline Parallelism for PyTorch. In Proceedings of the 4th Workshop on Practical Adop-tion Challenges of ML for Systems (Seoul, Republic of Korea) (PACMI ’25) . Association for Computing Machinery, New York, NY, USA, 1–6. doi: 10.1145/3766882.3767187 
+
+[14] Ahan Gupta, Zhihao Wang, Neel Dani, Masahiro Tanaka, Olatunji Ruwase, and Minjia Zhang. [n. d.]. AutoSP: Unlocking Long-Context LLM Training Via Compiler-Based Sequence Parallelism. In The Four-teenth International Conference on Learning Representations .[15] Aaron Harlap, Deepak Narayanan, Amar Phanishayee, Vivek Seshadri, Nikhil Devanur, Greg Ganger, and Phil Gibbons. 2018. PipeDream: Fast and Efficient Pipeline Parallel DNN Training. arXiv:1806.03377 [cs.DC] 
+
+https://arxiv.org/abs/1806.03377 
+
+[16] Weifang Hu, Langshi Chen, Man Yuan, Youyang Yao, Xiulong Yuan, Li Tian, Yong Li, Wei Lin, Xuanhua Shi, Zhengping Qian, and Jingren Zhou. 2026. Tessera: A Holistic Pipeline Parallelism Framework for Trillion-Parameter Heterogeneous MoE Training. In Proceedings of the 20th USENIX Symposium on Operating Systems Design and Imple-mentation (OSDI ’26) . To appear. 
+
+> 13
+
+[17] Yanping Huang, Youlong Cheng, Ankur Bapna, Orhan Firat, Mia Xu Chen, Dehao Chen, HyoukJoong Lee, Jiquan Ngiam, Quoc V. Le, Yonghui Wu, and Zhifeng Chen. 2019. GPipe: efficient training of giant neural networks using pipeline parallelism . Curran Associates Inc., Red Hook, NY, USA. [18] Abhinav Jangda, Jun Huang, Guodong Liu, Amir Hossein Nodehi Sa-bet, Saeed Maleki, Youshan Miao, Madanlal Musuvathi, Todd Mytkow-icz, and Olli Saarikivi. 2022. Breaking the computation and communica-tion abstraction barrier in distributed machine learning workloads. In 
+
+Proceedings of the 27th ACM International Conference on Architectural Support for Programming Languages and Operating Systems . 402–416. [19] Zhihao Jia, Matei Zaharia, and Alex Aiken. 2019. Beyond data and model parallelism for deep neural networks. Proceedings of Machine Learning and Systems 1 (2019), 1–13. [20] Zhiquan Lai, Shengwei Li, Xudong Tang, Keshi Ge, Weijie Liu, Yabo Duan, Linbo Qiao, and Dongsheng Li. 2023. Merak: An efficient distributed dnn training framework with automated 3d parallelism for giant foundation models. IEEE Transactions on Parallel and Distributed Systems 34, 5 (2023), 1466–1478. [21] Dmitry Lepikhin, HyoukJoong Lee, Yuanzhong Xu, Dehao Chen, Orhan Firat, Yanping Huang, Maxim Krikun, Noam Shazeer, and Zhifeng Chen. 2020. Gshard: Scaling giant models with conditional computation and automatic sharding. arXiv preprint arXiv:2006.16668 
+
+(2020). [22] Shen Li, Yanli Zhao, Rohan Varma, Omkar Salpekar, Pieter Noordhuis, Teng Li, Adam Paszke, Jeff Smith, Brian Vaughan, Pritam Damania, and Soumith Chintala. 2020. PyTorch Distributed: Experiences on Accelerating Data Parallel Training. arXiv:2006.15704 [cs.DC] https: //arxiv.org/abs/2006.15704 
+
+[23] Wanchao Liang, Tianyu Liu, Less Wright, Will Constable, Andrew Gu, Chien-Chin Huang, Iris Zhang, Wei Feng, Howard Huang, Junjie Wang, Sanket Purandare, Gokul Nadathur, and Stratos Idreos. 2025. TorchTitan: One-stop PyTorch native solution for production ready LLM pretraining. In The Thirteenth International Conference on Learn-ing Representations . https://openreview.net/forum?id=SFN6Wm7YBI 
+
+[24] Lightning.ai. [n. d.]. Faster PyTorch Training by Reducing Peak Mem-ory (combining backward pass + optimizer step) - Lightning AI — lightning.ai. https://lightning.ai/pages/community/tutorial/faster-pytorch-training-by-reducing-peak-memory/ . [Accessed 23-04-2026]. [25] Zhiqi Lin, Youshan Miao, Quanlu Zhang, Fan Yang, Yi Zhu, Cheng Li, Saeed Maleki, Xu Cao, Ning Shang, Yilei Yang, et al . 2024. 
+
+{nnScaler }:{Constraint-Guided } Parallelization Plan Generation for Deep Learning Training. In 18th USENIX Symposium on Operating Systems Design and Implementation (OSDI 24) . 347–363. [26] Guodong Liu, Youshan Miao, Zhiqi Lin, Xiaoxiang Shi, Saeed Maleki, Fan Yang, Yungang Bao, and Sa Wang. 2024. Aceso: Efficient parallel DNN training through iterative bottleneck alleviation. In Proceedings of the Nineteenth European Conference on Computer Systems . 163–181. [27] Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. 2023. Visual Instruction Tuning. In Advances in Neural Information Pro-cessing Systems , A. Oh, T. Naumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine (Eds.), Vol. 36. Curran Associates, Inc., 34892– 34916. https://proceedings.neurips.cc/paper_files/paper/2023/file/ 6dcf277ea32ce3288914faf369fe6de0-Paper-Conference.pdf 
+
+[28] Xupeng Miao, Yujie Wang, Youhe Jiang, Chunan Shi, Xiaonan Nie, Hailin Zhang, and Bin Cui. 2022. Galvatron: Efficient transformer training over multiple gpus using automatic parallelism. arXiv preprint arXiv:2211.13878 (2022). [29] Deepak Narayanan, Amar Phanishayee, Kaiyu Shi, Xie Chen, and Matei Zaharia. 2021. Memory-Efficient Pipeline-Parallel DNN Train-ing. In Proceedings of the 38th International Conference on Machine Learning (Proceedings of Machine Learning Research, Vol. 139) , Marina Meila and Tong Zhang (Eds.). PMLR, 7937–7947. https://proceedings. mlr.press/v139/narayanan21a.html 
+
+[30] Deepak Narayanan, Mohammad Shoeybi, Jared Casper, Patrick LeGresley, Mostofa Patwary, Vijay Anand Korthikanti, Dmitri Vain-brand, Prethvi Kashinkunti, Julie Bernauer, Bryan Catanzaro, Amar Phanishayee, and Matei Zaharia. 2021. Efficient Large-Scale Language Model Training on GPU Clusters Using Megatron-LM. arXiv:2104.04473 [cs.CL] https://arxiv.org/abs/2104.04473 
+
+[31] NVIDIA. [n. d.]. NVIDIA Collective Communications Library (NCCL). 
+
+https://developer.nvidia.com/nccl .[32] Yi Pan, Yile Gu, Jinbin Luo, Yibo Wu, Ziren Wang, Hongtao Zhang, Ziyi Xu, Shengkai Lin, Baris Kasikci, and Stephanie Wang. 2026. DynaFlow: Transparent and Flexible Intra-Device Parallelism via Programmable Operator Scheduling. Proceedings of Machine Learning and Systems .To appear. [33] Yanghua Peng, Yibo Zhu, Yangrui Chen, Yixin Bao, Bairen Yi, Chang Lan, Chuan Wu, and Chuanxiong Guo. 2019. A generic communication scheduler for distributed DNN training acceleration. In Proceedings of the 27th ACM Symposium on Operating Systems Principles . 16–29. [34] Penghui Qi, Xinyi Wan, Guangxing Huang, and Min Lin. 2023. Zero Bubble Pipeline Parallelism. ArXiv abs/2401.10241 (2023). https: //api.semanticscholar.org/CorpusID:267060979 
+
+[35] Penghui Qi, Xinyi Wan, Guangxing Huang, and Min Lin. 2025. DualPipe could be better without the Dual. https://hackmd.io/ @ufotalent/r1lVXsa9Jg . Blog. [36] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, Gretchen Krueger, and Ilya Sutskever. 2021. Learning Transferable Visual Models From Natural Language Su-pervision. In Proceedings of the 38th International Conference on Ma-chine Learning (Proceedings of Machine Learning Research, Vol. 139) ,Marina Meila and Tong Zhang (Eds.). PMLR, 8748–8763. https: //proceedings.mlr.press/v139/radford21a.html 
+
+[37] Jonathan Ragan-Kelley, Connelly Barnes, Andrew Adams, Sylvain Paris, Frédo Durand, and Saman Amarasinghe. 2013. Halide: a lan-guage and compiler for optimizing parallelism, locality, and recompu-tation in image processing pipelines. SIGPLAN Not. 48, 6 (June 2013), 519–530. doi: 10.1145/2499370.2462176 
+
+[38] Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase, and Yuxiong He. 2019. ZeRO: Memory Optimization Towards Training A Trillion Parameter Models. CoRR abs/1910.02054 (2019). arXiv:1910.02054 
+
+http://arxiv.org/abs/1910.02054 
+
+[39] James Reed, Pavel Belevich, Ke Wen, Howard Huang, and Will Con-stable. 2022. PiPPy: Pipeline Parallelism for PyTorch. https://github. com/pytorch/PiPPy .[40] Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper, and Bryan Catanzaro. 2019. Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism. 
+
+CoRR abs/1909.08053 (2019). arXiv:1909.08053 http://arxiv.org/abs/ 1909.08053 
+
+[41] Zhenbo Sun, Huanqi Cao, Yuanwei Wang, Guanyu Feng, Shengqi Chen, Haojie Wang, and Wenguang Chen. 2024. Adapipe: Optimizing pipeline parallelism with adaptive recomputation and partitioning. In 
+
+Proceedings of the 29th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 3 .86–100. [42] Masahiro Tanaka, Du Li, Umesh Chand, Ali Zafar, Haiying Shen, and Olatunji Ruwase. 2025. DeepCompile: A Compiler-Driven Approach to Optimizing Distributed Deep Learning Training. arXiv preprint arXiv:2504.09983 (2025). [43] Jakub M Tarnawski, Deepak Narayanan, and Amar Phanishayee. 2021. Piper: Multidimensional planner for dnn parallelization. Advances in Neural Information Processing Systems 34 (2021), 24829–24840. [44] Colin Unger, Zhihao Jia, Wei Wu, Sina Lin, Mandeep Baines, Carlos Efrain Quintero Narvaez, Vinay Ramakrishnaiah, Nirmal Prajapati, Pat 
+
+> 14
+
+McCormick, Jamaludin Mohd-Yusof, et al . 2022. Unity: Accelerating 
+
+{DNN } training through joint optimization of algebraic transforma-tions and parallelization. In 16th USENIX Symposium on Operating Systems Design and Implementation (OSDI 22) . 267–284. [45] Minjie Wang, Chien-chin Huang, and Jinyang Li. 2019. Supporting very large models using automatic dataflow graph partitioning. In 
+
+Proceedings of the Fourteenth EuroSys Conference 2019 . 1–17. [46] Shibo Wang, Jinliang Wei, Amit Sabne, Andy Davis, Berkin Ilbeyi, Blake Hechtman, Dehao Chen, Karthik Srinivasa Murthy, Marcello Maggioni, Qiao Zhang, et al . 2022. Overlap communication with dependent computation via decomposition in large deep learning models. In Proceedings of the 28th ACM International Conference on Ar-chitectural Support for Programming Languages and Operating Systems, Volume 1 . 93–106. [47] Yifu Wang, Horace He, Less Wright, Luca Wehrstedt, Tianyu Liu, and Wanchao Liang. 2024. Distributed w/ TorchTi-tan: Introducing Async Tensor Parallelism in PyTorch. 
+
+https://discuss.pytorch.org/t/distributed-w-torchtitan-introducing-async-tensor-parallelism-in-pytorch/209487 . PyTorch Forum Post. Accessed: 2026-04-23. [48] Anxhelo Xhebraj, Sean Lee, Hanfeng Chen, and Vinod Grover. 2025. Scaling deep learning training with MPMD pipeline parallelism. Pro-ceedings of Machine Learning and Systems 7 (2025). [49] Yuanzhong Xu, HyoukJoong Lee, Dehao Chen, Blake Hechtman, Yanping Huang, Rahul Joshi, Maxim Krikun, Dmitry Lepikhin, Andy Ly, Marcello Maggioni, Ruoming Pang, Noam Shazeer, Shibo Wang, Tao Wang, Yonghui Wu, and Zhifeng Chen. 2021. GSPMD: General and Scalable Parallelization for ML Computation Graphs. arXiv:2105.04663 [cs.DC] https://arxiv.org/abs/2105.04663 
+
+[50] Amy Yang, Jingyi Yang, Aya Ibrahim, Xinfeng Xie, Bangsheng Tang, Grigory Sizov, Jongsoo Park, and Jianyu Huang. 2025. Context Paral-lelism for Scalable Million-Token Inference. In Proceedings of Machine Learning and Systems , M. Zaharia, G. Joshi, and Y. Lin (Eds.), Vol. 7. MLSys. https://proceedings.mlsys.org/paper_files/paper/2025/file/ 78834433edc3291f4c6cbbd2759324db-Paper-Conference.pdf 
+
+[51] Tailing Yuan, Yuliang Liu, Xucheng Ye, Shenglong Zhang, Jianchao Tan, Bin Chen, Chengru Song, and Di Zhang. 2024. Accelerating the training of large language models using efficient activation remate-rialization and optimal hybrid parallelism. In 2024 USENIX Annual Technical Conference (USENIX ATC 24) . 545–561. [52] Duzhen Zhang, Yahan Yu, Jiahua Dong, Chenxing Li, Dan Su, Chenhui Chu, and Dong Yu. 2024. MM-LLMs: Recent Advances in MultiModal Large Language Models. In Findings of the Association for Computa-tional Linguistics: ACL 2024 , Lun-Wei Ku, Andre Martins, and Vivek Srikumar (Eds.). Association for Computational Linguistics, Bangkok, Thailand, 12401–12430. doi: 10.18653/v1/2024.findings-acl.738 
+
+[53] Zili Zhang, Yinmin Zhong, Yimin Jiang, Hanpeng Hu, Jianjian Sun, Zheng Ge, Yibo Zhu, Daxin Jiang, and Xin Jin. 2025. DistTrain: Ad-dressing Model and Data Heterogeneity with Disaggregated Training for Multimodal Large Language Models. In Proceedings of the ACM SIGCOMM 2025 Conference (São Francisco Convent, Coimbra, Por-tugal) (SIGCOMM ’25) . Association for Computing Machinery, New York, NY, USA, 24–38. doi: 10.1145/3718958.3750472 
+
+[54] Chenggang Zhao, Shangyan Zhou, Liyue Zhang, Chengqi Deng, Zhean Xu, Yuxuan Liu, Kuai Yu, Jiashi Li, and Liang Zhao. 2025. DeepEP: an efficient expert-parallel communication library. https://github.com/ deepseek-ai/DeepEP .[55] Yanli Zhao, Andrew Gu, Rohan Varma, Liang Luo, Chien-Chin Huang, Min Xu, Less Wright, Hamid Shojanazeri, Myle Ott, Sam Shleifer, Alban Desmaison, Can Balioglu, Pritam Damania, Bernard Nguyen, Geeta Chauhan, Yuchen Hao, Ajit Mathews, and Shen Li. 2023. Py-Torch FSDP: Experiences on Scaling Fully Sharded Data Parallel. arXiv:2304.11277 [cs.DC] https://arxiv.org/abs/2304.11277 
+
+[56] Lianmin Zheng, Zhuohan Li, Hao Zhang, Yonghao Zhuang, Zhifeng Chen, Yanping Huang, Yida Wang, Yuanzhong Xu, Danyang Zhuo, Eric P Xing, et al . 2022. Alpa: Automating inter-and {Intra-Operator }
+
+parallelism for distributed deep learning. In 16th USENIX Symposium on Operating Systems Design and Implementation (OSDI 22) . 559–578. [57] Zhanda Zhu, Christina Giannoula, Muralidhar Andoorveedu, Qidong Su, Karttikeya Mangalam, Bojian Zheng, and Gennady Pekhimenko. 2025. Mist: Efficient Distributed Training of Large Language Mod-els via Memory-Parallelism Co-Optimization. In Proceedings of the Twentieth European Conference on Computer Systems . 1298–1316.

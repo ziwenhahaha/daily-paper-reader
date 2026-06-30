@@ -1,0 +1,907 @@
+Title: LBI: Parallel Scan Backpropagation via Latent Bounded Interfaces
+
+URL Source: https://arxiv.org/pdf/2605.09204v1
+
+Published Time: Tue, 12 May 2026 01:13:27 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# LBI: Parallel Scan Backpropagation via Latent Bounded Interfaces 
+
+Shaun Christopher Lee 
+
+University of California, Irvine 
+
+shauncl@uci.edu 
+
+Sangeetha Abdu Jyothi 
+
+University of California, Irvine 
+
+sangeetha.aj@uci.edu 
+
+## Abstract 
+
+Backpropagation is inherently sequential across depth, creating an O(K)-deep de-pendency chain that bottlenecks parallel training. While parallel-scan formulations theoretically reduce this depth to O(log K), they are computationally prohibitive for modern architectures due to the O(d3) cost of composing full-rank d × d
+
+Jacobians over the entire hidden state. We introduce Latent Bounded Interfaces (LBI), an algorithmic formulation that makes scan-based backpropagation tractable by restricting inter-region communication to a low-dimensional latent interface, 
+
+mk ∈ Rr , where r ≪ d. This reduces the adjoint recursion to a suffix scan over 
+
+r × r Jacobians, cutting per-combine cost from O(d3) to O(r3) while preserving exact gradients under the bounded-interface model. We demonstrate that LBI main-tains model quality across four architectures (Mamba-2, Mamba-3, Transformer, and a Mamba–Transformer hybrid) at 47–61M block parameters. Interfaces of di-mension r = 16 suffice to preserve training quality within 0.16–0.35 cross entropy of dense baselines. The resulting framework provides an algorithmic foundation for region-parallel training, reducing cross-device backward communication to a single scan over K fixed-size matrices, of approximately 56 KB for our experimental configurations. 
+
+## 1 Introduction 
+
+Backpropagation in deep neural networks is inherently sequential across layers: the adjoint at layer 
+
+k depends on the adjoint at layer k+1 , which depends on layer k+2 and so on. This sequential dependency chain has depth O(K) in the number of regions (or layers) K, imposing a fundamental algorithmic bottleneck on parallel training. Prior efforts to break this sequential chain have taken broadly complementary approaches. Exact scan-based approaches, such as BPPSA [ 30 ], theoretically reduce the O(K) dependency chain to O(log K), but are computationally prohibitive due to the O(d3)
+
+cost of composing d × d Jacobians (where d = BLD encompasses the full batch, sequence, and feature dimensions). Iterative [ 11 , 22 , 14 , 15 ], decoupled [ 17 , 18 ], and Jacobian-Free [ 12 ] approaches sacrifice gradient exactness for throughput. Pipeline parallelism [ 13 , 21 , 16 ] uses micro-batch scheduling to improve hardware utilization but leaves the O(K) sequential depth intact. We observe that the intractability of scan-based backpropagation is not inherent to the scan formulation itself, but to the size of the objects being scanned. Restricting inter-region communication to a low-dimensional interface state mk ∈ Rr reduces the adjoint recursion to a suffix scan over r × r
+
+Jacobians, preserving the O(log K)-depth associative structure identified by BPPSA while cutting per-combine cost from O(d3) to O(r3) with r ≪ d. All remaining gradient computation (parameter gradients and intra-region adjoints) becomes embarrassingly parallel across regions once the interface adjoints are available. This approach instantiates a broader principle: that inter-component communication in neural net-works admits learned low-dimensional compression. Multi-Head Latent Attention (MLA) [ 10 ]
+
+> Preprint.
+> arXiv:2605.09204v1 [cs.LG] 9 May 2026
+
+demonstrated this for cross-token attention, where attention can be compressed to a low-dimensional latent state without significant quality loss provided that the compression is native to the model and learned end-to-end. We apply the same principle to inter-region communication in depth. Rather than transmitting the full hidden state across region boundaries, we learn a compact interface carrying only the information needed by downstream computation. The resulting architecture, which we call a bounded-interface model , represents an architecture–algorithm co-design: it is both a modeling choice (that imposes a structural information bottleneck) and an algorithmic enabler (that reduces scan operator size from d × d to r × r). We make the following contributions: 1. Tractable Scan Backpropagation via Bounded Interfaces. We restrict inter-region communica-tion to an r-dimensional interface and prove that the resulting adjoint recursion admits an exact suffix scan over r × r Jacobians, reducing per-combine cost from O(d3) to O(r3) with O(log K)
+
+depth. Our algorithmic foundation decouples the scan’s computational cost from the model’s internal dimensions, making depth-parallel backpropagation tractable for modern architectures. 2. Three-Phase Decomposition with Region Independence. We show that bounded-interface backpropagation decomposes into three phases: embarrassingly parallel Jacobian construction, a lightweight suffix scan, and embarrassingly parallel region-local backward, where the scan is the sole sequential bottleneck at O(r3 log K) span. Once interface adjoints are available, all region-local computations are independent, enabling flexible distributed scheduling. 3. Exactness without Approximation. We verify that the resulting gradients are identical to standard reverse-mode backpropagation under the bounded-interface model. Unlike prior approaches, the scan-based backward pass does not introduce approximation, staleness, or auxiliary objectives. 4. Model-Agnostic Realization and Empirical Validation. We instantiate bounded-interface models across four architectures (Mamba-2, Mamba-3, Transformer, Hybrid) via a simple en-coder/decoder construction that compresses inter-region communication to a fixed-dimensional interface, while leaving intra-region computation unrestricted. We demonstrate that inter-faces of dimension r = 16 suffice to preserve training quality within 0.16–0.35 cross en-tropy of dense baselines, establishing the practical viability of LBI. The code is available at 
+
+https://github.com/shaunlee8/latent-bounded-interfaces .
+
+## 2 Scan Formulation 
+
+We formalize the notion of a bounded interface as a low-dimensional vertex separator in the compu-tational graph through which all inter-region dependencies must pass, and show that this structure implies a factorization of both forward computation and reverse-mode adjoints. 
+
+2.1 Graph and Interface Factorization Definition 2.1 (Region-Partitioned Computational Graph) . Let G = ( V, E) denote the directed acyclic computational graph of a model, where V are the graph nodes and E are directed edges representing data dependencies. A region partition of G is a disjoint decomposition, V = FK−1 
+
+> k=0
+
+Rk
+
+that is topologically ordered : for every edge (u → v) ∈ E with u ∈ R k and v ∈ R j , we have k ≤ j.This ensures that inter-region dependencies flow in a single forward direction and permits arbitrary region boundaries consistent with the DAG, including partitions that do not align with architectural layers. For each boundary between regions Rk−1 and Rk, we associate an interface state, mk ∈ Rrk ,where rk denotes the interface dimension, which controls the amount of information communicated across region boundaries. 
+
+Definition 2.2 (Interface Sufficiency) . An interface state mk is sufficient at boundary k if for every node v ∈ R ≥k, there exists a function ˜fv such that v = ˜fv (mk; θ≥k). That is, all dependence of v on variables in R<k factors exclusively through mk.Sufficiency holds whenever mk forms a vertex separator between R<k and R≥k in the computational graph, that is, every directed path from R<k to R≥k passes through nodes whose values determine 
+
+mk. A formal proof that a vertex separator implies sufficiency (Definition 2.2) is given in Appendix A (Lemma A.2). In our construction (Section 3), sufficiency holds by design. The architecture routes all inter-region communication exclusively through the interface states, with no bypass paths. 2Lemma 2.3 (Adjoint Factorization Through Interfaces) . If mk is sufficient at boundary k, then for any loss L computed from variables in R≥k,
+
+∂L
+
+∂R<k 
+
+=
+
+ ∂m k
+
+∂R<k 
+
+⊤ ∂L
+
+∂m k
+
+. (1) 
+
+That is, all reverse-mode adjoints from R≥k to R<k factor exclusively through the interface mk.Proof. Since mk is sufficient, the loss can be written as L = ˜L(mk; θ≥k) for some function ˜L
+
+(Definition 2.2). For any variable w ∈ R <k , the parameters θ≥k are independent of w, so L depends on w only through mk. By the chain rule, ∂L/∂w = ( ∂m k/∂w )⊤ ∂L/∂m k. Since this holds for every w ∈ R <k , Eq. (1) follows. 
+
+Definition 2.4 (Bounded-Interface Model) . A region-partitioned computational graph is said to satisfy the bounded-interface property if, for every boundary k, there exists a sufficient interface state 
+
+mk with dim( mk) ≤ rk for some prescribed interface budget rk independent of the total number of internal variables in the adjacent regions. 
+
+Remark 2.5 (Imposed vs. Discovered Interfaces) . By Menger’s theorem [ 5], the minimum vertex separator between R<k and R≥k in a typical neural network computational graph has size dk (the full hidden state) since each scalar component admits an independent path across the boundary under non-degeneracy (Appendix A). The bounded-interface property is therefore an architectural imposition , not a consequence of the model’s existing structure. We choose to communicate rk ≪ dk
+
+scalars where exact sufficiency would formally require dk. The architectural and empirical factors that make this compression viable are addressed in Sections 3 and 4. 
+
+Corollary 2.6 (Sequential Interface Representation) . For a bounded-interface model, all inter-region dependence factors through the interface chain m0 → m1 → · · · → mK . In particular, inter-region forward computation is completely characterized by the transition maps, 
+
+mk+1 = Rk(mk; θk), (2) 
+
+where Rk denotes the interface transition map associated with region Rk, while all remaining computation is local to its corresponding region with local parameters θk. By Lemma 2.3, reverse-mode transport across regions must therefore also factor through this chain. Proof. Fix k ∈ { 0, . . . , K −1}. By sufficiency at boundary k (Definition 2.2), every node in R≥k
+
+(in particular every node internal to Rk) depends on R<k only through mk. The outgoing interface state mk+1 is computed from nodes in Rk together with the incoming interface mk. Since all of these depend on R<k only through mk, the state mk+1 is determined by mk and the local parameters 
+
+θk alone, yielding the transition map (2) . Applying this argument inductively for k = 0 , . . . , K −1
+
+produces the interface chain m0 → m1 → · · · → mK . By Lemma 2.3, all reverse-mode adjoints across region boundaries also factor through this chain. Corollary 2.6 establishes that both forward and backward computation across regions reduce to operations on the interface chain m0 → m1 → · · · → mK rather than on the full hidden state. Since each interface transition mk → mk+1 is a differentiable map between fixed-dimensional spaces, the inter-region adjoint recursion ¯mk = J⊤ 
+
+> k
+
+¯mk+1 composes linear operators of size r × r, an associative structure that admits a parallel scan formulation. 
+
+2.2 Scan Parallel Backpropagation 
+
+Backpropagation over bounded interface models follows directly from Lemma 2.3 and Corollary 2.6, admitting a parallel scan formulation and span advantage over standard sequential backpropagation. For simplicity in analysis and instantiation (Sections 2.2–4), we assume a uniform interface width 
+
+rk = r. The variable-width case is analogous. We refer to the propagation of adjoints across region boundaries via Jacobian transposes as adjoint transport . Concretely, for a region transition 
+
+mk+1 = fk(mk), ¯mk = ( ∂m k+1 /∂m k)⊤ ¯mk+1 . The interface chain (Corollary 2.6) is seeded by an initial state m0 and terminates at mK . We assume that the loss L depends on all preceding regions exclusively through mK , so that ¯mK = ∂L/∂m K is well-defined and nonzero. 3Theorem 2.7 (Bounded-Interface Backpropagation) . Let G be a region-partitioned computational graph satisfying the bounded-interface property, with region transitions as in Eq. (2) , and let L be a scalar loss depending only on variables in the final region RK−1.Define the interface adjoint ¯mk := ∂L/∂m k ∈ Rr . Then, for every k = 0, . . . , K − 1,
+
+¯mk =
+
+ ∂m k+1 
+
+> ∂m k
+
+⊤
+
+¯mk+1 , and the local parameter gradient factorizes as ∇θk L =
+
+ ∂m k+1 
+
+> ∂θ k
+
+⊤
+
+¯mk+1 .
+
+Moreover, writing Jk := ∂m k+1 /∂m k ∈ Rr×r, where the operator Jk (the Jacobian) is the differen-tial of the region transition map evaluated at the forward state mk, the inter-region adjoint admits the exact product form, 
+
+¯mk =
+
+
+
+> K−1
+
+Y
+
+> j=k
+
+J⊤
+
+> j
+
+ ¯mK , k = 0 , . . . , K − 1, (3) 
+
+with the product ordered as J⊤ 
+
+> k
+
+J⊤ 
+
+> k+1
+
+· · · J⊤
+
+> K−1
+
+, and the empty product ( k = K) is the identity. Proof. Fix k ∈ { 0, . . . , K −1}. By Corollary 2.6, all influence of earlier regions on later computation factors through the interface chain, and in particular through mk+1 . Applying Lemma 2.3 at boundary 
+
+k+1 gives ¯mk = ( ∂m k+1 /∂m k)⊤ ¯mk+1 . A second application of the chain rule to the local param-eters θk, whose influence on L factors solely through mk+1 , gives ∇θk L = ( ∂m k+1 /∂θ k)⊤ ¯mk+1 .Finally, unrolling the recursion of ¯mk yields ¯mk = J⊤ 
+
+> k
+
+¯mk+1 = J⊤ 
+
+> k
+
+J⊤ 
+
+> k+1
+
+¯mk+2 = · · · =
+
+QK−1 
+
+> j=k
+
+J⊤
+
+> j
+
+
+
+¯mK , proving (3). For k = K, the product is empty and therefore equals identity. The product form in Eq. (3) shows that inter-region adjoint transport reduces to the composition of linear operators {J⊤ 
+
+> k
+
+}. Since matrix multiplication is associative, this composition admits a parallel scan formulation. 
+
+Proposition 2.8 (Scan Formulation of Backpropagation) . The inter-region adjoints { ¯mk}Kk=0 
+
+admit an exact suffix scan formulation over the sequence {J⊤ 
+
+> k
+
+}K−1 
+
+> k=0
+
+. In particular, defining 
+
+Pk := QK−1 
+
+> j=k
+
+J⊤ 
+
+> j
+
+, we have ¯mk = Pk ¯mK , where the products {Pk} can be computed in paral-lel using any associative scan algorithm. Proof. By Theorem 2.7, the inter-region adjoints satisfy ¯mk =
+
+QK−1 
+
+> j=k
+
+J⊤
+
+> j
+
+
+
+¯mK = Pk ¯mK . Hence, computing all inter-region adjoints reduces to computing the suffix products {Pk}Kk=0 of the sequence 
+
+{J⊤ 
+
+> k
+
+}K−1 
+
+> k=0
+
+. Since matrix multiplication is associative, these suffix products can be computed by any standard parallel prefix/suffix scan algorithm [3]. This replaces the sequential dependency chain of reverse-mode backpropagation with a logarithmic-depth parallel scan over fixed-size operators. 
+
+Corollary 2.9 (Region-Local Backward Independence) . Following Theorem 2.7, once the interface adjoints { ¯mk} are available, all region-local backward computations are independent across regions. Proof. By Theorem 2.7, the contribution of region k to the backward pass factors as ∇θk L =(∂m k+1 /∂θ k)⊤ ¯mk+1 . The Jacobian ∂m k+1 /∂θ k depends only on the forward computation internal to region k, and therefore only on region-k forward activations and local parameters θk. It does not depend on activations, parameters, or adjoints from any other region, except through the incoming interface adjoint ¯mk+1 . Consequently, once the interface adjoints have been computed, each region-local backward computation depends only on local data and may be executed independently across regions. Proposition 2.8 and Corollary 2.9 establish the structural decomposition. Crucially, this structure holds for any interface dimension, including rk = dk (recovering BPPSA’s full-rank scan [ 30 ]). What separates the bounded-interface regime from the full-rank regime is not the existence of an associative decomposition, but the cost of each scan operation. We address this in Section 3. 4Method FLOPs Span Operator I Jk?Sequential BP Θ(( BLD )2) Θ( K(BLD )2) BLD × BLD matvec Θ(1) No Full-rank scan Θ(( BLD )3) Θ(( BLD )3 log K) BLD × BLD matmul Θ( BLD ) Yes LBI scan Θ( r3) Θ( r3 log K) r × r matmul Θ( r) Yes Table 1: Comparison of inter-region gradient transport primitives. I denotes arithmetic intensity (FLOPs/byte) [ 31 ]. Standard sequential BP applies Jacobian-vector products, while scan-based methods compose Jacobians via matrix-matrix products. The table compares per-step (sequential) or per-combine (scan) costs. The cost of materializing the Jacobian Jk for scan-based methods is excluded and analyzed separately. Entries are derived in Appendix B (Remark B.1). 
+
+## 3 Model Realization 
+
+Table 1 summarizes the cost comparison between the three transport regimes. We now address the concrete architecture that enforces bounded interfaces (Section 3.1), the computational cost of the resulting scan and Jacobian construction (Section 3.2), and the backward algorithm (Section 3.3). 
+
+3.1 Bounded-Interface Architecture Instantiation Template. We instantiate a bounded-interface model by associating each region k
+
+with a local computation over activations xk and a low-dimensional interface state mk ∈ Rr . At each region k, the forward computation is defined as 
+
+xin  
+
+> k
+
+= xembed + Dec k(mk), xout  
+
+> k
+
+= Φ k(xin  
+
+> k
+
+), (4) where Φk denotes the region transformation map (e.g. attention, SSM, MLP), and Dec k injects the interface state into the region. The interface state is then updated by 
+
+mk+1 = Rk(mk) = LN( mk + αk Enc k(pool(Φ k(xembed + Dec k(mk))))) , (5) where Enc k projects region outputs into the interface space, pool( ·) aggregates region outputs, 
+
+αk is a learned per-region scaling parameter, and LN denotes layer normalization [ 1]. The initial interface state m0 ∈ Rr is derived from the input tokens, and the terminal state mK serves as input to the terminal block / loss head. Thus, the construction in Eq. (5) induces a region-partitioned computational graph in which all inter-region dependencies are mediated by the interface states 
+
+{mk}Kk=0 , thereby realizing the abstract region transition map Rk(mk; θk) of Corollary 2.6 in a concrete architectural form. Notice that when conditioned on mk+1 , no variable in region R≥k+1 
+
+depends on variables in R≤k, so the bounded-interface property holds. 
+
+Interface Design and Coupling. A key design constraint in bounded-interface models is that all dynamic inter-region dependencies must be mediated through mk, with no activation bypass paths from xout  
+
+> k
+
+to subsequent regions. Instead, we inject a shared static signal xembed at each region (Eq. (4) ), providing every region with a common representational canvas. The interface state mk then needs to encode only the refinement from preceding regions rather than the full hidden representation, which explains why the interface rank can be small relative to the model dimension. The canvas does not violate the bounded-interface property (Definition 2.4): xembed depends only on the input tokens, not on any region’s computation, and therefore does not constitute an inter-region communication channel. Our implementation uses 2-layer MLPs for the encoder and decoder, which introduces 
+
+Θ( D2
+
+> k
+
+) parameters per encoder/decoder pair, and is comparable in order to the region transformation 
+
+Φk itself (Table 2). Alternative encoder/decoder realizations are discussed in Section 6. 
+
+3.2 Computational Cost 
+
+The cost of bounded-interface backpropagation decomposes into three components: Jacobian con-struction, scan composition, and region-local backward. We state the structural work–span [ 4 ] result first, then derive each term. 
+
+Proposition 3.1 (Work–Span Decomposition) . The total work of bounded-interface backpropagation decomposes as, 
+
+Wbi =
+
+> K−1
+
+X
+
+> k=0
+
+W Jk + Θ  Kr 3 +
+
+> K−1
+
+X
+
+> k=0
+
+W local  
+
+> k
+
+, (6) 5and the total span satisfies 
+
+Tbi = max  
+
+> k
+
+W Jk + Θ( r3 log K) + max  
+
+> k
+
+W local  
+
+> k
+
+(7) 
+
+where the three terms correspond to (i) Jacobian construction across all regions (Eqs. (8) –(9) ), (ii) scan composition over interface Jacobians (Proposition 2.8), and (iii) region-local backward computation (Corollary 2.9). Proof. By Proposition 2.8, inter-region adjoint transport reduces to a suffix scan over interface Jacobians Jk, contributing total work Θ( Kr 3) and span Θ( r3 log K) for uniform r. Constructing each Jk requires propagating r perturbation directions through the linearized region Rk, at a cost we denote W Jk (quantified below). Since these constructions depend only on region-local forward caches and the incoming mk, all K constructions are independent, contributing total work P 
+
+> k
+
+W Jk and span max k W Jk . By Corollary 2.9, once the interface adjoints { ¯mk} are available, all region-local backward computations are independent, contributing total work P 
+
+> k
+
+W local  
+
+> k
+
+and span max k W local  
+
+> k
+
+.The three components execute sequentially: Jacobian construction requires the forward caches, the scan requires the constructed Jacobians, and region-local backward requires the scan output. 
+
+Jacobian Construction. Each Jk := ∂m k+1 /∂m k ∈ Rr×r is constructed by propagating rk
+
+perturbation directions through the linearized region Rk via automatic differentiation (AD) [ 2]. Appendix D.1 details the construction procedure and its implementation. Let Fk and Qk denote the total forward FLOPs and memory traffic for region k. Jacobian construction augments the forward computation with a basis dimension of size r, yielding total work 
+
+W Jk = FLOPs( Jk) = Θ( rF k). (8) Under activation reuse across perturbation directions, memory traffic is nearly unchanged, giving arithmetic intensity [31], 
+
+I(Jk) = Θ ( rF k/Q k) , (9) an r-fold increase over the forward pass. The materialized Jacobian itself requires only r2 scalars per region which is negligible relative to activation storage. Whether this places Jacobian construction in the compute-bound regime depends on the degree of activation reuse in practice. For ∼1B scale configurations ( r = 64 , d = BLD ≈ 1.26 × 10 7), the per-combine cost drops from Θ( d3) ≈
+
+2.0 × 10 21 for the full-rank scan to Θ( r3) ≈ 2.6 × 10 5, a reduction of approximately 10 16 ×.Appendix B provides the full numerical analysis and shows compute-bound operation is achievable under sufficient reuse. 
+
+Scan and Region-Local Backward. For the configurations in our experiments, the scan stage is negligible relative to Jacobian construction (Appendix B). Once interface adjoints are available (Corollary 2.9), each region’s local backward costs W local  
+
+> k
+
+= Θ( Fk), identical to standard reverse-mode seeded with ¯mk+1 . The dominant cost is Jacobian construction, with a work–depth tradeoff of an (r+1) × increase in total arithmetic in exchange for O(log K) scan depth and full region-level parallelism in both Jacobian construction and local backward computation. 
+
+3.3 Backward Algorithm 
+
+Algorithm 1 gives the backward procedure for a bounded-interface model, separating computation into three phases corresponding to the terms in Proposition 3.1. Phase 1 constructs all interface Jacobians independently across regions. Phase 2 composes them via a parallel suffix scan (Proposition 2.8) and is the sole sequential bottleneck with span Θ( r3 log K). Phase 3 computes all region-local parameter gradients independently (Corollary 2.9). The three-phase structure exposes opportunities for overlapped execution, with a candidate streaming schedule given in Appendix C (Algorithm 2). 
+
+## 4 Experiments 
+
+Experimental Setup. We evaluate bounded-interface backpropagation across four model backends: Mamba-2 [ 9 ], Mamba-3 SISO [ 20 ] (MIMO is excluded, see Appendix D.2), Transformer [ 29 ], and Hybrid (3 × Mamba-3 SISO + 1 × Transformer). All models are trained on 20.48M tokens 6Algorithm 1 Bounded-Interface Backpropagation 
+
+Require: Region transition maps {Rk}K−1 
+
+> k=0
+
+, forward caches {Ck}K−1 
+
+> k=0
+
+, local parameters {θk}K−1 
+
+> k=0
+
+,terminal interface adjoint ¯mK
+
+Ensure: Interface adjoints { ¯mk}Kk=0 and parameter gradients {∇ θk L} K−1
+
+> k=0
+
+▷ Phase 1: Jacobian construction  
+
+> 1:
+
+for all regions k = 0 , . . . , K − 1 in parallel do  
+
+> 2:
+
+Construct interface Jacobians Jk = ∂m k+1  
+
+> ∂m k
+
+∈ Rr×r from Ck via AD  
+
+> 3:
+
+end for 
+
+▷ Phase 2: Interface adjoint scan  
+
+> 4:
+
+Compute suffix products {Pk}Kk=0 via parallel scan over {J⊤ 
+
+> k
+
+}K−1 
+
+> k=0
+> 5:
+
+for all k = 0 , . . . , K in parallel do  
+
+> 6:
+
+¯mk ← Pk ¯mK 
+
+> 7:
+
+end for 
+
+▷ Phase 3: Region-local backward  
+
+> 8:
+
+for all regions k = 0 , . . . , K − 1 in parallel do  
+
+> 9:
+
+Compute ∇θk L =
+
+ ∂m k+1 
+
+> ∂θ k
+
+⊤
+
+¯mk+1 using Ck 
+
+> 10:
+
+Compute any additional local adjoints for region k 
+
+> 11:
+
+end for return { ¯mk}Kk=0 and {∇ θk L} K−1
+
+> k=0
+
+from the FineWeb-Edu dataset [ 26 ] using the 32k LLaMA tokenizer [ 28 ] with standard next-token prediction at a 1024 context length. Our experiments evaluate bounded-interface backpropagation independently within each architecture, comparing dense and LBI variants at a fixed layer count, model dimension, and training budget, varying only the interface rank r. LBI models carry additional encoder/decoder parameters (10–18%, Table 2), but we hold intra-region parameters fixed rather than match total parameters. Reducing backend capacity would conflate weaker per-region computation with the interface bottleneck. Layer counts differ across backends (14 for Mamba-2/Mamba-3, 12 for Transformer/Hybrid) as they were chosen to yield comparable backend parameter counts (47-61M) rather than to match K. Each region comprises 2 consecutive layers, yielding K=7 
+
+regions for Mamba-2/Mamba-3 and K=6 for Transformer/Hybrid. Cross-architecture comparisons of the absolute LBI gap should therefore be interpreted as observational rather than controlled. Hyperparameters were tuned over dense baselines and transferred to LBI variants. 
+
+Training Quality and Rank Sensitivity. Bounded-interface backpropagation recovers gradients identical to standard reverse-mode AD applied to the same LBI model across all four architectures (Appendix D.2, Table 5). Models train stably and remain competitive despite severe communication compression, converging within 0.16–0.35 CE of their dense counterparts (Table 2). The modest gap is approximately constant across ranks r ∈ { 16 , 32 , 64 } for most backends, suggesting that even the smallest rank tested ( r = 16 ) captures the dominant inter-region communication at this scale. The Transformer backend at r=64 exhibits high variance (±0.504) from one unstable seed, which we attribute to initialization sensitivity. At r ≤ 32 , training is stable (variance ≤ 0.051 ). Since the CE gap persists despite the parameter advantage, the observed gap is a conservative upper bound on the bottleneck’s cost. Appendix E provides a sensitivity analysis over region sizes. These results establish that bounded interfaces preserve model quality at the scales tested, validating the practical viability of the scan-based backward pass developed in Sections 2–3. 
+
+## 5 Related Work 
+
+The formulation of backpropagation as a composition of Jacobian operators to enable parallel scan was introduced by BPPSA [ 30 ]. However, BPPSA and related advances [ 7, 25 ] rely on full-rank 
+
+d × d Jacobians, making each scan combine intractable at modern hidden-state dimensions, and are further restricted to operations with closed-form Jacobians (e.g. convolutions), precluding application to Transformers and SSMs. Our work bridges this gap by observing that inter-layer communication can be restricted to compact latent interfaces, reducing operator Jacobian size to r × r. Other efforts to break the sequential bottleneck include iterative methods [ 11 , 22 , 14 , 15 ], decoupled 70 5M 10M 15M 20M 
+
+> Tokens Seen
+> 4
+> 6
+> 8
+> 10
+> Cross-Entropy
+> Mamba-2 Train and Online Validation CE
+> LBI r=16
+> LBI r=32
+> LBI r=64
+> dense
+> train
+> online val
+
+(a) Mamba-2 0 5M 10M 15M 20M  
+
+> Tokens Seen
+> 4
+> 6
+> 8
+> 10
+> Cross-Entropy
+> Mamba-3 Train and Online Validation CE
+> LBI r=16
+> LBI r=32
+> LBI r=64
+> dense
+> train
+> online val
+
+(b) Mamba-3 SISO 0 5M 10M 15M 20M 
+
+> Tokens Seen
+> 4
+> 6
+> 8
+> 10
+> Cross-Entropy
+> Transformer Train and Online Validation CE
+> LBI r=16
+> LBI r=32
+> LBI r=64
+> dense
+> train
+> online val
+
+(c) Transformer 0 5M 10M 15M 20M  
+
+> Tokens Seen
+> 4
+> 6
+> 8
+> 10
+> Cross-Entropy
+> Hybrid Train and Online Validation CE
+> LBI r=16
+> LBI r=32
+> LBI r=64
+> dense
+> train
+> online val
+
+(d) Hybrid 
+
+Figure 1: Smoothed training CE (solid lines) and periodic online validation CE (markers) on FineWeb-Edu across four model backends, averaged over three seeds. Training curves are smoothed with an exponential moving average for readability. Shaded regions indicate ±1 standard deviation across seeds for validation loss. Online validation uses a small held-out budget per evaluation, final quantitative comparisons are reported using post-hoc evaluation on the full held-out sample (Table 2). 
+
+Architecture Rank r Backend N Interface N Total N Post-Hoc Val CE ↓
+
+Mamba-2 –51.33M – 75.91M 4.061 ± 0.010 
+
+16 9.05M 84.95M 4.413 ± 0.016 
+
+32 9.23M 85.14M 4.404 ± 0.009 
+
+64 9.60M 85.51M 4.408 ± 0.019 
+
+Mamba-3 SISO –53.52M – 78.09M 4.070 ± 0.009 
+
+16 9.05M 87.14M 4.393 ± 0.108 
+
+32 9.23M 87.33M 4.310 ± 0.004 
+
+64 9.60M 87.70M 4.312 ± 0.003 
+
+Transformer –47.25M – 63.63M 3.992 ± 0.005 
+
+16 3.52M 67.16M 4.318 ± 0.031 
+
+32 3.63M 67.26M 4.314 ± 0.051 
+
+64 3.84M 67.48M 4.646 ± 0.504 
+
+Hybrid –60.97M – 85.55M 4.058 ± 0.005 
+
+16 7.84M 93.39M 4.223 ± 0.053 
+
+32 8.00M 93.55M 4.237 ± 0.067 
+
+64 8.32M 93.87M 4.221 ± 0.045 
+
+Table 2: Final validation CE across architectures and interface ranks. Rank r = – denotes the dense baseline (no interface), while finite r corresponds to bounded-interface (LBI) models. Backend N
+
+counts block parameters only and excludes token embeddings and output parameters; Interface N
+
+counts additional bounded-interface parameters; Total N counts all trainable parameters. All models reported are trained up to a fixed 20.48M tokens (Figure 1) to enable controlled comparisons of relative behavior. Reported CE are post-hoc evaluations of final checkpoints, using the same fixed held-out FineWeb-Edu sample of 524,288 tokens, with mean ± standard deviation across three seeds. approaches [ 17 , 18 ], and Jacobian-Free Backpropagation [ 12 ], which trade gradient exactness for throughput via approximations or auxiliary objectives. Pipeline parallel techniques [ 13 , 21 , 16 ]improve hardware utilization through micro-batch scheduling while leaving the O(K) algorithmic depth intact. Our approach is complementary to these scheduling gains as it targets a reduction in the theoretical dependency depth from O(K) to O(log K) without introducing gradient approximation. 86 Discussion & Limitations 
+
+From Algorithmic to Practical Parallelism. Bounded-interface backpropagation decomposes into three phases: Jacobian construction, scan composition, and region-local backward. Our implementa-tion provides a dedicated CUDA kernel for the suffix scan, but realizing the true wall-clock advantages (fused Jacobian materialization, overlapped scheduling, and fused region-local backward passes) requires further kernel engineering (Appendix D.1). This decomposition has a direct implication for distributed training. Standard backpropagation creates an O(K)-deep chain of BLD -dimensional ad-joint transmissions between devices. Although pipeline parallelism [ 13 , 21 , 16 ] improves utilization, it preserves this dependency. Bounded interfaces replace this chain with a single O(log K)-depth scan over K matrices of size r ×r. Because Jacobian construction and region-local backward are truly independent across regions with zero inter-region communication, this suffix scan becomes the only synchronous phase. In our experiments ( r = 64 , K = 7 ), the largest scan payload is approximately 56 KB in bf16, which is negligible relative to standard parameter gradient synchronization. 
+
+Interface Structure and Analysis. The bounded-interface formulation exposes inter-region Ja-cobians as low-dimensional objects that can be tracked throughout training, enabling direct study of gradient transport properties such as conditioning, spectral decay, and norm evolution, which are difficult to observe in standard backpropagation. Appendix F confirms that Mamba-3 SISO LBI chains remain contractive (suffix ∥Pk∥2 < 1) even when individual region transitions briefly exceed unit norms. This framework offers significant flexibility: it only mandates r-dimensional communication without prescribing the encoder/decoder architecture, thus preserving the parallelism guarantees of Section 2 regardless of the encoder/decoder realization. While our implementation uses 2-layer MLPs (Section 3.1), this choice is not intrinsic to the framework. A linear projection would cost Θ( rD ) with smaller constants, while structured alternatives (e.g., gated linear projections, cross-attention interfaces [ 19 ], or Monarch/butterfly matrices [ 8]) could reduce the overhead further or improve compression quality via task-specific inductive biases. Optimizing encoder/decoder designs to balance overhead and Jacobian stability remains an open design problem, similar to projection choices in MLA [10]. 
+
+Expressivity and Scale. Any feedforward model imposes a Markov structure at every layer bound-ary, as layer k is sufficient for computing all subsequent layers. The bounded-interface property makes this structure explicit and compresses it: the region Rk depends on all preceding regions only through the interface state mk ∈ Rr . The shared canvas xembed (Section 3.1) ensures the interface encodes only inter-region refinements, explaining why small r suffices. Appendix F provides spectral evidence that the dominant modes of inter-region communication concentrate in a low-dimensional subspace. Rank and region size sweeps (Table 2, Appendix E) support this, as r = 16 preserves stable training and maintains a near-constant CE gap up to r = 64 . While the current canvas uses cheap raw token embeddings, r = 16 still achieves near-dense quality. Optimizing the information partitioning between the canvas and the interface remains a natural extension of the encoder/decoder design. At our scale (47-61M parameters, 20.48M tokens), we report CE loss on held-out samples as downstream benchmarks are uninformative at this budget. Finally, while relaxing the bounded-interface constraint to recover dense communication is possible, it falls outside our exact scan-parallel regime and is a natural extension for future work. 
+
+## 7 Conclusion 
+
+We have introduced Latent Bounded Interfaces (LBI), an algorithmic framework that reduces the sequential depth of backpropagation from O(K) to O(log K) by restricting inter-region commu-nication to a low-dimensional latent space. Our core contribution reduces parallel-scan adjoint recursion from an intractable O(d3) operation to a tractable O(r3) cost, where r ≪ d. Empirically, interfaces as small as r = 16 maintain training quality, while the contractive nature of the resulting Jacobians ensures stable convergence across four architectures. Realizing the full wall-clock speedup of this approach requires further systems-level engineering to fuse Jacobian materialization and overlap the three phases of our algorithm. LBI reduces cross-device backward communication to an 
+
+O(log K)-depth scan over fixed-size r × r matrices, providing a mathematically rigorous foundation for region-parallel training and opening a new axis of parallelism for scaling deep learning beyond the sequential depth bottleneck. 9References 
+
+[1] Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton. Layer normalization. arXiv preprint arXiv:1607.06450 , 2016. [2] Atılım Günes Baydin, Barak A. Pearlmutter, Alexey Andreyevich Radul, and Jeffrey Mark Siskind. Automatic differentiation in machine learning: a survey. J. Mach. Learn. Res. , 18(1):5595–5637, January 2017. [3] Guy E. Blelloch. Prefix sums and their applications. In Synthesis of Parallel Algorithms , pages 35–60. Morgan Kaufmann, 1990. [4] Guy E Blelloch. Programming parallel algorithms. Communications of the ACM , 39(3):85–97, 1996. [5] Thomas Böhme, Frank Göring, and Jochen Harant. Menger’s theorem. Journal of Graph Theory ,37(1):35–36, 2001. [6] Tianqi Chen, Bing Xu, Chiyuan Zhang, and Carlos Guestrin. Training deep nets with sublinear memory cost. arXiv preprint arXiv:1604.06174 , 2016. [7] Federico Danieli, Miguel Sarabia, Xavier Suau Cuadros, Pau Rodriguez, and Luca Zappella. DeepPCR: Parallelizing Sequential Operations in Neural Networks. In A. Oh, T. Naumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine, editors, Advances in Neural Information Processing Systems , volume 36, pages 47598–47625. Curran Associates, Inc., 2023. [8] Tri Dao, Beidi Chen, Nimit S Sohoni, Arjun Desai, Michael Poli, Jessica Grogan, Alexander Liu, Aniruddh Rao, Atri Rudra, and Christopher Ré. Monarch: Expressive structured matrices for efficient and accurate training. In International Conference on Machine Learning , pages 4690–4721. PMLR, 2022. [9] Tri Dao and Albert Gu. Transformers are SSMs: generalized models and efficient algorithms through structured state space duality. In Proceedings of the 41st International Conference on Machine Learning ,pages 10041–10071, 2024. [10] DeepSeek-AI, Aixin Liu, Bei Feng, Bin Wang, Bingxuan Wang, Bo Liu, et al. Deepseek-v2: A strong, economical, and efficient mixture-of-experts language model. arXiv preprint arXiv:2405.04434 , 2024. [11] Erwan Fagnou, Paul Caillon, Blaise Delattre, and Alexandre Allauzen. Accelerated training through iterative gradient propagation along the residual path. In The Thirteenth International Conference on Learning Representations , 2025. [12] Samy Wu Fung, Howard Heaton, Qiuwei Li, Daniel McKenzie, Stanley Osher, and Wotao Yin. JFB: Jacobian-Free Backpropagation for Implicit Networks. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 36, pages 6648–6656, 2022. [13] Aidan N. Gomez, Oscar Key, Kuba Perlin, Stephen Gou, Nick Frosst, Jeff Dean, and Yarin Gal. Interlocking backpropagation: Improving depthwise model-parallelism. Journal of Machine Learning Research ,23(171):1–28, 2022. [14] Xavier Gonzalez, Andrew Warrington, Jimmy T.H. Smith, and Scott W. Linderman. Towards Scalable and Stable Parallelization of Nonlinear RNNs. In A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang, editors, Advances in Neural Information Processing Systems , volume 37, pages 5817–5849. Curran Associates, Inc., 2024. [15] Stefanie Günther, Lars Ruthotto, Jacob B. Schroder, Eric C. Cyr, and Nicolas R. Gauger. Layer-Parallel Training of Deep Residual Neural Networks. SIAM Journal on Mathematics of Data Science , 2(1):1–23, 2020. [16] Yanping Huang, Youlong Cheng, Ankur Bapna, Orhan Firat, Dehao Chen, Mia Chen, HyoukJoong Lee, Jiquan Ngiam, Quoc V Le, Yonghui Wu, and Zhifeng Chen. Gpipe: Efficient training of giant neural networks using pipeline parallelism. In H. Wallach, H. Larochelle, A. Beygelzimer, F. d'Alché-Buc, E. Fox, and R. Garnett, editors, Advances in Neural Information Processing Systems , volume 32. Curran Associates, Inc., 2019. [17] Zih-Hao Huang, You-Teng Lin, and Hung-Hsuan Chen. Deinforeg: A decoupled learning framework with information regularization for better training throughput. Neurocomputing , 651:130813, 2025. [18] Max Jaderberg, Wojciech Marian Czarnecki, Simon Osindero, Oriol Vinyals, Alex Graves, David Silver, and Koray Kavukcuoglu. Decoupled neural interfaces using synthetic gradients. In Doina Precup and Yee Whye Teh, editors, Proceedings of the 34th International Conference on Machine Learning , volume 70 of Proceedings of Machine Learning Research , pages 1627–1635. PMLR, 06–11 Aug 2017. 
+
+10 [19] Andrew Jaegle, Felix Gimeno, Andy Brock, Oriol Vinyals, Andrew Zisserman, and Joao Carreira. Perceiver: General perception with iterative attention. In International conference on machine learning , pages 4651– 4664. PMLR, 2021. [20] Aakash Lahoti, Kevin Y Li, Berlin Chen, Caitlin Wang, Aviv Bick, J Zico Kolter, Tri Dao, and Albert Gu. Mamba-3: Improved Sequence Modeling using State Space Principles. arXiv preprint arXiv:2603.15569 ,2026. [21] Shigang Li and Torsten Hoefler. Chimera: efficiently training large-scale neural networks with bidirectional pipelines. In Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis , SC ’21, New York, NY, USA, 2021. Association for Computing Machinery. [22] Yi Heng Lim, Qi Zhu, Joshua Selfridge, and Muhammad Firmansyah Kasim. Parallelizing non-linear sequential models over the sequence length. arXiv preprint arXiv:2309.12252 , 2023. [23] NVIDIA. NVIDIA H100 Tensor Core GPU Architecture, 2022. White Paper. [24] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, et al. PyTorch: An imperative style, high-performance deep learning library. Advances in neural information processing systems , 32, 2019. [25] Christian Pehle and Jean-Jacques Slotine. Unlocked Backpropagation using Wave Scattering. arXiv preprint arXiv:2602.10461 , 2026. [26] Guilherme Penedo, Hynek Kydlíˇ cek, Loubna Ben allal, Anton Lozhkov, Margaret Mitchell, Colin Raffel, Leandro Von Werra, and Thomas Wolf. The fineweb datasets: Decanting the web for the finest text data at scale. In A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang, editors, 
+
+Advances in Neural Information Processing Systems , volume 37, pages 30811–30849. Curran Associates, Inc., 2024. [27] Naftali Tishby, Fernando C Pereira, and William Bialek. The information bottleneck method. arXiv preprint physics/0004057 , 2000. [28] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal Azhar, et al. LLaMA: Open and Efficient Foundation Language Models. arXiv preprint arXiv:2302.13971 , 2023. [29] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural information processing systems ,30, 2017. [30] Shang Wang, Yifan Bai, and Gennady Pekhimenko. Bppsa: Scaling back-propagation by parallel scan algorithm. In I. Dhillon, D. Papailiopoulos, and V. Sze, editors, Proceedings of Machine Learning and Systems , volume 2, pages 451–469, 2020. [31] Samuel Williams, Andrew Waterman, and David Patterson. Roofline: an insightful visual performance model for multicore architectures. Communications of the ACM , 52(4):65–76, 2009. 
+
+## A Vertex Separators 
+
+Definition A.1 (Interface Separator) . A set of nodes Sk ⊂ V is an interface separator at boundary k
+
+if every directed path from R<k to R≥k contains at least one node in Sk.
+
+Lemma A.2 (A Separator Implies Sufficiency) . If Sk is an interface separator at boundary k, then the vector mk formed by collecting the values of nodes in Sk is sufficient in the sense of Definition 2.2. Proof. We proceed by induction on the topological order of G, restricted to R≥k. Let v ∈ R ≥k and suppose the claim made by the lemma holds for every node in R≥k that precedes v in topological order. If v ∈ Sk, then the value of v is a component of mk and the claim immediately holds. If 
+
+v / ∈ Sk, then consider the parents of v in G. Notice that each parent u of v satisfies exactly one of the following conditions: 1. u ∈ R ≥k. Then, u precedes v in topological order, so by the inductive hypothesis, u is a function of (mk, θ ≥k).11 2. u ∈ R <k . Then the edge u → v is a directed path from R<k to R≥k, which must contain a node in Sk by Definition A.1. Since this path consists of only the two nodes u and v, and 
+
+v / ∈ Sk, we conclude that u ∈ Sk. Therefore the value of u is a component of mk.In either case, the value of every parent u of v is determined by (mk, θ ≥k). Since v computes a deterministic function of its parents, v is also a function of (mk, θ ≥k), which completes the induction. 
+
+Remark A.3 (Minimum Separator Size) . By Menger’s vertex theorem [ 5], the minimum vertex separator between R<k and R≥k in a standard feedforward computational graph has size dk, which is the full hidden state since each scalar component admits an independent directed path across the boundary. The bounded-interface property (Definition 2.4) therefore requires architectural modification. The encoder/decoder projections of Section 3.1 create a new vertex separator of size 
+
+rk ≪ dk in the modified graph, which cannot be achieved by selecting a subset of existing nodes. 
+
+Graph-Theoretic vs. Effective Minimality. Remark A.3 establishes that exact sufficiency formally requires the full hidden state dk. However, our experiments (Section 4) demonstrate that interfaces of dimension rk ≪ dk preserve training quality, indicating that inter-region communication concentrates in a low-dimensional subspace. The spectral analysis in Appendix F provides direct evidence. The interface Jacobians exhibit spectral concentration, with the leading singular value approximately 
+
+2.5× the RMS singular value at r = 64 , suggesting that even within the r-dimensional interface, most gradient transport energy flows through a small number of directions. A second factor is the shared canvas xembed (Section 3.1), which provides every region with the full D-dimensional token embedding independently of the interface chain. Because the canvas carries base token information, the interface need only encode inter-region refinements, reducing the effective information gap between dk and rk beyond what the learned function structure would predict. Characterizing the effective interface rank (the minimum rk for which the bounded-interface model achieves a given approximation quality) likely requires tools beyond the graph-theoretic framework developed here. Two natural directions are: (i) an information-theoretic analysis that bounds the mutual information 
+
+I(R≥k; R<k | mk) as a function of rk, relating interface dimension to the information bottleneck principle [ 27 ], and (ii) a spectral analysis of the full-rank Jacobian ∂h k/∂h k−1 at convergence, where the effective rank of this operator would predict the minimum interface dimension needed to preserve gradient transport quality. Both directions connect the architectural imposition (bounded interfaces) to the learned structure of the model and would provide principled guidance for choosing rk.
+
+## B Representative Cost Instantiations 
+
+We derive the entries of Table 1, then instantiate the work–span formulas of Proposition 3.1 for SSM-like and Transformer-like regions, assuming uniform interface width rk = r. We analyze 
+
+r = 64 throughout. Since all per-combine costs scale as O(r3) and Jacobian construction scales as 
+
+O(r), the analysis is strictly more favorable at the r = 16 that our experiments (Section 4) show suffices for model quality. 
+
+Remark B.1 (Derivation of Table 1) . Table 1 compares three regimes for transporting adjoints across 
+
+K region boundaries, where each boundary involves a d × d Jacobian ( d = BLD ) in the full-rank case or an r × r Jacobian in the bounded-interface case. 
+
+Sequential backpropagation. Standard reverse-mode AD [ 2] applies each J⊤ 
+
+> k
+
+as a matrix-vector product (Theorem 2.7): given ¯mk+1 ∈ Rd, the product J⊤ 
+
+> k
+
+¯mk+1 costs Θ( d2) FLOPs and reads 
+
+Θ( d2) data (the implicit Jacobian row/column entires accessed during the VJP), giving arithmetic intensity [ 31 ] I = Θ(1) . The K matvecs execute sequentially, yielding span Θ( Kd 2). The Jacobian is never materialized, but accessed implicitly through the AD tape. 
+
+Full-rank scan. Replacing the sequential chain with a parallel scan (Proposition 2.8 with r = d)requires materializing each Jk ∈ Rd×d and composing them via matrix-matrix multiplication. Each combine costs Θ( d3) with arithmetic intensity Θ( d) (standard matmul on a d × d operand with Θ( d2)
+
+data). The scan has O(log K) sequential combine steps, giving span Θ( d3 log K).
+
+LBI scan. Identical to the full-rank scan with r replacing d. Then, the per-combine cost is Θ( r3),the span is Θ( r3 log K), and the arithmetic intensity is Θ( r). The Jacobian Jk ∈ Rr×r must be materialized, and its construction cost is analyzed below and excluded from Table 1. 12 Cost Structure. Table 3 summarizes the per-region costs for two canonical region types. For both, Jacobian construction multiplies forward FLOPs by r while leaving the dominant memory traffic unchanged under activation reuse . All r perturbation directions share the same forward activations, so only lower-order tangent intermediates contribute additional traffic. The resulting arithmetic intensity is 
+
+I(Jk) = rF k/Q k = r · Ifwd , (10) where Ifwd = Fk/Q k is the arithmetic intensity of the forward pass alone. SSM-like Region Transformer-like Region Activation shape BLD , state N BLD , heads H, MLP X
+
+Forward FLOPs ( Fk) Θ( BLDN ) Θ( BLD 2 + BL 2D + BLDX )
+
+Forward memory ( Qk) Θ( BL (D + N )) Θ( BLD + BHL 2 + BLX )
+
+Jacobian FLOPs ( W Jk ) Θ( r · BLDN ) Θ( r · [BLD 2 + BL 2D + BLDX ]) 
+
+Jacobian memory Θ( BL (D + N )) Θ( BLD + BHL 2 + BLX )
+
+Jacobian I Θ( r · DN/ (D + N )) Θ( r · (D2 + LD + DX )/(D + HL + X)) 
+
+Table 3: Per-region cost of Jacobian construction for SSM-like and Transformer-like regions under uniform interface width r. Jacobian FLOPs scale by r relative to the forward pass. Jacobian memory is unchanged under perfect activation reuse (Eq. (10) ). I denotes arithmetic intensity. Region subscripts are dropped for readability. 
+
+Activation Reuse in Practice. Eq. (10) assumes that all r perturbation directions share a single read of the forward activations. This holds when the r directions are processed in a single fused kernel pass. In practice, memory constraints may require processing in chunks of size c ≤ r (Appendix D.1), in which case the forward activations are read ⌈r/c ⌉ times and the effective arithmetic intensity becomes 
+
+Ieff (Jk) ≈ c · Ifwd , (11) interpolating between Ifwd (no reuse, c = 1 ) and r · Ifwd (perfect reuse, c = r). We instantiate these formulas for a configuration representative of medium-scale language models ( ∼1B parameters): 
+
+B = 8 , L = 2048 , D = 768 , N = 16 (SSM state size), H = 12 , X = 3072 (Transformer MLP width), r = 64 , and K = 16 (corresponding to 32 layers at 2 layers per region). These dimensions are chosen to illustrate the cost regimes at a scale where region-parallel training provides practical benefit. Empirical validation at this scale requires the native kernel implementation discussed in Section 6. The compute-bound threshold on an H100-SXM5 in bf16 is approximately 295 ops/byte [ 23 ]. Table 4 reports arithmetic intensity as a function of chunk size for both region types. The Transformer Region Type Ifwd c = 1 c = 16 c = 64 H100 threshold SSM ( B = 8 , L = 2048 , D = 768 , N = 16 ) 7.8 7.8 125 500 295 Transformer ( B = 8 , L = 2048 , D =768 , H = 12 , X = 3072 )80 80 1275 5100 295 Table 4: Arithmetic intensity (ops/byte) of Jacobian construction as a function of chunk size c, for the illustrative configuration described above ( r = 64 , bf16). Values above the H100 threshold indicate compute-bound operation. The SSM case requires c ≥ 38 to cross the threshold, the Transformer case crosses it at c ≥ 4.case is compute-bound even at modest chunk sizes because its forward pass is already moderately compute-dense ( Ifwd ≈ 80 ). The SSM case is more demanding, where the forward pass is memory-bound ( Ifwd ≈ 7.8), so reaching compute-bound operation requires chunks of c ≥ 38 . With a fused kernel that processes all r = 64 directions simultaneously (the kernel engineering target discussed in Section 6), both cases are firmly compute-bound. 
+
+Scan Negligibility. The suffix scan over K interface Jacobians of size r × r has total work 
+
+Θ( Kr 3). For the illustrative configuration ( K = 16 , r = 64 ), the scan costs Kr 3 = 16 × 64 3 ≈
+
+4.19 × 10 6 FLOPs. Total Jacobian construction for the SSM case costs K · rF k = 16 × 64 × 2.01 ×
+
+10 8 ≈ 2.06 × 10 11 FLOPs, giving a scan-to-construction ratio below 10 −4. The Transformer case yields a ratio below 10 −7. In both cases the scan is negligible, and the dominant cost of bounded-interface backpropagation is Jacobian construction at (r+1) × the work of standard reverse-mode 13 backpropagation. For comparison, a full-rank scan ( r = d = BLD ≈ 1.26 × 10 7) would require 
+
+Θ( d3) ≈ 2.0 × 10 21 FLOPs per combine, approximately 10 16 × the bounded-interface per-combine cost of r3 ≈ 2.6 × 10 5 FLOPs. 
+
+## C Execution & Scheduling 
+
+Algorithm 1 presents bounded-interface backpropagation as three strictly sequential phases: Jacobian construction, scan composition, and region-local backward. This ordering is correct but still conser-vative, and does not exploit the fact that Jacobian construction for region k depends only on region 
+
+k’s forward cache Ck and the incoming interface state mk, both of which are available as soon as region k’s forward pass completes. Algorithm 2 gives a streaming schedule that overlaps Jacobian construction with the sequential forward pass, reducing the effective wall-clock time between the end of the forward pass and the start of the scan. 
+
+Algorithm 2 Forward-Overlapped Bounded-Interface Backpropagation 
+
+Require: Region transition maps {Rk}K−1 
+
+> k=0
+
+, local parameters {θk}K−1 
+
+> k=0
+
+, input interface state m0,terminal interface adjoint ¯mK
+
+Ensure: Interface adjoints { ¯mk}Kk=0 and parameter gradients {∇ θk L} K−1
+
+> k=0
+
+▷ Combined forward pass and Jacobian construction  
+
+> 1:
+
+for k = 0 , . . . , K −1 do  
+
+> 2:
+
+Compute mk+1 = Rk(mk; θk) and store forward cache Ck 
+
+> 3:
+
+launch async: Construct Jk = ∂m k+1 /∂m k ∈ Rr×r from Ck via AD  
+
+> 4:
+
+end for  
+
+> 5:
+
+synchronize all Jacobian construction tasks 
+
+▷ Interface adjoint scan  
+
+> 6:
+
+Compute suffix products {Pk}Kk=0 via parallel scan over {J⊤ 
+
+> k
+
+}K−1 
+
+> k=0
+> 7:
+
+for all k = 0 , . . . , K in parallel do  
+
+> 8:
+
+¯mk ← Pk ¯mK 
+
+> 9:
+
+end for 
+
+▷ Region-local backward  
+
+> 10:
+
+for all k = 0 , . . . , K −1 in parallel do  
+
+> 11:
+
+Compute ∇θk L = ( ∂m k+1 /∂θ k)⊤ ¯mk+1 using Ck 
+
+> 12:
+
+Compute any additional local adjoints for region k 
+
+> 13:
+
+end for return { ¯mk}Kk=0 and {∇ θk L} K−1
+
+> k=0
+
+The overlap window depends on the relative cost of the forward pass and Jacobian construction for each region. Since the forward pass costs Θ( Fk) FLOPs per region and Jacobian construction costs Θ( rk · Fk) (Eq. (6) ), Jacobian construction is approximately rk× more expensive than a single region’s forward pass. In the streaming schedule, construction for region k proceeds concurrently with the forward passes of regions k+1 , . . . , K −1. If the remaining K−1−k forward passes provide sufficient time for region k’s Jacobian construction to complete, the synchronization barrier on line 5 incurs no additional wait. In the theoretical case where K ≫ rk, all Jacobians complete before the forward pass finishes, and the combined span of the forward pass plus Phase 1 collapses to approximately the span of the forward pass alone. A second overlap opportunity exists between the scan and the region-local backward. Once the suffix scan produces ¯mk for a particular region k, that region’s local backward can begin immediately without waiting for all interface adjoints. Exploiting this requires a scan implementation that exposes partial results incrementally, which is feasible with a streaming or segmented scan kernel but is not standard. We do not incorporate this optimization into Algorithm 2. Evaluating the wall-clock impact of these scheduling strategies requires architecture-specific kernel implementations and hardware profiling, which we defer to future systems work. 14 D Implementation & Experimental Details 
+
+D.1 Implementation Details Jacobian Construction Procedure. The core computational step unique to bounded-interface backpropagation is the construction of the region-local interface Jacobians Jk := ∂m k+1 /∂m k ∈
+
+Rrk+1 ×rk . This Jacobian represents the local linearization of Rk: for any perturbation δm k ∈ Rrk ,the corresponding perturbation of the next interface state is δm k+1 = Jk δm k. In general, Jk is not available in closed form and must be constructed from the computation graph of Rk. We do so by propagating rk perturbation directions through the computation graph of Rk via automatic differentiation (AD) [ 2]. Let {ej }rk 
+
+> j=1
+
+denote the standard basis of Rrk . A single AD pass through 
+
+Rk with tangent vector ej computes one column (or row) of Jk,
+
+dR k(mk) · ej ∈ Rrk+1 , (12) where dR k(mk) denotes the differential (total derivative) of Rk at mk. This yields the j-th column (or row) of Jk. Repeating for all rk basis directions assembles the full Jacobian. When the underlying region kernel admits an additional batch dimension, all rk directions can be obtained simultaneously by propagating the rk × rk identity ( Irk ∈ Rrk ×rk ) through the linearized computation 
+
+Jk = dR k(mk) · Irk , (13) operating over tensors of shape RBk ×Lk ×Dk ×rk . This batched formulation amortizes kernel launch overhead and improves hardware utilization relative to rk sequential evaluations of (12) . In our instantiation (Section 3.1), each evaluation propagates a perturbation through the composite path of Eq. (5) . This step computes only the interface-to-interface Jacobian and does not require any parameter gradients, which are handled separately in the region-local backward phase (Section 3.3). 
+
+Implementation and AD. Our implementation provides two components for bounded-interface backpropagation: (i) a PyTorch-based [ 24 ] Jacobian materialization procedure that constructs each 
+
+Jk independently from cached boundary values through recomputation, and (ii) a dedicated CUDA suffix scan kernel that composes the K interface Jacobians in a single kernel launch. Together, these enable correct end-to-end bounded-interface backpropagation as described in Algorithm 1. Jacobian construction uses a recomputation strategy [ 6]: each region’s cached boundary values ( mk
+
+and xembed ) are detached from the global computation graph, the batch dimension is replicated by a factor of up to r, the region forward map Rk is re-executed on the expanded batch, and Jacobian rows are extracted via reverse-mode AD (VJPs) against the standard basis, equivalently yielding columns of J⊤ 
+
+> k
+
+. When memory is constrained, the basis dimension is processed in chunks of size < r , trading fewer simultaneous replicas for more forward passes. This approach is necessitated by PyTorch’s execution model, which records the forward pass as a single sequential graph corresponding to the recurrence m0 → R0 → m1 → · · · → mK , preventing region-local derivatives from being exposed as independent units of computation. The recomputation works around this by explicitly rebuilding independent per-region subgraphs from cached boundary values, achieving correctness but not native parallelism. Section 3.2 describes Jacobian construction in terms of the differential dR k(mk), which is mode-agnostic. Both forward-mode AD (JVPs) and reverse-mode AD (VJPs) construct the same 
+
+r × r Jacobian in r passes at the same asymptotic cost (Eqs. (8) – (9) ). Our implementation uses reverse-mode with batch expansion, which interacts differently with the AD framework but produces identical results. 
+
+Systems Engineering. Three systems capabilities named in Section 6 remain for future work and build on the algorithmic independence established in the main text. First, on fused Jacobian material-ization, a dedicated kernel could fuse basis propagation with the underlying region computation in a single pass, achieving the Θ( r) arithmetic intensity described in Eq. (9) , rather than incurring the overhead of batch replication and separate AD passes per chunk. Second, on overlapped scheduling, the dependency structure permits Jacobian construction for region k to begin as soon as region k’s forward pass completes (Algorithm 2, Appendix C), and region-local backward for region k to begin as soon as the scan produces ¯mk. Exploiting this requires a streaming execution model that the current sequential graph recording does not support. Third, fused region-local backward passes that would exploit the inter-region independence established by Corollary 2.9, enabling all K regions’ parameter gradients to be computed concurrently. 15 D.2 Experimental Details Gradient Parity. We verify that bounded-interface backpropagation (Algorithm 1) recovers the same parameter gradients as standard reverse-mode AD applied to the same bounded-interface model. Because this test checks an implementation-level equality between two backward computations, rather than a scaling-dependent training outcome, we run it on reduced-size instances of each architecture chosen to exercise the same region decomposition, interface scan, and backend block types used in the experiments. For each architecture, we compare the full parameter-gradient vectors produced by the scan-based backward pass against the reference gradient from PyTorch’s standard autograd, across 100 trials (20 random initializations × 5 batches). Table 5 reports worst-case values. The maximum absolute error, relative ℓ2 error, and cosine similarity confirm that the two gradient computations agree to the precision expected for each dtype. The larger discrepancies in the bfloat16 rows (Mamba-3 SISO, Hybrid) are consistent with reduced-precision arithmetic and differences in operation ordering from explicit Jacobian materialization, not from algorithmic error. All float32 architectures achieve cosine similarity > 0.99999 with relative error below 10 −7.Architecture (LBI) ∥∆g∥∞ ∥∆g∥2/∥g∥2 cos sim dtype Mamba-2 1.12 × 10 −8 2.07 × 10 −8 > 0.99999 float32 Mamba-3 SISO 4.88 × 10 −4 1.66 × 10 −3 > 0.99999 bfloat16 Transformer 8.94 × 10 −8 1.41 × 10 −7 > 0.99999 float32 Hybrid 5.86 × 10 −3 1.37 × 10 −2 0.99991 bfloat16 Table 5: Gradient parity between bounded-interface backpropagation (Algorithm 1) and standard reverse-mode AD, where all models are bounded-interface (LBI) variants of the corresponding architectures. Results are worst-case values over 100 trials per architecture (20 random initializations, 5 batches per initialization). We report the maximum absolute gradient error ∥∆g∥∞, relative ℓ2
+
+error ∥∆g∥2/∥g∥2, and cosine similarity between full parameter-gradient vectors. 
+
+Hyperparameter Tuning. Bounded-interface models introduce a modified optimization problem relative to their dense counterparts: the encoder/decoder projections add new parameter groups, the interface bottleneck reshapes the loss surface, and the effective gradient scale at interface boundaries depends on the conditioning of the encoder/decoder Jacobians. We therefore treat the optimizer settings as a stability-oriented configuration rather than an exhaustive optimum. For dense baselines, we ran fixed-seed sweeps over learning rate, weight decay, and warmup, while holding the optimizer, learning-rate schedule, batch size, sequence length, tokenizer, model size, and gradient clipping fixed. We then fixed the selected architecture-specific dense configurations for all reported seeds. For LBI variants, we reuse the corresponding dense non-learning-rate optimizer settings, and perform further learning rate diagnostics where transfer from the dense configuration was unstable. Mamba-2 and Transformer transferred without modification to the LBI setting. Mamba-3 SISO required lowering the LBI learning rate from 6 × 10 −4 to 3 × 10 −4 for stable training. Hybrid used the dense learning rate ( 6×10 −4) for r = 16 , but a lower learning rate ( 3×10 −4) for r ∈ { 32 , 64 }. These results suggest that LBI preserves the dense training configuration to first order, but its interface-induced gradient pathway can require architecture/rank-specific learning rate adjustment. A systematic optimizer study is a natural direction for future larger-scale experiments. 
+
+On Mamba-3 MIMO. We evaluate Mamba-3 [ 20 ] in its SISO configuration only. The MIMO configuration augments SISO with an additional rank dimension R > 1 that expands the B/C projections, and introduces per-head MIMO mixing projections for the value/gating/output pathways. This increases intra-region expressivity and kernel work while preserving the same external hidden-state dimension. The bounded-interface constraint applies only at region boundaries, and intra-region computation is otherwise unrestricted, so MIMO is compatible with the LBI formulation in principle. Support for the MIMO path requires additional systems/kernel engineering and is a direction for future work. 
+
+Hardware/Compute. All reported training runs used single-GPU jobs on NVIDIA H100 NVL GPUs [ 23 ] with 96 GB memory. Reported runs (Figures 1, 2, and 3) trained for 20,000 steps with batch size 1 and sequence length 1024, corresponding to 20.48M tokens per run. On this hardware, dense baselines required approximately 10-17 minutes per run, while LBI runs required approximately 55–94 minutes for r = 16 , 71–139 minutes for r = 32 , and 105–230 minutes for r = 64 , depending 16 on architecture. The 48 total runs required approximately 71 H100-hours. Appendix region-size sweeps added approximately 41 H100-hours, Jacobian analysis runs added approximately 12 H100-hours, for roughly 124 logged H100-hours across the listed experimental workflow. These estimates exclude startup, checkpoint I/O, tuning, dataset export/tokenization, and other exploratory runs. 
+
+## E Region Size Sensitivity 
+
+We sweep the number of layers per region at fixed backend parameters, training budget, and interface rank r = 32 for Mamba-3 SISO and Transformer backends. Varying the region size changes both K
+
+(the number of interface states) and the encoder/decoder parameter overhead per region. All other hyperparameters are held fixed from the main experiments (Section 4). 0 5M 10M 15M 20M      
+
+> Tokens Seen
+> 4.5
+> 6.0
+> 7.5
+> 9.0
+> 10.5
+> Cross-Entropy
+> Mamba-3 Train and Online Validation CE
+> region=1
+> region=2
+> region=3
+> region=4
+> train
+> online val
+> (a) Mamba-3 SISO 05M 10M 15M 20M
+> Tokens Seen
+> 4.5
+> 6.0
+> 7.5
+> 9.0
+> 10.5
+> Cross-Entropy
+> Transformer Train and Online Validation CE
+> region=1
+> region=2
+> region=3
+> region=4
+> train
+> online val (b) Transformer
+
+Figure 2: Smoothed training CE (solid lines) and periodic online validation CE (markers) on FineWeb-Edu for Mamba-3 SISO (left) and Transformer (right) at interface rank r = 32 , varying the number of layers per region from 1 to 4. Training curves are smoothed with an exponential moving average for readability. Shaded regions indicate ±1 standard deviation across three seeds for validation loss. Final quantitative comparisons are reported in Table 6. 
+
+Architecture (LBI) Region Size K Backend N Interface N Total N Post-Hoc Val CE ↓
+
+Mamba-3 SISO 1 14 53.52M 17.85M 95.95M 4.442 ± 0.007 
+
+2 7 9.23M 87.33M 4.310 ± 0.004 
+
+3 5 6.77M 84.86M 4.369 ± 0.104 
+
+4 4 5.54M 83.63M 4.309 ± 0.004 
+
+Transformer 1 12 47.25M 6.98M 70.62M 4.533 ± 0.027 
+
+2 6 3.63M 67.26M 4.348 ± 0.069 
+
+3 4 2.51M 66.15M 4.349 ± 0.123 
+
+4 3 1.96M 65.59M 4.445 ± 0.144 
+
+Table 6: Post-hoc validation CE across region sizes for Mamba-3 SISO and Transformer at interface rank r = 32 (same evaluation procedure as Table 2). Region size denotes the number of consecutive layers per region, yielding K = ⌈# layers /region size ⌉ regions. When the division is uneven, the final region is truncated in the number of layers. Backend N is fixed within each architecture, and the interface N varies with region size due to the per-region encoder/decoder overhead. Entries report mean ± standard deviation across three seeds. Region sizes of 2–4 layers yield comparable validation CE for both architectures. Region size 1 (one layer per region) incurs the largest CE for both backends (4.442 for Mamba-3, 4.533 for Transformer), which we attribute to two compounding factors: the maximum number of interface bottlenecks ( K = 14 and K = 12 respectively), each forcing information through an r-dimensional compression, and the largest encoder/decoder parameter overhead (17.85M and 6.98M), which increases total parameter count without proportionally benefiting model quality. At region size 1, the encoder/decoder parameter count per interface approaches ∼33% of each layer’s parameter count for Mamba-3 ( ∼1.28M vs. 3.82M), making the encoder/decoder a substantial nonlinear transformation that competes with the backend during optimization. For the Transformer, this ratio is lower ( ∼15%, ∼0.58M vs. ∼3.94M), indicating that parameter competition is less severe. 17 Despite this, the Transformer also incurs its largest CE at region size 1, suggesting that the bottleneck frequency ( K = 12 compressions through an r-dimensional interface) is a more dominant degradation mechanism. The parameter competition may compound this effect for Mamba-3 but is secondary for the Transformer. The overall pattern (Figure 2 and Table 6) shows a tradeoff between two possible failure modes. Too many interfaces (region size 1) impose excessive compression, and may distort the optimization landscape through heavy per-layer encoder/decoder overhead. Too few interfaces may provide insufficient inter-region communication points, increasing sensitivity to initialization and reducing the model’s ability to propagate refinements across the network, but this degradation appears only for the Transformer at region size 4, not for Mamba-3. Importantly, increasing region size does not interpolate toward the unrestricted dense model, since the bounded-interface architecture rebuilds each region’s hidden state from xembed + Dec k(mk) regardless of region size, so inter-region communication remains r-dimensional even when individual regions are large. The sweet spot of 2–3 layers per region in our experiments balances compression frequency against communication opportunity, which is a practical property since it means the framework does not require careful tuning of this hyperparameter. 
+
+## F Interface Jacobian Structure 
+
+We report the spectral properties of the interface Jacobians {Jk} throughout training for Mamba-3 SISO LBI at ranks r ∈ { 16 , 32 , 64 }, using the main experimental configuration (region size 2, K = 7 
+
+regions). Figure 3 tracks the local and suffix-composed spectral norms across training steps. Table 7 reports summary statistics at the final checkpoint. 0 5M 10M 15M 20M     
+
+> Tokens Seen
+> 0.6
+> 1.2
+> 1.8
+> 2.4
+> 3.0
+> Spectral Norm
+> Local spectral norm
+> 05M 10M 15M 20M
+> Tokens Seen
+> 0.4
+> 0.8
+> 1.2
+> 1.6
+> Spectral Norm
+> Suffix spectral norm
+> r=16
+> r=32
+> r=64
+
+Figure 3: Spectral norm of interface Jacobians throughout Mamba-3 SISO LBI training at ranks 
+
+r ∈ { 16 , 32 , 64 } with region size 2. Left: mean local spectral norm ∥Jk∥2 averaged across regions. Right: mean spectral norm of the suffix-composed interface Jacobian ∥Pk∥2 = ∥ QK−1 
+
+> j=k
+
+J⊤ 
+
+> j
+
+∥2,averaged across suffix indices. Both quantities are averaged over three seeds, with shaded regions indicating ±1 standard deviation. The first logged step is omitted to remove the initialization transient. Rank r Local ∥Jk∥2 Suffix ∥Pk∥2 Local ∥Jk∥F /√r
+
+16 1.486 ± 0.293 0.862 ± 0.252 0.708 ± 0.190 32 1.327 ± 0.084 0.690 ± 0.071 0.591 ± 0.036 64 1.901 ± 0.257 0.635 ± 0.060 0.749 ± 0.103 Table 7: Final-checkpoint interface Jacobian statistics for Mamba-3 SISO LBI at ranks r ∈{16 , 32 , 64 } with region size 2. Local ∥Jk∥2 is the spectral norm of individual region-to-region interface Jacobians averaged across regions, suffix ∥Pk∥2 is the spectral norm of the suffix-composed interface Jacobians averaged across suffix indices, and local ∥Jk∥F /√r is the rank-normalized Frobenius norm (equal to the RMS singular value when Jk is square). All values are computed from the final logged training step and reported as mean ± standard deviation across three seeds. The initialization transient is again omitted. 18 Spectral Analysis. We make three observations. First, individual region transitions have local spectral norms slightly above 1 (1.3–1.9 across ranks), indicating moderate amplification along the leading singular direction. However, the suffix-composed Jacobians (which govern the actual gradient transport through the interface chain) converge to spectral norms consistently below 1 (Figure 3), meaning that the composed interface map is contractive. Gradients propagated through the full interface chain are attenuated rather than amplified, which is consistent with the stable training observed in Section 4. The contraction of the composed map despite local amplification implies that the leading singular directions of adjacent Jacobians are not aligned, where amplification in one region is not reinforced by the next and the composed product is dominated by the contractive bulk of the spectrum rather than the leading singular values. Second, both local and suffix spectral norms stabilize rapidly after an initial transient and remain bounded throughout training for all three ranks. This suggests that the gradient transport structure of the interface chain is determined early on in training and maintained thereafter, rather than drifting or deteriorating. Third, the gap between the local spectral norm ∥Jk∥2 and the rank-normalized Frobenius norm ∥Jk∥F /√r reveals spectral concentration within the interface Jacobians. For r = 64 , the spectral norm (1.901) is approximately 2.5 × the RMS singular value (0.749), indicating that a few singular directions carry disproportionate energy while most directions are attenuative. This concentration is consistent with the observation from Section 4 that small r is sufficient, where even within the r-dimensional interface, the effective communication concentrates in a low-dimensional subspace. The canvas mechanism (Section 3.1) may contribute to this concentration, since the embedding already carries D-dimensional token information to every region, the interface communicates refinements that plausibly occupy a lower-dimensional subspace than the full hidden state would require. 
+
+Further Characterization. We report results only for Mamba-3 SISO, so the Jacobian structure may differ for Mamba-2, Transformer, or Hybrid backends where the region transformation Φk
+
+has different spectral properties. A full per-region breakdown of Jk would reveal whether early or late regions are systematically more or less contractive. The full singular value spectrum of each 
+
+Jk (beyond the leading value and the RMS) would characterize the effective rank of inter-region communication more precisely. Finally, the layer normalization in Eq. (5) likely plays a stabilizing role in keeping the suffix norms bounded, since the normalizing effect on the pre-interface state constrains the output scale of each region transition. Characterizing the interaction between the LN, the learned scaling αk, and the encoder/decoder architecture in determining Jacobian conditioning is a direction for future work that connects to the open design problem discussed in Section 6. 19

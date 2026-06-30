@@ -1,0 +1,657 @@
+Title: Understanding and Reducing Metadata-Driven Host Overheads in Sampling-Based GNN Training
+
+URL Source: https://arxiv.org/pdf/2605.29346v1
+
+Published Time: Fri, 29 May 2026 00:35:31 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# Understanding and Reducing Metadata-Driven Host Overheads in Sampling-Based GNN Training 
+
+## Yidong Gong 
+
+William & Mary Williamsburg, VA, USA 
+
+## Saima Afrin 
+
+William & Mary Williamsburg, VA, USA 
+
+## Yuchen Ma 
+
+William & Mary Williamsburg, VA, USA 
+
+## Guannan Wang 
+
+William & Mary Williamsburg, VA, USA 
+
+## Bin Ren 
+
+William & Mary Williamsburg, VA, USA 
+
+## Pradeep Kumar 
+
+William & Mary Williamsburg, VA, USA 
+
+## Abstract 
+
+Modern deep learning workloads increasingly exhibit dy-namic, metadata-driven execution, where runtime-generated information determines memory provisioning and kernel launch decisions. In sampling-based graph neural network (GNN) training, this behavior places the CPU on the critical path, introducing persistent host–device orchestration overhead and frequent GPU–CPU synchronization, which dominate end-to-end runtime when GPU computation is small. Existing approaches, including CUDA Graphs and GPU dynamic par-allelism, fail to address this problem because the metadata-driven control loop remains host-mediated, and execution structure varies across iterations. We present Z ERO GNN, a system that removes the host from the metadata-driven con-trol loop and enables fully GPU-resident execution under dynamic behavior. Z ERO GNN keeps runtime metadata on-device, mediates dynamic execution within a fixed launch structure, and provisions a conservative yet tight execution envelope to restore CUDA Graph replayability. Experiments on sampling-based GNN workloads show that Z ERO GNN achieves up to 5.28 × end-to-end speedup, near-100% GPU execution fraction, and memory efficiency comparable to ideal metadata-informed allocation, while enabling strong multi-GPU scaling by eliminating host-side bottlenecks. 
+
+## 1 Introduction 
+
+In today’s data-driven applications, deep learning (DL) has be-come a core technique for both training and inference [ 6, 13 ,23 , 29 , 30 , 35 , 43 , 45 ]. To meet the growing computational demand, GPUs are widely deployed as the primary accelera-tors. Meanwhile, modern DL workloads are no longer purely static: many emerging models introduce additional sub-tasks and runtime-dependent execution behaviors, which signifi-cantly alter how DL systems are orchestrated and executed. A key consequence of this trend is that the CPU plays an increasingly critical role in metadata-driven orchestration. Be-yond launching GPU kernels, the CPU participates in control-flow decisions, runtime scheduling, and memory provisioning based on intermediate results of execution. As a result, CPU execution is frequently placed on the performance-critical path, making host-side orchestration a major limiter for end-to-end performance in dynamic DL workloads. This work focuses on sampling-based Graph Neural Net-work (GNN) training, a representative and widely adopted class of dynamic deep learning workloads. GNNs are used to learn from graph-structured data such as social networks, recommendation graphs, and knowledge graphs. Early GNNs often employed full-batch training (e.g., GCN [ 22 ], GAT [ 33 ], GIN [ 39 ], and others [ 1, 44 ]), in which the entire graph is processed per iteration. While effective, full-batch execu-tion consumes prohibitive memory and frequently causes out-of-memory failures even for mid-sized graphs. To scale GNN training, modern systems adopt mini-batch training with neighbor sampling (e.g., GraphSAGE [ 14 ]). Each itera-tion first samples a small subgraph and then performs training on that subgraph. This approach greatly reduces memory us-age and enables training on much larger graphs under the same GPU memory budget. However, neighbor sampling fundamentally introduces dynamic behavior: sampled sub-graphs vary across iterations, leading to runtime-dependent vertex/edge counts and irregular computation patterns. This dynamic behavior makes optimization challenging. Prior work [ 12 ] has shown that in sampling-based GNN training, when per-iteration GPU computation becomes small, the end-to-end runtime is dominated by framework overhead, i.e., CPU-side execution such as Python/C/C++ control logic, kernel launches, and runtime orchestration operations. We refer to this CPU-side cost of driving and coordinating GPU execution as Host–Device Orchestration Overhead(HDOO) .Importantly, HDOO tends to remain relatively constant and does not shrink proportionally with subgraph size. At the same time, sampling produces much smaller GPU workloads than full-batch training, and thus GPU kernels execute quickly on modern accelerators. Consequently, the bottleneck shifts toward HDOO, reducing overall system efficiency. Importantly, the challenge goes beyond “CPU overhead exists.” In sampling-based execution, key runtime metadata, such as sampled vertex/edge counts, is produced on the GPU but immediately required to drive follow-up control decisions, including kernel launch configurations, memory allocations, and tensor preparation. This creates frequent GPU → CPU  
+
+> 1
+> arXiv:2605.29346v1 [cs.DC] 28 May 2026 Conference’17, July 2017, Washington, DC, USA Yidong Gong, Saima Afrin, Yuchen Ma, Guannan Wang, Bin Ren, and Pradeep Kumar
+
+metadata round-trips and synchronization points in the critical path, forming a host-mediated dependency barrier(HMDB) :the CPU cannot proceed without waiting for metadata, and the GPU cannot execute subsequent steps without CPU decisions. As a result, the system loses overlap opportunities between phases and underutilizes available resources. This bottleneck also limits scaling. Ideally, data-parallel multi-GPU train-ing [ 9, 25 , 26 , 31 ] reduces per-GPU computation by splitting the mini-batch across devices, achieving near-linear speedups. However, in sampling-based GNN training, dividing the mini-batch often produces even smaller subgraphs per GPU, fur-ther shrinking per-device GPU compute time. Meanwhile, Host–Device Orchestration Overhead (HDOO) includes ker-nel launches, synchronizations, and metadata-driven control, remains largely unchanged per iteration, and does not de-crease with GPU count. Therefore, HDOO becomes a strong-scaling limiter and prevents effective multi-GPU speedups, even though inter-GPU communication for GNNs can be relatively small due to their modest model parameter sizes. A natural direction for reducing host overhead is CUDA Graphs, which can remove repeated per-iteration launch and orchestration costs by capturing and replaying a fixed GPU ex-ecution graph. CUDA Graphs can be effective when workload behavior is static and predictable. Unfortunately, dynamic, metadata-driven execution renders this approach ineffective: runtime-dependent control flow and dynamic memory require-ments break the predictability assumptions of capture-and-replay. As a result, although framework overhead dominance is well recognized, a practical and general solution remains missing for dynamic DL workloads. We ask: How to eliminate Host–Device Orchestration Over-head and remove host-mediated dependency barrier for metadata-driven dynamic workloads, enabling GPU-only execution efficiency when runtime behavior varies across iterations? 
+
+To address this, we propose Z ERO GNN, enabling GPU-only execution for dynamic, metadata-driven workloads by: 
+
+• Device-Resident Metadata Buffer (DRMB) eliminates the host-mediated dependency barrier (HMDB) by introducing memory indirection to keep the metadata flow on the GPU, eliminating frequent GPU → CPU round-trips and host-side synchronization in the critical path. 
+
+• Enabling fully device-side launch and provisioning for metadata-driven workloads by combining Device-Side Launch Mediation (DLM) and a Metadata-Free Dispatcher (MFD): kernel-launch indirection moves per-iteration launch deci-sions to the GPU for device-side launch, while MFD pro-visions a safe execution envelope with conservative upper bounds for memory and launch resources, avoiding under-provisioning and eliminating host involvement. 
+
+• Unlocking CUDA Graph replay under dynamic behavior. 
+
+With HMDB removed and launch/provisioning handled fully on-device, Z ERO GNN recovers the key capture/replay con-ditions and thus unlocks CUDA Graph replay for dynamic, metadata-driven workloads to reduce per-iteration overhead. Evaluation shows that Z ERO GNN shows substantial perfor-mance improvements over existing systems. On average, Z E-
+
+> RO
+
+GNN achieves 5.28 ×, 2.92 ×, and 2.33 × end-to-end train-ing runtime speedups compared to DGL [36], GraphPy [12], and CU-DPI, respectively. When focusing solely on the sam-pling phase, Z ERO GNN achieves even greater acceleration, 17.69 ×, 7.41 ×, and 12.75 × speedups over the same base-lines. In terms of memory efficiency, Z ERO GNN attains up to 3.41 × lower memory usage than DGL, and approximately 10.84 × memory savings compared to the naive maximal allocation strategy(MaxSG). Furthermore, it achieves mem-ory consumption comparable to the optimal dynamic allo-cation approach(GraphPy [ 12 ]), which allocates subgraph memory precisely according to runtime metadata. Moreover, ZERO GNN achieves the highest GPU execution fraction ,around 100 %, among all evaluated frameworks, including DGL and GraphPy, confirming that Z ERO GNN is the only one that eliminates host-side bottlenecks. It further preserves strong multi-GPU scaling by eliminating per-worker host or-chestration overhead. We also show that Z ERO GNN remains effective in large-graph settings, achieving on average 2.59 ×
+
+end-to-end speedups. The remainder of the paper is organized as follows. The background is presented in §2, motivation and overview in §3, detailed design and discussion in §4, and evaluations in §5. Other related works and discussions are presented in §6, and we conclude in §7. 
+
+## 2 Background 
+
+2.1 GNN Storage Formats. 
+
+In a graph G = (V, E), V and E refer to the vertex/row set and the edges/non-zero elements, respectively. We continue to use both the graph and sparse linear algebra terminologies. Specif-ically, features and computation are referred to as vertex-level and edge-level, while rows, columns, and non-zero elements (NZE) refer to datasets. The compressed sparse row (CSR) format stores NZE in a row sequentially and uses the offset array to point to the start of the row. For a directed graph, its transpose is also stored; where CSR stores the rows con-secutively, while compressed sparse column (CSC) format stores the columns consecutively. The degree of a row is the row-length. 
+
+2.2 Sampling-based GNN iteration. 
+
+Given a graph G = (V, E), modern large-scale GNN training commonly adopts mini-batch training with neighbor sampling. Each training iteration starts from a mini-batch of labeled source vertices and performs multi-hop sampling to construct a set of sampled subgraphs, followed by feature gathering and GNN computation on the sampled subgraphs. 
+
+Subgraph sampling. Given a mini-batch 𝑉 1 
+
+> 𝑠
+
+, the sampler expands neighbors to generate a destination set 𝑉 1 
+
+> 𝑑
+
+and the corresponding edges, where the fan-out k denotes the number of neighbors sampled per source vertex. For an N-layer GNN,  
+
+> 2Metadata-Driven Host Overheads in GNN Training Conference’17, July 2017, Washington, DC, USA
+
+sampling is performed for multiple hops; we denote the source and destination vertex sets at hop i as 𝑉 𝑖 𝑠 and 𝑉 𝑖 𝑑 , respectively. Importantly, the sampled vertex/edge counts ( 𝑉 𝑖 𝑠 , 𝑉 𝑖 𝑑 , |𝐸 |𝑖 )vary across each iteration, making sampling-based training a representative metadata-driven dynamic workload. 
+
+ID translation (relabeling). The sampled subgraphs are ini-tially expressed in the original global ID space, which would lead to prohibitively large tensor footprints (e.g., |𝑉 | × 𝐹 ) if used directly. Therefore, systems perform ID translation (rela-beling) to remap the active vertices in the sampled subgraph to a compact, contiguous local ID space (while keeping the adjacency sparse) and to construct mapping tables between global IDs and local IDs. This step determines the exact tensor shapes and buffer sizes required by subsequent stages. 
+
+Feature/label Copy. After relabeling, features associated with sampled vertices (typically 𝑉 𝑁 𝑑 ) are gathered from the full feature table using the generated ID mapping, and labels for source vertices (typically 𝑉 1 
+
+> 𝑑
+
+) are also collected. These operations are indexed and irregular, and their working-set sizes depend on the sampled subgraph structure. 
+
+Subgraph GNN Training. Finally, the GNN model executes on the sampled subgraphs. Compared to full-batch training, each iteration operates on significantly smaller graphs, re-sulting in short GPU kernels whose end-to-end performance can become sensitive to CPU-side orchestration overhead in existing frameworks. 
+
+2.3 CUDA Graphs and predictability assumptions. 
+
+CUDA Graphs can reduce repeated per-iteration CPU over-head by capturing and replaying a fixed GPU execution graph, amortizing kernel launch and orchestration costs. This tech-nique is effective when workload behavior is static and pre-dictable. However, sampling-based training introduces runtime-dependent control flow and dynamic memory requirements. In particular, runtime metadata produced during sampling and relabeling directly determines tensor sizes, memory provision-ing, and kernel launch parameters in later stages. Such dy-namic, metadata-driven execution violates the predictability assumptions required by capture-and-replay, making CUDA Graphs difficult to apply directly in existing frameworks. 
+
+## 3 Motivation and Design Overview 
+
+This section characterizes sampling-based GNN training to identify the dominant performance bottlenecks under realistic training configurations. Our goal is to establish key obser-vations that motivate a system-level solution for eliminating framework overhead. Unless otherwise noted, all results are measured on the Reddit dataset using GraphSAGE [ 14 ] with default hyperparameters following prior works [4, 14]. 
+
+Fig. 1: Stage-wise Breakdown of End-to-End Training Time (%) 
+
+3.1 Workload Characterization: The Real Bottleneck Observation 1. End-to-end performance is primarily deter-mined by the sampling and training stages, making optimiza-tion of these two stages critical for accelerating sampling-based GNN workloads. 
+
+Fig. 1 presents the stage-wise breakdown of the end-to-end runtime for the stages described in §2.2. We observe that stages (a) sampling and (c) training dominate the overall runtime, accounting for 26% and 66%, respectively, while stage (b) feature/label copying contributes only 8%. 
+
+Observation 2. Sampling-based GNN training is frequently HDOO-dominated, leaving significant GPU execution capac-ity underutilized. 
+
+Prior works [ 10 , 12 ] showed that GNN training leads to HDOO-dominated, where CPU-side orchestration overhead outweighs GPU compute time. In such cases, optimizing GPU kernels alone provides limited end-to-end benefits, and reduc-ing HDOO is necessary to unlock meaningful acceleration. To quantify whether execution is GPU-bound or HDOO-bound, we measure GPU Execution Fraction, defined as: GPU Execution Fraction = GPU Time End-to-End Training Runtime Fig. 2 reports GPU execution fraction for GraphSAGE on Reddit across different batch sizes. We find that GPU execution fraction in both the overall pipeline and the training stage remains relatively low when the batch size is smaller than 4096. Specifically, when considering batch size 128, only 45% of the end-to-end runtime corresponds to active GPU computation, while the remaining 55% is GPU idle time. This low GPU execution fraction indicates that the end-to-end runtime is dominated by HDOO, including CPU-side framework logic, repeated kernel launches, and synchroniza-tion required by metadata-driven orchestration. 
+
+Observation 3. Conventional framework-level optimizations reduce HDOO constants but Plateau. 
+
+The conventional approach to mitigate HDOO includes: (i) simplifying framework design by eliminating redundant components, and (ii) migrating performance-critical modules from Python to C++. Fig. 3 compares DGL with a repre-sentative lightweight framework design. Although the light-weight approach [ 12 ] achieves higher end-to-end speedups (e.g., 1.56 × at batch size 256), its GPU execution fraction remains comparable to or even lower than DGL (e.g., 63% vs. 
+
+Fig. 2: Illustration of PU Execution Fraction for DGL GraphSAGE Stages Across Different Batch Sizes  
+
+> 3Conference’17, July 2017, Washington, DC, USA Yidong Gong, Saima Afrin, Yuchen Ma, Guannan Wang, Bin Ren, and Pradeep Kumar
+
+Fig. 3: Illustration of end-to-end training runtime and corresponding GPU Utilization comparison between DGL and Gong et al across Different Batch Sizes 
+
+68% at batch size 256). This suggests that trimming frame-work code improves throughput, but the GPU still cannot sustain near-continuous execution due to persistent HDOO and synchronization points. In summary, sampling-based GNN training frequently oper-ates in an overhead-dominated regime, where reducing GPU kernel time alone is insufficient for improving end-to-end performance. We next show that this bottleneck arises from dynamic metadata that repeatedly forces the host into the execution-critical path. 
+
+3.2 Root Cause: Dynamic Metadata Creates HMDB and Breaks Replayability 
+
+A natural way to reduce repeated host-side launch overhead is CUDA Graphs, which capture and replay a fixed GPU execution graph to amortize per-iteration CPU launch costs. However, CUDA Graphs assume predictable control flow, stable memory addresses, and fixed launch structures. Un-fortunately, sampling-based GNN workloads fundamentally violate these assumptions due to dynamic, metadata-driven execution (§2.3). Its runtime metadata is produced on the GPU each iteration and must be repeatedly materialized as CPU-resident scalars and consumed by the host control plane to construct subsequent allocations and kernel launches, forc-ing GPU →CPU round-trips that insert HMDB and break capture-and-replay. Fig. 4 illustrates this behavior with a representative multi-hop sampling GNN workflow. Within each hop ℓ, GPU ker-nels preSampling(graph) and postSampling(subgraph) gen-erate hop-specific runtime metadata such as the sampled ver-tex/edge counts |𝑉 ℓ | and |𝐸 ℓ |. These metadata immediately trigger two nested dependency structures. 
+
+(a) Intra-hop dependency. Within the same hop, later GPU execution depends on CPU-resident metadata. The metadata produced by early kernels in hop ℓ must be materialized as CPU scalars because the host uses them to provision down-stream buffers and tensors and to configure subsequent kernel launches (e.g., grid sizes and kernel arguments). This creates an intra-hop “Produce → Export → Consume → Relaunch” control loop. 
+
+(b) Inter-hop Dependency Second, across hops, the input of hop ℓ+1 depends on the output of hop ℓ. Multi-hop sampling therefore forms a strict dependency chain rather than a flat sequence of independent kernels: each hop produces runtime metadata that determines the frontier and workload of the next hop. After all hops complete, these per-hop metadata are fur-ther consumed by downstream stages such as ID translation and GNN training. As a result, runtime metadata drives execu-tion not only within individual sampling hops, but across the entire sampling-to-training pipeline. This nested dependency structure leads to two fundamental consequences. 
+
+Consequence 1: Dynamic metadata repeatedly introduces a host-mediated dependency barrier (HMDB). Because runtime metadata must be transferred to and consumed by the host before subsequent execution decisions can be made, the training pipeline repeatedly incurs GPU →CPU metadata exchange and the associated host-device synchronization. As a result, the host becomes a required part of the critical path. 
+
+Consequence 2: Nested dependencies exacerbate HDOO and violate CUDA Graph replay assumptions. Because downstream allocation and kernel-launch decisions continue to depend on runtime metadata consumed by the host, execu-tion can no longer progress as a purely GPU-driven asynchro-nous flow. Instead, kernel launches must repeatedly wait for host-side decisions, which serializes launch progression and reduces effective overlap and parallel execution across stages. These synchronization and orchestration costs remain on the execution path and do not shrink proportionally with GPU kernel time, so they increasingly dominate end-to-end run-time. More fundamentally, because these host-side decisions vary with runtime metadata across iterations, the resulting execution no longer satisfies the stable control flow, launch structure, and memory behavior required for CUDA Graph capture and replay. In short, this host-mediated execution pattern misaligned with modern GPU programming interfaces, which are moving toward fully asynchronous, GPU-resident progress (e.g., be-yond asynchronous kernels, even allocation/free are becoming asynchronous via cudaMallocAsync /cudaFreeAsync ). This motivates Z ERO GNN: to recover replayability, the system must keep metadata on-device and transform metadata-driven execution into a replayable GPU-resident flow. 
+
+Fig. 4: Execution Flow: Host-Device Coordination in Sampling-Based GNNs  
+
+> 4Metadata-Driven Host Overheads in GNN Training Conference’17, July 2017, Washington, DC, USA
+
+3.3 Overview of ZeroGNN 
+
+ZERO GNN’s key idea is restructuring metadata-driven exe-cution so that it remains on-device and becomes replayable. Fig. 5 illustrates the transformed execution flow. Z ERO GNN uses: 1. Device-Resident Metadata Buffer (DRMB). to keep runtime metadata (e.g., sampled 𝑉 𝑁 𝑑 and 𝐸 𝑁 𝑑 , frontier sizes) in GPU memory and let downstream kernels consume it di-rectly via device pointers, eliminating per-iteration GPU →
+
+CPU metadata round-trips. 2. Device-Side Launch Media-tion (DLM) decouples kernel execution from per-iteration CPU scalar metadata by mediating dynamic work on the GPU: kernels read true runtime sizes from DRMB and spe-cialize execution (e.g., early-exit / bounded access) within a replayable launch structure issued by the host. 3. Metadata-Free Dispatcher (MFD) makes DLM replayable and safe by provisioning a safe execution envelope, conservative bounds for both memory capacity and launch resources, so the host can issue a fixed launch structure while guaranteeing that device-side specialization in DLM never runs out of bounds, preserving stable addresses and launch shapes for CUDA Graph capture/replay. Together, these three modules remove per-iteration host mediation in the metadata-driven control loop and restore CUDA Graph replayability under dynamic sampling behavior. 
+
+## 4 Detailed Design 
+
+This section presents the detailed design of Z ERO GNN. Start-ing from device-resident metadata, we address two follow-on challenges, launch provisioning and memory provisioning, using a replayable execution envelope. We also include two internal baselines only for motivation; they are neither prior work nor adopted by existing systems. 
+
+4.1 Device-Resident Metadata Buffer(DRMB) 
+
+The device-resident metadata buffer(DRMB) removes the most fundamental host dependence in sampling-based GNN: runtime metadata is produced on the GPU, but is repeatedly exported to the CPU to drive subsequent execution. DRMB 
+
+Fig. 5: ZERO GNN Overview: Device-Resident Metadata-Driven Replayable Execution that removes per-iteration host mediation and improves end-to-end performance. 
+
+eliminates this export by keeping metadata on-device and making it directly consumable by downstream GPU kernels. 
+
+4.1.1 Design: memory interaction via memory indirec-tion DRMB replaces the CPU-visible metadata flow with a GPU-only metadata interaction. Instead of materializing |𝑉 |
+
+and |𝐸 | as CPU scalars, Z ERO GNN keeps them resident on the device as GPU pointers, and downstream kernels derefer-ence these pointers to obtain runtime values during execution. This change turns the metadata dependency from a GPU →
+
+CPU round-trip into a pure GPU → GPU dependency. Since the number of layers for sampling subgraph objects is determined by the number of graph convolution layers in the GNN model, their sizes (i.e., the number of sampling op-erations and corresponding GPU pointers for their metadata) are fixed. Hence, memory is allocated once during initial-ization. Consequently, even if subsequent iterations produce different vertex and edge counts, the same memory locations are reused to store the updated values. This design change enables the CUDA graph seamlessly: a) the CUDA graph does not support CPU-GPU synchro-nization, so removing it with a normal GPU kernel removes that unsupported code block; and b) a static CUDA memory pointer is needed for each kernel argument to support the CUDA graph, which is done using pre-allocating subgraph metadata. 
+
+4.1.2 Transition: two follow-on provisioning challenges 
+
+With metadata no longer returning to the CPU, two follow-on challenges emerge: (i) how to provision kernel launches when the host cannot access exact runtime sizes, and (ii) how to provision dynamic buffers/tensors without invoking host-side allocators using CPU scalars. We address these challenges next with Device-Side Launch Mediation(§4.2) and Metadata-Free Dispatcher(§4.3). 
+
+4.2 Device-Side Launch Mediation(DLM) 
+
+We first tackle the launch-side challenge. In metadata-driven GNN training, many kernels require runtime-dependent launch decisions, either computing launch configurations (e.g., grid size from |𝑉 | or |𝐸 |) or determining the number of kernel invocations (e.g., loop-/recursion-based primitives). Since launches are issued from the host, these dependencies would otherwise force metadata back to the CPU and break replaya-bility. Device-Side Launch Mediation(DLM) mediates both cases while preserving a replayable launch skeleton. 
+
+4.2.1 Case 1: Dynamic grid-size allocation Kernel launches generally follow either static allocation or dynamic allocation .Static allocation launches a fixed grid and relies on grid-stride execution to cover varying input sizes. While it preserves correctness, it is typically an unfavorable fallback for GNN kernels because it often under-utilizes GPU parallelism and weakens tile-per-block optimization structures.  
+
+> 5Conference’17, July 2017, Washington, DC, USA Yidong Gong, Saima Afrin, Yuchen Ma, Guannan Wang, Bin Ren, and Pradeep Kumar
+
+In contrast, dynamic allocation assigns a fixed work quota per block and launches as many blocks as required by the runtime problem size: grid ≈
+
+ 𝑁 𝑇 
+
+
+
+, 𝑁 ∈ {| 𝑉 |, |𝐸 |} .
+
+This makes the grid size directly depend on the runtime sizes of |𝑉 | and |𝐸 |. This type of allocation strategy is widely used [ 11 , 12 , 16 , 17 , 32 , 37 ] in GNN because it typically yields (i) higher effective occupancy—more blocks than SMs enable better latency hiding; (ii) better load balance—many equal-sized tiles let the hardware scheduler distribute tail work evenly; (iii) improved memory locality and bandwidth efficiency—each block works on a contiguous tile, aiding coalescing and cache reuse; and (iv) easier block-level opti-mization - fixed-size tiles map naturally to shared-memory buffering, register blocking, and unrolling. However, once |𝑉 | and |𝐸 | remain on-device via DRMB, the host can no longer compute the exact grid size needed for dynamic allocation without reintroducing GPU → CPU synchronization, making this common launch strategy incom-patible with replayable execution unless additional mediation mechanisms are applied. 
+
+4.2.2 Case 2: Dynamic number of kernel calls Beyond launch dimensions, some computations require invoking ker-nels multiple times in a loop or recursion, where the number of rounds depends on runtime-dependent sizes such as |𝑉 | and 
+
+|𝐸 |. A representative example is prefix-sum (scan) used dur-ing subgraph construction, e.g., deriving the CSR offset array from the degree array. Scan implementations typically involve two kernels (e.g., scan and add-offset): the first performs a local prefix sum within each CTA, while the second applies CTA-level carry-out offsets. Since the carry-out buffer size it-self depends on the input length, one or more additional scan rounds may be required, resulting in a runtime-dependent number of kernel invocations. This case introduces a stronger form of launch dynamism than Case 1: the host must decide not only the launch config-uration, but also how many kernel calls to issue and in what chronological order, which would again require exporting runtime metadata back to the CPU and break replayability. 
+
+4.2.3 Internal baseline: dynamic parallelism via pilot-k-ernel indirection A straightforward baseline to handle both dynamic grid sizing and dynamic kernel-call counts is to shift launch decisions onto the GPU using dynamic paral-lelism. Since runtime metadata |𝑉 | and |𝐸 | remain available on-device through DRMB, the system can launch a light-weight pilot kernel whose only purpose is: (i) read the device-resident metadata, (ii) derive the required launch configura-tion, and (iii) launch actual worker kernels from the device. This design effectively introduces a launch indirection: the host always launches the pilot kernel with a fixed, capture-friendly configuration (e.g., a single CTA), while the pilot kernel encapsulates the dynamic behavior. Therefore, the host no longer needs to synchronize to fetch |𝑉 | and |𝐸 |, and the pilot kernel can naturally support dynamic control flow such as issuing multiple kernel invocations for loop-/recursion-based primitives (e.g., scan-style operators) until completion. However, despite being functionally general, this baseline is not practical for sampling-based GNN training. Device-side nested launches introduce substantial overhead and schedul-ing cost, which directly undermines the goal of reducing host-device orchestration overhead and achieving efficient replayable execution. 
+
+4.2.4 ZERO GNN solution: Device-Side Launch Media-tion (DLM) DLM avoids nested device-side launches (the internal baseline) and instead mediates launch dynamism with a unified mechanism: the host issues a replayable launch skele-ton that is statically capturable, while the GPU specializes ex-ecution at runtime using DRMB metadata. Concretely, DLM launches kernels using a conservative upper bound on launch resources (e.g., grid dimensions), provided by our Dispatcher (§4.3). During execution, each kernel dereferences DRMB to obtain the true runtime sizes (e.g., |𝑉 | and |𝐸 |) and applies standard boundary checks so that any over-provisioned blocks exit early without performing out-of-range memory accesses. This device-visible metadata is the key enabler: because the exact runtime size is available on-device via DRMB, over-allocation does not compromise correctness—the kernel sim-ply treats the extra blocks as no-ops through early return. In practice, such controlled over-provisioning is also efficient. Fig. 6 shows a state-of-the-art SpMM kernel [ 11 ] maintains near-constant runtime even when the grid is over-allocated by a large margin (e.g., from +20% to +180%) on Reddit and OGBN-Products datasets, indicating that extra blocks can quickly return and incur negligible overhead. Based on this insight, it is clear that over- or under-allocation does not prevent the computation from being completed. Fur-ther, over-allocation does not introduce a performance re-gression, while under-allocation may become a minor perfor-mance issue if the allocated thread blocks do not saturate the GPU’s computation power. For this reason, the estimate must always be higher. However, the estimation must be statically predictable; otherwise, the estimate itself becomes dynamic information that cannot solve our original problem of remov-ing dynamic behavior from the CPU execution path. In summary, DLM eliminates host-visible launch chronol-ogy dependence for computations with runtime-dependent control flow (e.g., loop-/recursion-based primitives). Instead of requiring the CPU to decide dynamic launch counts and 
+
+Fig. 6: SpMM Kernel Runtime Across Different Over-Allocated Grids  
+
+> 6Metadata-Driven Host Overheads in GNN Training Conference’17, July 2017, Washington, DC, USA
+
+ordering, DLM keeps the host-side schedule fixed and re-playable, while device-resident state mediates whether addi-tional work is required, avoiding metadata export and host-side control dependence. Finally, to keep launch provisioning statically replayable, the upper bound used by DLM must be fixed during cap-ture and replay. Z ERO GNN obtains this bound from the Dis-patcher (§4.3), which provisions a safe execution envelope for both launch and memory resources. 
+
+4.3 Dynamic Memory Provisioning via Dispatch (MFD) 
+
+Device-Side Launch Mediation removes GPU → CPU meta-data export for kernel arguments and enables device-side spe-cialization (§4.1), dynamic sampling still produces iteration-dependent subgraph sizes. In existing DL frameworks, allocat-ing tensors/buffers (e.g., subgraph structures, feature tensors, intermediate activations) remains a host-side operation that requires CPU-resident scalar sizes such as |𝑉 | and |𝐸 |. If we continue to allocate per iteration based on these runtime sizes, the system must again synchronize and export metadata back to the CPU, effectively reverting back to the HDOO/HMDB bottleneck described in the Introduction (§1). Therefore, en-abling replayable execution requires a provisioning strategy that avoids per-iteration host allocation decisions driven by runtime metadata. Moreover, GNN systems perform tensor allocation through deep learning frameworks (e.g., PyTorch) rather than native CUDA APIs, because memory lifetime management is com-plex and allocations must be wrapped as framework tensors to support autograd and reuse via caching allocators. However, framework allocation APIs fundamentally require the alloca-tion size to be specified as a CPU-resident scalar. As a result, dynamic tensor provisioning in GNN training—covering sam-pled subgraphs, associated features and labels, and interme-diate activations—forces runtime metadata such as |𝑉 | and 
+
+|𝐸 |, which are produced on the GPU, to be transferred back to the host. This requirement makes the CPU execution path intrinsically dynamic and introduces unavoidable CPU–GPU synchronization. 
+
+4.3.1 Internal baseline (naïve): Max Reserved Memory 
+
+A straightforward solution is to pre-reserve memory based on the theoretical maximum subgraph size implied by the sampling configuration (i.e., batch size and per-hop fanouts), which we refer to as max reserved memory. This baseline is attractive because it is trivially safe: once the “maximum” buffers are allocated, the pipeline can run without per-iteration metadata queries or GPU → CPU synchronization for deter-mining allocation sizes. However, this baseline is impractical because the maximum subgraph size implied by fan-out sampling grows multiplica-tively across hops. Let 𝐵 be the mini-batch size, 𝑁 the number of sampling hops, and 𝐹 𝑖 the fan-out at hop 𝑖 . If each hop ex-pands the frontier by a factor of 𝐹 𝑖 , estimated vertex count after ℎ hops scales as 
+
+𝑉 𝑁 ≤ 𝐵 · 
+
+> 𝑁 −1
+
+Ö
+
+> 𝑖 =0
+
+𝐹 𝑖 (1) which is approximately 𝐵 · 𝐹 𝑁 when 𝐹 𝑖 ≈ 𝐹 , which is exponential in the hop count. As a result, even moderate fanouts can translate into a highly pessimistic memory budget for sampled node/edge lists, feature tensors, and intermediate activations. More importantly, this theoretical maximum is rarely reached in real workloads, making the baseline excessively wasteful. First, real-world graphs exhibit strong degree skew, and many nodes simply do not have enough neighbors to satisfy the nom-inal fan-out, causing systematic sampling shortfall. Second, multi-hop sampling often revisits the same popular neighbors across hops, and deduplication during subgraph construction removes substantial cross-hop duplication. Together, these ef-fects keep the realized subgraph sizes far below the theoretical maximum subgraph size estimate. Therefore, while max reserved memory eliminates iteration-dependent sizing decisions, it comes at the cost of severe memory over-provisioning, which can easily become infeasi-ble on commodity GPUs and directly limits achievable batch size and model scale. We quantify this effect in our exper-iments(§5.2.2). This motivates the need for a provisioning mechanism that avoids per-iteration host involvement without relying on maximum-capacity reservation. We next present our solution, the Metadata-Free Dispatcher (MFD) , to ad-dress this challenge. 
+
+4.3.2 Metadata-Free Dispatcher (MFD): safe-but-tight execution envelope ZERO GNN introduces a Metadata-Free Dispatcher (MFD) , which dispatches a conservative yet tight 
+
+execution envelope that can be reused across iterations. The key insight behind MFD is that, in practice, sampled graph sizes are highly stable across iterations .
+
+Key insight: stability of deduplicated sampled size. 
+
+Although neighbor sampling is stochastic, the resulting computation graph depends only on the deduplicated set of unique sampled vertices, denoted as 𝑉 𝑑 . We find that 
+
+|𝑉 𝑑 | follows a Poisson-binomial distribution and, for large graphs, admits a normal approximation , which enables a high-confidence concentration bound. We summarize this result as Lemma 4.1, and provide the full proof in Appendix(§A). We further provide empirical evidence in §B.2. 
+
+Formalization. To formalize this process, we define an indi-cator random variable 𝐼 𝑣 for each vertex 𝑣 , where 𝐼 𝑣 = 1 if 𝑣 is sampled at least once and 𝐼 𝑣 = 0 otherwise. The deduplicated sampled size is then 
+
+|𝑉 𝑑 | =∑︁ 
+
+> 𝑣
+
+𝐼 𝑣 . (2)  
+
+> 7Conference’17, July 2017, Washington, DC, USA Yidong Gong, Saima Afrin, Yuchen Ma, Guannan Wang, Bin Ren, and Pradeep Kumar
+
+Under the standard sampling-with-replacement setting, each 
+
+𝐼 𝑣 is a Bernoulli random variable with success probability 
+
+𝑝 𝑣 = 1 − ( 1 − 𝜋 𝑣 )𝑆 tot , (3) where 𝜋 𝑣 can be modeled as a global hitting probability pro-portional to vertex degree. Therefore, |𝑉 𝑑 | is a sum of non-identical Bernoulli vari-ables, i.e., a Poisson-binomial random variable. This distribu-tion concentrates tightly, allowing us to derive the following high-confidence stability bound. 
+
+Lemma 4.1 (Stability of Deduplicated Sampled Size) . For multi-hop neighbor sampling with replacement and dedupli-cation, the deduplicated sampled size |𝑉 𝑑 | exhibits a narrow, high-confidence fluctuation band around its mean. In partic-ular, for confidence level 𝑝 over 𝑚 repeated iterations, the normalized range satisfies: 
+
+max 𝑖 |𝑉 (𝑖 ) 
+
+> 𝑑
+
+| − min 𝑖 |𝑉 (𝑖 ) 
+
+> 𝑑
+
+|
+
+E[| 𝑉 𝑑 |] ≤ 2𝑧 (𝑚 ) 
+
+> 𝑝
+
+· CV , (4) 
+
+where CV = 𝜎 /𝜇 is the coefficient of variation of |𝑉 𝑑 |, and 
+
+𝑧 (𝑚 ) 
+
+> 𝑝
+
+is the corresponding Gaussian quantile after accounting for 𝑚 repetitions. 
+
+Envelope dispatch. Leveraging Lemma 4.1, MFD dispatches a fixed execution envelope E that conservatively upper-bounds the resource footprint of dynamic sampling across iterations. Concretely, E provides (i) memory provisioning bounds for sampled-subgraph buffers and scratchpads, and (ii) launch provisioning bounds for replayable launch skeleton used by device-side specialization (§4.2). With E, the host allocates all dynamic buffers once during initialization and reuses the same memory addresses across iterations, preserving, all else equal, the address stability required by CUDA Graph cap-ture/replay. At runtime, kernels dereference DRMB to obtain the true sampled sizes and apply lightweight bounds checks; any excess threads/blocks safely early-exit, ensuring correct-ness without reintroducing per-iteration host involvement. 
+
+Overflow-safe fallback. Although Lemma 4.1 enables MFD to dispatch a tight envelope E with high confidence, it is still a statistical guarantee rather than an absolute bound. Therefore, a vanishingly small fraction of iterations may exceed E due to rare sampling outcomes. To handle such cases without breaking replayability, Z ERO GNN maintains a cached safe graph as a backup execution path. Concretely, during initialization, Z ERO GNN caches a safe graph (along with its corresponding conservative envelope) that serves as a guaranteed fallback when an overflow is detected. When overflow occurs, the runtime simply replays this cached safe graph, avoiding any per-iteration host-driven reprovisioning. This mechanism can be viewed as maintaining a checkpoint-like backup for execution safety. Importantly, this fallback does not affect training accuracy. Executing the cached safe graph is semantically equivalent to running the same computation graph for the same batch again—i.e., chaining an identical graph twice. This is con-sistent with the standard full-batch GNN training semantics, where the model update is defined by executing a fixed graph-level computation; thus, the overflow fallback preserves cor-rectness while ensuring memory safety. 
+
+4.4 End-to-End CUDA Graph Capture and Replay 
+
+Managing the dynamic behavior of GNN training system-atically allows us to keep only predictable control logic on the host (including the Python model code), while removing iteration-by-iteration CPU interventions that primarily serve to orchestrate GPU work. To this end, we leverage CUDA Graphs to capture the GPU execution data-flow and kernel launch order once, and replay it across iterations to eliminate repeated framework overhead. 
+
+PyTorch and CUDA Graph. CUDA Graph captures a se-quence of kernel launches and their dependencies into a graph object. When replaying the same CUDA Graph, the execution does not re-run the original CPU-side launch code; instead, it incurs only a single CUDA Graph launch on the CPU per iteration, while the GPU kernels are issued automatically in the captured order. As a result, each training iteration can be invoked by simply replaying the captured graph, avoiding repeated CPU-side dispatch and launch overhead. 
+
+Capture prerequisites and how Z ERO GNN restores them. 
+
+CUDA Graph replay relies on a key assumption that each iter-ation follows the same execution path and operates on tensors with stable shapes and stable memory addresses. However, metadata-driven dynamic sampling violates this assumption by introducing iteration-dependent provisioning decisions (e.g., buffer sizing and launch configuration), which tradi-tionally require per-iteration host involvement. Z ERO GNN restores the capture/replay conditions by (i) keeping runtime metadata on-device via DRMB (§4.1), (ii) enabling device-side specialization under a fixed launch skeleton (§4.2), and (iii) provisioning a replayable execution envelope with stable memory addresses via MFD (§4.3). 
+
+Warm-up, capture, and replay. Using CUDA Graph in Z E-
+
+> RO
+
+GNN follows three phases: warm-up , capture , and replay .During warm-up, Z ERO GNN runs one or more iterations without CUDA Graph to initialize memory pools and mate-rialize required buffers under the MFD-dispatched envelope. During capture, Z ERO GNN records a steady-state training it-eration into a CUDA Graph object, including the fixed launch skeleton and all dependent device work. During replay, Z E-
+
+> RO
+
+GNN repeatedly replays the captured CUDA Graph for subsequent iterations. 
+
+Stable buffers and inputs. To ensure replayability, Z ERO GNN allocates all dynamic buffers (e.g., sampled-subgraph scratch-pads) once and reuses their addresses across iterations (§4.3.2). In addition, CUDA Graph replay requires stable input/output tensor pointers. Z ERO GNN therefore performs replay on stat-ically allocated input/output tensors, and copies minibatch  
+
+> 8Metadata-Driven Host Overheads in GNN Training Conference’17, July 2017, Washington, DC, USA
+
+Table 1. Dataset details. * indicates labeled dataset, while the rest use 150 generated features and 7 prediction classes.                                     
+
+> Graph Vertex Edge Feature Predict Dataset Count Count Length Class Cora(G0)* 2,708 10,858 1,433 7Hollywood(G1) 1,069,127 112,613,308 150 7LiveJournal(G2) 4,847,571 137,987,546 150 7OGBN-Products(G3)* 2,449,029 123,718,280 100 47 Reddit(G4)* 232,965 229,231,784 602 41 Orkut(G5) 3,072,627 234,370,166 150 7OGBN-papers100M(G6) 111,059,956 1,615,685,872 128 172
+
+features/labels into these fixed buffers before replay. This en-sures that the captured graph remains valid while the training data changes across iterations. 
+
+Handling rare overflows. Although MFD dispatch is tight with high confidence, extremely rare iterations may exceed the envelope. Z ERO GNN handles such cases by replaying a cached safe graph as a backup execution path (§4.3.2), and then resuming the steady-state replay loop. This preserves correctness while keeping the common case fully replayable and host-independent. 
+
+## 5 Evaluation 
+
+Our evaluation is organized as follows. We first validate ac-curacy in §5.1, then present the main overall results in §5.2. We further study large-scale graphs and multi-GPU scaling in §5.3 and in §5.4, followed by a breakdown study in §5.5. Additional supporting results, including a case study against CU-DPI and an analysis of sampled subgraph size variation, are deferred to Appendix B. We compare Z ERO GNN with DGL (version 1.1.0+cu117) [ 36 ], Gong et al. [ 12 ], MariusGNN [ 34 ], and CU-DPI, an internal baseline that we define, design, and implement ourselves based on NVIDIA’s dynamic parallelism interface to rep-resent a potential alternative for device-side kernel-launch configuration and dynamic memory allocation for runtime metadata. To the best of our knowledge, no existing work or implementation evaluates this design. The datasets are listed in Table 1. Only Cora, Reddit, and OGBN-Products are labeled datasets, and the first two are relatively small. All ex-periments are conducted on a single node with two NVIDIA A100 GPUs (80GB each) and CUDA 11.7. 
+
+5.1 Accuracy 
+
+We compare Z ERO GNN with DGL on the labeled dataset to verify training accuracy. Fig. 7 shows that Z ERO GNN achieves an accuracy comparable to DGL. 
+
+Fig. 7: Accuracy measure of ZeroGNN and DGL 
+
+Fig. 8: Sampling Only Runtime Speedup Over DGL and Gong et al Across Different Datasets. Y-axis Values Are Clipped. 
+
+Fig. 9: End-to-End Runtime Speedup Over DGL Across Dif-ferent Datasets. 
+
+5.2 Overall Evaluation 5.2.1 Performance Speedups All subsequent experiments use the GraphSAGE model, following the configuration from Papers [4, 14]. 
+
+Subgraph Sampling(Stage1) Fig. 8 shows the comparison of Z ERO GNN sampling only runtime with DGL and Gong et al., and CU-DPI across multiple datasets. For readability, we cap the plotted speedup values to facilitate comparison among baselines. On average, Z ERO GNN achieves a 17.68 ×
+
+speedup over DGL. 
+
+End-to-end Training Runtime(All Stages) Fig. 9 shows the comparison of Z ERO GNN end-to-end training runtime with DGL, Gong et al. and CU-DPI across multiple datasets. On average, ZeroGNN achieves a 5.28 × speedup over DGL. 
+
+5.2.2 Memory Usage Analysis We compare the memory usage of Z ERO GNN with DGL, Gong et al., and MaxSG. Gong et al. serves as an optimal reference because it allo-cates memory using exact runtime metadata, while MaxSG represents a naive worst-case reservation strategy. 
+
+Memory Usage Fig.10 shows that Z ERO GNN achieves a memory footprint comparable to this optimal, dynamically in-formed solution (Gong et al), while significantly outperform-ing DGL. Notably, both DGL and Gong et al rely on dynamic metadata and adaptive allocation, whereas Z ERO GNN attains near-optimal memory efficiency through device-side indi-rection and fixed subgraph sampling mechanisms—without requiring per-iteration metadata updates. 
+
+Comparison with MaxSG(Internal Baseline) We further compare Z ERO GNN with MaxSG, a naive allocation strategy, which always reserves the maximum possible memory for subgraph sampling based solely on the batch size—ignoring the actual subgraph size in each iteration. The experimental results, presented in Fig.11, reveal distinct memory utilization trends across different GNN layers. On average, Z ERO GNN delivers a 10.84 × memory efficiency improvement over the MaxSG baseline. In layer 2, the subgraph size remains small, leading to only marginal differences between Z ERO GNN and the naive approach. However, as we progress to layers 3–5, the advan-tages of Z ERO GNN become increasingly evident. This im-provement arises because deeper layers generate substantially larger subgraphs with more duplicated or overlapping neigh-borhoods. Z ERO GNN’s optimized allocation strategy miti-gates such redundancy via metadata reuse and fine-grained  
+
+> 9Conference’17, July 2017, Washington, DC, USA Yidong Gong, Saima Afrin, Yuchen Ma, Guannan Wang, Bin Ren, and Pradeep Kumar
+
+device-side allocation, while the naive solution continues to over-provision memory for the worst-case scenario. For clarity, the results are shown on a log 2 scale, where the naive allocation(MaxSG) is normalized to 1, and the Z E-
+
+> RO
+
+GNN bars represent the log 2-based memory savings rel-ative to this baseline. As observed, Z ERO GNN consistently achieves significant memory reductions, especially in deeper layers where dynamic reuse opportunities are amplified. 
+
+5.3 Large-scale Graph 
+
+Large-scale graphs such as OGBN-papers100M often exceed GPU memory capacity primarily because of the full node fea-ture table rather than the graph topology itself. In our setting, the graph topology is placed on the GPU to enable device-side subgraph sampling, but storing the full feature table on the GPU leads to out-of-memory errors. To demonstrate that Z E-
+
+> RO
+
+GNN remains effective under such large-graph conditions, we construct a simulated large-graph setting by replacing the full feature table with a GPU-resident feature buffer while keeping the graph topology and GPU-side sampling path un-changed. This remains representative because sampled GNN training is performed on sampled subgraphs rather than on the full graph: once features for the sampled nodes are supplied, the downstream training computation remains unchanged. In this sense, the simulation removes only the full-table memory bottleneck, without changing the sampled-subgraph sampling and training path that we aim to evaluate. Under this setting, DGL still runs out of memory because of additional framework overheads, while MariusGNN [ 34 ]is incompatible with our fully GPU-based sampling config-uration due to its tightly coupled disk/CPU-driven pipeline. We therefore compare against Gong et al. Fig. 12 shows that ZERO GNN achieves 2.31 × to 2.70 × performance speedups over Gong et al across different batch sizes. 
+
+5.4 Multi-GPU Scaling 
+
+In this section, we show that Z ERO GNN remains effective under multi-GPU training. Multi-GPU training follows a data-parallel execution model [ 9 , 25 , 26 , 31 ], in which each GPU processes a distinct mini-batch on its own model replica, and gradients are synchronized across devices after each iteration. However, scaling across multiple GPUs does not eliminate the core inefficiency of sampling-based GNN execution. Within each worker, subgraphs are still generated dynamically, run-time metadata still determines downstream tensor allocation and kernel launches, and host-side orchestration remains on the critical path in existing systems. Although multi-GPU training introduces inter-GPU communication(e.g., via all-reduce), this communication is not the primary bottleneck, 
+
+Fig. 10: Memory usage comparison between Z ERO GNN, DGL, and the optimal dynamic allocation baseline(Gong et al) across different sampling depths(L2–L5; lower is better). 
+
+Fig. 11: Memory usage efficiency comparison between Z ERO GNN and the MaxSG (Naive Maximum Subgraph Allocation strategy) across different sampling depths. The MaxSG serves as the baseline (value = 1). Efficiency is measured on a log 2 scale, where higher values indicate better memory efficiency. 
+
+since the communicated data mainly consists of model pa-rameters, which are relatively small in sampling-based GNN models. As a result, even in the multi-GPU setting, the dom-inant limitation still lies in the per-worker, metadata-driven host control path rather than in gradient synchronization. Fig. 13 compares Z ERO GNN with Gong et al on a 2-GPU machine and shows that Z ERO GNN achieves an average speedup of up to 8 × in the multi-GPU setting. This gain arises because the baseline still executes through a GPU →CPU →GPU control path: runtime metadata must be transferred to the host, used to determine subsequent tensor provisioning and kernel launch decisions, and then translated back into GPU work. Such repeated host involvement introduces persistent syn-chronization, launch preparation, and orchestration overhead that is not removed by multi-GPU execution. As a result, ZERO GNN continues to deliver strong end-to-end speedups over the baseline across different batch sizes. Fig. 14 shows the 1-to-2 GPU strong-scaling results of ZERO GNN. Across batch sizes, Z ERO GNN achieves 1.68 ×
+
+– 1.80 × speedup, indicating consistently strong scaling with only modest variation. This stability is important because, at smaller batch sizes, framework overhead would normally account for a larger fraction of end-to-end execution time, making speedup less stable and causing performance to ap-proach the ideal 2 × only at larger batch sizes. Instead, Z E-
+
+> RO
+
+GNN maintains similar scaling behavior across the entire range, indicating that the framework overhead that would otherwise disproportionately penalize small-batch execution has been effectively removed from the critical path. Overall, ZERO GNN not only preserves its end-to-end benefit under multi-GPU training, but also delivers stable strong scaling across workloads. 
+
+5.5 Speedup Analysis and Breakdown 5.5.1 GPU Execution Fraction This section evaluates GPU Execution Fraction between Z ERO GNN and existing systems. We demonstrate that Z ERO GNN achieves substantially higher utilization than prior work, from the sampling perspective as well as the end-to-end training perspective. We omit CU-DPI 
+
+Fig. 12: End-to-End Runtime Speedup For Z ERO GNN Over Gong et al Across Different Batch Sizes On OGBN-papers100M Dataset. 10 Metadata-Driven Host Overheads in GNN Training Conference’17, July 2017, Washington, DC, USA 
+
+Fig. 13: ZERO GNN End-to-End Training Runtime Comparison Under 2 GPUs Configurations. 
+
+Fig. 14: ZERO GNN End-to-End Training Runtime Comparison for strong scaling. 
+
+Fig. 15: Comparison of GPU Ex-ecution Fraction across Systems during the Sampling Stage. 
+
+Fig. 16: Comparison of GPU Ex-ecution Fraction across Systems during the end-to-end training. 
+
+from the plot, as the dynamic parallelism interface disables GPU time profiling. [27] 
+
+Subgraph Sampling(Stage1) Fig. 15 reports GPU Execution Fraction in the sampling stage. Z ERO GNN sustains 100% utilization, indicating negligible kernel idle time. In contrast, Gong et al. and DGL show substantially lower utilization (with Gong et al below DGL), demonstrating that kernel-level tweaks alone cannot overcome persistent framework overheads that throttle end-to-end utilization. 
+
+End-to-end Training(All Stages) Fig. 16 shows end-to-end GPU Execution Fraction across systems. ZeroGNN main-tains 100% utilization, whereas existing baselines exhibit substantially lower GPU execution fraction. This indicates that our approach effectively removes framework overhead, resolving the dominant bottleneck. 
+
+5.5.2 End-to-End Performance Scaling Analysis In this section, we examine how two additional input factors, batch size and sampling depth, affect the end-to-end performance speedup of Z ERO GNN. 
+
+Batch Size We fix all other configurations (e.g., fanout and layouts) and vary only the batch size. Fig. 17 shows the end-to-end runtime speedup of Z ERO GNN over existing systems on Reddit. Z ERO GNN achieves, on average, a 4.80 ×(2.84 
+
+×) performance speedup compared to DGL(Gong el al). For readability, the y-axis is clipped at 3 ×, so bars reaching the top correspond to speedups of at least 3 ×. For example, at batch size 64, Z ERO GNN achieves a 8.75 × speedup com-pared to DGL. It is clear that when the batch size is small, such as 64, Z ERO GNN achieves much better performance speedups than all existing works. As batch size increases, the speedup decreases, because GPU compute accounts for a larger fraction of end-to-end runtime, whereas Z ERO GNN mainly removes framework overhead rather than optimiz-ing GPU kernels. Even at batch size 4096, Z ERO GNN still achieves a 1.75 × speedup, while the existing work Gong et al attains only a runtime similar to DGL. 
+
+Sampling Model Depths: Multi-Hop Sampling Fig. 18 shows that Z ERO GNN achieves the largest speedups at smaller model depths, while the benefit decreases moderately as depth 
+
+Fig. 17: End-to-End Runtime Speedup For Z ERO GNN Over DGL Across Different Batch Sizes On Reddit Dataset. 
+
+Fig. 18: End-to-End Runtime Speedups (Log 2 Scale) across Sam-pling Layers on the Reddit Dataset. 
+
+increases but remains higher than all baselines. Specifically, ZERO GNN achieves a 3.50 × speedup at 2 layers and still delivers 1.96 × at 5 layers. This trend arises because deeper models generate larger sampled subgraphs, increasing GPU compute time while framework overhead remains roughly constant. Since Z ERO GNN primarily removes framework overhead, its relative benefit decreases as GPU computation becomes more dominant, though it remains consistently ben-eficial across all depths. 
+
+## 6 Related Work 
+
+Optimizing Sampling-Based GNN Systems Prior works improve the efficiency of sampling-based GNN execution by optimizing sampling, pipeline organization, or data placement. SALIENT [ 21 ] improves sampling efficiency mainly from the CPU/framework side through a lightweight C++ implementa-tion and reduced software overhead, while NextDoor [ 20 ] ac-celerates GPU sampling through frontier-aware execution and better load balancing. MariusGNN [ 34 ] improves subgraph construction efficiency through partitioning and locality-aware design. Other systems, such as GNNLab [ 42 ], DSP [ 2], and WholeGraph [ 41 ], improve end-to-end throughput through pipeline restructuring, cache/locality optimization, multi-GPU partitioning, and communication-efficient data access. These works improve sampling or system throughput, but they do not eliminate the metadata-driven host control path that deter-mines downstream provisioning and kernel launch behavior within each iteration. 
+
+GNN computation and kernel optimization. Another line of work focuses on optimizing GPU kernel computation it-self. Prior studies, including DA-SpMM [ 5], GE-SpMM [ 16 ], GNNOne [ 11 ], and related operator-level optimizations [ 3 , 7,8, 15 , 17 , 38 , 40 ], improve sparse-dense computation through input-aware kernel design and execution specialization. HalfGNN [ 32 ]further improves training efficiency under half precision. These works target the efficiency of GPU kernels operating on the sampled graph, whereas our work addresses a different bottle-neck: the host-side orchestration overhead caused by runtime metadata across the sampling-to-training pipeline.  
+
+> 11 Conference’17, July 2017, Washington, DC, USA Yidong Gong, Saima Afrin, Yuchen Ma, Guannan Wang, Bin Ren, and Pradeep Kumar
+
+CPU–GPU Communication Optimization Prior works [ 18 ,19 , 24 , 28 ] also reduced CPU–GPU interaction overhead through communication and memory-management optimiza-tions. Examples include compiler/runtime techniques that remove redundant transfers, demand-driven migration for pointer-based workloads, and coherence- or placement-based approaches that keep data near the processor that uses it. These methods are effective when the goal is to reduce redun-dant communication or exploit persistent data reuse across accesses. In contrast, our setting is fundamentally different: it is driven by iteration-specific runtime metadata rather than reusable data across accesses, and thus concerns the place-ment of such metadata in a host-mediated control loop rather than the reuse, retention, or migration of persistent data. 
+
+## 7 Conclusion and Future Works 
+
+We analyze sampling-based GNN systems and observe that their training runtime is dominated by framework overhead rather than GPU computation. However, the dynamic meta-data workflow generated in each iteration repeatedly forces host-mediated coordination, introducing synchronization into the critical path and preventing CUDA Graph replay from effectively removing this overhead. To address this gap, we propose Z ERO GNN, which combines device-resident meta-data, device-side specialization, and a conservative replayable execution envelope to enable dynamic execution under a fixed host launch structure. Our results show that this design sub-stantially improves end-to-end performance and scalability. More broadly, the same perspective may be useful for other metadata-driven dynamic workloads beyond GNN training. 
+
+> 12
+
+Metadata-Driven Host Overheads in GNN Training Conference’17, July 2017, Washington, DC, USA 
+
+## References 
+
+[1] X. Bresson and T. Laurent. Residual gated graph convnets. arXiv preprint arXiv:1711.07553 , 2017. [2] Z. Cai, Q. Zhou, X. Yan, D. Zheng, X. Song, C. Zheng, J. Cheng, and G. Karypis. DSP: Efficient GNN Training with Multiple GPUs. In Proceedings of the 28th ACM SIGPLAN Annual Symposium on Principles and Practice of Parallel Programming , PPoPP ’23, page 392–404, 2023. [3] Z. Chen, M. Yan, M. Zhu, L. Deng, G. Li, S. Li, and Y. Xie. fuseGNN: Accelerating Graph Convolutional Neural Network Training on GPGPU. In Proceedings of the 39th International Conference on Computer-Aided Design , pages 1–9, 2020. [4] W.-L. Chiang, X. Liu, S. Si, Y. Li, S. Bengio, and C.-J. Hsieh. Cluster-GCN: An Efficient Algorithm for Training Deep and Large Graph Convolutional Networks. In Proceedings of the 25th ACM SIGKDD International Conference on Knowledge Discovery & Data Mining ,KDD ’19, page 257–266, New York, NY, USA, 2019. Association for Computing Machinery. [5] G. Dai, G. Huang, S. Yang, Z. Yu, H. Zhang, Y. Ding, Y. Xie, H. Yang, and Y. Wang. Heuristic adaptability to input dynamics for SpMM on GPUs. In Proceedings of the 59th ACM/IEEE Design Automation Conference , DAC ’22, page 595–600, New York, NY, USA, 2022. Association for Computing Machinery. [6] W. Fan, Y. Ma, Q. Li, Y. He, E. Zhao, J. Tang, and D. Yin. Graph Neural Networks for Social Recommendation. In The World Wide Web Conference , pages 417–426, 2019. [7] Q. Fu, Y. Ji, and H. H. Huang. TLPGNN: A Lightweight Two-Level Par-allelism Paradigm for Graph Neural Network Computation on GPU. In 
+
+Proceedings of the 31st International Symposium on High-Performance Parallel and Distributed Computing , pages 122–134, 2022. [8] T. Gale, M. Zaharia, C. Young, and E. Elsen. Sparse GPU Kernels for Deep Learning. In 2020 SC20: International Conference for High Performance Computing, Networking, Storage and Analysis (SC) , pages 219–232. IEEE Computer Society, 2020. [9] S. Gandhi and A. P. Iyer. P3: Distributed Deep Graph Learning at Scale. In 15th USENIX Symposium on Operating Systems Design and Implementation (OSDI’21) , pages 551–568, 2021. [10] Y. Gong and P. Kumar. GNNBENCH: Fair and Productive Benchmark-ing for Single-GPU GNN System. arXiv preprint arXiv:2404.04118 ,2024. [11] Y. Gong and P. Kumar. GNNOne: A Unified System Optimizations for GNN Kernels. In Proceedings of the 33rd International Symposium on High-Performance Parallel and Distributed Computing , HPDC ’24, page 15–27, New York, NY, USA, 2024. Association for Computing Machinery. [12] Y. Gong, A. K. Tarafder, S. Afrin, and P. Kumar. Identifying and Ana-lyzing Pitfalls in GNN Systems. In Proceedings of the 2025 USENIX Annual Technical Conference , 2025. [13] W. Hamilton, P. Bajaj, M. Zitnik, D. Jurafsky, and J. Leskovec. Em-bedding Logical Queries on Knowledge Graphs. Advances in Neural Information Processing Systems , 31:2026–2037, 2018. [14] W. Hamilton, Z. Ying, and J. Leskovec. Inductive Representation Learn-ing on Large Graphs. In Advances in neural information processing systems , pages 1024–1034, 2017. [15] Y. Hu, Z. Ye, M. Wang, J. Yu, D. Zheng, M. Li, Z. Zhang, Z. Zhang, and Y. Wang. FeatGraph: A Flexible and Efficient Backend for Graph Neural Network Systems. In Proceedings of the International Con-ference for High Performance Computing, Networking, Storage and Analysis , pages 1–13, 2020. [16] G. Huang, G. Dai, Y. Wang, and H. Yang. GE-SpMM: General-purpose Sparse Matrix-Matrix Multiplication on GPUs for Graph Neural Net-works. In SC20: International Conference for High Performance Com-puting, Networking, Storage and Analysis , pages 1–12. IEEE, 2020. [17] K. Huang, J. Zhai, Z. Zheng, Y. Yi, and X. Shen. Understanding and Bridging the Gaps in Current GNN Performance Optimizations. In 
+
+Proceedings of the 26th ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming , pages 119–132, 2021. [18] T. B. Jablin, J. A. Jablin, P. Prabhu, F. Liu, and D. I. August. Dynami-cally managed data for CPU-GPU architectures. In Proceedings of the Tenth International Symposium on Code Generation and Optimization ,pages 165–174, 2012. [19] T. B. Jablin, P. Prabhu, J. A. Jablin, N. P. Johnson, S. R. Beard, and D. I. August. Automatic CPU-GPU communication management and optimization. SIGPLAN Not. , 46(6):142–151, June 2011. [20] A. Jangda, S. Polisetty, A. Guha, and M. Serafini. Accelerating Graph Sampling for Graph Machine Learning using GPUs. In Proceedings of the Sixteenth European Conference on Computer Systems , 2021. [21] T. Kaler, N. Stathas, A. Ouyang, A.-S. Iliopoulos, T. Schardl, C. E. Leiserson, and J. Chen. Accelerating Training and Inference of Graph Neural Networks with Fast Sampling and Pipelining. Proceedings of Machine Learning and Systems , 4:172–189, 2022. [22] T. N. Kipf and M. Welling. Semi-Supervised Classification with Graph Convolutional Networks. In 5th International Conference on Learning Representations (ICLR-17) , 2017. [23] E. Krahmer, S. v. Erk, and A. Verleg. Graph-Based Generation of Referring Expressions. Computational Linguistics , 29(1):53–72, 2003. [24] L. Li and B. Chapman. Compiler assisted hybrid implicit and explicit GPU memory management under unified address space. In Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis , SC ’19, New York, NY, USA, 2019. Association for Computing Machinery. [25] M. Li, D. G. Andersen, J. W. Park, A. J. Smola, A. Ahmed, V. Josi-fovski, J. Long, E. J. Shekita, and B.-Y. Su. Scaling distributed ma-chine learning with the parameter server. In Proceedings of the 11th USENIX Conference on Operating Systems Design and Implementation ,OSDI’14, page 583–598, USA, 2014. USENIX Association. [26] S. Li, Y. Zhao, R. Varma, O. Salpekar, P. Noordhuis, T. Li, A. Paszke, J. Smith, B. Vaughan, P. Damania, and S. Chintala. PyTorch distributed: experiences on accelerating data parallel training. Proc. VLDB Endow. ,13(12):3005–3018, Aug. 2020. [27] NVIDIA. [28] S. Pai, M. J. Thazhuthaveetil, and R. Govindarajan. Improving GPGPU concurrency with elastic kernels. SIGARCH Comput. Archit. News ,41(1):407–418, Mar. 2013. [29] R. Perera and P. Nand. Recent Advances in Natural Language Genera-tion: A Survey and Classification of the Empirical Literature. Comput-ing and Informatics , 36(1):1–32, 2017. [30] M. Schlichtkrull, T. N. Kipf, P. Bloem, R. Van Den Berg, I. Titov, and M. Welling. Modeling Relational Data with Graph Convolutional Networks. In European Semantic Web Conference , pages 593–607. Springer, 2018. [31] A. Sergeev and M. D. Balso. Horovod: fast and easy distributed deep learning in TensorFlow. ArXiv , abs/1802.05799, 2018. [32] A. K. Tarafder, Y. Gong, and P. Kumar. Optimization of GNN Training Through Half-precision. In Proceedings of the 34th International Symposium on High-Performance Parallel and Distributed Computing ,HPDC ’25, New York, NY, USA, 2025. Association for Computing Machinery. [33] P. Veliˇ ckovi´ c, G. Cucurull, A. Casanova, A. Romero, P. Lio, and Y. Ben-gio. Graph Attention Networks. 6th International Conference on Learning Representations (ICLR-18) , 2018. [34] R. Waleffe, J. Mohoney, T. Rekatsinas, and S. Venkataraman. Mar-iusGNN: Resource-Efficient Out-of-Core Training of Graph Neural Networks. In Eighteenth European Conference on Computer Systems (EuroSys’ 23) , 2023. [35] H. Wang, H. Ren, and J. Leskovec. Entity Context and Relational Paths for Knowledge Graph Completion. arXiv preprint arXiv:2002.06757 ,2020. 13 Conference’17, July 2017, Washington, DC, USA Yidong Gong, Saima Afrin, Yuchen Ma, Guannan Wang, Bin Ren, and Pradeep Kumar 
+
+[36] M. Wang, D. Zheng, Z. Ye, Q. Gan, M. Li, X. Song, J. Zhou, C. Ma, L. Yu, Y. Gai, T. Xiao, T. He, G. Karypis, J. Li, and Z. Zhang. Deep Graph Library: Towards Efficient And Scalable Deep Learning on Graphs. In ICLR 2019 Workshop on Representation Learning on Graphs and Manifolds , 2019. [37] Y. Wang, B. Feng, G. Li, S. Li, L. Deng, Y. Xie, and Y. Ding. GNNAdvi-sor: An Adaptive and Efficient Runtime System for GNN Acceleration on GPUs. In 15th USENIX Symposium on Operating Systems Design and Implementation (OSDI 21) , pages 515–531, 2021. [38] Y. Wu, K. Ma, Z. Cai, T. Jin, B. Li, C. Zheng, J. Cheng, and F. Yu. Seastar: Vertex-centric Programming for Graph Neural Networks. In 
+
+Proceedings of the Sixteenth European Conference on Computer Sys-tems , pages 359–375, 2021. [39] K. Xu, W. Hu, J. Leskovec, and S. Jegelka. How Powerful are Graph Neural Networks? 7th International Conference on Learning Represen-tations (ICLR-19) , 2019. [40] C. Yang, A. Buluç, and J. D. Owens. Design principles for sparse matrix multiplication on the gpu. In European Conference on Parallel Processing , pages 672–687. Springer, 2018. [41] D. Yang, J. Liu, J. Qi, and J. Lai. WholeGraph: A Fast Graph Neural Network Training Framework with Multi-GPU Distributed Shared Memory Architecture. 2022. [42] J. Yang, D. Tang, X. Song, L. Wang, Q. Yin, R. Chen, W. Yu, and J. Zhou. GNNLab: A Factored System for Sample-Based GNN Training over GPUs. In Proceedings of the Seventeenth European Conference on Computer Systems , pages 417–434, 2022. [43] R. Ying, R. He, K. Chen, P. Eksombatchai, W. L. Hamilton, and J. Leskovec. Graph Convolutional Neural Networks for Web-Scale Recommender Systems. In Proceedings of the 24th ACM SIGKDD International Conference on Knowledge Discovery & Data Mining ,pages 974–983, 2018. [44] J. Zhang, X. Shi, J. Xie, H. Ma, I. King, and D. Yeung. GaAN: Gated Attention Networks for Learning on Large and Spatiotemporal Graphs. In Proceedings of the Thirty-Fourth Conference on Uncertainty in Artificial Intelligence , pages 339–349, 2018. [45] M. Zitnik, M. Agrawal, and J. Leskovec. Modeling Polypharmacy Side Effects with Graph Convolutional Networks. Bioinformatics ,34(13):i457–i466, 2018. 14 Metadata-Driven Host Overheads in GNN Training Conference’17, July 2017, Washington, DC, USA 
+
+## A Proof of Lemma 4.1 
+
+Problem setting. We consider the standard multi-hop neigh-bor sampling procedure widely used in GraphSAGE-like GNN training [ 14 ]. Given an input mini-batch of seed nodes 
+
+𝑆 (0) (batch size 𝐵 ), the sampling expands hop by hop. For each hop ℎ = 1, 2, . . . , 𝐻 , we are given the current frontier 
+
+𝑆 (ℎ−1) , and for each vertex 𝑢 ∈ 𝑆 (ℎ−1) , we sample its neigh-bors with replacement (uniformly among all neighbors). All sampled neighbors are collected into 𝑆 (ℎ) . After 𝐻 hops, the raw sampled node multiset is: 
+
+𝑆 (0) ∪ 𝑆 (1) ∪ · · · ∪ 𝑆 (𝐻 ) . (5) Although sampling is performed with replacement, the final computation graph used by the GNN depends only on the set of unique sampled nodes. Thus, we define the deduplicated sampled vertex set as 
+
+𝑉 𝑠 = unique 
+
+
+
+𝑆 (0) ∪ 𝑆 (1) ∪ · · · ∪ 𝑆 (𝐻 ) 
+
+, (6) and the quantity we care about is the deduplicated sampled size |𝑉 𝑠 |.
+
+Goal of the proof. In typical GNN training, this multi-hop sampling procedure is executed repeatedly once per iteration (or per mini-batch), producing a sequence: 
+
+|𝑉 (1) 
+
+> 𝑠
+
+|, |𝑉 (2) 
+
+> 𝑠
+
+|, . . . , |𝑉 (𝑚 ) 
+
+> 𝑠
+
+|. (7) We aim to show that even though sampling is random and |𝑉 𝑠 |
+
+fluctuates from iteration to iteration, its fluctuation range is extremely small when expressed as a percentage of its mean: 
+
+max 𝑖 |𝑉 (𝑖 ) 
+
+> 𝑠
+
+| − min 𝑖 |𝑉 (𝑖 ) 
+
+> 𝑠
+
+|
+
+E[| 𝑉 𝑠 |] ≪ 1, (8) with very high confidence (e.g., 99 .9% or 99 .99% ). 
+
+Modeling a draw via a global hitting probability. We model each neighbor-sampling draw as selecting one element from the multiset of neighbor-occurrences . When we take the union of all neighbor-occurrences across all seeds and hops, we obtain a large pool. Hence, each draw can be viewed as choosing one element from this global pool. Consequently, the probability that a sampling draw returns vertex 𝑣 can be modeled by the global hitting probability: 
+
+𝜋 𝑣 = deg (𝑣 )
+
+Í𝑢 ∈𝑉 deg (𝑢 ) . (9) This definition ensures that 𝜋 𝑣 ≪ 1 and typically 𝜋 𝑣 𝑆 tot ≪ 1,which matches the regime where the Poisson and Poisson-binomial approximations are accurate. 
+
+Formalization with indicator random variables. We de-fine an indicator random variable for each vertex 𝑣 :
+
+𝐼 𝑣 =
+
+(
+
+1, if vertex 𝑣 appears in the sample at least once ,
+
+0, otherwise .
+
+(10) Then the deduplicated total node count is 
+
+|𝑉 𝑠 | =
+
+> 𝑛
+
+∑︁ 
+
+> 𝑣 =1
+
+𝐼 𝑣 , (11) where 𝑛 is the total number of vertices in the graph. 
+
+Probability that a vertex gets sampled. Assume the sam-pling pipeline performs a total of 𝑆 tot draws, and each draw hits vertex 𝑣 with probability 𝜋 𝑣 . Then the probability that vertex 𝑣 is hit at least once is: 
+
+𝑝 𝑣 = 1 − ( 1 − 𝜋 𝑣 )𝑆 tot . (12) When 𝜋 𝑣 is small and 𝑆 tot is large (as sampling-based GNNs operate on sparse, dynamically sampled subgraphs), 
+
+(1 − 𝜋 𝑣 )𝑆 tot ≈ 𝑒 −𝜆 𝑣 , 𝜆 𝑣 = 𝑆 tot 𝜋 𝑣 , (13) thus 
+
+𝑝 𝑣 ≈ 1 − 𝑒 −𝜆 𝑣 . (14) Therefore, 
+
+𝐼 𝑣 ∼ Bernoulli (𝑝 𝑣 ). (15) 
+
+Overall distribution: Poisson-binomial. Because the indi-cators 𝐼 𝑣 are (approximately) independent Bernoulli random variables with different success probabilities 𝑝 𝑣 , the total num-ber of unique sampled nodes is 
+
+|𝑉 𝑠 | =
+
+> 𝑛
+
+∑︁ 
+
+> 𝑣 =1
+
+𝐼 𝑣 , (16) which follows a Poisson-binomial distribution: 
+
+|𝑉 𝑠 | ∼ PB (𝑝 1, 𝑝 2, . . . , 𝑝 𝑛 ). (17) 
+
+Approximate normal distribution. When the number of vertices 𝑛 is large and the sampling probabilities 𝑝 𝑣 are not extreme, the central limit theorem for Poisson-binomial ap-plies: 
+
+|𝑉 𝑠 | − 𝜇 𝜎 ⇒ N ( 0, 1), (18) where 
+
+𝜇 =∑︁ 
+
+> 𝑣
+
+𝑝 𝑣 , 𝜎 2 =∑︁ 
+
+> 𝑣
+
+𝑝 𝑣 (1 − 𝑝 𝑣 ). (19) Therefore, 
+
+|𝑉 𝑠 | ≈ N ( 𝜇, 𝜎 2). (20) 
+
+Range (fluctuation) of sampled node count across 𝑚 iter-ations. Since |𝑉 𝑠 | is approximately normal, we can compute its confidence interval. For a given confidence level 𝑝 and sampling repeated 𝑚 times, define: 
+
+𝑧 (𝑚 ) 
+
+> 𝑝
+
+= Φ−1 
+
+𝑝 1/𝑚 
+
+, (21) where Φ−1 is the inverse CDF of the standard normal dis-tribution. Then the confidence interval for all 𝑚 repeated samplings is: 
+
+[𝑇 min ,𝑇 max ] =
+
+h
+
+𝜇 − 𝑧 (𝑚 ) 
+
+> 𝑝
+
+𝜎, 𝜇 + 𝑧 (𝑚 ) 
+
+> 𝑝
+
+𝜎 
+
+i
+
+. (22) Thus, the range is 
+
+Range = 𝑇 max − 𝑇 min = 2𝑧 (𝑚 ) 
+
+> 𝑝
+
+𝜎. (23) 15 Conference’17, July 2017, Washington, DC, USA Yidong Gong, Saima Afrin, Yuchen Ma, Guannan Wang, Bin Ren, and Pradeep Kumar 
+
+Fig. 19: End-to-End Training Runtime Comparison Across Differ-ent Design Choices to handle Dynamic Dataflow. 
+
+Normalized range and coefficient of variation. To com-pare fluctuations across different sampling settings, we nor-malize by the mean: 
+
+𝑟 range = Range 
+
+𝜇 = 2𝑧 (𝑚 ) 
+
+> 𝑝
+
+𝜎 𝜇 = 2𝑧 (𝑚 ) 
+
+> 𝑝
+
+· CV , (24) where 
+
+CV = 𝜎 𝜇 (25) is the coefficient of variation. 
+
+Core insight: CV depends only on 𝑝 𝑣 . Recall: 
+
+|𝑉 𝑠 | =∑︁ 
+
+> 𝑣
+
+𝐼 𝑣 , 𝐼 𝑣 ∼ Bernoulli (𝑝 𝑣 ). (26) Thus, 
+
+𝜇 =∑︁ 
+
+> 𝑣
+
+𝑝 𝑣 , 𝜎 2 =∑︁ 
+
+> 𝑣
+
+𝑝 𝑣 (1 − 𝑝 𝑣 ), (27) and the coefficient of variation is: 
+
+CV = 𝜎 𝜇 =√︄ Í𝑣 𝑝 𝑣 (1 − 𝑝 𝑣 )(Í𝑣 𝑝 𝑣 )2 . (28) 
+
+Sparse-sampling regime: all 𝑝 𝑣 very small. When 𝑝 𝑣 is very small, 𝑝 𝑣 (1 − 𝑝 𝑣 ) ≈ 𝑝 𝑣 , hence 
+
+𝜎 2 ≈∑︁ 
+
+> 𝑣
+
+𝑝 𝑣 = 𝜇, CV ≈ 1
+
+√𝜇 . (29) Therefore, larger sampling budgets lead to more stable sam-pled graph sizes. 
+
+Final conclusion. Combining the above steps, the sam-pling stability satisfies: 
+
+𝑟 range = 2𝑧 (𝑚 ) 
+
+> 𝑝
+
+· CV , (30) which concludes the proof. 
+
+## B Additional Evaluation Results 
+
+B.1 Case Study: Why ZeroGNN Outperforms the CU-DPI Baseline CU-DPI: CUDA Dynamic-Parallelism Implementation. In this design, a pilot kernel dynamically launches child kernels on demand. Although this approach simplifies programming, it introduces significant kernel-launch overhead, since each child kernel invocation behaves as an independent launch. 
+
+ZeroGNN: Over-provisioned launch with device-side in-direction. ZERO GNN launches kernels using an estimated upper bound for grid size and memory. Inside the kernel, the true work sizes are read from GPU memory via GPU pointer (indirection), so only the necessary blocks perform work, and allocated buffers are sized effectively for the actual metadata. Our experiments show that CU-DPI introduces notice-able overhead due to repeated kernel launches, whereas Z E-
+
+> RO
+
+GNN effectively eliminates this cost. Fig. 19 quantifies the overhead of CU-DPI relative to our Z ERO GNN design. 
+
+B.2 Sampled Subgraph Size Variation Analysis 
+
+In this section, we analyze the distribution of sampled sub-graph sizes to demonstrate that their variability is minimal. We perform the experiments by using the default model con-figuration on the Reddit dataset. Fig. 20 shows the experiment result. The size (number of nodes) of the subgraph obtained at each training iteration is plotted on the X axis. The resulting histogram is approximately bell-shaped: most samples cluster near the center, and only a few outliers appear. Quantita-tively, the percentage spread between the observed maximum and minimum subgraph sizes is 7%, which is well below the 20% upper-bound margin we provisioned. This indicates that across iterations, sampled subgraph sizes remain tightly concentrated and do not fluctuate substantially. 
+
+Fig. 20: Distribution of sampled subgraph sizes (number of nodes) for Z ERO GNN on the Reddit dataset.
