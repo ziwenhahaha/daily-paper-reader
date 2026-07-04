@@ -6,27 +6,28 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-03
-- 运行时间：2026-07-03 21:26:56 UTC
+- 最新运行日期：2026-07-04
+- 运行时间：2026-07-04 21:04:29 UTC
 - 运行状态：成功
 - 本次总论文数：2
-- 精读区：0
-- 速读区：2
+- 精读区：1
+- 速读区：1
 
 ### 今日简报（AI）
-今天速读2篇论文，聚焦MoE训练内存优化与图结构数据Transformer扩展。最值得关注的是《Mixture-of-Parallelisms》通过并行机制创新降低MoE训练内存开销（7.0分），以及《X-LogSMask》将Transformer扩展至图数据（6.0分）。建议优先精读前者，可深入理解其内存高效训练栈的设计细节。
-- 详情：[/202607/03/README](/202607/03/README)
+今天精读了1篇大模型稀疏通信高效训练的高分论文，并速读了1篇纵向联邦学习的增益升级方法。  
+最值得关注的是《SCAPE》，其以极端稀疏通信大幅降低LLM训练开销的同时保持准确率。  
+建议普通读者关注稀疏通信技术对大规模分布式训练的实用价值，可进一步了解其性能与压缩权衡。
+- 详情：[/202607/04/README](/202607/04/README)
 
 ### 精读区论文标签
-- 本次无精读推荐。
+1. [SCAPE: Accurate and Efficient LLM Training with Extreme Sparse Communication](/202607/04/2607.01678v1-scape-accurate-and-efficient-llm-training-with-extreme-sparse-communication)  
+   标签：评分：9.0/10、query:dgnn-nas
+   evidence：利用极端稀疏通信提升分布式训练效率
 
 ### 速读区论文标签
-1. [Mixture-of-Parallelisms: Towards Memory-Efficient Training Stack for Mixture-of-Experts Models](/202607/03/2607.01844v1-mixture-of-parallelisms-towards-memory-efficient-training-stack-for-mixture-of-experts-models)  
+1. [Expected Gain-based Escalation in Vertical Federated Learning](/202607/04/2606.31331v1-expected-gain-based-escalation-in-vertical-federated-learning)  
    标签：评分：7.0/10、query:dgnn-nas
-   evidence：通信高效训练：提出组合多种并行技术以优化通信带宽
-2. [X-LogSMask: Expand Transformer for Graph-Structured Data](/202607/03/2607.01553v1-x-logsmask-expand-transformer-for-graph-structured-data)  
-   标签：评分：6.0/10、query:dgnn-nas
-   evidence：图神经网络架构：提出可解释的多头对数结构掩码，属于图Transformer架构创新
+   evidence：基于期望收益的升级策略减少纵向联邦学习中的通信开销
 
 
 <div class="dpr-home-promo-card">
