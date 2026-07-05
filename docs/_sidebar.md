@@ -1,6 +1,9 @@
 * <a class="dpr-sidebar-root-link" href="#/">首页</a>
 * <a class="dpr-sidebar-root-link dpr-sidebar-noactive-link" href="javascript:void(0)" data-dpr-hash="#/tutorial/README">使用教程</a>
 * Daily Papers
+  * 2026-07-05 <!--dpr-date:20260705-->
+    * 速读区
+      * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/202607/05/2606.30499v1-discovering-collaboration-from-novelty-random-network-distillation-for-clustered-federated-learning" data-sidebar-item="{&quot;title&quot;: &quot;Discovering Collaboration from Novelty: Random Network Distillation for Clustered Federated Learning&quot;, &quot;link&quot;: &quot;https://arxiv.org/abs/2606.30499v1-discovering-collaboration-from-novelty-random-network-distillation-for-clustered-federated-learning&quot;, &quot;score&quot;: &quot;6.0&quot;, &quot;tags&quot;: [{&quot;kind&quot;: &quot;query&quot;, &quot;label&quot;: &quot;dgnn-nas&quot;}], &quot;evidence&quot;: &quot;使用随机网络蒸馏的轻量级聚类减少联邦学习通信开销&quot;}">Discovering Collaboration from Novelty: Random Network Distillation for Clustered Federated Learning</a>
   * 2026-07-04 <!--dpr-date:20260704-->
     * 精读区
       * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/202607/04/2607.01678v1-scape-accurate-and-efficient-llm-training-with-extreme-sparse-communication" data-sidebar-item="{&quot;title&quot;: &quot;SCAPE: Accurate and Efficient LLM Training with Extreme Sparse Communication&quot;, &quot;link&quot;: &quot;https://arxiv.org/abs/2607.01678v1-scape-accurate-and-efficient-llm-training-with-extreme-sparse-communication&quot;, &quot;score&quot;: &quot;9.0&quot;, &quot;tags&quot;: [{&quot;kind&quot;: &quot;query&quot;, &quot;label&quot;: &quot;dgnn-nas&quot;}], &quot;evidence&quot;: &quot;利用极端稀疏通信提升分布式训练效率&quot;}">SCAPE: Accurate and Efficient LLM Training with Extreme Sparse Communication</a>
