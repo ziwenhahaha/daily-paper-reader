@@ -6,26 +6,22 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-05
-- 运行时间：2026-07-05 20:02:55 UTC
+- 最新运行日期：2026-07-06
+- 运行时间：2026-07-06 20:36:36 UTC
 - 运行状态：成功
-- 本次总论文数：1
+- 本次总论文数：0
 - 精读区：0
-- 速读区：1
+- 速读区：0
 
 ### 今日简报（AI）
-今天重点关注一篇关于聚类联邦学习的速读论文。  
-最值得关注的是利用随机网络蒸馏从新颖性自动发现客户端协作分组的方法。  
-建议进一步了解该方法在数据异构场景下的实际效果与潜在局限。
-- 详情：[/202607/05/README](/202607/05/README)
+> 今日无新推荐，系统未产出可展示论文。
+- 详情：[/202607/06/README](/202607/06/README)
 
 ### 精读区论文标签
 - 本次无精读推荐。
 
 ### 速读区论文标签
-1. [Discovering Collaboration from Novelty: Random Network Distillation for Clustered Federated Learning](/202607/05/2606.30499v1-discovering-collaboration-from-novelty-random-network-distillation-for-clustered-federated-learning)  
-   标签：评分：6.0/10、query:dgnn-nas
-   evidence：使用随机网络蒸馏的轻量级聚类减少联邦学习通信开销
+- 本次无速读推荐。
 
 
 <div class="dpr-home-promo-card">
