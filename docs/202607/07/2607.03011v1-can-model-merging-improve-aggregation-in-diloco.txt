@@ -1,0 +1,570 @@
+Title: Can Model Merging Improve Aggregation in DiLoCo?
+
+URL Source: https://arxiv.org/pdf/2607.03011v1
+
+Published Time: Tue, 07 Jul 2026 00:42:11 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# Can Model Merging Improve Aggregation in DiLoCo? 
+
+Stefan Horoi 1,2∗ Benjamin Thérien 1,2 Guy Wolf 1,2 Eugene Belilovsky 2,31Université de Montréal 2Mila – Quebec AI Institute 3Concordia University 
+
+# Abstract 
+
+Model merging techniques, which aggregate independently finetuned models into one to combine their capabilities, have become a topic of significant interest in recent years, with a broad array of methods having been proposed to tackle this problem. Simultaneously, an emerging trend in distributed learning has been the use of methods such as local SGD and DiLoCo, which greatly reduce communication costs by periodically aggregating the independently trained local models. However, these communication-efficient methods have been shown to degrade in performance relative to the FLOP-matched data-parallel gold standard as the number of inde-pendent local models grows and as the number of local training steps before global communication is increased. In this work, we draw an explicit analogy between the pseudo-gradient aggregation step in local SGD/DiLoCo and task arithmetic-based model merging, establishing a straightforward way to utilize merging methods in the context of distributed optimization. We then evaluate multiple state-of-the-art model merging methods in this setting and identify one method in particular, Iso-C, as a promising approach for improving DiLoCo. We find that DiLoCo SGD with Iso-C aggregation outperforms not only simple pseudo-gradient averaging but even the momentum-based DiLoCo, despite lacking a momentum mechanism itself. Building on this finding, we propose IsoLoCo, which adapts Iso-C for distributed training by equipping it with Nesterov momentum. Our empirical evaluations on language model pre-training across varying numbers of local workers show that IsoLoCo significantly outperforms DiLoCo, with the gap between them widening as the number of workers increases. This advantage remains present across model sizes and inner step counts, confirming that merging-inspired aggregation is an effective strategy for low-communication distributed training. 
+
+# 1 Introduction 
+
+The recent success of large language models (LLMs) has relied in large part on the scaling of model parameters, dataset size and amount of compute used for training. However, training models with parameter counts in the billions or trillions on internet-scale datasets comes with significant engineering challenges. The standard practice is to use data-parallel training, where multiple replicas of the model process mini-batches of data in parallel and their gradients are aggregated to update model parameters via gradient-based optimization. This requires large clusters of tightly co-located accelerators connected with high-bandwidth links, along with careful engineering to orchestrate communication and ensure efficient resource utilization. Furthermore, such synchronized training is vulnerable to device failures and makes poor use of heterogeneous hardware with varying processing speeds or network topologies. Recently, [ 6] introduced Distributed Low-Communication (DiLoCo) training, a variant of Fe-dAvg [ 23 ] and FedOpt [ 28 ] with AdamW [ 21 ] as the inner optimizer and stochastic gradient    
+
+> ∗Correspondence to: stefan.horoi@umontreal.ca ,eugene.belilovsky@concordia.ca
+> Code available at: https://github.com/shoroi/isoloco
+> Preprint.
+> arXiv:2607.03011v1 [cs.LG] 3 Jul 2026
+
+descent (SGD) with Nesterov momentum [ 24 , 30 ] as the outer optimizer. DiLoCo enables the training of deep learning models on multiple “islands” of poorly connected computational clusters. 1 2 4 8 16 32 64 128  
+
+> Number of Workers R
+> 0
+> 5
+> 10
+> 15
+> (%) increase in Val. Loss
+> over AdamW DP  AdamW DP
+> DiLoCo
+> DiLoCo SGD + Iso-C
+> IsoLoCo (ours)
+
+Figure 1: IsoLoCo scales better with work-ers than DiLoCo. Final validation loss is shown versus worker count for a 178M LLaMa-2 model in a FLOP-matched setting. Each cluster, or worker , trains its own model replica through multiple local optimization steps before shar-ing the accumulated parameter changes, i.e. pseudo-gradients , with the remaining clusters for a global optimization step. Performing many inner optimiza-tion steps between each outer synchronization al-lows DiLoCo to reach comparable final performance to data-parallel training while communicating sig-nificantly less. While highly effective at reduc-ing communication costs and even surpassing data-parallel training at small worker counts, DiLoCo’s final performance degrades in FLOP-matched set-tings as the number of workers or inner steps in-creases, making it difficult to scale without losing FLOP-efficiency [4, 31, 6, 29]. In parallel, as strong foundation models have been built and their weights made accessible to the public, these models have been adapted to many downstream tasks, with fine-tuned versions published on public repositories such as HuggingFace [ 33 ] and AdapterHub [ 27 ]. Model merging methods have emerged as a powerful way to leverage such checkpoints, aggregating them into one model with the combined capabilities of its constituents. Recently, task arithmetic [13 ] has emerged as a simple yet powerful paradigm for model merging. Rather than directly aggregating expert model parameters, e.g. by averaging them, task vectors are computed to isolate the difference between each expert’s fine-tuned parameters and the pre-trained initialization. These task vectors are then aggregated, scaled, and added back to the pre-trained model parameters, often yielding significant performance gains. However, despite these advances, the merged model often falls short of each fine-tuned expert on its corresponding task, even while achieving better overall multi-task performance than any individual expert. This merging performance gap is generally attributed to task, or parameter, 
+
+interference [34 , 9, 22 ]: a phenomenon in which the accumulated parameter updates induced by training on different tasks can conflict during merging. Task interference is known to worsen as the number of models being merged increases [ 13 , 34 , 5 , 22 ] and with longer fine-tuning duration [ 38 , 12 ], motivating a wide range of task-arithmetic-based merging methods aimed at reducing negative interference [37, 9, 22, 35]. At first glance, low-communication distributed training methods such as DiLoCo and model merging methods appear to address very different problems. DiLoCo is motivated by the need to pre-train large models on massive datasets across multiple, poorly connected compute pools. In this setting, workers optimize the same objective, typically next-token prediction, on disjoint subsets of the same training dataset. By contrast, model merging is usually framed as a post-training technique: multiple checkpoints from a shared base model, fine-tuned on different data distributions and/or objectives, are combined into a single model intended to inherit their capabilities. Despite these differences, the two families of methods share a common underlying structure. In DiLoCo, the quantities communicated by workers at each outer optimization step are pseudo-gradients: parameter differences between the model at the previous global synchronization point and the locally updated replicas obtained after several inner optimization steps. From the perspective of model merging, these pseudo-gradients can be interpreted as task vectors, where the reference model is the checkpoint from the previous outer step and the “experts” are the local replica checkpoints after inner training. The main distinction is that DiLoCo repeats this train-and-aggregate procedure over many rounds, whereas standard model merging typically performs a single, often more substantial, round of specialization followed by one aggregation step. This connection also suggests that the performance degradation observed in DiLoCo as the number of workers or inner optimization steps increases is directly analogous to the negative task interference studied in the model merging literature. This parallel motivates viewing low-communication distributed training through the lens of model merging, and raises the question of whether merging methods designed to reduce interference can improve DiLoCo-style training. 2Expert A 
+
+> Pre-trained
+> model
+> Expert B
+
+Model Merging  DiLoCo 
+
+> Merged
+> Model
+> Replica 1
+> Replica 2
+
+Figure 2: DiLoCo as iterative model merging. Dots represent model checkpoints, with blue dots denoting locally trained models: fine-tuned experts in model merging and worker replicas in DiLoCo respectively. Blue arrows are local updates—task vectors in merging and pseudo-gradients in DiLoCo—measuring displacement from the shared initialization. Red arrows denote aggregation: a one-shot merge on the left, and an outer-optimizer update on the right. Formally, with SGD, DiLoCo’s outer step reduces to task-arithmetic merging (Equations (1) and (2)), applied iteratively. In this work, we bridge these two closely related but largely separate lines of research. While DiLoCo has recently emerged as an effective approach for distributed pre-training across poorly connected compute pools, its global aggregation step remains simple, typically averaging the pseudo-gradients produced by each worker. In contrast, recent model merging methods propose more sophisticated aggregation mechanisms explicitly designed to reduce negative interference when combining task vectors from multiple independently fine-tuned models, including challenging settings with many experts or long fine-tuning durations. Building on the structural correspondence identified above, which we make explicit in Section 2.3, we investigate whether model merging techniques can serve as drop-in replacements for DiLoCo’s pseudo-gradient aggregation step. Specifically, we ask whether such merging-inspired aggregation can better preserve performance as the number of workers and inner optimization steps increases, two regimes in which low-communication training is known to degrade. Our contributions are as follows: • We establish a direct analogy between DiLoCo’s pseudo-gradient aggregation step and task-arithmetic-based model merging (Section 2.3), showing that model merging methods can be interpreted as alternative aggregation rules for low-communication distributed training. • Guided by this connection, we systematically benchmark state-of-the-art merging methods as drop-in aggregation mechanisms for DiLoCo-style training in Section 3, identifying Iso-C [ 22 ]as offering the strongest performance at reasonable computational cost, even surpassing DiLoCo despite not having a momentum mechanism itself (Figure 1 and Table 2). • We propose IsoLoCo in Section 4, a practical adaptation of Iso-C to low-communication distributed training equipped with Nesterov momentum. Through extensive experiments across worker counts (up to R = 128 ), number of inner steps, and model sizes, we show that IsoLoCo consistently outperforms DiLoCo and substantially narrows the gap to data-parallel training. • We develop a fast Newton–Schulz-based implementation of IsoLoCo that replaces SVD with iterative orthogonalization and an RMS proxy for the singular-value mean, yielding up to two orders of magnitude faster orthogonalization ( ≈15% end-to-end speed-up) with negligible loss degradation ( ∼0.45% ). • Following recent work that uses Muon as DiLoCo’s inner optimizer (MuLoCo) [ 31 ], we show that IsoLoCo composes with a Muon inner optimizer to further improve worker-count scaling, achieving the lowest validation loss among all methods considered for R ≥ 32 , while IsoLoCo with an AdamW inner optimizer matches or surpasses MuLoCo at high worker counts, at a fraction of the orthogonalization cost (Section 4.4). 32 Background and Preliminaries 
+
+2.1 Distributed Low-Communication Training 
+
+The ideas behind DiLoCo can be traced back to federated learning, where training data is distributed across many consumer devices and cannot be centrally aggregated due to privacy or bandwidth constraints. Federated Averaging (FedAvg) [ 23 ] addresses this problem by broadcasting a global model to participating clients, letting each perform several local SGD steps, and aggregating the resulting updates through a weighted average. When each client takes exactly one step with the same batch size, FedAvg reduces to synchronous data-parallel SGD. Subsequent work has addressed FedAvg’s shortcomings, such as difficulty of hyperparameter tuning and convergence issues, by incorporating adaptive server-side optimizers such as Adam [16] in the FedOpt framework [28]. Algorithm 1: DiLoCo 
+
+Require: Initial model θ(0) 
+
+Require: R workers, Data shards {D 1, . . . , DR}
+
+Require: Optimizers InnerOpt and OuterOpt  
+
+> 1:
+
+for outer step t = 1 , . . . , T do 
+
+▷ Inner optimization  
+
+> 2:
+
+for worker i = 1 , . . . , R in parallel do  
+
+> 3:
+
+θ(t) 
+
+> i
+
+← θ(t−1)  
+
+> 4:
+
+for inner step h = 1 , . . . , H do  
+
+> 5:
+
+x ∼ D i 
+
+> 6:
+
+L ← f (x, θ (t) 
+
+> i
+
+) 
+
+> 7:
+
+θ(t) 
+
+> i
+
+← InnerOpt  θ(t) 
+
+> i
+
+, ∇L  
+
+> 8:
+
+end for  
+
+> 9:
+
+end for 
+
+▷ Average pseudo-gradients  
+
+> 10:
+
+∆(t) ← 1
+
+> R
+
+PRi=1 
+
+ θ(t−1) − θ(t)
+
+> i
+
+
+
+▷ Outer optimization  
+
+> 11:
+
+θ(t) ← OuterOpt  θ(t−1) , ∆(t) 
+
+> 12:
+
+end for 
+
+DiLoCo [ 6] adapts this idea to large-scale language-model pretraining across R workers, or “islands” of compute. As shown in Al-gorithm 1, each worker receives the current global model and independently trains a local replica for H inner steps using an inner opti-mizer ( InnerOpt , often AdamW [ 21 ]). After the inner loop, each worker computes a pseudo-gradient capturing its local parameter changes, and these are averaged across workers. The global model is then updated with an outer op-timizer ( OuterOpt , typically SGD with Nes-terov momentum [ 24 , 30 ]), applied to this av-eraged pseudo-gradient. Unlike standard Fe-dOpt, DiLoCo retains inner optimizer states across outer rounds rather than resetting them. Since workers communicate only once every H
+
+steps, DiLoCo reduces global synchronization by roughly a factor of H relative to data-parallel, making it attractive for training across weakly connected or geographically distributed clusters. Subsequent work has established that DiLoCo scales predictably with model size and can match or improve over data-parallel training under fixed compute budgets [ 4]. However, the same studies show that increasing the number of workers R
+
+degrades performance [ 4, 31 ]. Similarly, increasing the number of inner steps H leads to worse performance, as local replicas diverge further before aggregation, making the averaged pseudo-gradient less aligned with the update that tightly synchronized training would produce. This limitation is central to our work: DiLoCo’s communication savings come at the cost of aggregation quality. 
+
+2.2 Model Merging and Task Arithmetic 
+
+Model merging is a means of combining multiple model checkpoints, fine-tuned from the same pre-trained model, into one with the goal of combining the constituent models’ capabilities. It is often justified through the lens of linear mode connectivity [ 10 , 7 , 8 ]: models fine-tuned from a common pre-trained checkpoint tend to lie in the same basin of the loss landscape [ 25 ], meaning their parameters can be averaged without incurring high loss. However, naive parameter averaging often yields poor results in practice. A seminal improvement is task arithmetic (TA) [ 13 ], which operates on task vectors rather than raw parameters. Let θ0 denote the pre-trained parameters and θt those of the model fine-tuned on task t ∈ T . The task vector τt = θt − θ0 captures the parameter changes induced by fine-tuning, and models are merged as: 
+
+Merge( θ0, {θt}t∈T ) = θ0 + λ X
+
+> t∈T
+
+τt, (1) where λ is a tunable hyper-parameter. Task-arithmetic based merging significantly improves merged model performance and has thus become the dominant paradigm in this area of research. Nevertheless, 
+
+negative parameter interference remains a challenge, since the merged model often falls short of each 4fine-tuned expert on its corresponding task. Such interference is exacerbated when the number of models being merged increases [13, 34, 5, 22] or when the fine-tuning stage is prolonged [38, 12]. Many methods have been proposed to reduce negative task interference during merging and narrow the gap between the merged model and the individual experts [ 13 , 34 , 37 , 5 , 9, 22 , 35 ]. For example, some methods rely on sparsifying the task vectors to reduce direct parameter conflicts [ 34 , 37 , 5], while others use SVD to reduce conflicts in the spectral domain of task vectors [ 9, 22 ]. In this work we focus on five popular and state-of-the-art merging methods, representative of the two main mechanisms used to improve task-arithmetic-based merging: sparsity and orthogonalization. We provide a brief description of each considered method below. 
+
+TIES (TrIm, Elect Sign) merging was introduced in [ 34 ] as a means to reduce parameter interference. TIES prunes the low magnitude parameters of each task vector, then averages the remaining sparse task vectors based on sign alignment: in each parameter dimension, TIES only averages the parameters from each task vector that have the same sign as the weighted majority. 
+
+DARE (Drop And REscale) merging [ 37 ] randomly prunes a fraction of each task vector parameters and rescales the remaining ones based on the pruning fraction before combining them as in Eq. 1. 
+
+TSV (Task Singular Vector) merging [ 9 ] operates on the per-layer matrix form of task vectors, or task matrices, which were found empirically to be low-rank. TSV first computes a truncated SVD of each layer’s task matrix to compress it into its principal singular directions, then decorrelates the singular vectors across tasks via a whitening transformation to reduce task interference before recombining. 
+
+Iso-C (Isotropic merging in Common subspace) & Iso-CTS [22 ] both operate on task matrices. Iso-C sums the task matrices, computes the SVD, and replaces the singular-value spectrum with its average, flattening high-energy directions to yield a more balanced common subspace. Iso-CTS further adds task-specific directions from the orthogonal complement to preserve information that may otherwise be lost during merging. 
+
+2.3 DiLoCo as Iterative Model Merging 
+
+We begin by highlighting the structural similarity between DiLoCo and task-arithmetic-based model merging. At outer step t, all DiLoCo workers are initialized from the shared parameters θ(t−1) and independently perform local training, producing updated parameters {θ(t) 
+
+> i
+
+}Ri=1 . DiLoCo then forms its outer update from the average of the resulting local updates, i.e., the displacement in parameter space between the shared initialization and the locally updated replicas. Defining the local update of worker i at outer step t as ∆(t) 
+
+> i
+
+:= θ(t) 
+
+> i
+
+− θ(t−1) , with ∆(t) denoting the average local update across workers, an SGD outer optimizer with learning rate η gives 
+
+θ(t) = θ(t−1) + η∆(t)
+
+= θ(t−1) + η 1
+
+R
+
+> R
+
+X
+
+> i=1
+
+
+
+θ(t) 
+
+> i
+
+− θ(t−1) 
+
+. (2) Comparing this update to Equation (1) reveals a direct correspondence: the shared parameters θ(t−1) 
+
+play the role of the pretrained model θ0, each worker output θ(t) 
+
+> i
+
+plays the role of a task-specific fine-tuned model, the local updates ∆(t) 
+
+> i
+
+correspond to task vectors, and the number of workers corresponds to the number of tasks. The outer learning rate η then plays the role of the task-arithmetic scaling coefficient, up to the normalization by R.
+
+Thus, with an SGD outer optimizer, DiLoCo’s outer step can be viewed as an application of task-arithmetic-based model merging. This perspective raises a natural question: can more sophisticated merging methods be substituted into the outer step to improve low-communication distributed training? This is the question we investigate in the following section. 
+
+# 3 Can Model Merging Improve Pseudo-Gradient Aggregation in DiLoCo? 
+
+3.1 Experimental Set-up Models, data and optimizers: We train Llama-style decoder-only transformer models of various sizes on the DCLM [ 18 ] dataset. The data is tokenized with the Llama-2 [ 32 ] tokenizer. We 5use a Chinchilla budget of 20x the number of training tokens relative to the number of model parameters [ 11 ] and a sequence length of 2048. We use a global batch size of 524k tokens for the 178M models and 2M tokens for the 512M and 1B models. We follow the convention of matching the global batch size for our DiLoCo experiments [6, 4], i.e. for any distributed training experiment with R workers, the inner batch size for each worker is set to global batch size divided by R.For all DiLoCo experiments, we fix the number of warm-up steps to 10% of the entire training budget, we use AdamW as the inner optimizer with standard values of β1 = 0 .9 and β2 = 0 .95 and a fixed weight decay of 0.1. Unless otherwise specified, we use R = 8 workers, H = 30 inner steps, and SGD with Nesterov momentum [6, 4] for the outer optimizer. 
+
+Hyperparameter sweeps: For our distributed training experiments, we conduct an extensive sweep over outer momentum, outer learning rate, and inner learning rate at the 178M scale. At all other scales, we fix the outer hyperparameters (momentum and learning rate) to their optimal values at 178M and sweep only over the inner learning rate, since prior work has shown that the optimal outer hyperparameters remain approximately constant across model scales [ 4 , 31 ]. The inner learning rate is swept over powers of √2, while the outer momentum is swept over values in {0.6, 0.7, 0.8, 0.9}.The outer learning rate is swept from 0.5 to 2 using increments of 0.1, following past works. However, since the merging inspired outer steps can differ substantially from the standard Nesterov SGD outer optimizer, we also find it necessary to sweep values greater than 2 using an approximately logarithmic spacing to preserve the granularity of the sweep across different scales. The training runs are evaluated on a held-out validation dataset consisting of a 100M token subset of the DCLM dataset, and the best validation loss is reported. For the AdamW data-parallel baselines we sweep over the learning rate first with a fixed weight decay of 0.1 and then we sweep over the weight decay. 
+
+Code and compute: We use the PyTorch [ 26 ] implementation from [ 29 ], adapted to our setting. Most of our experiments were conducted on nodes with 4xH100 Nvidia GPUs, with some of the larger scale experiments (larger R and/or model size) conducted on nodes with 8xH200 Nvidia GPUs. 
+
+3.2 Model Merging for DiLoCo Pseudo-Gradient Aggregation 
+
+Motivated by the direct analogy between task-arithmetic-based model merging and the outer steps of DiLoCo with SGD identified in Section 2.3, we evaluate whether other model merging methods can improve DiLoCo by replacing its outer update. We use SGD as the outer optimizer because this is the setting in which the analogy holds, and to avoid the potentially confounding effects of outer momentum. We also include data-parallel (DP) AdamW and DiLoCo with SGD outer optimizer results for comparison. Results for R = 8 workers and H = 30 inner steps are presented in Table 1. Table 1: Validation loss for DiLoCo SGD with merging-based aggregation.         
+
+> Method Valid loss
+> Baselines
+> AdamW DP 2.881 DiLoCo SGD 2.990
+> DiLoCo SGD + Merging Agg.
+> TIES 2.997 DARE 2.993 TSV-M 3.160 Iso-C 2.929
+> Iso-CTS 2.986
+
+We first observe that the sparsity-based methods TIES and DARE achieve final validation losses close to DiLoCo SGD, with losses of 2.997 and 2.993 respectively. However, these results occur at the lowest sparsity value tested for both meth-ods (0.1) and performance degrades progressively as sparsity increases. This suggests that their strong performance at low sparsity is primarily due to the resulting updates being sim-ilar to those of DiLoCo SGD, rather than to the benefits of sparsification itself. Thus, sparsity does not appear to provide a useful perspective for improving DiLoCo outer optimization in this setting. For the orthogonalization-based methods, TSV-M performs poorly, reaching a validation loss of 3.160, approximately 5.6% higher than the DiLoCo SGD baseline. It is also among the most computationally expensive methods evaluated, requiring T +2 singular value decompositions for every parameter matrix in the model: one for each worker for the low-rank approximation and two additional global. While this cost may be acceptable in merging settings, where the method is only applied once after training, it becomes prohibitive in the DiLoCo setting, where the procedure is applied at every outer optimization step. We therefore exclude TSV-M from further analysis. The related Iso-C and Iso-CTS methods both outperform the DiLoCo SGD baseline, achieving valida-tion losses of 2.929 and 2.986 respectively. However, Iso-CTS is substantially more computationally expensive, requiring T + 1 singular value decompositions and therefore incurring a cost on the order 6of the number of workers like TSV-M. Moreover, Iso-CTS performs worse than Iso-C in our setting, and prior work suggests that the difference between the two is small even for merging [ 22 ]. While preserving task-specific information may be marginally beneficial in model merging, where models are trained for longer and often on substantially different tasks, it appears less appropriate for DiLoCo: replicas are trained only for short inner loops, on subsets of the same dataset, and under the same objective. In this setting, the additional mechanisms introduced by Iso-CTS appear unnecessary and may even harm performance. We therefore also exclude Iso-CTS from the remainder of our analysis. Our benchmarking of model merging methods as outer optimizers for DiLoCo therefore leaves Iso-C as the strongest candidate, improving over the DiLoCo SGD baseline by approximately 2% with modest computational overhead: a single SVD per two-dimensional parameter matrix, rather than O(T ) decompositions as in TSV-M and Iso-CTS. As we will show later, even this cost can be significantly reduced. We therefore adopt Iso-C as the foundation for the remainder of our analysis. 
+
+# 4 IsoLoCo: Isotropic Distributed Low-Communication Training 
+
+Algorithm 2: IsoLoCo 
+
+Require: Initial global model θ(0) 
+
+Require: Outer learning rate ηout , momentum μ 
+
+> 1:
+
+Initialize momentum buffer B(0) ← 0 
+
+> 2:
+
+for t = 1 , . . . , T do  
+
+> 3:
+
+Complete local optimization from θ(t−1)  
+
+> 4:
+
+Collect pseudo-gradients {∆(t) 
+
+> i
+
+}Ri=1  
+
+> 5:
+
+Compute mean ∆(t) ← 1
+
+> R
+
+PRi=1 ∆(t) 
+
+> i
+> 6:
+
+for parameter tensor ℓ do  
+
+> 7:
+
+if dim(∆ (t) 
+
+> ℓ
+
+) = 2 then  
+
+> 8:
+
+U ΣV ⊤ ← SVD(∆ (t) 
+
+> ℓ
+
+) 
+
+> 9:
+
+σ ← Diag(Σ)  
+
+> 10:
+
+¯σ ← 1
+
+> r
+
+Prk=1 σk 
+
+> 11:
+
+∆(t) 
+
+> ℓ
+
+← ¯σU V ⊤ 
+
+> 12:
+
+end if  
+
+> 13:
+
+end for  
+
+> 14:
+
+B(t) ← μB (t−1) + ∆ (t) 
+
+> 15:
+
+P (t) ← ∆(t) + μB (t) 
+
+> 16:
+
+θ(t) ← θ(t−1) − ηout P (t) 
+
+> 17:
+
+end for 
+
+Building on Iso-C, we introduce IsoLoCo (Iso tropic distributed Lo w-Co mmunication) training, which augments the isotropic correc-tion with Nesterov momentum. This is moti-vated by [ 6 ], who identified Nesterov momen-tum as highly beneficial for FedOpt algorithms in distributed low-communication LLM train-ing; we hypothesize it can also improve Iso-C. The algorithm is presented in Algorithm 2. At each outer step t, each worker i provides a pseudo-gradient ∆(t) 
+
+> i
+
+:= θ(t) 
+
+> i
+
+− θ(t−1) , repre-senting its local progress relative to the pre-vious synchronized global parameters θ(t−1) .These are averaged to form ∆(t). For weight matrices (parameters with exactly two dimen-sions), we apply the isotropic correction: the SVD of ∆(t) is computed, its singular val-ues replaced by their mean ¯σ, and the up-date reconstructed as ¯σU V ⊤, projecting onto a nearby isotropic operator that regularizes the spectrum while preserving subspace struc-ture. Non-matrix parameters (e.g. normaliza-tion layers) are left unchanged. The corrected pseudo-gradient is then incorporated into a Nesterov momentum scheme: the buffer B(t) accumulates past corrected pseudo-gradients, and the effective update P (t) applies the characteristic look-ahead. 
+
+4.1 IsoLoCo Outperforms DiLoCo at High Worker Counts 
+
+We now review our low-communication LLM pre-training results, where the number of workers we train on grows from R = 1 to 128 and the synchronization interval is fixed at H = 30 . To the best of our knowledge, we scaled the number of workers well beyond the largest settings studied in past works R ≈ 16 –20 [31, 19, 14]. Our results are presented in Tables 2 and 3 and Figure 1. Table 2 presents the final validation loss of DiLoCo, DiLoCo SGD, DiLoCo SGD + Iso-C, and IsoLoCo on 178M models and, for DiLoCo and IsoLoCo, on 512M models. Surprisingly, even the naive combination of DiLoCo SGD with Iso-C merging-based aggregation outperforms DiLoCo at 178M scale across all worker counts, despite lacking a momentum mechanism. IsoLoCo further widens this gap, outperforming DiLoCo across both model scales and confirming the added benefit of momentum. At 178M scale, we find that the improvement of 0.027 loss at R = 1 (∼ 0.9% ) grows to 0.195 at R = 128 (∼ 5.8% ), showing IsoLoCo’s substantial improvements over DiLoCo at large worker counts. At the 512M scale, IsoLoCo’s improvement over DiLoCo is just as strong, growing 7Table 2: Validation loss across numbers of workers R and model sizes. The AdamW DP baseline reached 2.881 and 2.633 final loss at 178M and 512M scales, respectively. We observe that IsoLoCo consistently improves over DiLoCo and has much stronger performance at large worker counts.                                                                   
+
+> Model Method R= 1 R= 2 R= 4 R= 8 R= 16 R= 32 R= 64 R= 128
+> 178M DiLoCo SGD 2.887 2.905 2.937 2.990 3.064 3.178 3.357 3.601 DiLoCo 2.869 2.882 2.911 2.950 3.005 3.077 3.195 3.355 DiLoCo SGD + Iso-C 2.855 2.872 2.891 2.929 2.992 3.070 3.162 3.280 IsoLoCo (ours) 2.842 2.852 2.864 2.889 2.930 2.992 3.062 3.160
+> 512M DiLoCo 2.630 2.639 2.653 2.675 2.706 2.767 2.863 –IsoLoCo (ours) 2.589 2.593 2.599 2.610 2.628 2.676 2.716 –
+
+from 0.041 (1.6% ) at R = 1 to 0.147 (5.1% ) at R = 64 . The R = 128 results for the 512M models are omitted due to out-of-memory issues at that scale. In Table 3 we also report results for 1B-scale models with R = 8 and H = 30 . IsoLoCo continues to outperform DiLoCo at this scale ( 2.421 vs. 2.450 ), though the relative improvement is more modest than at smaller scales: 1.2% at 1B, compared to 2.1% and 2.4% at 178M and 512M (all with R = 8 ). Two effects help explain this. First, DiLoCo’s worker scaling is known to improve with model size [ 4, 31 ], allowing it to catch up to IsoLoCo at the larger scales. Second, larger models reach lower validation loss overall, leaving less headroom for algorithmic gains. Taken together, these suggest that IsoLoCo should continue to outperform DiLoCo as model size increases, albeit with smaller relative improvements at larger scales. Table 3: Validation loss for DiLoCo and IsoLoCo for 1B models, R = 8 .   
+
+> Method Valid loss
+> DiLoCo 2.450 IsoLoCo (ours) 2.421
+
+Figure 1 reports the performance of DiLoCo, DiLoCo SGD + Iso-C, and IsoLoCo at 178M scale normalized relative to an AdamW DP baseline. Specifically, we report the percentage 
+
+100 · ( Method AdamW DP − 1) , i.e. the relative increase in loss over AdamW DP. Since communication-intensive data-parallel training is the de facto gold standard and low communication methods are known to degrade in performance at larger worker counts [ 31 , 4], this metric allows direct inspection of the performance degradation of different methods relative to this ideal. We observe that relative to the AdamW DP (Loss= 2.881 ) all low communication methods degrade as the number of workers increases. However, IsoLoCo strictly improves over DiLoCo at all worker counts, reaching only a 9.7% degradation at R = 128 vs. DiLoCo’s 16.5%. Moreover, IsoLoCo outperforms AdamW DP at 
+
+R ≤ 4. In summary, we find that IsoLoCo yields strict improvements over DiLoCo in all settings. 
+
+4.2 Increasing the Number of Inner Steps 
+
+We now evaluate the performance of our method as the synchronization interval is increased from 
+
+H = 30 to 240 . The number of workers is fixed to R = 8 here. Table 4 reports the final loss of DiLoCo and IsoLoCo at each synchronization interval H ∈ { 30 , 60 , 120 , 240 }. Both methods were extensively tuned in each case. We observe that IsoLoCo consistently improves over DiLoCo across all numbers of inner steps. These results demonstrate that IsoLoCo is compatible with long synchronization intervals, which is essential for training under heavy bandwidth constraints. Table 4: Validation loss as a function of synchronization interval ( H) for DiLoCo and IsoLoCo. 
+
+We observe that IsoLoCo consistently improves over DiLoCo across all synchronization intervals. 
+
+Method H = 30 H = 60 H = 120 H = 240 
+
+DiLoCo 2.950 2.957 2.976 3.008 IsoLoCo (ours) 2.889 2.907 2.944 2.991 4.3 Accelerating IsoLoCo with Newton-Schulz Iterations 
+
+Despite being significantly less computationally expensive than some of the other merging methods considered, Iso-C still relies on SVD to compute the singular values and vectors of the gradients, which can be slow on GPUs. We therefore explore whether IsoLoCo can be accelerated using the iterative Newton-Schulz [ 3 , 17 ] method, which is already used in the recently popularized Muon 8optimizer [ 15 , 20 ]. We discuss the relationship between IsoLoCo and Muon in more detail in Appendix B. Let M ∈ Rn×m be a matrix with singular value decomposition M = U SV ⊤. The Newton-Schulz ( NS ) method uses matrix multiplications to approximately orthogonalize M , i.e. 
+
+NS( M ) ≈ U V ⊤. However, using Newton-Schulz to orthogonalize the gradients does not yield the individual singular values, which are needed to compute their mean in IsoLoCo. Instead, we propose using the root mean square of the singular values as a cheap proxy, since it can be computed directly from the gradient matrix before orthogonalization: 
+
+RMS( σ) = ∥M ∥F
+
+√r =
+
+vuut 1
+
+r
+
+> r
+
+X
+
+> i=1
+
+σ2
+
+> i
+
+Note that in general RMS( σ) ≥ mean( σ), with equality only when all singular values are identical. Despite this difference, we find that the RMS is a good replacement for the mean. In our experiments with 178M models, R = 8 , and H = 30 , the fast implementation reaches a validation loss of 2.902, still significantly outperforming DiLoCo (2.950) and trailing the SVD implementation (2.889) by only ∼0.45% . Furthermore, both versions share the same optimal hyperparameters. 
+
+Time complexity analysis. Both SVD and Newton-Schulz have a time complexity of 
+
+O(min( m2n, mn 2)) , with Newton-Schulz also depending on the number of iterations; however, that number is small (we use the standard 5-step iteration from the literature [ 15 , 20 ] with the polynomial coefficients from [ 1]). In practice, Newton-Schulz is faster because it relies solely on general matrix-matrix multiplications, which GPUs are heavily optimized for and which can exploit lower-precision arithmetic. At the 178M model scale with R = 8 , we found the Newton–Schulz orthogonalization step to be up to two orders of magnitude faster than SVD for the matrix sizes used in our models, resulting in a roughly 15% speed-up in wall-clock time over the entire training duration, with all other factors held constant. 
+
+4.4 IsoLoCo improves MuLoCo’s worker-count scaling 
+
+The Muon optimizer [ 15 ] has recently attracted considerable attention for LLM pre-training [ 20 ,2], as it improves on both the performance and efficiency of the long-standing default optimizer, AdamW [ 21 ]. Closest to our setting, [ 31 ] use Muon as DiLoCo’s inner optimizer and show that the resulting method, MuLoCo, scales better with worker count, tolerates tighter communication constraints, and admits larger critical batch sizes than standard DiLoCo. Since IsoLoCo modifies only the outer step, it is orthogonal to the choice of inner optimizer. We therefore ask whether the two improvements compose, pairing IsoLoCo’s outer step with a Muon inner optimizer. 8 16 32 64 128  
+
+> Number of Workers R
+> 2.9
+> 3.0
+> 3.1
+> 3.2
+> 3.3
+> Validation Loss
+> DiLoCo
+> IsoLoCo
+> MuLoCo (DiLoCo + Muon inner)
+> IsoLoCo + Muon inner
+
+Figure 3: IsoLoCo further improves MuLoCo’s worker-count scaling. Final validation loss is shown versus worker count for a 178M LLaMa-2 model in a FLOP-matched setting. Figure 3 compares DiLoCo and IsoLoCo under both AdamW [ 21 ] and Muon [ 15 ]inner optimizers as the worker count is var-ied from R = 8 to R = 128 in a FLOP-matched setting; following [ 31 ], we denote DiLoCo with a Muon inner optimizer as MuLoCo. The two techniques improve DiLoCo through the same underlying mechanism— flattening the spectrum of the updates—but at different stages: IsoLoCo replaces the singular values of the outer update with their mean, while Muon drives the singu-lar values of the inner updates toward one. This shared mechanism explains both why combining them helps and why the effect is not additive. Each operation improves over DiLoCo on its own, and because they act at different stages they contribute comple-mentary gains: IsoLoCo’s isotropic scaling improves the aggregation of worker gradients, yielding its largest advantages at high worker counts, while Muon’s inner steps improve convergence. Combining them therefore helps, and increasingly so 9as workers scale. But since both operations flatten the spectrum, stacking them does not double the benefit. Because the outer step is applied only once every H inner steps, IsoLoCo orthogonalizes far less frequently than MuLoCo, which does so at every inner step. IsoLoCo is therefore considerably cheaper while matching MuLoCo at low worker counts and surpassing it at high ones. This is borne out by the numbers. At R = 8 , IsoLoCo, MuLoCo, and IsoLoCo with a Muon inner optimizer all fall within ∼0.7% of one another, and all sit more than ∼2% below DiLoCo: at low worker counts the two operations do largely the same job, so little is gained by applying both. As the worker count grows, however, the combination of IsoLoCo and MuLoCo increasingly separates from either method alone. For R ≥ 32 it attains the lowest validation loss among all methods considered, with its improvement over MuLoCo growing from 0.13% at R = 32 to 1.63% at R = 128 , and its improvement over IsoLoCo with an AdamW inner optimizer growing from 0.60% to 0.92% over the same range. This is consistent with the outer and inner interventions addressing distinct bottlenecks, namely gradient aggregation and convergence respectively, that both become more pronounced at scale. 
+
+4.5 Ablations and Analysis 
+
+We conduct ablations on our 178M models with R = 8 to validate key design choices in IsoLoCo. 
+
+Momentum and orthogonalization target. We compare Nesterov momentum against standard (non-Nesterov) momentum and evaluate whether orthogonalization should be applied to the gradients ∆(t)
+
+(as in IsoLoCo) or to the final update matrix P (t). For the momentum experiments, we additionally sweep over the outer momentum coefficient, as the non-Nesterov variant requires lower values for this hyperparameter. We find that all design choices have a modest effect: non-Nesterov momentum yields slightly worse results ( ∼0.2% ) than the Nesterov variant, and applying orthogonalization to P (t)
+
+rather than the gradients also degrades performance slightly. We additionally tried excluding the two-dimensional embedding and head parameters from orthogonalization but observed no improvement. 
+
+Directional analysis of singular value equalization. Since IsoLoCo exposes the gradients’ singular values, we can isolate the source of its gains: does performance improve primarily from clipping high singular values down to the mean, or from boosting low singular values up to it? We implement two variants: CLIP _HIGH , which sets only above-mean singular values to the mean, and CLIP _LOW , which does the same for below-mean values, leaving the remaining singular values unchanged. Both variants improve over the DiLoCo baseline (2.950), with CLIP _LOW reaching 2.931 and CLIP _HIGH reaching 2.894. Notably, CLIP _HIGH nearly matches the full IsoLoCo result (2.889), while CLIP _LOW closes only a small fraction of the gap. We therefore conclude that IsoLoCo’s gains are primarily driven by reducing the dominance of a few high-energy directions in the gradient spectrum. 
+
+# 5 Conclusion and Limitations 
+
+This work investigates model merging as a mechanism for improving gradient aggregation in DiLoCo-style low-communication training, providing what is, to our knowledge, the first thorough study of model merging methods in the context of distributed optimization. Our analysis is grounded in the direct analogy between task-arithmetic-based model merging and DiLoCo with SGD outer optimizer (Section 2.3). Evaluating merging methods in this setting allows us to identify Iso-C as a particularly effective replacement for pseudo-gradient averaging and propose IsoLoCo, a momentum-equipped variant for distributed optimization. IsoLoCo consistently outperforms DiLoCo across model sizes and synchronization intervals, with gains that become more pronounced as the number of workers increases. We further introduce a fast implementation based on the iterative Newton–Schulz method that closely matches the SVD version while yielding substantial wall-clock improvements. More broadly, our results suggest that model merging is a valuable source of inspiration for distributed training research: merging-inspired gradient aggregation can help low-communication training scale to larger numbers of poorly interconnected workers while reducing the performance gap to AdamW DP typically observed with standard DiLoCo. Important future directions include evaluating IsoLoCo under strong compression, combining it with low-communication pipelining methods, studying the single-worker case more extensively, and developing a theoretical understanding of why merging-inspired distributed optimizers, IsoLoCo in particular, improve results. 10 Limitations. While we have made our best effort to provide a thorough scientific study and taken the necessary measures to ensure our results are sound, limitations naturally arise from the computational resources available in academia. In no particular order, our empirical results do not evaluate models beyond 1B scale, architectures beyond a dense transformer (e.g. MoE, efficient attention variants, hybrid architectures), or tasks beyond language modeling. On the theoretical side, we do not prove convergence for optimizers employing model merging outer steps. 
+
+Broader Impact. This work proposes improvements to distributed optimization for neural network training, which could help make large-scale training more accessible to researchers with limited or heterogeneous infrastructure. We do not foresee specific negative societal consequences beyond those generally associated with advances in language modeling. 
+
+# Acknowledgments 
+
+This work was partially funded by the NSERC CGS D 569345 - 2022 scholarship [S.H.]; FRQNT Doctoral (B2X) scholarship [B.T.]; FRQNT New Scholar grant [E.B.]; FRQNT-NSERC grant 2023-NOVA-329125 [E.B. & G.W.]; Canada CIFAR AI Chair, NSF DMS grant 2327211 and NSERC Discovery grant 03267 [G.W.]. This work is also supported by resources from Compute Canada and Calcul Quebec. The content is solely the responsibility of the authors and does not necessarily represent the views of the funding agencies. 11 References 
+
+[1] K. Ahn, B. Xu, N. Abreu, Y. Fan, G. Magakyan, P. Sharma, Z. Zhan, and J. Langford. Dion: Distributed orthonormalized updates, 2025. [2] E. AI, :, I. Shah, A. M. Polloreno, K. Stratos, P. Monk, A. Chaluvaraju, A. Hojel, A. Ma, A. Thomas, A. Tanwer, D. J. Shah, K. Nguyen, K. Smith, M. Callahan, M. Pust, M. Parmar, P. Rushton, P. Mazarakis, R. Kapila, S. Srivastava, S. Singla, T. Romanski, Y. Vanjani, and A. Vaswani. Practical efficiency of muon for pretraining, 2025. [3] Å. Björck and C. Bowie. An iterative algorithm for computing the best estimate of an orthogonal matrix. SIAM Journal on Numerical Analysis , 8(2):358–364, 1971. [4] Z. Charles, G. Teston, L. M. Dery, J. K. Rush, N. Fallen, Z. Garrett, A. Szlam, and A. Douillard. Communication-efficient language model training scales reliably and robustly: Scaling laws for diloco. In The Thirty-ninth Annual Conference on Neural Information Processing Systems ,2026. [5] M. Davari and E. Belilovsky. Model breadcrumbs: Scaling multi-task model merging with sparse masks. In Computer Vision – ECCV 2024: 18th European Conference, Milan, Italy, September 29–October 4, 2024, Proceedings, Part LXXV , page 270–287, Berlin, Heidelberg, 2024. Springer-Verlag. [6] A. Douillard, Q. Feng, A. A. Rusu, R. Chhaparia, Y. Donchev, A. Kuncoro, M. Ranzato, A. Szlam, and J. Shen. Diloco: Distributed low-communication training of language models, 2024. [7] F. Draxler, K. Veschgini, M. Salmhofer, and F. Hamprecht. Essentially no barriers in neural network energy landscape. In J. Dy and A. Krause, editors, International Conference on Machine Learning (ICML) , volume 80 of Proceedings of Machine Learning Research , pages 1309–1318. PMLR, 10–15 Jul 2018. [8] J. Frankle, G. K. Dziugaite, D. Roy, and M. Carbin. Linear mode connectivity and the lottery ticket hypothesis. In H. D. III and A. Singh, editors, International Conference on Machine Learning (ICML) , volume 119 of Proceedings of Machine Learning Research , pages 3259–3269. PMLR, 13–18 Jul 2020. [9] A. A. Gargiulo, D. Crisostomi, M. S. Bucarelli, S. Scardapane, F. Silvestri, and E. Rodolà. Task singular vectors: Reducing task interference in model merging. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 18695–18705, June 2025. [10] T. Garipov, P. Izmailov, D. Podoprikhin, D. P. Vetrov, and A. G. Wilson. Loss surfaces, mode connectivity, and fast ensembling of DNNs. In S. Bengio, H. Wallach, H. Larochelle, K. Grau-man, N. Cesa-Bianchi, and R. Garnett, editors, Advances in Neural Information Processing Systems (NeurIPS) , volume 31. Curran Associates, Inc., 2018. [11] J. Hoffmann, S. Borgeaud, A. Mensch, E. Buchatskaya, T. Cai, E. Rutherford, D. de Las Casas, L. A. Hendricks, J. Welbl, A. Clark, T. Hennigan, E. Noland, K. Millican, G. van den Driessche, B. Damoc, A. Guy, S. Osindero, K. Simonyan, E. Elsen, J. W. Rae, O. Vinyals, and L. Sifre. Training compute-optimal large language models, 2022. [12] S. Horoi, G. Wolf, E. Belilovsky, and G. K. Dziugaite. Less is more: Undertraining experts improves model upcycling. arXiv preprint arXiv:2506.14126 , 2025. [13] G. Ilharco, M. T. Ribeiro, M. Wortsman, L. Schmidt, H. Hajishirzi, and A. Farhadi. Editing models with task arithmetic. In International Conference on Learning Representations (ICLR) ,2023. [14] S. Jaghouar, J. M. Ong, M. Basra, F. Obeid, J. Straube, M. Keiblinger, E. Bakouch, L. Atkins, M. Panahi, C. Goddard, M. Ryabinin, and J. Hagemann. INTELLECT-1 technical report. CoRR ,abs/2412.01152, 2024. 12 [15] K. Jordan, Y. Jin, V. Boza, J. You, F. Cesista, L. Newhouse, and J. Bernstein. Muon: An optimizer for hidden layers in neural networks. https://kellerjordan.github.io/posts/muon/ ,2024. Accessed: 2026-04-27. [16] D. P. Kingma and J. Ba. Adam: A method for stochastic optimization. In International Conference on Learning Representations (ICLR) , 2015. [17] Z. Kovarik. Some iterative methods for improving orthonormality. SIAM Journal on Numerical Analysis , 7(3):386–389, 1970. [18] J. Li, A. Fang, G. Smyrnis, M. Ivgi, M. Jordan, S. Gadre, H. Bansal, E. Guha, S. Keh, K. Arora, S. Garg, R. Xin, N. Muennighoff, R. Heckel, J. Mercat, M. Chen, S. Gururangan, M. Wortsman, A. Albalak, Y. Bitton, M. Nezhurina, A. Abbas, C.-Y. Hsieh, D. Ghosh, J. Gardner, M. Kilian, H. Zhang, R. Shao, S. Pratt, S. Sanyal, G. Ilharco, G. Daras, K. Marathe, A. Gokaslan, J. Zhang, K. Chandu, T. Nguyen, I. Vasiljevic, S. Kakade, S. Song, S. Sanghavi, F. Faghri, S. Oh, L. Zettlemoyer, K. Lo, A. El-Nouby, H. Pouransari, A. Toshev, S. Wang, D. Groeneveld, L. Soldaini, P. W. Koh, J. Jitsev, T. Kollar, A. G. Dimakis, Y. Carmon, A. Dave, L. Schmidt, and V. Shankar. Datacomp-lm: In search of the next generation of training sets for language models. In A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang, editors, 
+
+Advances in Neural Information Processing Systems , volume 37, pages 14200–14282. Curran Associates, Inc., 2024. [19] J. Lidin, A. Sarfi, E. Miahi, Q. Anthony, S. Chauhan, E. Pappas, B. Thérien, E. Belilovsky, and S. Dare. Covenant-72b: Pre-training a 72b llm with trustless peers over-the-internet, 2026. [20] J. Liu, J. Su, X. Yao, Z. Jiang, G. Lai, Y. Du, Y. Qin, W. Xu, E. Lu, J. Yan, Y. Chen, H. Zheng, Y. Liu, S. Liu, B. Yin, W. He, H. Zhu, Y. Wang, J. Wang, M. Dong, Z. Zhang, Y. Kang, H. Zhang, X. Xu, Y. Zhang, Y. Wu, X. Zhou, and Z. Yang. Muon is scalable for llm training, 2025. [21] I. Loshchilov and F. Hutter. Decoupled weight decay regularization. In International Conference on Learning Representations (ICLR) , 2019. [22] D. Marczak, S. Magistri, S. Cygert, B. Twardowski, A. D. Bagdanov, and J. van de Weijer. No task left behind: Isotropic model merging with common and task-specific subspaces. In 
+
+Forty-second International Conference on Machine Learning , 2025. [23] B. McMahan, E. Moore, D. Ramage, S. Hampson, and B. A. y. Arcas. Communication-Efficient Learning of Deep Networks from Decentralized Data. In A. Singh and J. Zhu, editors, 
+
+Proceedings of the 20th International Conference on Artificial Intelligence and Statistics ,volume 54 of Proceedings of Machine Learning Research , pages 1273–1282. PMLR, 20–22 Apr 2017. [24] Y. Nesterov. A method for solving the convex programming problem with convergence rate 
+
+O(1 /k 2). Proceedings of the USSR Academy of Sciences , 269:543–547, 1983. [25] B. Neyshabur, H. Sedghi, and C. Zhang. What is being transferred in transfer learning? In H. Larochelle, M. Ranzato, R. Hadsell, M. Balcan, and H. Lin, editors, Advances in Neural Information Processing Systems (NeurIPS) , volume 33, pages 512–523. Curran Associates, Inc., 2020. [26] A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan, T. Killeen, Z. Lin, N. Gimelshein, L. Antiga, A. Desmaison, A. Kopf, E. Yang, Z. DeVito, M. Raison, A. Te-jani, S. Chilamkurthy, B. Steiner, L. Fang, J. Bai, and S. Chintala. PyTorch: An imperative style, high-performance deep learning library. In H. Wallach, H. Larochelle, A. Beygelzimer, F. d'Alché-Buc, E. Fox, and R. Garnett, editors, Advances in Neural Information Processing Systems (NeurIPS) , volume 32. Curran Associates, Inc., 2019. [27] J. Pfeiffer, A. Rücklé, C. Poth, A. Kamath, I. Vuli´ c, S. Ruder, K. Cho, and I. Gurevych. AdapterHub: A framework for adapting transformers. In Q. Liu and D. Schlangen, editors, 
+
+Proceedings of the 2020 Conference on Empirical Methods in Natural Language Process-ing: System Demonstrations , pages 46–54, Online, Oct. 2020. Association for Computational Linguistics. 13 [28] S. J. Reddi, Z. Charles, M. Zaheer, Z. Garrett, K. Rush, J. Koneˇ cný, S. Kumar, and H. B. McMa-han. Adaptive federated optimization. In International Conference on Learning Representations ,2021. [29] A. Sarfi, B. Thérien, J. Lidin, and E. Belilovsky. Communication efficient llm pre-training with sparseloco. https://arxiv.org/pdf/2508.15706 , 2025. [30] I. Sutskever, J. Martens, G. Dahl, and G. Hinton. On the importance of initialization and mo-mentum in deep learning. In S. Dasgupta and D. McAllester, editors, International Conference on Machine Learning (ICML) , volume 28 of Proceedings of Machine Learning Research , pages 1139–1147, Atlanta, Georgia, USA, 17–19 Jun 2013. PMLR. [31] B. Thérien, X. Huang, A. Defazio, I. Rish, and E. Belilovsky. Muloco: Muon is a practical inner optimizer for diloco, 2026. [32] H. Touvron, L. Martin, K. Stone, P. Albert, A. Almahairi, Y. Babaei, N. Bashlykov, S. Batra, P. Bhargava, S. Bhosale, D. Bikel, L. Blecher, C. C. Ferrer, M. Chen, G. Cucurull, D. Esiobu, J. Fernandes, J. Fu, W. Fu, B. Fuller, C. Gao, V. Goswami, N. Goyal, A. Hartshorn, S. Hosseini, R. Hou, H. Inan, M. Kardas, V. Kerkez, M. Khabsa, I. Kloumann, A. Korenev, P. S. Koura, M.-A. Lachaux, T. Lavril, J. Lee, D. Liskovich, Y. Lu, Y. Mao, X. Martinet, T. Mihaylov, P. Mishra, I. Molybog, Y. Nie, A. Poulton, J. Reizenstein, R. Rungta, K. Saladi, A. Schelten, R. Silva, E. M. Smith, R. Subramanian, X. E. Tan, B. Tang, R. Taylor, A. Williams, J. X. Kuan, P. Xu, Z. Yan, I. Zarov, Y. Zhang, A. Fan, M. Kambadur, S. Narang, A. Rodriguez, R. Stojnic, S. Edunov, and T. Scialom. Llama 2: Open foundation and fine-tuned chat models, 2023. [33] T. Wolf, L. Debut, V. Sanh, J. Chaumond, C. Delangue, A. Moi, P. Cistac, T. Rault, R. Louf, M. Funtowicz, and J. Brew. Huggingface’s transformers: State-of-the-art natural language processing. CoRR , abs/1910.03771, 2019. [34] P. Yadav, D. Tam, L. Choshen, C. A. Raffel, and M. Bansal. Ties-merging: Resolving interfer-ence when merging models. In A. Oh, T. Naumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine, editors, Advances in Neural Information Processing Systems (NeurIPS) , volume 36, pages 7093–7115. Curran Associates, Inc., 2023. [35] E. Yang, L. Shen, G. Guo, X. Wang, X. Cao, J. Zhang, and D. Tao. Model merging in LLMs, MLLMs, and beyond: Methods, theories, applications, and opportunities. ACM Comput. Surv. ,58(8), Feb. 2026. [36] G. Yang, J. B. Simon, and J. Bernstein. A spectral condition for feature learning, 2024. [37] L. Yu, B. Yu, H. Yu, F. Huang, and Y. Li. Language models are super mario: Absorbing abilities from homologous models as a free lunch. In R. Salakhutdinov, Z. Kolter, K. Heller, A. Weller, N. Oliver, J. Scarlett, and F. Berkenkamp, editors, International Conference on Machine Learning (ICML) , volume 235 of Proceedings of Machine Learning Research , pages 57755–57775. PMLR, 21–27 Jul 2024. [38] L. Zhou, D. Solombrino, D. Crisostomi, M. S. Bucarelli, G. A. D’Inverno, F. Silvestri, and E. Rodolà. On task vectors and gradients. In UniReps: 3rd Edition of the Workshop on Unifying Representations in Neural Models , 2025. 14 A Optimal Hyperparameters 
+
+We report the optimal hyperparameters used for each main-text result table: inner learning rate ηin ,outer learning rate ηout , and outer momentum μ. For the AdamW DP baselines we found optimal learning rates of 0.00195 and 0.00276; weight decays of 0.15 and 0.125 for the 178M and 512M models, respectively. Table 5: Optimal hyperparameters for Table 1. 
+
+Method ηin ηout 
+
+DiLoCo SGD 0.00138 1.6 TIES 0.00276 0.7 DARE 0.00276 1.5 TSV-M 0.00276 0.6 Iso-C 0.00391 2.1 Iso-CTS 0.00391 3.1 
+
+Table 6: Optimal hyperparameters for Table 2 at 178M scale.                                                                                                  
+
+> Method Hyperparameter R= 1 R= 2 R= 4 R= 8 R= 16 R= 32 R= 64 R= 128
+> DiLoCo SGD
+> ηin 0.00195 0.00195 0.00276 0.00138 0.00195 0.00138 0.00138 0.000977
+> ηout 1.2 1.4 1.4 1.6 1.5 1.6 1.6 1.6 DiLoCo
+> ηin 0.00138 0.00138 0.00138 0.00138 0.00138 0.00195 0.00276 0.00195
+> ηout 0.5 0.6 0.6 0.7 0.8 10.9 1
+> μ0.8 0.8 0.8 0.9 0.9 0.9 0.9 0.9 DiLoCo SGD + Iso-C
+> ηin 0.00391 0.00391 0.00391 0.00391 0.00138 0.000488 0.000244 0.000122
+> ηout 1.7 1.7 2.1 2.1 4.6 915.9 25.5 IsoLoCo
+> ηin 0.00195 0.00138 0.00138 0.00138 0.00195 0.000345 0.000244 0.000122
+> ηout 1.6 1.7 1.8 1.8 1.8 4.6 5.6 9.8
+> μ0.7 0.8 0.8 0.8 0.8 0.9 0.9 0.9
+
+Table 7: Optimal hyperparameters for Table 2 at 512M scale. 
+
+Method Hyperparameter R = 1 R = 2 R = 4 R = 8 R = 16 R = 32 R = 64 
+
+DiLoCo 
+
+ηin 0.00195 0.00138 0.00195 0.000691 0.000691 0.000488 0.000488 
+
+ηout 0.5 0.6 0.6 0.7 0.8 1 0.9 
+
+μ 0.8 0.8 0.8 0.9 0.9 0.9 0.9 IsoLoCo 
+
+ηin 0.00195 0.00138 0.00195 0.00138 0.00195 0.000345 0.000345 
+
+ηout 1.6 1.7 1.8 1.8 1.8 4.6 5.6 
+
+μ 0.7 0.8 0.8 0.8 0.8 0.9 0.9 
+
+Table 8: Optimal hyperparameters for Table 4. 
+
+Method Hyperparameter H = 30 H = 60 H = 120 H = 240 
+
+DiLoCo 
+
+ηin 0.00138 0.00138 0.00195 0.00195 
+
+ηout 0.7 0.9 1 1.1 
+
+μ 0.9 0.8 0.8 0.7 IsoLoCo 
+
+ηin 0.00138 0.00138 0.000977 0.00138 
+
+ηout 1.8 1.7 1.7 1.7 
+
+μ 0.8 0.8 0.8 0.7 
+
+15 B Comparing IsoLoCo to Muon 
+
+IsoLoCo bears some similarities with the Muon optimizer, which has been recently proposed as an effective optimizer for 2D parameters in LLMs [ 15 , 20 ]. In this section, we discuss the similarities and differences between the two. Algorithm 3: Muon 
+
+Require: Learning rate η, momentum μ 
+
+> 1:
+
+Initialize momentum buffer B0 ← 0 
+
+> 2:
+
+for t = 1 , . . . , T do  
+
+> 3:
+
+Compute gradient Gt ← ∇ θ Lt(θt−1) 
+
+> 4:
+
+Bt ← μB t−1 + Gt 
+
+> 5:
+
+Ot ← NewtonSchulz( Bt) 
+
+> 6:
+
+Ot ← pfan_out /fan_in · Ot 
+
+> 7:
+
+Update parameters θt ← θt−1 − ηO t 
+
+> 8:
+
+end for  
+
+> 9:
+
+return θT
+
+Muon approximately orthogonalizes the pa-rameter gradients through the use of the Newton-Schulz iterative method described in Section 4.3. Muon then scale the gradients by pfan_out /fan_in so that the effective magni-tude of the gradients is consistent across layers of different sizes [ 36 ]. We will call this nor-malization here “spectral”. The main difference between IsoLoCo is that IsoLoCo actually computes the SVD of the gradient matrices, giving us access to the sin-gular values and allowing to set them all to their mean. On the other hand, Muon per-forms Newton-Shulz iterations to approximately set all singular values to 1 and then normalizes then by pfan_out /fan_in . Since we also use Newton–Schulz in the fast implementation of IsoLoCo, the main difference becomes the scaling: IsoLoCo scales the orthogonalized gradient matrices by the mean/ RMS of their singular values while Muon scales by pfan_out /fan_in. Table 9: Validation loss for scaling choices under different orthogonalization methods.        
+
+> Orthog. Method SVD Newton-Schulz
+> Mean/RMS scale 2.898 2.902 qfan_out fan_in scale –3.005
+
+We isolate the impact of the orthogonalization (SVD vs. Newton–Shulz) and the scaling (mean vs spectral) on IsoLoCo by implementing these variants and keeping all other factors constant. We report results for our 178M models with R =8 and H = 30 in Table 9. The results with SVD orthogonalization and mean scaling (IsoLoCo) and with Newton–Schulz orthogonalization and RMS scaling (fast implementation of IsoLoCo) were already presented in the main text, with both variants performing well. On the other hand, Newton–Schulz orthogonalization with pfan_out /fan_in scaling, which roughly represents Muon as a DiLoCo outer optimizer, is significantly worse than IsoLoCo, with 3.4% higher loss. Other notable differences between IsoLoCo and Muon are the fact that Muon uses standard momentum while IsoLoCo uses Nesterov. Also, Muon applies the Newton–Schulz-based orthogonalization to the final update matriecs Bt while IsoLoCo applies the orthogonalization to the gradients directly. Both of these variations were found to perform worse than our IsoLoCo design (see Section 4.5). Another difference is in how these two methods treat 1D parameters, IsoLoCo simply averages them and applies momentum (similar to SGD + Nesterov optimizer) while Muon typically optimizes those with another optimizer such as AdamW. Lastly, it is common in Muon implementations to exclude the 2D embedding and head parameters from the orthogonalization step, we did not find this to significantly affect performance. 16

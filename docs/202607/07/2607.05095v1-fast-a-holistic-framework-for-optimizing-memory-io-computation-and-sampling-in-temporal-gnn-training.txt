@@ -1,0 +1,608 @@
+Title: FAST: A Holistic Framework for Optimizing Memory-I/O, Computation, and Sampling in Temporal GNN Training
+
+URL Source: https://arxiv.org/pdf/2607.05095v1
+
+Published Time: Tue, 07 Jul 2026 03:12:54 GMT
+
+Number of Pages: 11
+
+Markdown Content:
+# FAST: A Holistic Framework for Optimizing Memory-I/O, Computation, and Sampling in Temporal GNN Training 
+
+# Yushu Cai 
+
+Xidian University Guangzhou, Guangdong, China yushucai@stu.xidian.edu.cn 
+
+# Qingrui Zhu 
+
+Xidian University Guangzhou, Guangdong, China zhuqingrui@stu.xidian.edu.cn 
+
+# Lei Liu 
+
+Xidian University Guangzhou, Guangdong, China liulei2303@stu.xidian.edu.cn 
+
+# Kai Sheng 
+
+Xidian University Guangzhou, Guangdong, China kaisheng@xidian.edu.cn 
+
+# Hao Chen 
+
+Hunan University Changsha, Hunan, China haochen@hnu.edu.cn 
+
+# Xin He 
+
+Xidian University Guangzhou, Guangdong, China hexin@xidian.edu.cn 
+
+## Abstract 
+
+Temporal Graph Neural Networks (TGNNs) are widely used for learning from dynamic graphs in applications such as recommen-dation, social network analysis, and traffic forecasting. However, scaling TGNN training to large dynamic graphs remains challenging due to three intertwined bottlenecks: memory I/O, irregular com-putation, and temporal neighbor sampling. Existing systems often optimize these stages in isolation, leaving substantial performance headroom on the table. We present FAST , a holistic framework that accelerates end-to-end TGNN training by jointly optimizing sam-pling, memory I/O, and computation. FAST introduces SlimCache ,which exploits within-batch compression and cross-batch caching to reduce host-device data movement under limited GPU memory budgets. It further designs thread-efficient graph operators tailored to sparse temporal subgraphs, improving GPU cache locality and reducing the latency of aggregation and edge softmax. In addition, 
+
+FAST employs a topology-aware sampling strategy that improves CPU cache locality and accelerates temporal neighbor sampling. Ex-tensive experiments on real-world large dynamic graphs show that 
+
+FAST achieves an average of 2.1 × (up to 4.7 ×) speedup over state-of-the-art systems without sacrificing model accuracy.The code of FAST is publicly available at https://github.com/NoneBone/FAST. 
+
+## 1 Introduction 
+
+Dynamic graphs naturally model timestamped interactions between real-world entities, with nodes representing entities and times-tamped edges capturing their temporal relationships. Learning from such data is fundamental to applications including recommenda-tion, social network analysis, traffic forecasting, and fraud detection [9 , 29 ]. Temporal Graph Neural Networks (TGNNs) [ 18 , 20 , 25 ] have become the dominant approach by capturing evolving message dy-namics through recursive temporal message passing, combining temporal neighbor sampling with temporally encoded neighbor-hood aggregation to learn expressive, time-aware node representa-tions. TGNNs excel at modeling evolving relationships, such as user interest drift in streaming services [ 17 ], enabling accurate future behavior prediction. To scale TGNNs to large dynamic graphs, existing systems typi-cally adopt a timestamp-ordered batch training paradigm [ 18 , 25 ]. The input graph is partitioned into chronologically ordered batches, 
+
+> Accepted to the 55th International Conference on Parallel Processing (ICPP 2026).
+
+each containing a sequence of interactions. For each batch, the system (1) performs temporal neighbor sampling to construct a computation subgraph, (2) reads node states and feature data from host memory and transfers them to the GPU, and (3) executes for-ward and backward propagation to update representations and optimize model parameters. While effective in small-scale settings, this pipeline suffers from the following three severe bottlenecks when scaled to large graphs. 
+
+Memory I/O Bottleneck. A fundamental bottleneck is the mas-sive data access overhead between host and GPU memory. Each mini-batch requires copying dynamically sampled subgraphs and associated features, saturating the host–device interconnect (e.g., 32 GB/s of PCIe 4.0 with 16 channels) and leaving GPU compute cores underutilized. In large-scale graphs, the memory I/O stage can dom-inate up to 78% of total training time [ 4 , 31 ]. Existing frameworks attempt to mitigate this through feature compression (e.g., ETC [ 4]) or caching placement (e.g., SIMPLE [ 5], TASER [ 3]), but their designs often ignore the heterogeneous redundancy patterns of nodes and edges, and are constrained by small GPU cache budgets. 
+
+Computation Bottleneck. Beyond data movement, TGNN training suffers from inefficient computation on sparse dynamic graphs. The sampled subgraphs exhibit highly skewed degree dis-tributions and irregular memory access patterns, leading to load imbalance and low cache utilization on GPUs [ 9, 29 ]. Current work focuses on embedding reuse or redundancy elimination [ 13 , 24 ] but overlooks the acceleration of core graph operators(aggregation and edge softmax), leaving the computation stage as a key bottleneck. 
+
+Sampling Bottleneck. In addition, temporal neighbor sampling becomes a significant cost. CPU-based parallel samplers such as TGL [ 31 ] are widely adopted, but they underutilize CPU cache hi-erarchies. GPU-based samplers (e.g., GNNFlow [ 30 ], MSpipe [ 21 ], TASER [ 3 ]) achieve higher throughput but with custom implemen-tations and poor reusability, making cross-framework comparisons difficult. This motivates a simple, high -performance sampling strat-egy that improves CPU cache locality without sacrificing generality. In this paper, we present FAST , a holistic framework for opti-mizing memory I/O, computation, and sampling in TGNN train-ing. FAST is built on the observation that TGNN training exhibits substantial within - batch and cross - batch redundancy in sampled subgraphs. We first design SlimCache , which jointly exploits com-pression and caching to minimize host–device data movement un-der a limited GPU memory budget, carefully distinguishing node 
+
+> arXiv:2607.05095v1 [cs.LG] 6 Jul 2026
+
+and edge reuse patterns. Second, we introduce thread - efficient graph operators tailored to the sparsity and irregularity of tem-poral graphs, redesigning task partitioning and reduction paths to reduce latency in aggregation and edgeSoftmax. Third, we develop a topology - aware sampling strategy that maps sampling threads to CPU cores based on subgraph similarity, improving cache locality and accelerating the sampling stage. In summary, our main contributions are as follows: 
+
+• We identify and characterize the joint bottlenecks of memory I/O, computation, and sampling in large - scale TGNN training, and demonstrate that existing system designs leave significant performance headroom. 
+
+• We propose FAST , a holistic framework that co-designs system optimizations with TGNN semantics, including a SlimCache strategy that combines compression and caching for reduced host–device traffic, thread - efficient graph operators that address load imbalance and low thread utilization in sparse temporal graphs (accelerating both aggregation and edgeSoftmax), and a topology - aware CPU sampling strategy that leverages CPU core and cache hierarchies to improve locality and throughput. 
+
+• We evaluate FAST on real - world large dynamic graphs and show that it achieves an average 2.1 × speedup (up to 4.7 ×) over state-of-the-art systems without sacrificing model accuracy. 
+
+## 2 Background 2.1 Dynamic Graphs 
+
+Dynamic graphs are a fundamental data structure for modeling timestamped interactions between entities in real - world systems. A dynamic graph is typically represented as a sequence of times-tamped events G𝑆 = {𝑒 𝑡 1 , 𝑒 𝑡 2 , · · · , 𝑒 𝑡 |𝐸 | }, where each edge 𝑒 𝑡 = (𝑢, 𝑣 )
+
+denotes an interaction between nodes 𝑢 and 𝑣 occurring at times-tamp 𝑡 [ 3 – 5, 7]. Based on the granularity of temporal modeling, dynamic graphs are broadly categorized into two types. 
+
+Continuous - Time Dynamic Graphs (CTDGs) treat each in-teraction as an independent event at a continuous time point, com-monly expressed as 𝛼 (𝑡 ) = (𝑢, 𝑣, e𝑢𝑣 (𝑡 ), 𝑡 ), where e𝑢𝑣 (𝑡 ) is the edge feature vector at time 𝑡 [18 ]. CTDGs naturally capture fine -grained evolution patterns, including edge additions, deletions, updates, and node-level events modeled as self-loops. 
+
+Discrete - Time Dynamic Graphs (DTDGs) approximate the continuous process by partitioning the timeline into equal - length time windows (or snapshots) [ 1 ], converting each window into a static graph. While DTDGs are often computationally more efficient, they sacrifice some temporal continuity compared to CTDGs. 
+
+## 2.2 Temporal Graph Neural Networks 
+
+TGNNs are designed to learn node representations from dynamic graphs in an end -to -end manner. TGN [ 18 ] and TGAT [ 25 ] are representative models for CTDGs, which process event streams through temporal encoding modules and generate dynamic node embeddings at arbitrary time points. DySAT [ 20 ] targets DTDGs, aggregating information both within each snapshot (structural di-mension) and across snapshots (temporal dimension) to capture evolving structural patterns. TGL [ 31 ] argues that DTDGs can be viewed as discretized CTDGs and designs a unified training frame-work that supports both CTDG- and DTDG-based TGNNs. Naive Naive+SC Naive+SC+TE FAST 
+
+> Method Variant
+> 0
+> 250
+> 500
+> 750
+> 1000
+> Execution Time per Epoch (s)
+> TGAT
+> TGN
+> TGAT
+> TGN
+> TGAT
+> TGN
+> TGAT
+> TGN
+> Sample
+> Memory IO
+> Computation
+
+Figure 1: The execution time breakdown analysis on WIK-ITALK dataset of TGAT and TGN(generated from 5 epochs). 
+
+These models compute node embeddings via temporal message passing. For a target node and its temporal neighbors, TGNNs perform iterative sample - aggregate -update steps, where forward aggregation follows the GraphSAGE paradigm [14, 18]: 
+
+ℎ(𝑙 ) 
+
+> 𝑣
+
+= AGG 
+
+n 
+
+𝑀 
+
+
+
+ℎ(𝑙 −1) 
+
+> 𝑢
+
+, ℎ (𝑙 −1) 
+
+> 𝑣
+
+, 𝑒 𝑢𝑣 , 𝑡 
+
+
+
+| 𝑢 ∈ N in (𝑣 )
+
+o 
+
+. (1) where node 𝑣 ’s embedding at layer 𝑙 is updated by aggregating messages from its incoming neighbors Nin (𝑣 ), 𝑀 (·) is the message function, 𝑒 𝑢𝑣 denotes edge features, and 𝑡 is the timestamp. This work focuses on TGNNs applied to CTDGs, where TGNNs operate on an event - stream representation and rely on chrono-logical order batch training for scalable learning. Similar to TGL [ 31 ], our framework can support TGNNs on DTDGs but its perfor-mance remains suboptimal. We leave the design of optimizations specifically for DTDG-style training as future work. 
+
+## 3 Motivation 
+
+Training TGNN on large dynamic graphs shows fundamental inef-ficiencies across the full training pipeline. While prior work has ex-plored optimizations in individual stages, we find that performance remains bottlenecked by a combination of memory I/O overhead, irregular computation, and suboptimal sampling. In this section, we revisit these bottlenecks through measurement and analysis, and identifies key opportunities for a unified, system-level solution. 
+
+## 3.1 Rethinking Memory I/O 
+
+We begin by analyzing the execution time breakdown of represen-tative TGNN models (e.g., TGAT and TGN) on real-world datasets. As shown in Figure 1, memory I/O dominates end-to-end train-ing time, accounting for up to 78% of total execution. This over-head stems from repeated host–device transfers of dynamically sampled subgraphs and associated features, which are fundamen-tally constrained by limited interconnect bandwidth (e.g., PCIe) [ 32 ]. Existing approaches attempt to reduce data movement via either caching or compression [ 3 –5]. Caching-based methods ex-ploit cross-batch reuse by storing frequently accessed data in GPU memory, while compression-based methods reduce within-batch redundancy by transmitting compact representations. Although effective in isolation, these strategies fail to fully utilize available GPU memory or exploit the full spectrum of redundancy present in TGNN workloads. In practice, large-scale TGNN training operates in a regime be-tween two extremes: GPU memory is insufficient for full caching, 
+
+> 2
+
+yet not fully utilized during execution. This creates an opportunity to jointly leverage caching and compression under a unified design. Moreover, we observe that nodes and edges exhibit distinct reuse patterns during batched training. However, existing systems either treat them uniformly or prioritize node caching [ 3, 5 ], leading to sub-optimal cache utilization. To validate this observation, we perform a pre-sampling analysis to quantify redundancy patterns across batches. To characterize redundancy in sampled subgraphs, we adopt two metrics. First, we use the overlap ratio 𝑀 𝑖 𝑗 [ 32 ] measur-ing the fraction of shared nodes (or edges) between two subgraphs 
+
+𝑖 and 𝑗 . Second, we define the repetition rate 𝑅 𝑖 to capture the proportion of duplicate IDs within a subgraph. Formally, 
+
+𝑀 𝑖 𝑗 = 𝑁 𝑜 
+
+min (𝑁 𝑖 , 𝑁 𝑗 ) , 𝑅 𝑖 = 1 − 𝑁 𝑢 
+
+𝑁 𝑖 
+
+.
+
+where 𝑁 𝑜 denotes the number of overlapping IDs, 𝑁 𝑢 denotes the number of unique IDs in subgraph 𝑖 , and 𝑁 𝑖 and 𝑁 𝑗 denote the total number of IDs in subgraphs 𝑖 and 𝑗 , respectively. The results, shown in Table 1, present overlap and repetition statistics across four datasets. We observe that both 𝑀 and 𝑅 are consistently higher for nodes than for edges, which is consistent with prior observations based on Jaccard similarity in GNNFlow [ 30 ]. This behavior arises because a single node typically partici-pates in multiple interactions within a sampled subgraph, leading to higher redundancy compared to edges. These findings have direct system implications. A high repetition rate indicates greater potential for within-batch compression, while a high overlap ratio suggests improved effectiveness of cross-batch caching. Together, they highlight the need for a unified design that (1) integrates caching and compression to reduce host–device data movement, and (2) explicitly accounts for the heterogeneous reuse patterns of nodes and edges to maximize cache efficiency under limited memory budgets. 
+
+## 3.2 Inefficiency in Graph Computation 
+
+After alleviating memory I/O overhead, computation becomes dom-inant, as shown in Figure 1. A detailed operator-level breakdown in Figure 2(a) shows that graph operators such as aggregation(AGG) and edge-softmax(ESM) account for up to 57% of total computation time. Unlike dense tensor operations, these operators exhibit irreg-ular memory access patterns and highly skewed workloads due to the sparsity of graphs [ 2 ]. Existing frameworks rely on general abstractions (e.g., gSpMM/gSDDMM) [ 6, 23 ], which limit opportu-nities for operator-specific optimization. While prior work on static graphs improves performance through kernel fusion and memory optimization [ 28 , 32 ], these techniques do not generalize well to TGNNs with highly sparse and dynamic topologies. Our analysis reveals two key inefficiencies. First, node-centric parallelization leads to severe load imbalance due to skewed de-gree distributions. As illustrated in Figure 3, dynamic graphs often exhibit long-tailed or small-degree distributions. We quantify this imbalance using the unbalance rate defined in Equation (2). Let 
+
+𝑅 𝑑 be the proportion of degree-𝑑 nodes, and 𝐷 max be the maxi-mum sampled degree. The unbalance score for degree-𝑑 nodes is 
+
+US (𝑑 ) = 𝑅 𝑑 (𝐷 max − 𝑑 ). The worst-case imbalance occurs when all nodes have degree 1, yielding US worst = 𝐷 max − 1. Thus, the (b) (a) 
+
+Figure 2: (a) Forward pass time breakdown on WIKITALK. (b) Sampler time on LASTFM with hyper-threading on/off. 1 2 3 4 5 6 7 8 9 10                    
+
+> WIKITALK
+> 0
+> 8
+> 16
+> 24
+> Degree Distribution (%)
+> 5% 4% 4% 5% 6% 7% 10%
+> 15%
+> 26%
+> 18%
+> 12345678910
+> BITCOIN
+> 24%
+> 8% 6% 6% 5% 6% 7%
+> 14%
+> 17%
+> 9%
+
+Figure 3: Distributions of root node degree. 
+
+unbalance rate is: 
+
+UR (𝑑 ) = US (𝑑 )
+
+US worst 
+
+= 𝑅 𝑑 (𝐷 max − 𝑑 )
+
+𝐷 max − 1 . (2) A higher UR (𝑑 ) indicates more severe load imbalance. We report the results in Table 1. For example, the WIKITALK dataset reaches up to 35.6% of the worst-case imbalance. This imbalance directly leads to low hardware utilization; Table 2 shows that the average active threads per warp for the aggregation operator is only 57.6%, meaning that nearly half of the threads within a warp remain idle. Datasets with higher unbalance rates are expected to suffer from even more severe idling. Second, the small-degree nature of sampled temporal subgraphs results in low efficiency for warp-level primitives. For edge soft-max, reduction operations are typically mapped to fixed-width warp units [ 28 ]. However, when node degrees are small, many threads remain idle. As shown in Table 1, the theoretical thread efficiency ranges only from 53% to 76% under typical settings. Although mea-sured warp activity appears high (e.g., 78.5% in Table 2), a signifi-cant fraction of threads do not contribute to effective computation. These inefficiencies not only degrade compute utilization but also limit memory locality and reduce the number of active warps per SM. Collectively, they motivate the need for TGNN-specific thread-efficient operator designs that jointly optimize workload balance, thread utilization, and memory access efficiency. 
+
+Table 1: Match, repeat, imbalance rates and degree efficiency of graph datasets                              
+
+> Dataset Match (%) Repeat (%) Unbalance rate (%) Avg. degree (Thread efficiency) node edge node edge LASTFM 91.8 19.9 93.5 75.0 36.5 6.83(68%) WIKITALK 71.5 41.3 91.0 73.0 35.6 7.56(76%) BITCOIN 64.1 38.3 84.0 64.0 52.0 5.34(53%) GDELT 94.6 47.4 96.5 76.0 42.3 7.08(70%)
+
+## 3.3 Opportunity in Sampling 
+
+As memory I/O and computation are progressively optimized, the cost of temporal neighbor sampling becomes increasingly visible 
+
+> 3
+
+Table 2: Performance of AGG and ESM on WIKITALK. 
+
+Kernel L1 Cache L2 Cache Act. warps Act. threads/warp Aggregation 80.45% 56.33% 39.76 / SM 18.94 (57.6%) Edge-Softmax 37.62% 73.81% 11.24 / SM 25.11 (78.5%) 
+
+(Figure 1). Existing CPU-based samplers (e.g., TGL) leverage multi-threading to exploit data parallelism [ 4, 5, 31 ], but do not fully utilize modern CPU cache hierarchies. Meanwhile, GPU-based samplers achieve high performance through specialized designs [ 3 , 21 , 30 ], but often sacrifice generality and reusability. We empirically evalu-ate the impact of hardware features such as Hyper-Threading (HT) on sampling performance. As shown in Figure 2(b), enabling HT provides only marginal improvements, indicating that naive thread scaling is insufficient to fully exploit hardware capabilities[15]. We further observe that sampled subgraphs exhibit structural lo-cality, where different root nodes share overlapping neighborhoods. Prior work such as NextDoor [ 8] exploits this property on GPUs using software-managed memory. However, such mechanisms are not directly available on CPUs. Instead, we identify an alternative opportunity: hardware-aware thread scheduling. Modern CPUs expose shared cache hierarchies across cores (e.g., L2/L3 caches), suggesting that carefully mapping sampling tasks to cores can im-prove cache locality. The key challenge is bridging the gap between abstract graph topology and physical hardware organization. To address this, we propose a topology-aware sampling strategy that analyzes overlap patterns in sampled subgraphs (via pre-sampling) and maps threads to CPU cores accordingly. By aligning compu-tation with cache sharing domains, this approach improves cache hit rates and reduces memory access latency, enabling efficient and generalizable sampling acceleration. 
+
+## 4 Design 4.1 Overview 
+
+We present FAST, a holistic framework that accelerates TGNN train-ing by jointly addressing bottlenecks in sampling, memory I/O, and computation. Figure 4 illustrates the overall architecture. FAST be-gins with a lightweight pre-sampling phase, which extracts two key pieces of information based on the target batch size: (1) thread affin-ity score for topology-aware sampler, and (2) redundancy statistics used to identify frequently accessed node and edge IDs (i.e., hot IDs). Prior to training, the topology-aware sampler maps logical threads to physical CPU cores according to the affinity matrix, improving cache locality and reducing memory access latency. Simultaneously, the SlimCache manager selects frequently accessed node and edge features for GPU caching under a fixed memory budget using a greedy strategy based on hot IDs. During training, FAST first executes the pre-configured sam-pler. For memory I/O, SlimCache reuses cached data across batches, while uncached data are transferred in a compressed format to reduce host-device data movement and accelerate memory I/O. In the GPU trainer, FAST employs thread-efficient graph operators tailored to the sparse and irregular structure of temporal graphs, improving workload balance and cache utilization through cus-tomized CUDA kernels. The above pipeline is executed iteratively over mini-batches until the end of each epoch. FAST is designed 12345 12345        
+
+> Pre-sample Training
+> ➀Topology Aware Sampler
+> ➁Slim-Cache Manager
+> ➂Thread-Efficient Graph operator
+> Sampling Memory I/O TGNN Trainer
+> Node Feat. Cache
+> n2n3n5Fast Edge-Softmax
+> Balanced Aggregate
+> Hot IDs Affinity Score Eege Feat. Cache
+> e1e2e3
+> Thread Binding Affinity Matrix
+
+Figure 4: Overall architecture of FAST. (a) slimming process. 
+
+1 2 2 3 3 3 31 1 2 3 4[ 0, 1, 1, 2, 2, 2, 2 ] 1 2 3[ 0, 0, 1, 2, 3 ] 1 2 3 4
+
+> (b)Avg. cache process.
+
+0 1 2 3 41 5 2 6 10 2 0 7 8 9... Iter. Node Feature 0 1 2 3 41 1 2 3 62 1 2 3 7... Iter. Edge Feature (c) Greedy cache process. 0 1 2 3 41 5 2 6 10 2 0 7 8 9... Iter. Node Feature 0 1 2 3 41 1 2 3 62 1 2 3 7... Iter. Edge Feature Node Feat. Node Slim Compress Node Inverse Edge Inverse Edge Slim Edge Feat. Cache in the GPU memory Load from the Host memory 
+
+Figure 5: Process of slimming and cache. 
+
+for a single-machine, single-GPU setting, providing an integrated solution for efficient large-scale TGNN training. 
+
+## 4.2 SlimCache: Joint Caching and Compression for Efficient Memory I/O 
+
+Existing memory I/O optimization techniques [ 4 , 5] treat caching and compression as independent strategies and overlook the distinct redundancy characteristics of nodes and edges in batched TGNN training, leading to suboptimal cache utilization. To address this limitation, we propose SlimCache , a unified design that jointly exploits within-batch repetition and cross-batch overlap to minimize host-device data movement. SlimCache operates in two stages. First, during runtime, it ap-plies ID-based compression to eliminate redundant data transfers within each batch. As illustrated in Figure 5(a), for 𝐷 -dimensional node and edge features, only unique IDs and their corresponding features are transferred, along with an inverse index for recon-struction on the GPU. This reduces memory traffic from 12 𝐷 to 
+
+7𝐷 in the example. Second, SlimCache leverages a GPU-resident cache to reuse frequently accessed data across batches. A naive strategy that equally partitions cache space between nodes and edges (Figure 5(b)) yields limited benefit (e.g., 9𝐷 cache hits over three iterations). However, as shown in Table 1, nodes and edges ex-hibit different redundancy patterns, suggesting that rigid allocation policies are suboptimal. To maximize cache effectiveness, we design a greedy selection strategy that determines cache placement based on access fre-quency. Specifically, we perform pre-sampling [ 26 ] over multiple mini-batches to collect access statistics for node and edge IDs. As de-scribed in Algorithm 1, we first initialize access counters for nodes and edges (line 1), then accumulate their access frequencies across sampled batches (lines 2-4). The IDs are sorted in descending order of access frequency to obtain ranked lists (line 6). Given a fixed cache budget, we iteratively allocate space to nodes or edges based on their marginal gain in cache hits, obtaining the corresponding 
+
+> 4
+
+Algorithm 1 Greedy selection strategy                                                                                                           
+
+> Require: Cache budget 𝛼 , batches { ( N 𝑘 ,E𝑘 ) } 𝑏 𝑘 =1, node set 𝑉 , edge set 𝐸
+> Ensure: Hot node set H𝑁 , hot edge set H𝐸
+> 1: f𝑣 ←0|𝑉 |,f𝑒 ←0|𝐸 |
+> 2: for ( N 𝑘 ,E𝑘 ) ∈ batches do ⊲Count frequencies
+> 3: f𝑣 [ N 𝑘 ] ← f𝑣 [ N 𝑘 ] + 1
+> 4: f𝑒 [ E 𝑘 ] ← f𝑒 [ E 𝑘 ] + 1
+> 5: end for
+> 6: (s𝑣 ,s𝑒 ) ← ( argsort (f𝑣 ),argsort (f𝑒 ) )
+> 7: (𝑖, 𝑗 ) ← ( 0,0)
+> 8: while 𝑖 +𝑗 <𝛼 ( | 𝑉 | + | 𝐸 | ) do ⊲Greedy selection under budget
+> 9: if f𝑣 [s𝑣 [𝑖 ] ] >f𝑒 [s𝑒 [𝑗 ] ] then
+> 10: H𝑁 ← H 𝑁 ∪ { s𝑣 [𝑖 ] }
+> 11: 𝑖 ←𝑖 +1
+> 12: else
+> 13: H𝐸 ← H 𝐸 ∪ { s𝑒 [𝑗 ] }
+> 14: 𝑗 ←𝑗 +1
+> 15: end if
+> 16: end while
+> 17: return H𝑁 ,H𝐸
+
+hot ID sets (lines 8-10). This process completes before training and determines the final cache layout. Figure 5(c) illustrates the behavior of the greedy strategy. By capturing higher cross-batch overlap in edges, SlimCache allocates more cache budget to edges, achieving higher overall cache effi-ciency. For example, the total feature hit count reaches 11 𝐷 , outper-forming the equal-allocation strategy in Figure 5(b). More broadly, the redundancy analysis in Table 1 shows that nodes and edges dif-fer significantly in both repetition and overlap, reinforcing the need for differentiated treatment. By tightly integrating compression and caching, SlimCache simultaneously exploits within-batch re-dundancy and cross-batch reuse. This unified design substantially reduces memory I/O traffic and improves data access efficiency, enabling scalable TGNN training on large dynamic graphs. 
+
+## 4.3 Thread-Efficient Graph Operators 
+
+As discussed in Section 3.2, the computation stage of TGNN train-ing is dominated by thread-inefficient graph operators. In partic-ular, the aggregation(AGG) operator suffers from severe load im-balance, which reduces active threads per warp, while the edge-softmax(ESM) operator incurs low thread efficiency during reduc-tion because of the small-degree property of sampled temporal subgraphs. These issues jointly lead to poor SM utilization and limit the performance of the computation stage. To address them, we redesign the two critical operators with TGNN-specific exe-cution strategies: an edge-centric AGG scheme to eliminate load imbalance, and a thread-efficient reduction scheme for ESM to improve thread utilization and expose more locality for the GPU cache. 
+
+Balanced Aggregate. TGNN aggregation follows the Graph-SAGE paradigm by summing neighbor embeddings for each target node [ 31 ], as defined in Equation (1) . Unlike conventional GNNs, TGNNs incorporate temporal and edge information during message passing [ 18 , 20 , 25 ], and the corresponding message function for 
+
+AGG can be simplified to directly copying the neighbor embedding, i.e., the copy_u primitive in DGL. Therefore, the AGG operator in TGNNs reduces to a sum over neighbor embeddings, where for a COO-Based CSR-Based Reduce Shuffler   
+
+> invalid
+> shuffler0 invalid
+> shuffler1 Atomic Operate Idle
+
+(a) (b)   
+
+> ⅠⅡⅢ
+
+Figure 6: (a) Invalid thread in shuffler.(b) Reduction using COO(Coordinate) or CSR(Compressed Sparse Row) formats. 
+
+target node 𝑣 we have ℎ𝑣 = Í𝑢 ∈ N in (𝑣 ) 𝑣 𝑢 with Nin (𝑣 ) denoting the set of incoming neighbors of node 𝑣 .Existing optimizations such as FastGL[ 32 ] improve AGG mainly at the memory-access level by caching frequently used features in shared memory(SMEM). However, for TGNN workloads, the feature dimension limits how many nodes can be processed within one block; for example, when the feature dimension is 𝐷 = 128 , at most 8 nodes can be processed per block. As a result, increasing cache hit rate through a larger per-block working set is difficult. We therefore focus on the computation-level bottleneck. In the conven-tional node-parallel implementation, each thread iterates over the neighbors of one node, as shown in Figure 6(b)-II. Because neigh-borhood sizes vary substantially, threads finish at different times and many become idle, leading to the load imbalance described in Section 3.2. Although a CSR-based balancing strategy could assign additional neighborhoods to idle threads, such fine-grained sched-uling is ill-suited to TGNNs, where sampled subgraphs are sparse and the overhead of task redistribution would offset the benefit. To eliminate this imbalance, we adopt an edge-centric execution scheme based on the COO representation, as shown in Figure 6(b)-III. In this design, each thread handles one edge independently, which distributes work more evenly across threads and removes the degree-dependent imbalance of the node-parallel method. The main concern is the need to combine partial results from multiple edges into the same destination node, which requires atomic op-erations such as atomicAdd . However, for TGNNs, this contention is manageable. For a graph 𝐺 (𝑉 , 𝐸 ) with 𝑛 nodes, let 𝑑 in (𝑣 ) denote the in-degree of node 𝑣 . The atomic blocking delay is bounded by 
+
+𝑇 atomic-block ≤ max   
+
+> 𝑣 ∈𝑉
+
+(𝑑 in (𝑣 ) − 1) = 𝑑 max − 1.
+
+where 𝑑 max = max 𝑣 ∈𝑉 𝑑 in (𝑣 ). This indicates that atomic contention scales linearly with the maximum degree. Since dynamic graph workloads are typically small-degree, the blocking overhead re-mains limited. As shown in Table 1, the maximum average degree across training batches is 7.56, and the maximum degree in a batch does not exceed the sampling bound of 10. Under such conditions, the contention cost of the COO-based design is negligible in practice. More importantly, because AGG in TGNNs is additive, each thread performs only a single atomic update to global memory(GMEM), avoiding the need for complex SMEM buffering. This makes the edge-centric design both simple and efficient. 
+
+Edge Softmax. ESM computes a numerically stable softmax over the edges of each sampled subgraph [ 16 ], involving a maximum reduction, a sum reduction, and an element-wise division. In the existing dGNN[ 28 ] implementation, the reduction is performed with warp shuffle, as illustrated in Figure 6(b)-I. The reduction width must be set according to the maximum neighbor count, and 
+
+> 5
+
+threads assigned to positions beyond the actual degree remain active but perform ineffective work. A natural alternative is to reuse the COO-style edge-parallel re-duction used for AGG . However, this is not suitable for ESM . First, implementing the three stages of safe softmax with atomic reads and writes to GMEM would introduce substantial memory-access overhead. Second, using SMEM to optimize repeated GMEM ac-cesses would require additional preprocessing to ensure that each node’s neighborhood is not split across blocks, which adds nontriv-ial overhead. Therefore, the COO-based design does not provide a good tradeoff for ESM . Instead, we refine the CSR-style thread partitioning strategy used by FastGL. As shown in Figure 6(b)-II, each thread iterates over multiple reduction elements, which removes invalid active threads and improves thread utilization. This design is particularly effective for TGNNs because the thread idling introduced by small degrees is much less severe in ESM than 
+
+AGG . Let |𝐸 | be the number of edges, 𝐷 𝑓 the feature dimension, and 𝐻 the number of attention heads. For the same set of edges, the ratio of idle threads between ESM and AGG is approximately 
+
+IdleNum ESM /IdleNum AGG = 𝐻 /𝐷 𝑓 ≪ 1. For typical settings such as 𝐻 = 2 and 𝐷 𝑓 = 128 , the number of idle threads in ESM is less than 2% of that in AGG . In addition, this thread-loop design also increases the per-block node count. Given a block supporting up to 1024 threads, the original shuffle reduction processes 64 nodes per block (due to a 16-element shuffler), whereas the thread-loop version processes 1024 nodes, achieving a 16 × increase.Combined with the within-batch repetition observed in Section 3.1, this larger working set exposes more spatial locality among sampled subgraphs and improves cache hit rates. Overall, our computation design tailors the AGG and ESM opera-tors to the structural properties of TGNN workloads. The balanced 
+
+AGG eliminates load imbalance through edge-centric execution, while the thread-efficient ESM improves reduction efficiency and enlarges the per-block working set. Together, these optimizations reduce both computation and memory-access overheads in forward and backward propagation, enabling efficient TGNN training on sparse dynamic graphs. 
+
+## 4.4 Topology-Aware Sampling 
+
+As discussed in Section 3.3, accelerating the sampling stage re-quires mapping logical sampling threads to physical CPU cores in a topology-aware manner, so as to reduce memory access la-tency by improving CPU cache locality. Unlike GPUs, CPU cache resources cannot be explicitly controlled. However, the placement of sampling tasks over physical cores can be managed. Modern processors support fine-grained thread binding through OpenMP 4.0 [27], which provides the basic mechanism for such control. A key challenge is that batched TGNN training executes sam-pling repeatedly across many mini-batches within an epoch. Recom-puting thread bindings at runtime would introduce unnecessary overhead and offset the performance gains from improved cache hit rates. We therefore determine the binding configuration once before training begins and reuse it throughout the epoch. The re-maining question is how to characterize affinity among sampling threads based on the dynamic topology of all training batches. To this end, we design a topology-aware strategy that analyzes (a) 0 1 2 3 4 5 6 Neighbor 
+
+(b) (c)          
+
+> 3210
+> thread0 thread1 thread2 thread3 Root Node Affinity Matrix 01230123L-Core0 L-Core1 P-Core0 P-Core1 P-Core2 L1D & L1I L2 Cache L3 Cache
+>  P-Core3
+
+Figure 7: Topology-aware binding and affinity matrix. 
+
+the overlap patterns among the subgraphs processed by different threads. As illustrated in Figure 7(a), each root node and its sampled neighborhood are assigned to a specific logical thread. Figure 7(b) shows the cache organization of a hyper-threaded CPU, where each performance core (P-Core) contains two logical cores (L-Core0 and L-Core1). To exploit the shared L2 cache, threads that process highly similar sampled subgraphs should be bound to the same P-Core, such as threads 0 and 2 highlighted in green. To capture this relationship, we construct the thread affinity matrix shown in Figure 7(c), where rows and columns correspond to thread IDs and each entry denotes the similarity between the sampled subgraphs processed by the corresponding pair of threads. Based on this ma-trix, we perform pairwise matching to produce the final logical-core binding list. Specifically, we use the Blossom algorithm [ 22 ] to find the maximum-weight matching that maximizes the total affinity across all thread pairs. Algorithm 2 summarizes the construction of the thread affinity matrix for batched training. We first initialize the affinity matrix according to the number of threads (line 1). We then iterate over the sampling root nodes of 𝑅 batches. For each batch, every thread processes a contiguous chunk of nodes, following OpenMP static scheduling (lines 2-4). Given the chunk size, we compute the start-ing position for each thread within the batch (lines 5-8). Next, we traverse the upper triangular part of the matrix to compute the affinity between each pair of threads and write the result into the matrix (lines 9-13). The lower triangular part is filled to enforce symmetry, and the diagonal entries are set to -1 to prevent self-pairing (lines 14-15). Finally, the Blossom algorithm [ 22 ] generates the binding list used for thread-to-core placement (line 16). The simFunc (line 10) computes Jaccard similarity between 𝐾 -hop neighborhoods in 𝑂 (𝑆 𝐾 ) time, where 𝑆 denotes the average number of neighbors. The affinity matrix construction costs 𝑂 (𝑇 2 ·
+
+𝑅 · 𝐶 · 𝑆 𝐾 ) for 𝑅 batches, 𝐶 nodes per thread, and 𝑇 threads, while Blossom adds 𝑂 (𝑇 3). The total complexity 𝑂  𝑇 2 · 𝑅 · 𝐶 · 𝑆 𝐾  (since 
+
+𝑅 · 𝐶 · 𝑆 𝐾 ≫ 𝑇 ) is practically acceptable for typical parameters ( 𝑇 =
+
+40 , 𝑅 = 469 , 𝐶 = 100 , 𝑆 = 10 , 𝐾 = 1). In our implementation, root nodes alone capture repetition patterns adequately. We set the pre-sampling hop number to 0 (using only roots), reducing overhead and 
+
+𝐾 -hop dependence. This lightweight strategy suffices for capturing thread affinity patterns, as demonstrated in our evaluation. 
+
+> 6
+
+Algorithm 2 Topology-aware thread binding                                                                                                                          
+
+> Require: Root node IDs for all training batches: R, number of threads:
+> 𝑇 , sub-graph similarity function: simFunc (𝑢, 𝑣, nodes ), blossom algo-rithm: BlossomSelect (M)
+> Ensure: Thread binding list: B
+> 1: Initialize affinity matrix A←0𝑇 ×𝑇
+> 2: for each batch 𝑏 =1to | R | do
+> 3: V𝑏 ← R [ 𝑏 ]⊲Nodes in batch 𝑏
+> 4: 𝐶 ← ⌊ | V𝑏 |/ 𝑇 ⌋⊲Chunk size per thread
+> 5: for 𝑘 =0to 𝐶 −1do
+> 6: for 𝑖 =0to 𝑇 −1do
+> 7: 𝑢 𝑖 ←𝑖 ·𝐶 +𝑘
+> 8: end for
+> 9: for all unordered pairs (𝑖, 𝑗 )where 0≤𝑖 <𝑗 <𝑇 do
+> 10: A[𝑖 ] [ 𝑗 ] ← A[𝑖 ] [ 𝑗 ] + simFunc (𝑢 𝑖 , 𝑢 𝑗 ,V𝑏 )
+> 11: end for
+> 12: end for
+> 13: end for
+> 14: Symmetrize A:A[𝑗 ] [ 𝑖 ] ← A[𝑖 ] [ 𝑗 ]for all 0≤𝑖 <𝑗 <𝑇
+> 15: Set diagonal: A[𝑖 ] [ 𝑖 ] ← − 1for 𝑖 =0to 𝑇 −1
+> 16: B ← BlossomSelect (A)
+> 17: return B
+
+## 5 Implementation 
+
+FAST is built on the modular architecture of TGL[ 31 ], which uses DGL[ 23 ] as the graph message-passing backend and provides dy-namic graph learning support.To accelerate both I/O and com-putation, we develop a compression engine that generates com-pact triples(including uni_ID , inv_Idx , and CSR-style ind_ptr )for SlimCache and CSR-Based graph operator execution. 1 We im-plement a Python class cacheConfig() to manage SlimCache’s greedy caching and compression logic. When GPU memory is in-sufficient, the feature cache ratio is scaled down according to the remaining space. Additionally, we design custom CUDA kernels for thread-efficient graph operators and expose them via user-facing forward and backward APIs for constructing different TGNN mod-els. Through these modular APIs, each design component of FAST 
+
+can be readily integrated into other TGNN training frameworks. 
+
+Table 3: Dataset statistic of the dynamic graphs. ( D𝑣 and D𝑒 
+
+denote the dimensions of node features and edge features) 
+
+Graph |𝑉 | |𝐸 | D𝑣 D𝑒 
+
+Feature size (GB) Vertex Edge Total LastFM 2K 1.3M 128 128 0.007 0.48 0.49 WIKITALK 1.1M 7.8M 172 172 0.73 5.01 5.74 BITCOIN 24.5M 122.9M 172 172 15.7 78.7 94.5 GDELT 17K 191.3M 413 182 0.02 129.7 130 
+
+## 6 Evaluation 6.1 Experimental Setup 
+
+Environments. We conduct all experiments on a server equipped with dual Intel Xeon Gold 6133 CPUs (2x40 cores in total) running at 2.50 GHz, 512 GB of DRAM, and a single NVIDIA A100 GPU with 40 GB of GDDR6 VRAM. The software stack includes Python 3.8, PyTorch 2.1.2, DGL 0.9.1, and CUDA 11.8. Each reported result is averaged over five independent runs. 
+
+> 1Corresponding results will be shown in Section 6.3.
+
+Datasets and Models. As summarized in Table 3, we evaluate 
+
+FAST on four large-scale temporal graph datasets spanning different domains and graph characteristics. LastFM [ 11 ] captures listener– music interactions over a month. Wiki-Talk [ 17 ] records interactions among Wikipedia users on talk pages. Bitcoin [ 10 , 19 ] is a subset of the Bitcoin transaction network. GDELT is a near-billion-scale temporal knowledge graph derived from GDELT 2.0 [ 12 ], which models large-scale global events and interactions. We evaluate FAST using three representative TGNN backbones with different computational patterns: TGAT [ 25 ], which encodes temporal information with random Fourier features and attention-based aggregation; TGN [ 18 ], which maintains a memory vector for each node to model temporal evolution; and DySAT [ 20 ], which applies self-attention over both structural neighborhoods and tem-poral dynamics. 
+
+Baselines and Settings. To assess the effectiveness of FAST , we compare against three state-of-the-art TGNN training frameworks: TGL [ 31 ], ETC [ 4 ], and SIMPLE [ 5]. We exclude SWIFT [ 7 ] from the main performance comparison because its performance is primarily constrained by disk bandwidth; we include it only in the overhead analysis in Section 6.4 to ensure a fair comparison. For component-wise analysis, we additionally use individual optimizations from other systems, including the caching design of TASER [ 3 ] for I/O comparison, as well as graph operator optimizations from static graph systems such as dGNN [28] and FastGL [32]. To ensure a fair comparison, we evaluate FAST and all baselines under the same training settings. For all TGNN models, we adopt top-𝑘 recent neighbor sampling [18] with 𝑘 = 10 . We set the num-ber of sampling threads to 8, following the default configurations of the baselines. All models use a standard 2-layer message-passing architecture [ 18 , 20 , 25 ], with a batch size of 2000. We focus on the link prediction task [ 4], and report test-set Average Precision (AP) as the primary accuracy metric. Each model is trained for 10 epochs, consistent with prior studies [ 4, 5 , 7, 31 ]. Framework-specific hyper-parameters are set to the recommended defaults of each baseline. For example, the cache budget ratio in SIMPLE, defined as the frac-tion of total input data that can be retained in memory, is set to its default value of 0.1. 
+
+## 6.2 Overall Performance 
+
+Training Efficiency and Accuracy. We first compare FAST against the baseline frameworks on end-to-end TGNN training. Table 4 summarizes the results across different datasets and models. In terms of model quality, FAST achieves average precision (AP) val-ues similar to those of all baseline systems, indicating that the introduced optimizations do not compromise model accuracy. In terms of training efficiency, however, FAST consistently outper-forms the baselines across all three models, achieving an average speedup of 2.6 × (up to 4.7 ×) over TGL, 1.3 × (up to 1.4 ×) over ETC, and 1.6 × (up to 2.6 ×) over SIMPLE. These gains are enabled by the combined effect of our SlimCache, thread-efficient operators, and topology-aware sampling, which together reduce memory I/O, computation overhead, and sampling latency. On larger graphs with more than 100 million edges, FAST contin-ues to deliver strong speedups. For the TGN model on BITCOIN and GDELT, FAST achieves 2.5 × and 4.2 × speedup on average over TGL, 
+
+> 7
+
+Table 4: Comparison results of T-GNN training frameworks. Time refers to per-epoch execution time (s). The best average precision (%) and the fastest execution time are marked in bold. "OOM" indicates out of memory. 
+
+Dataset Model Framework Time(s) AP(%) Dataset Model Framework Time(s) AP(%) LASTFM TGN TGL 153.17 (2.1 ×) 86.25 BITCOIN TGN TGL 6824.28 (2.5 ×) 90.42 ETC 94.79 (1.3 ×) 86.47 ETC 4029.77 (1.4 ×) 90.37 SIMPLE 94.85 (1.3 ×) 86.13 SIMPLE OOM N/A FAST 74.59 86.26 FAST 2784.33 90.50 
+
+TGAT TGL 77.85 (1.5 ×) 86.73 TGAT TGL 2902.93 (2.4 ×) 87.49 
+
+ETC 73.68 (1.4 ×) 86.57 ETC 1411.99 (1.2 ×) 87.35 SIMPLE 65.18 (1.3 ×) 86.63 SIMPLE 3206.78 (2.6 ×) 87.39 FAST 51.77 86.76 FAST 1217.96 87.44 DySat TGL 75.94 (1.5 ×) 76.49 DySat TGL 8286.44 (1.4 ×) 78.95 FAST 49.38 76.47 FAST 5921.24 78.91 
+
+WIKITALK TGN TGL 928.13 (4.7 ×) 95.17 GDELT TGN TGL 31169.29 (4.2 ×) 98.27 ETC 221.21 (1.1 ×) 95.03 ETC OOM N/A SIMPLE 237.44 (1.2 ×) 94.98 SIMPLE OOM N/A FAST 196.00 95.19 FAST 7385.34 98.32 
+
+TGAT TGL 476.99 (3.4 ×) 90.84 TGAT TGL 16656.16 (3.2 ×) 98.79 ETC 178.29 (1.3 ×) 90.87 ETC OOM N/A SIMPLE 215.26 (1.6 ×) 90.74 SIMPLE OOM N/A FAST 138.86 90.79 FAST 5213.77 98.82 
+
+DySat TGL 581.64 (1.8 ×) 88.28 DySat TGL 35044.56 (2.3 ×) 98.66 FAST 314.62 88.31 FAST 15056.18 98.68 
+
+respectively. In contrast, ETC and SIMPLE encounter significant overhead that degrades their practical performance. For example, ETC runs into an Out-of-Memory (OOM) condition on GDELT, as its pipeline parallelism relies on storing the full batch sampling result in host memory, which exceeds the 512 GB system mem-ory. SIMPLE’s dynamic cache updates also introduce substantial overhead on large graphs; on the BITCOIN dataset for TGAT, its performance is even worse than TGL’s. In contrast, FAST maintains robust execution comparable to TGL while achieving substantial speedups, reflecting the scalability and stability of our design. We further analyze the overhead characteristics of these frameworks in Section 6.4. 
+
+## 6.3 Ablation Study 
+
+We conduct a detailed ablation study to quantify the contribution of each of FAST’s three core optimizations: SlimCache(SC), thread-efficient(TE) operators, and topology-aware(TA) sampling. This analysis isolates their individual impact on performance. 
+
+Effectiveness of SlimCache. To quantify the contribution of our memory-I/O optimizations, we compare SlimCache with TASER and SIMPLE under varying cache ratios, where the cache ratio is the fraction of node and edge features stored in GPU memory (e.g., 0.2 indicates 20% of features cached). All three frameworks share the same memory overhead 𝑀 as the cache budget: TASER uses a node-prioritized caching strategy, SIMPLE employs a dynamic node - prioritized placement, and FAST applies the greedy selection-based SlimCache strategy that combines caching and compression. Figure 8(a) shows memory I/O time for the TGAT model on the WIKITALK dataset. With no cache, SlimCache’s compression speeds up 3.0 ×. At cache ratio 0.8, FAST underperforms TASER as compression overhead dominates when the cache saturates. At cache ratio 1, SlimCache automatically disables compression for small graphs (e.g., 5.74 GB features) on typical server GPUs. For large graphs such as BITCOIN (94 GB), the cache ratio must remain small, and SlimCache delivers the best memory I/O acceleration. 0 0.2 0.4 0.6 0.8 1 
+
+> (a)Cache Ratio
+> 0
+> 77
+> 155
+> 232
+> 310
+> Time of Memory IO (s)
+> 3.0×
+> 2.4×
+> 1.9×
+> 1.4×
+> 0.9×
+> 1.0×
+> 2.9×
+> 1.1×
+> 1.2×
+> 1.4×
+> 1.5×
+> 1.9×
+> 1.0x
+> 1.0x
+> 1.0x
+> 1.0x
+> 1.0x
+> 1.0x
+> TASER
+> SIMPLE
+> FAST
+> WIKITALK BITCOIN
+> (b)Dataset
+> 0
+> 500
+> 1000
+> 1500
+> 2001
+> Time of Memory IO (s)
+> 262.5
+> 89.2
+> 49.4
+> 1539.4
+> 652.1
+> 496.5
+> TGL
+> w/o
+> w/
+> 0.0
+> 200.0
+> 400.0
+> 600.0
+> 800.0
+> Memory Accesses (GB)
+
+Figure 8: The time spent on the memory IO comparison be-tween (a) TASER, SIMPLE and FAST of TGAT on WIKITALK; (b) with and without the greedy selection strategy on TGAT. LASTFM WIKI BITCOIN GDELT 
+
+> 1
+> 2
+> 4
+> 8
+> 16
+> 32
+> 64
+> 128
+> Aggegrate Time(s)
+> 1.83×
+> 1.92×
+> 2.28×
+> 1.78×
+> 1.06×
+> 1.19×
+> 1.38×
+> 1.21×
+> 1×
+> 1×
+> 1×
+> 1× TGL
+> FastGL
+> FAST
+
+(a) LASTFM WIKI BITCOIN GDELT  
+
+> 1
+> 2
+> 4
+> 8
+> 16
+> 32
+> 64
+> 128
+> 256
+> EdgeSoftmax Time(s)
+> 4.17×
+> 1.03×
+> 3.46×
+> 1.33×
+> 1.12×
+> 1.01×
+> 1.26×
+> 1.15×
+> 1×
+> 1×
+> 1×
+> 1× TGL
+> dGNN
+> FAST
+
+(b) 
+
+Figure 9: The time spend on graph operator in TGAT. (a) TGL, FastGL and FAST of AGG;(b) TGL, dGNN and FAST of ESM. 
+
+Further isolating the effects of compression and caching, we set the cache ratio to 0.2 on WIKITALK and BITCOIN (Figure 8(b)). Here, w/o denotes disabling the greedy cache (only compression), while w corresponds to full SlimCache. On WIKITALK, compression alone reduces I/O from 49 GB to 21 GB; adding greedy caching cuts traffic further to 13 GB, yielding a 5.3 × I/O speedup. On BITCOIN, compression reduces 612 GB to 160 GB, and SlimCache brings it down to 114 GB, achieving a 3.1 × I/O speedup. This confirms that compression alone improves I/O, and SlimCache’s combined design further reduces traffic under typical memory constraints. 
+
+Effectiveness of Thread-Efficient Graph Operators. Fig-ure 9(a) and (b) report the graph operator execution time for DGL, dGNN, FastGL, and FAST across four datasets. FAST achieves up to 2.3 × speedup for the aggregate operator and 4.2 × for edge softmax. 
+
+> 8
+
+(a) 
+
+> ←←
+> 41% 52% 50% 80% 98% 98%
+
+(b) Figure 10: (a) The sampling time of TGL and FAST.(b) The cache hit rates(TGL and TA with static or dynamic binding). 
+
+For aggregation, FAST achieves 2.28 × speedup over TGL and 1.38 × over FastGL on BITCOIN, whose high imbalance (Table 1) matches our edge-parallel COO design. For edge softmax, FAST at-tains 4.17 × and 3.46 × speedup over TGL on LASTFM and BITCOIN, respectively, benefiting from the small-degree pattern and thread-level reduction outlined in Section 4.3. On WIKITALK, acceleration is modest due to its exponential degree distribution, which limits the benefit of the CSR-based reduction and prevents meaningful gains from COO-based trials. Table 5 profiles the kernel metrics for the largest sampled sub-graph. For ESM, the L1 hit rate rises from 32.46% to 90.26%, and the L2 hit rate from 68.63% to 80.67%. FAST increases the nodes per block from 32 to 512, exposing additional locality and reducing access latency for the memory-bound ESM operator. The average active warps per SM rise from 12.95 to 29.58, while the average ac-tive threads per warp drop from 26 to 19, reflecting reduced invalid work rather than lower efficiency. For AGG, hit rates and active warps per SM decline slightly, as the edge-parallel scheme weakens spatial locality, but the average active threads per warp increase, directly alleviating the load imbalance in node-centric aggregation. 
+
+Table 5: Kernel performance comparison 
+
+Kernel L1 (%) L2 (%) Act. warps Avg. threads ESM-dGNN 32.46 68.63 12.95 / SM 25.84 / Warp ESM-FAST 90.26 80.67 29.58 / SM 19.00 / Warp AGG-FastGL 81.04 51.44 39.83 / SM 20.36 / Warp AGG-FAST 25.99 46.75 28.66 / SM 27.00 / Warp 
+
+Topology-Aware Sampling Effectiveness. FAST speeds sam-pling by 1.14 ×–1.46 × versus TGL (Figure 10(a)). On WIKITALK with 40 threads, TA improves L2 cache hit rates from 41% to 50–52% and L3 hit rates from 80% to 98%(Figure 10(b)). Gains stem from mapping highly affine threads to shared L2/L3 domains, as visualized in the affinity matrices of Figure 11(a) (perform thread binding based on the darkest block). When exceeding 40 threads, L3 hit rates decline due to NUMA(Non-Uniform Memory Access) spill, yet TA outper-forms TGL by binding high-affinity threads preferentially within the same NUMA node. After sampling, the compression engine outputs compressed triples that drive SlimCache and CSR-Based operator(Section 5).Figure 11(b) shows that the engine’s overhead is modest, consuming 0.8%–5.4% of end-to-end training time (average 2.7%) across datasets. 
+
+End-to-End Speedup Breakdown. Figure 11(c) decomposes the overall speedup of TGN on four datasets versus TGL. Slim-Cache cuts memory I/O time and yields the largest gain. Adding TE graph operators provides an additional 1.21 × speedup by tackling reduction inefficiency in ESM and load imbalance in AGG. The TA sampler then contributes about 1.1 × speedup by improving cache (a)                      
+
+> Speedup
+> (b)(c)
+> 0123456789 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 012345678910 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 0123456
+> Thread Num
+> ×10 4Normalized Time
+> 0.0 0.2 0.8 1.0 0.4 0.6
+> LM WK BC GT
+> 99.0% 94.6% 96.4% 99.2%
+> Compress Triplet Training
+> 01234TGL SC TE TA 1.00× 2.52× 3.03× 3.36×
+> TGL Baseline FAST 2.52× speedup with SC 1.21× speedup with TE 1.11× speedup with TA
+
+Figure 11: (a) Thread affinity matrix under 8 threads on WIK-ITALK.(b) Comparison of normalized time between the com-pressing and the training.(c) The breakdown analysis on the average overall speedup. ‘SC’ denotes SlimCache, ‘TE’ de-notes thread-efficient, and ‘TA’ denotes topology-aware. Table 6: Overhead comparison of Memory and Time. 
+
+Method Memory usage (GB) Time (s) Main Disk GPU Pre-sample Epoch 
+
+TGL 101.62 2.84 10.54(26.4%) 0 6824(2.5x) ETC 274.38 2.84 10.62(26.6%) 0 4029(1.4x) SIMPLE OOM 5.53 N/A 285.03(2.3x) N/A SWIFT 28.26 255.62 38.42(96.1%) 615.73(4.9x) 3747(1.3x) FAST 101.59 2.92 38.89(97.2%) 125.69 2784 
+
+locality in sampling. Together, the three components explain the end-to-end acceleration reported in Section 6.2. 
+
+## 6.4 Overhead 
+
+FAST delivers acceleration with small, manageable memory and preprocessing overhead. Evaluated on TGN with the million-scale BITCOIN dataset(Table 6), FAST matches the TGL baseline in main memory usage, while SIMPLE incur OOM due to aggressive opti-mizations. SWIFT minimizes main memory by offloading to disk, but consumes 90 × more disk space than TGL. In contrast, FAST ’s disk usage nearly equals TGL’s, as SlimCache only stores a com-pact hot-ID list without retaining intermediate data. GPU memory utilization is comparable to SWIFT, confirming that our caching strategy fully exploits GPU memory without storage bottlenecks. Table 6 also reports the pre-sampling time. FAST ’s overhead is 2.3 × and 4.9 × lower than SIMPLE and SWIFT, while TGL/ETC have none. SIMPLE uses full-batch sampling for disk-based caching; SWIFT builds disk buckets for async-I/O. FAST instead performs lightweight pre-sampling: topology-aware analysis generates thread-binding, and sampled subgraphs update hot lists before being dis-carded, keeping preprocessing minimal. We further evaluate SWIFT’s per -epoch performance, its perfor-mance is limited by 1.7 GB/s disk bandwidth on our hardware, below the reported 2.0–6.7 GB/s. This constraint prevents SWIFT from achieving the expected throughput, making FAST becomes 1.3 ×
+
+faster than SWIFT. FAST builds on the main-memory framework[ 4,5 , 31 ] without new hardware constraints, demonstrating practical robustness. 
+
+## 7 Related Work 
+
+Graph Feature Caching. 
+
+In static GNNs, FastGL [ 32 ] pre-samples to identify hot features [ 26 ] and uses batch reordering to retain previously accessed data, combining static and dynamic caching. In TGNNs training, TASER 
+
+> 9
+
+[ 3] caches statically per epoch based solely on edge feature ac-cess frequencies, while SIMPLE [ 5] selects retention intervals for dynamic placement. ETC [ 4] reduces I/O volume through feature compression and overlaps GPU computation with CPU compres-sion, masking the compression overhead. However, SIMPLE’s and ETC’s dependence on full - batch sampled subgraph data introduces host memory bottlenecks on large graphs. SWIFT [ 7] alleviates memory pressure via a disk - based I/O pipeline, but its bucket -based design needs much more disk space and is constrained by disk bandwidth. 
+
+Computational Optimization. Several TGNN works acceler-ate computation via reuse or redundancy elimination. Orca [ 13 ]caches embeddings, while TGOpt [ 24 ] removes redundant compu-tations. In static GNNs, GNNOne [ 6] optimizes DGL’s core kernels (SpMM and SDDMM) via a two - phase data loading and reuse strat-egy; dGNN [ 28 ] and FuseGNN [ 2 ] reorder and fuse operator for full - graph training, and FastGL [ 32 ] caches edge features to accel-erate aggregation. These designs are tailored to static GNNs and are not directly applicable to highly sparse TGNN workloads. 
+
+Sampler-Based Acceleration. TGL [ 31 ] is a general frame-work for training TGNNs on large continuous -time dynamic graphs, proposing T-CSR and CPU temporal sampler.Subsequent works ex-ploit GPU acceleration for specific scenarios, include TASER [ 3](adaptive), GNNFlow [ 30 ] (distributed), MSpipe [ 21 ] (memory -based), SWIFT [ 7] (UVA). These GPU samplers are often highly customized and lack easy reuse and clean cross-framework comparisons. 
+
+## 8 Conclusion 
+
+In this paper, we propose FAST , a holistic framework for optimizing memory I/O, computation, and sampling in Temporal GNN train-ing on large dynamic graphs. By jointly exploiting within - batch and cross -batch redundancy, FAST reduces host–device data move-ment, accelerates sparse graph operators, and improves CPU cache locality in temporal neighbor sampling. Extensive experiments show that FAST achieves an average 2.1 × speedup (up to 4.7 ×)over state - of - the - art systems without sacrificing model accuracy, demonstrating that a cross - stage co - design can significantly im-prove TGNN training. 
+
+## References 
+
+[1] Chaoyi Chen, Dechao Gao, Yanfeng Zhang, Qiange Wang, Zhenbo Fu, Xuecang Zhang, Junhua Zhu, Yu Gu, and Ge Yu. 2023. NeutronStream: A Dynamic GNN Training Framework with Sliding Window for Graph Streams. Proc. VLDB Endow. 
+
+17, 3 (Nov. 2023), 455–468. doi:10.14778/3632093.3632108 [2] Zhaodong Chen, Mingyu Yan, Maohua Zhu, Lei Deng, Guoqi Li, Shuangchen Li, and Yuan Xie. 2020. fuseGNN: accelerating graph convolutional neural network training on GPGPU. In Proceedings of the 39th International Conference on Computer-Aided Design (Virtual Event, USA) (ICCAD ’20) . Association for Computing Machinery, New York, NY, USA, Article 60, 9 pages. doi:10.1145/ 3400302.3415610 [3] Gangda Deng, Hongkuan Zhou, Hanqing Zeng, Yinglong Xia, Christopher Leung, Jianbo Li, Rajgopal Kannan, and Viktor Prasanna. 2024. TASER: Temporal Adap-tive Sampling for Fast and Accurate Dynamic Graph Representation Learning. In 2024 IEEE International Parallel and Distributed Processing Symposium (IPDPS) .926–937. doi:10.1109/IPDPS57955.2024.00087 [4] Shihong Gao, Yiming Li, Yanyan Shen, Yingxia Shao, and Lei Chen. 2024. ETC: Efficient Training of Temporal Graph Neural Networks over Large-Scale Dynamic Graphs. Proc. VLDB Endow. 17, 5 (Jan. 2024), 1060–1072. doi:10.14778/3641204. 3641215 [5] Shihong Gao, Yiming Li, Xin Zhang, Yanyan Shen, Yingxia Shao, and Lei Chen. 2024. SIMPLE: Efficient Temporal Graph Neural Network Training at Scale with Dynamic Data Placement. Proc. ACM Manag. Data 2, 3, Article 174 (May 2024), 25 pages. doi:10.1145/3654977 [6] Yidong Gong and Pradeep Kumar. 2024. GNNOne: A Unified System Op-timizations for GNN Kernels. In Proceedings of the 33rd International Sym-posium on High-Performance Parallel and Distributed Computing (Pisa, Italy) 
+
+(HPDC ’24) . Association for Computing Machinery, New York, NY, USA, 15–27. doi:10.1145/3625549.3658655 [7] Rui Guo, Zezhong Ding, Xike Xie, and Jianliang Xu. 2025. SWIFT: Enabling Large-Scale Temporal Graph Learning on a Single Machine. Proc. ACM Manag. Data 3, 4, Article 266 (Sept. 2025), 27 pages. doi:10.1145/3749184 [8] Abhinav Jangda, Sandeep Polisetty, Arjun Guha, and Marco Serafini. 2021. Accel-erating graph sampling for graph machine learning using GPUs. In Proceedings of the Sixteenth European Conference on Computer Systems (Online Event, United Kingdom) (EuroSys ’21) . Association for Computing Machinery, New York, NY, USA, 311–326. doi:10.1145/3447786.3456244 [9] G. Jin, Lingbo Liu, Fuxian Li, and Jincai Huang. 2023. Spatio-Temporal Graph Neu-ral Point Process for Traffic Congestion Event Prediction. AAAI abs/2311.08635, 14268–14276. [10] Dániel Kondor, Márton Pósfai, István Csabai, and Gábor Vattay. 2014. Do the Rich Get Richer? An Empirical Analysis of the Bitcoin Transaction Network. 
+
+PLOS ONE 9, 2 (Feb. 2014), 1–10. doi:10.1371/journal.pone.0086197 [11] Srijan Kumar, Xikun Zhang, and Jure Leskovec. 2019. Predicting dynamic em-bedding trajectory in temporal interaction networks. In Proceedings of the 25th ACM SIGKDD international conference on knowledge discovery & data mining .1269–1278. [12] Kalev Leetaru and Philip A Schrodt. 2013. Gdelt: Global data on events, location, and tone, 1979–2012. In ISA annual convention , Vol. 2. Citeseer, 1–49. [13] Yiming Li, Yanyan Shen, Lei Chen, and Mingxuan Yuan. 2023. Orca: Scalable Temporal Graph Neural Network Training with Theoretical Guarantees. Proc. ACM Manag. Data 1, 1, Article 52 (May 2023), 27 pages. doi:10.1145/3588737 [14] Yuwen Liu, Lianyong Qi, Weiming Liu, Xiaolong Xu, Xuyun Zhang, and Wanchun Dou. 2024. GraphSAGE-based POI Recommendation via Continuous-Time Mod-eling. In Companion Proceedings of the ACM Web Conference 2024 (Singapore, Singapore) (WWW ’24) . Association for Computing Machinery, New York, NY, USA, 585–588. doi:10.1145/3589335.3651515 [15] Konstantin Macarenco, Kristina Frye, Benjamin Hamlin, and Karen L. Karavanic. 2016. The Effects of System Management Interrupts on Multithreaded, Hyper-threaded, and MPI Applications. In 45th International Conference on Parallel Processing Workshops, ICPP Workshops 2016, Philadelphia, PA, USA, August 16-19, 2016 . IEEE Computer Society, 338–345. doi:10.1109/ICPPW.2016.55 [16] Maxim Milakov and Natalia Gimelshein. 2018. Online Normalizer Calculation for Softmax. (2018). arXiv:1805.02867 [17] Ashwin Paranjape, Austin R Benson, and Jure Leskovec. 2017. Motifs in temporal networks. In Proceedings of the tenth ACM international conference on web search and data mining . 601–610. [18] Emanuele Rossi, Ben Chamberlain, Fabrizio Frasca, Davide Eynard, Federico Monti, and Michael Bronstein. 2020. Temporal Graph Networks for Deep Learn-ing on Dynamic Graphs. In Proceedings of the ICML 2020 Workshop on Graph Representation Learning .[19] Ryan Rossi and Nesreen Ahmed. 2015. The network data repository with inter-active graph analytics and visualization. In Proceedings of the AAAI conference on artificial intelligence , Vol. 29. [20] Aravind Sankar, Yanhong Wu, Liang Gou, Wei Zhang, and Hao Yang. 2020. DySAT: Deep Neural Representation Learning on Dynamic Graphs via Self-Attention Networks. In Proceedings of the 13th International Conference on Web Search and Data Mining (Houston, TX, USA) (WSDM ’20) . Association for Com-puting Machinery, New York, NY, USA, 519–527. doi:10.1145/3336191.3371845 [21] Guangming Sheng, Junwei Su, Chao Huang, and Chuan Wu. 2024. MSPipe: Efficient Temporal GNN Training via Staleness-Aware Pipeline. In Proceedings of the 30th ACM SIGKDD Conference on Knowledge Discovery and Data Mining 
+
+(Barcelona, Spain) (KDD ’24) . Association for Computing Machinery, New York, NY, USA, 2651–2662. doi:10.1145/3637528.3671844 [22] Amy Shoemaker and Sagar Vare. 2016. Edmonds’ blossom algorithm. CME 18 (2016). [23] Minjie Yu Wang. 2019. Deep graph library: Towards efficient and scalable deep learning on graphs. In ICLR workshop on representation learning on graphs and manifolds . doi:https://doi.org/10.48550/arXiv.1909.01315. [24] Yufeng Wang and Charith Mendis. 2023. TGOpt: Redundancy-Aware Optimiza-tions for Temporal Graph Attention Networks. In Proceedings of the 28th ACM SIGPLAN Annual Symposium on Principles and Practice of Parallel Programming 
+
+(Montreal, QC, Canada) (PPoPP ’23) . Association for Computing Machinery, New York, NY, USA, 354–368. doi:10.1145/3572848.3577490 [25] Da Xu, Chuanwei Ruan, Evren Körpeoğlu, Sushant Kumar, and Kannan Achan. 2020. Inductive representation learning on temporal graphs. In International Conference on Learning Representations (ICLR) .[26] Jianbang Yang, Dahai Tang, Xiaoniu Song, Lei Wang, Qiang Yin, Rong Chen, Wenyuan Yu, and Jingren Zhou. 2022. GNNLab: a factored system for sample-based GNN training over GPUs. In Proceedings of the Seventeenth European Conference on Computer Systems (Rennes, France) (EuroSys ’22) . Association 
+
+> 10
+
+for Computing Machinery, New York, NY, USA, 417–434. doi:10.1145/3492321. 3519557 [27] Chenle Yu, Sara Royuela, and Eduardo Quiñones. 2024. Enhancing Hetero-geneous Computing Through OpenMP and GPU Graph. In Proceedings of the 53rd International Conference on Parallel Processing (Gotland, Sweden) (ICPP ’24) . Association for Computing Machinery, New York, NY, USA, 534–543. doi:10.1145/3673038.3673050 [28] Hengrui Zhang, Zhongming Yu, Guohao Dai, Guyue Huang, Yufei Ding, Yuan Xie, and Yu Wang. 2022. Understanding GNN Computational Graph: A Coordinated Computation, IO, and Memory Perspective. In Proceedings of Machine Learning and Systems (MLSys) , Vol. 4. 467–484. doi:10.48550/arXiv.2110.09524 [29] Mengqi Zhang, Shu Wu, Xueli Yu, Qiang Liu, and Liang Wang. 2023. Dynamic Graph Neural Networks for Sequential Recommendation. IEEE Trans. on Knowl. and Data Eng. 35, 5 (May 2023), 4741–4753. doi:10.1109/TKDE.2022.3151618 [30] Yuchen Zhong, Guangming Sheng, Tianzuo Qin, Minjie Wang, Quan Gan, and Chuan Wu. 2023. GNNFlow: A Distributed Framework for Continuous Temporal GNN Learning on Dynamic Graphs. (2023). arXiv:2311.17410 [cs.DC] [31] Hongkuan Zhou, Da Zheng, Israt Nisa, Vasileios Ioannidis, Xiang Song, and George Karypis. 2022. TGL: A General Framework for Temporal GNN Training onBillion-Scale Graphs. Proc. VLDB Endow. 15, 8 (2022), 1572–1580. [32] Zeyu Zhu, Peisong Wang, Qinghao Hu, Gang Li, Xiaoyao Liang, and Jian Cheng. 2025. FastGL: A GPU-Efficient Framework for Accelerating Sampling-Based GNN Training at Large Scale. In Proceedings of the 29th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 4 (Hilton La Jolla Torrey Pines, La Jolla, CA, USA) (ASPLOS ’24) . Association for Computing Machinery, New York, NY, USA, 94–110. doi:10.1145/3622781. 3674167
