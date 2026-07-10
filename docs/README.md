@@ -6,32 +6,26 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-09
-- 运行时间：2026-07-09 21:00:47 UTC
+- 最新运行日期：2026-07-10
+- 运行时间：2026-07-10 20:42:26 UTC
 - 运行状态：成功
-- 本次总论文数：4
-- 精读区：1
-- 速读区：3
+- 本次总论文数：1
+- 精读区：0
+- 速读区：1
 
 ### 今日简报（AI）
-今日精读《Air-Plan》优化空中去中心化联邦学习的拓扑选择（8.0分），速读3篇涉及MoE通信感知剪枝、动态聚类联邦学习及鲁棒Transformer训练。最值得关注的是Air-Plan的查询优化拓扑方案，以及FLAIR的动态聚类策略。建议优先阅读精读论文，再结合速读中的通信优化与异构性处理方法。
-- 详情：[/202607/09/README](/202607/09/README)
+今天关注联邦学习异质性，速读了一篇谱梯度滤波框架论文。  
+其核心方向是用梯度频谱分析缓解数据分布差异，值得借鉴。  
+建议后续对比该框架在非独立同分布场景下的收敛效果与通信开销。
+- 详情：[/202607/10/README](/202607/10/README)
 
 ### 精读区论文标签
-1. [Air-Plan: Query-Optimized Topology Selection for Over-the-Air Decentralized Federated Learning](/202607/09/2607.04254v1-air-plan-query-optimized-topology-selection-for-over-the-air-decentralized-federated-learning)  
-   标签：评分：8.0/10、query:dgnn-nas
-   evidence：通过空中聚合和拓扑选择实现通信高效的去中心化联邦学习
+- 本次无精读推荐。
 
 ### 速读区论文标签
-1. [Communication-Aware Placement and Pruning for Efficient Mixture-of-Experts Inference](/202607/09/2607.05116v1-communication-aware-placement-and-pruning-for-efficient-mixture-of-experts-inference)  
-   标签：评分：7.0/10、query:dgnn-nas
-   evidence：通信感知的专家放置以减少设备间通信
-2. [FLAIR: Distributed Federated Learning with Dynamic Clustering](/202607/09/2607.06025v1-flair-distributed-federated-learning-with-dynamic-clustering)  
-   标签：评分：7.0/10、query:dgnn-nas
-   evidence：带动态聚类的分布式联邦学习
-3. [FedACT: Federated Adaptive Coordinate Trust Modulation for Robust Transformer Training under Data Heterogeneity](/202607/09/2607.03763v1-fedact-federated-adaptive-coordinate-trust-modulation-for-robust-transformer-training-under-data-heterogeneity)  
+1. [SpecGradFilter: A Spectral Gradient Filtering Framework for Taming Federated Heterogeneity](/202607/10/2607.04189v1-specgradfilter-a-spectral-gradient-filtering-framework-for-taming-federated-heterogeneity)  
    标签：评分：6.0/10、query:dgnn-nas
-   evidence：通信高效的联邦自适应优化
+   evidence：谱梯度过滤提升异构联邦学习收敛效率
 
 
 <div class="dpr-home-promo-card">

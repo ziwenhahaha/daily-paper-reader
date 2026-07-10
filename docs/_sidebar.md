@@ -1,6 +1,9 @@
 * <a class="dpr-sidebar-root-link" href="#/">首页</a>
 * <a class="dpr-sidebar-root-link dpr-sidebar-noactive-link" href="javascript:void(0)" data-dpr-hash="#/tutorial/README">使用教程</a>
 * Daily Papers
+  * 2026-07-10 <!--dpr-date:20260710-->
+    * 速读区
+      * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/202607/10/2607.04189v1-specgradfilter-a-spectral-gradient-filtering-framework-for-taming-federated-heterogeneity" data-sidebar-item="{&quot;title&quot;: &quot;SpecGradFilter: A Spectral Gradient Filtering Framework for Taming Federated Heterogeneity&quot;, &quot;link&quot;: &quot;https://arxiv.org/abs/2607.04189v1-specgradfilter-a-spectral-gradient-filtering-framework-for-taming-federated-heterogeneity&quot;, &quot;score&quot;: &quot;6.0&quot;, &quot;tags&quot;: [{&quot;kind&quot;: &quot;query&quot;, &quot;label&quot;: &quot;dgnn-nas&quot;}], &quot;evidence&quot;: &quot;谱梯度过滤提升异构联邦学习收敛效率&quot;}">SpecGradFilter: A Spectral Gradient Filtering Framework for Taming Federated Heterogeneity</a>
   * 2026-07-09 <!--dpr-date:20260709-->
     * 精读区
       * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/202607/09/2607.04254v1-air-plan-query-optimized-topology-selection-for-over-the-air-decentralized-federated-learning" data-sidebar-item="{&quot;title&quot;: &quot;Air-Plan: Query-Optimized Topology Selection for Over-the-Air Decentralized Federated Learning&quot;, &quot;link&quot;: &quot;https://arxiv.org/abs/2607.04254v1-air-plan-query-optimized-topology-selection-for-over-the-air-decentralized-federated-learning&quot;, &quot;score&quot;: &quot;8.0&quot;, &quot;tags&quot;: [{&quot;kind&quot;: &quot;query&quot;, &quot;label&quot;: &quot;dgnn-nas&quot;}], &quot;evidence&quot;: &quot;通过空中聚合和拓扑选择实现通信高效的去中心化联邦学习&quot;}">Air-Plan: Query-Optimized Topology Selection for Over-the-Air Decentralized Federated Learning</a>
