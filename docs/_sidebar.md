@@ -1,6 +1,9 @@
 * <a class="dpr-sidebar-root-link" href="#/">首页</a>
 * <a class="dpr-sidebar-root-link dpr-sidebar-noactive-link" href="javascript:void(0)" data-dpr-hash="#/tutorial/README">使用教程</a>
 * Daily Papers
+  * 2026-07-11 <!--dpr-date:20260711-->
+    * 速读区
+      * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/202607/11/2607.05469v1-breaking-structural-isolation-scalable-graph-clustering-via-community-aware-sampling-and-structural-entropy" data-sidebar-item="{&quot;title&quot;: &quot;Breaking Structural Isolation: Scalable Graph Clustering via Community-Aware Sampling and Structural Entropy&quot;, &quot;link&quot;: &quot;https://arxiv.org/abs/2607.05469v1-breaking-structural-isolation-scalable-graph-clustering-via-community-aware-sampling-and-structural-entropy&quot;, &quot;score&quot;: &quot;6.0&quot;, &quot;tags&quot;: [{&quot;kind&quot;: &quot;query&quot;, &quot;label&quot;: &quot;dgnn-nas&quot;}], &quot;evidence&quot;: &quot;可用于分布式GNN图划分的图聚类方法&quot;}">Breaking Structural Isolation: Scalable Graph Clustering via Community-Aware Sampling and Structural Entropy</a>
   * 2026-07-10 <!--dpr-date:20260710-->
     * 速读区
       * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/202607/10/2607.04189v1-specgradfilter-a-spectral-gradient-filtering-framework-for-taming-federated-heterogeneity" data-sidebar-item="{&quot;title&quot;: &quot;SpecGradFilter: A Spectral Gradient Filtering Framework for Taming Federated Heterogeneity&quot;, &quot;link&quot;: &quot;https://arxiv.org/abs/2607.04189v1-specgradfilter-a-spectral-gradient-filtering-framework-for-taming-federated-heterogeneity&quot;, &quot;score&quot;: &quot;6.0&quot;, &quot;tags&quot;: [{&quot;kind&quot;: &quot;query&quot;, &quot;label&quot;: &quot;dgnn-nas&quot;}], &quot;evidence&quot;: &quot;谱梯度过滤提升异构联邦学习收敛效率&quot;}">SpecGradFilter: A Spectral Gradient Filtering Framework for Taming Federated Heterogeneity</a>
