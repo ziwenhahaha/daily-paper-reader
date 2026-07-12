@@ -1,6 +1,9 @@
 * <a class="dpr-sidebar-root-link" href="#/">首页</a>
 * <a class="dpr-sidebar-root-link dpr-sidebar-noactive-link" href="javascript:void(0)" data-dpr-hash="#/tutorial/README">使用教程</a>
 * Daily Papers
+  * 2026-07-12 <!--dpr-date:20260712-->
+    * 速读区
+      * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/202607/12/2607.04676v1-adaptive-space-efficient-collectives-for-dynamic-and-unstructured-sparsity-on-gpu-platforms" data-sidebar-item="{&quot;title&quot;: &quot;Adaptive Space-efficient Collectives for Dynamic and Unstructured Sparsity on GPU Platforms&quot;, &quot;link&quot;: &quot;https://arxiv.org/abs/2607.04676v1-adaptive-space-efficient-collectives-for-dynamic-and-unstructured-sparsity-on-gpu-platforms&quot;, &quot;score&quot;: &quot;7.0&quot;, &quot;tags&quot;: [{&quot;kind&quot;: &quot;query&quot;, &quot;label&quot;: &quot;dgnn-nas&quot;}], &quot;evidence&quot;: &quot;利用稀疏性的集合通信算法减少通信量，提升训练效率&quot;}">Adaptive Space-efficient Collectives for Dynamic and Unstructured Sparsity on GPU Platforms</a>
   * 2026-07-11 <!--dpr-date:20260711-->
     * 速读区
       * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/202607/11/2607.05469v1-breaking-structural-isolation-scalable-graph-clustering-via-community-aware-sampling-and-structural-entropy" data-sidebar-item="{&quot;title&quot;: &quot;Breaking Structural Isolation: Scalable Graph Clustering via Community-Aware Sampling and Structural Entropy&quot;, &quot;link&quot;: &quot;https://arxiv.org/abs/2607.05469v1-breaking-structural-isolation-scalable-graph-clustering-via-community-aware-sampling-and-structural-entropy&quot;, &quot;score&quot;: &quot;6.0&quot;, &quot;tags&quot;: [{&quot;kind&quot;: &quot;query&quot;, &quot;label&quot;: &quot;dgnn-nas&quot;}], &quot;evidence&quot;: &quot;可用于分布式GNN图划分的图聚类方法&quot;}">Breaking Structural Isolation: Scalable Graph Clustering via Community-Aware Sampling and Structural Entropy</a>
