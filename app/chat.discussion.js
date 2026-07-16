@@ -304,6 +304,10 @@ window.PrivateDiscussionChat = (function () {
     'ICML',
     'IJCAI',
     'NeurIPS',
+    'OSDI',
+    'SOSP',
+    'S&P',
+    'NDSS',
     'SIGIR',
   ];
 
@@ -1702,6 +1706,15 @@ window.PrivateDiscussionChat = (function () {
     if (chatSidebarBtn && !chatSidebarBtn._bound) {
       chatSidebarBtn._bound = true;
       chatSidebarBtn.addEventListener('click', () => {
+        if (window.DPRSidebar && typeof window.DPRSidebar.toggleMobile === 'function') {
+          window.DPRSidebar.toggleMobile();
+          return;
+        }
+        const dprSidebar = document.getElementById('dpr-sidebar-v2');
+        if (dprSidebar && dprSidebar.classList) {
+          dprSidebar.classList.toggle('is-open');
+          return;
+        }
         // 优先复用 Docsify 自带的 sidebar-toggle 行为
         const toggle = document.querySelector('.sidebar-toggle');
         if (toggle) {

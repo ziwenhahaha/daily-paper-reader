@@ -96,6 +96,30 @@ CONFERENCE_DEFAULTS: Dict[str, Dict[str, str]] = {
         "bm25_rpc": "match_emnlp_papers_bm25",
         "vector_rpc_exact": "match_emnlp_papers_exact",
     },
+    "osdi": {
+        "label": "OSDI",
+        "papers_table": "osdi_papers",
+        "bm25_rpc": "match_osdi_papers_bm25",
+        "vector_rpc_exact": "match_osdi_papers_exact",
+    },
+    "sosp": {
+        "label": "SOSP",
+        "papers_table": "sosp_papers",
+        "bm25_rpc": "match_sosp_papers_bm25",
+        "vector_rpc_exact": "match_sosp_papers_exact",
+    },
+    "ieee_sp": {
+        "label": "IEEE S&P",
+        "papers_table": "ieee_sp_papers",
+        "bm25_rpc": "match_ieee_sp_papers_bm25",
+        "vector_rpc_exact": "match_ieee_sp_papers_exact",
+    },
+    "ndss": {
+        "label": "NDSS",
+        "papers_table": "ndss_papers",
+        "bm25_rpc": "match_ndss_papers_bm25",
+        "vector_rpc_exact": "match_ndss_papers_exact",
+    },
 }
 
 CONFERENCE_ALIASES = {
@@ -109,6 +133,22 @@ CONFERENCE_ALIASES = {
     "ijcai": "ijcai",
     "acl": "acl",
     "emnlp": "emnlp",
+    "osdi": "osdi",
+    "sosp": "sosp",
+    "sp": "ieee_sp",
+    "s&p": "ieee_sp",
+    "ieeesp": "ieee_sp",
+    "ieee-sp": "ieee_sp",
+    "ieee_sp": "ieee_sp",
+    "ieee s&p": "ieee_sp",
+    "ndss": "ndss",
+}
+
+UNIFIED_CONFERENCE_BACKEND: Dict[str, str] = {
+    "label": "Unified Conference",
+    "papers_table": "conference_papers_unified",
+    "bm25_rpc": "match_conference_papers_bm25",
+    "vector_rpc_exact": "match_conference_papers_exact",
 }
 
 
@@ -174,7 +214,8 @@ def parse_conferences(value: str) -> List[str]:
     for raw in parse_csv_items(value):
         key = CONFERENCE_ALIASES.get(raw.strip().lower())
         if not key:
-            raise ValueError(f"不支持的会议：{raw}，当前仅支持 ICML / NIPS(NeurIPS)。")
+            supported = ", ".join(sorted(CONFERENCE_DEFAULTS))
+            raise ValueError(f"不支持的会议：{raw}，当前支持：{supported}。")
         if key not in seen:
             seen.add(key)
             out.append(key)
@@ -199,6 +240,45 @@ def parse_years(value: str) -> List[int]:
     if not years:
         raise ValueError("至少需要指定一个年份。")
     return years
+
+
+def parse_conference_pairs(value: str) -> List[Tuple[str, int]]:
+    pairs: List[Tuple[str, int]] = []
+    seen = set()
+    for raw in parse_csv_items(value):
+        if ":" not in raw:
+            raise ValueError(f"会议年份格式应为 conference:year：{raw}")
+        raw_conf, raw_year = raw.split(":", 1)
+        conference = CONFERENCE_ALIASES.get(raw_conf.strip().lower())
+        if not conference:
+            supported = ", ".join(sorted(CONFERENCE_DEFAULTS))
+            raise ValueError(f"不支持的会议：{raw_conf}，当前支持：{supported}。")
+        try:
+            year = int(str(raw_year).strip())
+        except ValueError as exc:
+            raise ValueError(f"年份不是整数：{raw_year}") from exc
+        if year < 2000 or year > 2100:
+            raise ValueError(f"年份超出合理范围：{year}")
+        pair = (conference, year)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        pairs.append(pair)
+    if value and not pairs:
+        raise ValueError("至少需要指定一个会议年份。")
+    return pairs
+
+
+def conference_pairs_to_filter_pairs(pairs: Iterable[Tuple[str, int]]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for conference, year in pairs:
+        item = f"{conference}:{int(year)}"
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
 
 
 def year_window(year: int) -> Tuple[datetime, datetime]:
@@ -259,6 +339,30 @@ def resolve_conference_backend(config: Dict[str, Any], conference_key: str) -> D
         "vector_rpc_exact": defaults["vector_rpc_exact"],
     }
     configured = get_source_backend(config, conference_key)
+    for key, value in configured.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        backend[key] = value
+    return backend
+
+
+def resolve_unified_conference_backend(config: Dict[str, Any]) -> Dict[str, Any]:
+    shared = _fallback_shared_supabase(config)
+    backend = {
+        "enabled": True,
+        "url": shared.get("url", ""),
+        "anon_key": shared.get("anon_key", ""),
+        "schema": shared.get("schema", "public"),
+        "papers_table": UNIFIED_CONFERENCE_BACKEND["papers_table"],
+        "use_bm25_rpc": True,
+        "bm25_rpc": UNIFIED_CONFERENCE_BACKEND["bm25_rpc"],
+        "use_vector_rpc": True,
+        "vector_rpc": UNIFIED_CONFERENCE_BACKEND["vector_rpc_exact"],
+        "vector_rpc_exact": UNIFIED_CONFERENCE_BACKEND["vector_rpc_exact"],
+    }
+    configured = get_source_backend(config, "conference_unified")
     for key, value in configured.items():
         if value is None:
             continue
@@ -365,6 +469,7 @@ def build_result_for_queries(
     years: List[int],
     config: Dict[str, Any],
     top_k: int,
+    filter_pairs: List[str] | None = None,
 ) -> Dict[str, Any]:
     id_to_paper: Dict[str, PaperHit] = {}
     output_queries: List[Dict[str, Any]] = []
@@ -377,66 +482,114 @@ def build_result_for_queries(
         if not q_text:
             continue
 
-        for conference_key in conferences:
-            backend = resolve_conference_backend(config, conference_key)
+        active_filter_pairs = [str(item).strip() for item in (filter_pairs or []) if str(item).strip()]
+        if active_filter_pairs:
+            backend = resolve_unified_conference_backend(config)
             if not backend.get("url") or not backend.get("anon_key"):
-                raise RuntimeError(f"{CONFERENCE_DEFAULTS[conference_key]['label']} 缺少 Supabase url/anon_key。")
-            for year in years:
-                start_dt, end_dt = year_window(year)
-                label = CONFERENCE_DEFAULTS[conference_key]["label"]
-                if mode == "bm25":
-                    rows, msg = match_papers_by_bm25(
-                        url=str(backend.get("url") or ""),
-                        api_key=str(backend.get("anon_key") or ""),
-                        rpc_name=str(backend.get("bm25_rpc") or CONFERENCE_DEFAULTS[conference_key]["bm25_rpc"]),
-                        query_text=q_text,
-                        match_count=top_k,
-                        schema=str(backend.get("schema") or "public"),
-                        start_dt=start_dt,
-                        end_dt=end_dt,
-                        time_fields=("published",),
-                    )
-                else:
-                    raw_embedding = query.get("query_embedding")
-                    if isinstance(raw_embedding, np.ndarray):
-                        query_embedding = raw_embedding.astype(np.float32).tolist()
-                    else:
-                        query_embedding = [float(x) for x in (raw_embedding or [])]
-                    rows, msg = match_papers_by_embedding(
-                        url=str(backend.get("url") or ""),
-                        api_key=str(backend.get("anon_key") or ""),
-                        rpc_name=str(
-                            backend.get("vector_rpc_exact")
-                            or backend.get("vector_rpc")
-                            or CONFERENCE_DEFAULTS[conference_key]["vector_rpc_exact"]
-                        ),
-                        query_embedding=query_embedding,
-                        match_count=top_k,
-                        schema=str(backend.get("schema") or "public"),
-                        start_dt=start_dt,
-                        end_dt=end_dt,
-                        time_fields=("published",),
-                    )
-                log(
-                    f"[Supabase Conference {mode}] query={q_idx}/{len(queries)} "
-                    f"tag={query.get('tag') or ''} conference={label} year={year} | {msg}"
+                raise RuntimeError("统一会议检索缺少 Supabase url/anon_key。")
+            if mode == "bm25":
+                rows, msg = match_papers_by_bm25(
+                    url=str(backend.get("url") or ""),
+                    api_key=str(backend.get("anon_key") or ""),
+                    rpc_name=str(backend.get("bm25_rpc") or UNIFIED_CONFERENCE_BACKEND["bm25_rpc"]),
+                    query_text=q_text,
+                    match_count=top_k,
+                    schema=str(backend.get("schema") or "public"),
+                    extra_payload={"filter_pairs": active_filter_pairs},
                 )
-                total_rpc_hits += len(rows)
-                # 按 source 字段中的会议年份过滤，避免时间窗口查询
-                # 把不属于目标会议年份的论文剔除
-                # source 格式如 "ICLR-2026-Public"、"AAAI-2025-Accepted"
-                year_tag = f"-{year}-"
-                for row in rows:
-                    pid = str(row.get("id") or "").strip()
-                    if not pid:
-                        continue
-                    row_source = str(row.get("source") or "")
-                    if year_tag not in row_source:
-                        continue
-                    score = score_from_row(row, mode)
-                    old = candidates.get(pid)
-                    if old is None or score > old[0]:
-                        candidates[pid] = (score, row)
+            else:
+                raw_embedding = query.get("query_embedding")
+                if isinstance(raw_embedding, np.ndarray):
+                    query_embedding = raw_embedding.astype(np.float32).tolist()
+                else:
+                    query_embedding = [float(x) for x in (raw_embedding or [])]
+                rows, msg = match_papers_by_embedding(
+                    url=str(backend.get("url") or ""),
+                    api_key=str(backend.get("anon_key") or ""),
+                    rpc_name=str(
+                        backend.get("vector_rpc_exact")
+                        or backend.get("vector_rpc")
+                        or UNIFIED_CONFERENCE_BACKEND["vector_rpc_exact"]
+                    ),
+                    query_embedding=query_embedding,
+                    match_count=top_k,
+                    schema=str(backend.get("schema") or "public"),
+                    extra_payload={"filter_pairs": active_filter_pairs},
+                )
+            log(
+                f"[Supabase Conference {mode}] query={q_idx}/{len(queries)} "
+                f"tag={query.get('tag') or ''} pairs={','.join(active_filter_pairs)} | {msg}"
+            )
+            total_rpc_hits += len(rows)
+            for row in rows:
+                pid = str(row.get("id") or "").strip()
+                if not pid:
+                    continue
+                score = score_from_row(row, mode)
+                old = candidates.get(pid)
+                if old is None or score > old[0]:
+                    candidates[pid] = (score, row)
+        else:
+            for conference_key in conferences:
+                backend = resolve_conference_backend(config, conference_key)
+                if not backend.get("url") or not backend.get("anon_key"):
+                    raise RuntimeError(f"{CONFERENCE_DEFAULTS[conference_key]['label']} 缺少 Supabase url/anon_key。")
+                for year in years:
+                    start_dt, end_dt = year_window(year)
+                    label = CONFERENCE_DEFAULTS[conference_key]["label"]
+                    if mode == "bm25":
+                        rows, msg = match_papers_by_bm25(
+                            url=str(backend.get("url") or ""),
+                            api_key=str(backend.get("anon_key") or ""),
+                            rpc_name=str(backend.get("bm25_rpc") or CONFERENCE_DEFAULTS[conference_key]["bm25_rpc"]),
+                            query_text=q_text,
+                            match_count=top_k,
+                            schema=str(backend.get("schema") or "public"),
+                            start_dt=start_dt,
+                            end_dt=end_dt,
+                            time_fields=("published",),
+                        )
+                    else:
+                        raw_embedding = query.get("query_embedding")
+                        if isinstance(raw_embedding, np.ndarray):
+                            query_embedding = raw_embedding.astype(np.float32).tolist()
+                        else:
+                            query_embedding = [float(x) for x in (raw_embedding or [])]
+                        rows, msg = match_papers_by_embedding(
+                            url=str(backend.get("url") or ""),
+                            api_key=str(backend.get("anon_key") or ""),
+                            rpc_name=str(
+                                backend.get("vector_rpc_exact")
+                                or backend.get("vector_rpc")
+                                or CONFERENCE_DEFAULTS[conference_key]["vector_rpc_exact"]
+                            ),
+                            query_embedding=query_embedding,
+                            match_count=top_k,
+                            schema=str(backend.get("schema") or "public"),
+                            start_dt=start_dt,
+                            end_dt=end_dt,
+                            time_fields=("published",),
+                        )
+                    log(
+                        f"[Supabase Conference {mode}] query={q_idx}/{len(queries)} "
+                        f"tag={query.get('tag') or ''} conference={label} year={year} | {msg}"
+                    )
+                    total_rpc_hits += len(rows)
+                    # 按 source 字段中的会议年份过滤，避免时间窗口查询
+                    # 把不属于目标会议年份的论文剔除
+                    # source 格式如 "ICLR-2026-Public"、"AAAI-2025-Accepted"
+                    year_tag = f"-{year}-"
+                    for row in rows:
+                        pid = str(row.get("id") or "").strip()
+                        if not pid:
+                            continue
+                        row_source = str(row.get("source") or "")
+                        if year_tag not in row_source:
+                            continue
+                        score = score_from_row(row, mode)
+                        old = candidates.get(pid)
+                        if old is None or score > old[0]:
+                            candidates[pid] = (score, row)
 
         ranked = sorted(candidates.items(), key=lambda item: item[1][0], reverse=True)[:top_k]
         sim_scores: Dict[str, Dict[str, float | int]] = {}
@@ -463,6 +616,7 @@ def build_result_for_queries(
                 "query_text": q_text,
                 "logic_cn": query.get("logic_cn") or "",
                 "retrieval_mode": f"supabase_{mode}",
+                "filter_pairs": active_filter_pairs,
                 "sim_scores": sim_scores,
             }
         )
@@ -482,6 +636,7 @@ def save_result(
     top_k: int,
     conferences: List[str],
     years: List[int],
+    filter_pairs: List[str] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     papers = [paper.to_dict() for paper in result.get("papers", {}).values() if paper.tags]
@@ -492,6 +647,7 @@ def save_result(
             "mode": f"supabase_{mode}",
             "conferences": conferences,
             "years": years,
+            "filter_pairs": filter_pairs or [],
             "total_rpc_hits": int(result.get("total_rpc_hits") or 0),
         },
         "papers": papers,
@@ -521,6 +677,7 @@ def main() -> None:
     parser.add_argument("--config", type=str, default=str(ROOT_DIR / "config.yaml"), help="配置文件路径；传 - 可从 stdin 读取。")
     parser.add_argument("--conferences", "--conference", dest="conferences", type=str, required=True, help="会议列表：ICML,NIPS。")
     parser.add_argument("--years", type=str, required=True, help="年份列表，例如 2024,2025。")
+    parser.add_argument("--conference-pairs", type=str, default="", help="精确会议年份列表，例如 iclr:2025,neurips:2024。")
     parser.add_argument("--top-k", type=int, default=50, help="每个查询最终保留的候选数。")
     parser.add_argument("--output-dir", type=str, default=str(DEFAULT_OUTPUT_DIR), help="输出目录。")
     parser.add_argument("--embedding-model", type=str, default=DEFAULT_EMBEDDING_MODEL)
@@ -531,8 +688,20 @@ def main() -> None:
     parser.add_argument("--skip-embedding", action="store_true")
     args = parser.parse_args()
 
-    conferences = parse_conferences(args.conferences)
-    years = parse_years(args.years)
+    pair_specs = parse_conference_pairs(args.conference_pairs) if str(args.conference_pairs or "").strip() else []
+    if pair_specs:
+        conferences = []
+        years = []
+        for conference, year in pair_specs:
+            if conference not in conferences:
+                conferences.append(conference)
+            if year not in years:
+                years.append(year)
+        filter_pairs = conference_pairs_to_filter_pairs(pair_specs)
+    else:
+        conferences = parse_conferences(args.conferences)
+        years = parse_years(args.years)
+        filter_pairs = []
     top_k = max(int(args.top_k or 1), 1)
     config = load_config(args.config)
     os.environ["DPR_INCLUDE_CONFERENCE_ONLY_PROFILES"] = "1"
@@ -547,7 +716,7 @@ def main() -> None:
         output_dir = ROOT_DIR / output_dir
     bm25_path, embedding_path = output_paths(output_dir, conferences, years)
     log(
-        f"[INFO] 会议候选召回：conferences={conferences} years={years} "
+        f"[INFO] 会议候选召回：conferences={conferences} years={years} filter_pairs={filter_pairs} "
         f"top_k={top_k} bm25_queries={len(bm25_queries)} embedding_queries={len(embedding_queries)}"
     )
 
@@ -559,8 +728,9 @@ def main() -> None:
             years=years,
             config=config,
             top_k=top_k,
+            filter_pairs=filter_pairs,
         )
-        save_result(bm25_result, bm25_path, mode="bm25", top_k=top_k, conferences=conferences, years=years)
+        save_result(bm25_result, bm25_path, mode="bm25", top_k=top_k, conferences=conferences, years=years, filter_pairs=filter_pairs)
 
     if not args.skip_embedding:
         prepare_embedding_queries(
@@ -577,8 +747,9 @@ def main() -> None:
             years=years,
             config=config,
             top_k=top_k,
+            filter_pairs=filter_pairs,
         )
-        save_result(emb_result, embedding_path, mode="embedding", top_k=top_k, conferences=conferences, years=years)
+        save_result(emb_result, embedding_path, mode="embedding", top_k=top_k, conferences=conferences, years=years, filter_pairs=filter_pairs)
 
 
 if __name__ == "__main__":

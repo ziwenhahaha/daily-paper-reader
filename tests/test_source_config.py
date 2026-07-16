@@ -78,9 +78,11 @@ class SourceConfigMigrationTest(unittest.TestCase):
                 "anon_key": "legacy-key",
             },
         }
-        backends = resolve_source_backends(cfg)
+        with patch.dict("os.environ", {}, clear=True):
+            backends = resolve_source_backends(cfg)
+            arxiv_backend = get_source_backend(cfg, "arxiv")
         self.assertEqual(backends["arxiv"]["url"], "https://new.supabase.co")
-        self.assertEqual(get_source_backend(cfg, "arxiv")["anon_key"], "shared-key")
+        self.assertEqual(arxiv_backend["anon_key"], "shared-key")
 
     def test_resolve_source_backends_merges_supabase_shared(self):
         cfg = {
@@ -322,6 +324,74 @@ class SourceConfigMigrationTest(unittest.TestCase):
         self.assertEqual(backend["url"], "https://shared.supabase.co")
         self.assertEqual(backend["papers_table"], "aaai_papers")
         self.assertEqual(backend["vector_rpc_exact"], "match_aaai_papers_exact")
+
+    def test_resolve_source_backends_supports_env_vision_and_ijcai_backends(self):
+        cfg = {
+            "supabase_shared": {
+                "url": "https://shared.supabase.co",
+                "anon_key": "shared-key",
+                "schema": "public",
+            }
+        }
+        cases = {
+            "cvpr": {
+                "DPR_ENABLE_CVPR_BACKEND": "1",
+                "DPR_CVPR_ENABLED": "1",
+                "DPR_CVPR_PAPERS_TABLE": "cvpr_papers",
+                "DPR_CVPR_VECTOR_RPC_EXACT": "match_cvpr_papers_exact",
+                "DPR_CVPR_BM25_RPC": "match_cvpr_papers_bm25",
+            },
+            "eccv": {
+                "DPR_ENABLE_ECCV_BACKEND": "1",
+                "DPR_ECCV_ENABLED": "1",
+                "DPR_ECCV_PAPERS_TABLE": "eccv_papers",
+                "DPR_ECCV_VECTOR_RPC_EXACT": "match_eccv_papers_exact",
+                "DPR_ECCV_BM25_RPC": "match_eccv_papers_bm25",
+            },
+            "ijcai": {
+                "DPR_ENABLE_IJCAI_BACKEND": "1",
+                "DPR_IJCAI_ENABLED": "1",
+                "DPR_IJCAI_PAPERS_TABLE": "ijcai_papers",
+                "DPR_IJCAI_VECTOR_RPC_EXACT": "match_ijcai_papers_exact",
+                "DPR_IJCAI_BM25_RPC": "match_ijcai_papers_bm25",
+            },
+        }
+        for source_key, env in cases.items():
+            with self.subTest(source_key=source_key), patch.dict("os.environ", env, clear=False):
+                backend = get_source_backend(cfg, source_key)
+            self.assertEqual(backend["url"], "https://shared.supabase.co")
+            self.assertEqual(backend["papers_table"], f"{source_key}_papers")
+            self.assertEqual(backend["vector_rpc_exact"], f"match_{source_key}_papers_exact")
+            self.assertEqual(backend["bm25_rpc"], f"match_{source_key}_papers_bm25")
+
+    def test_resolve_source_backends_supports_env_systems_security_backends(self):
+        cfg = {
+            "supabase_shared": {
+                "url": "https://shared.supabase.co",
+                "anon_key": "shared-key",
+                "schema": "public",
+            }
+        }
+        cases = {
+            "osdi": "OSDI",
+            "sosp": "SOSP",
+            "ieee_sp": "IEEE_SP",
+            "ndss": "NDSS",
+        }
+        for source_key, prefix in cases.items():
+            env = {
+                f"DPR_ENABLE_{prefix}_BACKEND": "1",
+                f"DPR_{prefix}_ENABLED": "1",
+                f"DPR_{prefix}_PAPERS_TABLE": f"{source_key}_papers",
+                f"DPR_{prefix}_VECTOR_RPC_EXACT": f"match_{source_key}_papers_exact",
+                f"DPR_{prefix}_BM25_RPC": f"match_{source_key}_papers_bm25",
+            }
+            with self.subTest(source_key=source_key), patch.dict("os.environ", env, clear=False):
+                backend = get_source_backend(cfg, source_key)
+            self.assertEqual(backend["url"], "https://shared.supabase.co")
+            self.assertEqual(backend["papers_table"], f"{source_key}_papers")
+            self.assertEqual(backend["vector_rpc_exact"], f"match_{source_key}_papers_exact")
+            self.assertEqual(backend["bm25_rpc"], f"match_{source_key}_papers_bm25")
 
 
 if __name__ == "__main__":

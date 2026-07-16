@@ -9,5 +9,6 @@
 - js-yaml `4.1.0`
 - libsodium `0.7.10`
 - libsodium-wrappers `0.7.9`
+- PDF.js `3.11.174`
 
 升级时请同步更新 `index.html` 中的本地路径，并保留 KaTeX `dist/fonts` 字体文件。

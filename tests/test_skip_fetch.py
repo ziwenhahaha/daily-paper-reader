@@ -21,6 +21,13 @@ from main import should_skip_fetch  # noqa: E402
 class ShouldSkipFetchTest(unittest.TestCase):
     """Unit tests for should_skip_fetch()."""
 
+    def setUp(self):
+        self._env_patch = patch.dict(os.environ, {}, clear=True)
+        self._env_patch.start()
+
+    def tearDown(self):
+        self._env_patch.stop()
+
     FULL_SUPABASE_CONFIG = {
         "arxiv_paper_setting": {
             "prefer_supabase_read": True,

@@ -194,6 +194,59 @@ class SelectPapersSourceTagTest(unittest.TestCase):
         self.assertEqual(seen_ahd, {"paper-ahd"})
         self.assertEqual(seen_all, {"paper-ahd", "paper-gene"})
 
+    def test_collect_seen_ids_canonicalizes_arxiv_versions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            recommend_dir = root / "20260421" / "recommend"
+            recommend_dir.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "deep_dive": [{"id": "2604.10929v1"}],
+                "quick_skim": [{"id": "math.GT/0309136v2"}],
+            }
+            (recommend_dir / "arxiv_papers_20260421.standard.json").write_text(
+                json.dumps(payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            seen = self.mod.collect_seen_ids(str(root), "20260422")
+
+        self.assertIn("2604.10929", seen)
+        self.assertIn("math.GT/0309136", seen)
+        self.assertNotIn("2604.10929v1", seen)
+
+    def test_build_candidates_filters_seen_arxiv_version_variants(self):
+        scored = [
+            {"id": "2604.10929v2", "title": "Same Paper New Version", "llm_score": 9.1},
+            {"id": "fresh-1", "title": "Fresh", "llm_score": 8.4},
+        ]
+
+        out = self.mod.build_candidates(scored, [], {"2604.10929v1"})
+
+        self.assertEqual([item.get("id") for item in out], ["fresh-1"])
+
+    def test_build_candidates_dedupes_arxiv_versions_by_canonical_id(self):
+        scored = [
+            {"id": "2604.10929v1", "title": "Older", "llm_score": 8.2},
+            {"id": "2604.10929v2", "title": "Newer", "llm_score": 8.7},
+        ]
+
+        out = self.mod.build_candidates(scored, [], set())
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].get("id"), "2604.10929v2")
+
+    def test_build_carryover_out_skips_recommended_arxiv_variant(self):
+        out = self.mod.build_carryover_out(
+            [
+                {"id": "2604.10929v1", "llm_score": 8.5, "title": "Older"},
+                {"id": "fresh-1", "llm_score": 8.6, "title": "Fresh"},
+            ],
+            {"2604.10929v2"},
+            5,
+        )
+
+        self.assertEqual([item.get("id") for item in out], ["fresh-1"])
+
 
 class SelectPapersDeepPriorityModeTest(unittest.TestCase):
     @classmethod

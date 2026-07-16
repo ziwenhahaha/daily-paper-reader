@@ -275,6 +275,7 @@ def build_command(workflow_key: str, workflow_file: str, inputs: dict[str, str])
         run_date = datetime.now(timezone.utc).strftime("%Y%m%d")
         conference = str(inputs.get("conference") or "ICML")
         years = str(inputs.get("years") or "2025")
+        conference_pairs = str(inputs.get("conference_pairs") or "")
         profile_tag = str(inputs.get("profile_tag") or "")
         pipeline_cmd = [
             python,
@@ -294,6 +295,8 @@ def build_command(workflow_key: str, workflow_file: str, inputs: dict[str, str])
             "--embedding-batch-size",
             "8",
         ]
+        if conference_pairs:
+            pipeline_cmd.extend(["--conference-pairs", conference_pairs])
         if as_bool(inputs.get("run_rerank"), True) or as_bool(inputs.get("run_llm_refine"), True):
             pipeline_cmd.extend(["--run-rerank", "--rerank-device", "cpu", "--rerank-batch-size", "4"])
         if as_bool(inputs.get("run_llm_refine"), True):
@@ -303,13 +306,20 @@ def build_command(workflow_key: str, workflow_file: str, inputs: dict[str, str])
             (
                 f"TOKENS=$(CONFERENCE_INPUT={shlex.quote(conference)} "
                 f"YEARS_INPUT={shlex.quote(years)} "
+                f"CONFERENCE_PAIRS_INPUT={shlex.quote(conference_pairs)} "
                 f"{shlex.quote(python)} -c "
                 + shlex.quote(
                     "import os, sys; "
                     "sys.path.insert(0, 'src'); "
-                    "from conference_retrieval import build_years_token, parse_conferences, parse_years; "
-                    "print('-'.join(parse_conferences(os.environ.get('CONFERENCE_INPUT', '')))); "
-                    "print(build_years_token(parse_years(os.environ.get('YEARS_INPUT', ''))))"
+                    "from conference_retrieval import build_years_token, parse_conference_pairs, parse_conferences, parse_years; "
+                    "pairs = parse_conference_pairs(os.environ.get('CONFERENCE_PAIRS_INPUT', '')); "
+                    "confs = []; years = []; "
+                    "[confs.append(c) for c, y in pairs if c not in confs]; "
+                    "[years.append(y) for c, y in pairs if y not in years]; "
+                    "confs = confs or parse_conferences(os.environ.get('CONFERENCE_INPUT', '')); "
+                    "years = years or parse_years(os.environ.get('YEARS_INPUT', '')); "
+                    "print('-'.join(confs)); "
+                    "print(build_years_token(years))"
                 )
                 + ")"
             ),

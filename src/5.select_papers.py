@@ -55,6 +55,8 @@ SOURCE_CARRYOVER_CACHE = "carryover_cache"
 PRIORITY_DEEP_SCORE = 9.0
 CARRYOVER_MIN_SCORE = 8.0
 CARRYOVER_UNTAGGED = "untagged"
+ARXIV_NEW_ID_RE = re.compile(r"^\d{4}\.\d{4,5}$")
+ARXIV_OLD_ID_RE = re.compile(r"^[a-z-]+(?:\.[A-Za-z-]+)?/\d{7}$", re.IGNORECASE)
 
 
 def log(message: str) -> None:
@@ -100,6 +102,61 @@ def parse_date_str(date_str: str) -> date:
         # 区间 token 用结束日期参与“今日/最近N天”逻辑
         s = s.split("-", 1)[1]
     return datetime.strptime(s, "%Y%m%d").date()
+
+
+def canonical_paper_id(value: Any) -> str:
+    """把 arXiv 不同版本号统一成同一个论文身份，用于跨天去重。"""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    s = raw
+    arxiv_prefix = re.match(r"^arxiv:(.+)$", s, flags=re.IGNORECASE)
+    if arxiv_prefix:
+        s = arxiv_prefix.group(1)
+    arxiv_url = re.match(r"^https?://arxiv\.org/(?:abs|pdf)/(.+)$", s, flags=re.IGNORECASE)
+    if arxiv_url:
+        s = arxiv_url.group(1)
+    s = s.split("?", 1)[0].split("#", 1)[0]
+    if s.lower().endswith(".pdf"):
+        s = s[:-4]
+    version_match = re.match(r"^(.+?)v(\d+)$", s, flags=re.IGNORECASE)
+    base = version_match.group(1) if version_match else s
+    if ARXIV_NEW_ID_RE.match(base) or ARXIV_OLD_ID_RE.match(base):
+        return base
+    return raw
+
+
+def arxiv_version_number(value: Any) -> int:
+    raw = str(value or "").strip()
+    if not raw:
+        return 0
+    arxiv_prefix = re.match(r"^arxiv:(.+)$", raw, flags=re.IGNORECASE)
+    if arxiv_prefix:
+        raw = arxiv_prefix.group(1)
+    arxiv_url = re.match(r"^https?://arxiv\.org/(?:abs|pdf)/(.+)$", raw, flags=re.IGNORECASE)
+    if arxiv_url:
+        raw = arxiv_url.group(1)
+    raw = raw.split("?", 1)[0].split("#", 1)[0]
+    if raw.lower().endswith(".pdf"):
+        raw = raw[:-4]
+    match = re.match(r"^(.+?)v(\d+)$", raw, flags=re.IGNORECASE)
+    if not match:
+        return 0
+    base = match.group(1)
+    if ARXIV_NEW_ID_RE.match(base) or ARXIV_OLD_ID_RE.match(base):
+        return int(match.group(2))
+    return 0
+
+
+def candidate_preference_key(item: Dict[str, Any]) -> Tuple[int, float, int, str]:
+    pid = str(item.get("id") or item.get("paper_id") or "").strip()
+    source_rank = 1 if item.get("_source") == "new" else 0
+    return (
+        source_rank,
+        parse_score(item.get("llm_score")),
+        arxiv_version_number(pid),
+        pid,
+    )
 
 
 def list_date_dirs(archive_root: str) -> List[str]:
@@ -247,12 +304,13 @@ def load_recent_carryover(
             copied = dict(item)
             copied["carry_days"] = carry_days
             pid = str(copied.get("id") or copied.get("paper_id") or "").strip()
-            if not pid:
+            paper_key = canonical_paper_id(pid)
+            if not paper_key:
                 continue
-            if pid in merged_by_id:
-                merged_by_id[pid] = merge_carryover_item(merged_by_id[pid], copied)
+            if paper_key in merged_by_id:
+                merged_by_id[paper_key] = merge_carryover_item(merged_by_id[paper_key], copied)
             else:
-                merged_by_id[pid] = copied
+                merged_by_id[paper_key] = copied
 
     return list(merged_by_id.values()), max_delta
 
@@ -390,7 +448,7 @@ def collect_seen_ids(
                         }
                         if not item_tag_keys.intersection(active_tag_keys):
                             continue
-                    seen.add(pid)
+                    seen.add(canonical_paper_id(pid))
     return seen
 
 
@@ -453,27 +511,41 @@ def build_candidates(
     seen_ids: set,
 ) -> List[Dict[str, Any]]:
     merged: Dict[str, Dict[str, Any]] = {}
+    seen_keys = {
+        paper_key
+        for paper_key in (canonical_paper_id(pid) for pid in (seen_ids or set()))
+        if paper_key
+    }
+
+    def upsert_candidate(item: Dict[str, Any]) -> None:
+        pid = str(item.get("id") or item.get("paper_id") or "").strip()
+        paper_key = canonical_paper_id(pid)
+        if not paper_key or paper_key in seen_keys:
+            return
+        existing = merged.get(paper_key)
+        if existing is None or candidate_preference_key(item) > candidate_preference_key(existing):
+            merged[paper_key] = item
 
     for item in carryover_items:
         pid = str(item.get("id") or item.get("paper_id") or "").strip()
         if float(item.get("llm_score", 0)) < CARRYOVER_MIN_SCORE:
             continue
-        if not pid or pid in seen_ids:
+        if not pid:
             continue
         copied = dict(item)
         copied["id"] = pid
         copied["_source"] = "carryover"
         copied["selection_source"] = SOURCE_CARRYOVER_CACHE
-        merged[pid] = copied
+        upsert_candidate(copied)
 
     for item in scored_papers:
         pid = str(item.get("id") or "").strip()
-        if not pid or pid in seen_ids:
+        if not pid:
             continue
         copied = dict(item)
         copied["_source"] = "new"
         copied["selection_source"] = SOURCE_FRESH_FETCH
-        merged[pid] = copied
+        upsert_candidate(copied)
 
     return list(merged.values())
 
@@ -723,9 +795,16 @@ def build_carryover_out(
     carryover_days: int,
 ) -> List[Dict[str, Any]]:
     carryover_out: List[Dict[str, Any]] = []
+    recommended_keys = {
+        paper_key
+        for paper_key in (canonical_paper_id(pid) for pid in (recommended_ids or set()))
+        if paper_key
+    }
+    emitted_keys: set[str] = set()
     for item in candidates:
         pid = str(item.get("id") or "").strip()
-        if not pid or pid in recommended_ids:
+        paper_key = canonical_paper_id(pid)
+        if not paper_key or paper_key in recommended_keys or paper_key in emitted_keys:
             continue
         if float(item.get("llm_score", 0)) < 8.0:
             continue
@@ -738,6 +817,7 @@ def build_carryover_out(
         copied["paper_id"] = copied.get("id")
         copied["carry_days"] = carry_days
         carryover_out.append(copied)
+        emitted_keys.add(paper_key)
     return carryover_out
 
 
@@ -920,9 +1000,10 @@ def force_all_into_quick(result: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(item, dict):
             continue
         pid = str(item.get("id") or item.get("paper_id") or "").strip()
-        if not pid or pid in seen:
+        paper_key = canonical_paper_id(pid)
+        if not paper_key or paper_key in seen:
             continue
-        seen.add(pid)
+        seen.add(paper_key)
         merged.append(item)
 
     copied = dict(result)
@@ -1060,18 +1141,24 @@ def main() -> None:
             active_tags=active_carryover_tags,
         )
         if args.carryover_only:
-            candidates = []
+            candidate_by_key: Dict[str, Dict[str, Any]] = {}
             for item in carryover_items:
                 pid = str(item.get("id") or item.get("paper_id") or "").strip()
                 if float(item.get("llm_score", 0)) < CARRYOVER_MIN_SCORE:
                     continue
                 if not pid:
                     continue
+                paper_key = canonical_paper_id(pid)
+                if not paper_key:
+                    continue
                 copied = dict(item)
                 copied["id"] = pid
                 copied["_source"] = "carryover"
                 copied["selection_source"] = SOURCE_CARRYOVER_CACHE
-                candidates.append(copied)
+                existing = candidate_by_key.get(paper_key)
+                if existing is None or candidate_preference_key(copied) > candidate_preference_key(existing):
+                    candidate_by_key[paper_key] = copied
+            candidates = list(candidate_by_key.values())
         else:
             candidates = build_candidates(scored_papers, carryover_items, seen_ids)
     finally:
@@ -1145,7 +1232,7 @@ def main() -> None:
             for item in result.get(key) or []:
                 pid = str(item.get("id") or item.get("paper_id") or "").strip()
                 if pid:
-                    recommended_ids.add(pid)
+                    recommended_ids.add(canonical_paper_id(pid) or pid)
     log_substep("5.4", "按模式生成推荐结果", "END")
 
     log_substep("5.5", "写入 carryover 状态", "START")

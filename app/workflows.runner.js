@@ -1025,6 +1025,10 @@ window.DPRWorkflowRunner = (function () {
       icml: 'ICML', iclr: 'ICLR', aaai: 'AAAI',
       cvpr: 'CVPR', eccv: 'ECCV', ijcai: 'IJCAI',
       acl: 'ACL', emnlp: 'EMNLP',
+      unified: 'unified',
+      osdi: 'OSDI', sosp: 'SOSP', ndss: 'NDSS',
+      sp: 'IEEE S&P', 's&p': 'IEEE S&P', ieeesp: 'IEEE S&P',
+      'ieee-sp': 'IEEE S&P', ieee_sp: 'IEEE S&P', 'ieee s&p': 'IEEE S&P',
     };
     return MAP[lower] || '';
   };
@@ -1042,23 +1046,59 @@ window.DPRWorkflowRunner = (function () {
     return out;
   };
 
+  const normalizeConferencePairKey = (value) => {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    const compact = text
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+    if (['ieee_s_p', 'ieee_sp', 's_p', 'sp'].includes(compact)) return 'ieee_sp';
+    if (compact === 'nips') return 'neurips';
+    return compact;
+  };
+
+  const normalizeConferencePairs = (values) => {
+    const raw = Array.isArray(values) ? values : String(values || '').split(',');
+    const out = [];
+    const seen = new Set();
+    raw.forEach((item) => {
+      const text = String(item || '').trim();
+      if (!text || !text.includes(':')) return;
+      const [confRaw, yearRaw] = text.split(':');
+      const conf = normalizeConferencePairKey(confRaw);
+      const year = parseInt(yearRaw, 10);
+      if (!conf || !Number.isFinite(year) || year <= 0) return;
+      const pair = `${conf}:${year}`;
+      if (seen.has(pair)) return;
+      seen.add(pair);
+      out.push(pair);
+    });
+    return out;
+  };
+
   const runConferenceRetrieval = async (conference, years, options = {}) => {
-    const normalizedConference = normalizeConferenceName(conference);
-    const normalizedYears = normalizeConferenceYears(years);
-    if (!normalizedConference || !normalizedYears.length) {
-      open();
-      setStatus('请先选择支持的会议和年份。', '#c00');
-      return false;
-    }
     const extraInputs =
       options && typeof options === 'object' && options.dispatchInputs
         ? options.dispatchInputs
         : {};
-    return runWorkflowByKey('conference-retrieval', {
+    const normalizedPairs = normalizeConferencePairs(extraInputs.conference_pairs);
+    const normalizedConference = normalizedPairs.length ? 'unified' : normalizeConferenceName(conference);
+    const normalizedYears = normalizeConferenceYears(years);
+    const pairYears = normalizedPairs.map((item) => item.split(':')[1]);
+    const workflowYears = normalizedYears.length ? normalizedYears : normalizeConferenceYears(pairYears);
+    if (!normalizedConference || !workflowYears.length) {
+      open();
+      setStatus('请先选择支持的会议和年份。', '#c00');
+      return false;
+    }
+    const inputs = {
       conference: normalizedConference,
-      years: normalizedYears.join(','),
+      years: workflowYears.join(','),
       ...extraInputs,
-    });
+    };
+    if (normalizedPairs.length) inputs.conference_pairs = normalizedPairs.join(',');
+    return runWorkflowByKey('conference-retrieval', inputs);
   };
 
   const runConferenceMaintain = async (conference, years) =>

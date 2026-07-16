@@ -52,6 +52,12 @@ class SyncBackendKeyTest(unittest.TestCase):
         path = self.mod.resolve_default_raw_path("20260318", "biorxiv")
         self.assertTrue(path.endswith("archive/20260318/raw/biorxiv_papers_20260318.json"))
 
+    def test_resolve_default_raw_path_uses_production_conference_prefixes(self):
+        for backend_key in ("cvpr", "eccv", "ijcai", "osdi", "sosp", "ieee_sp", "ndss"):
+            with self.subTest(backend_key=backend_key):
+                path = self.mod.resolve_default_raw_path("20260318", backend_key)
+            self.assertTrue(path.endswith(f"archive/20260318/raw/{backend_key}_papers_20260318.json"))
+
 
 if __name__ == "__main__":
     unittest.main()

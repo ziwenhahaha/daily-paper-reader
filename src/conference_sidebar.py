@@ -30,7 +30,7 @@ def norm_text(value: Any) -> str:
 
 def parse_conference_result_name(path: Path) -> Tuple[str, str]:
     name = path.name
-    match = re.match(r"^conference-([a-z0-9-]+?)-([0-9]{4}(?:-[0-9]{4})*)\.supabase\.(?:llm|rerank|rrf)\.json$", name)
+    match = re.match(r"^conference-([a-z0-9_-]+?)-([0-9]{4}(?:-[0-9]{4})*)\.supabase\.(?:llm|rerank|rrf)\.json$", name)
     if not match:
         raise ValueError(f"无法从会议结果文件名解析会议和年份：{path}")
     conference = match.group(1).upper()
@@ -45,8 +45,15 @@ def build_conference_marker(conference: str, years: str) -> str:
 
 
 def build_conference_label(conference: str, years: str) -> str:
-    year_label = ", ".join(part.strip() for part in norm_text(years).split(",") if part.strip())
-    return f"{norm_text(conference).upper()} {year_label}".strip()
+    display_names = {
+        "IEEE_SP": "IEEE S&P",
+        "IEEE-SP": "IEEE S&P",
+    }
+    raw = norm_text(conference).upper()
+    conf_label = display_names.get(raw, raw)
+    sep = "/" if raw in display_names else ", "
+    year_label = sep.join(part.strip() for part in norm_text(years).split(",") if part.strip())
+    return f"{conf_label} {year_label}".strip()
 
 
 def build_conference_key(conference: str, years: str) -> str:

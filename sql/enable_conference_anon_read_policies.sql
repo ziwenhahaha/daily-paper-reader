@@ -3,8 +3,9 @@
 -- ============================================================
 --
 -- 用途：
--- - 让前端使用 config.yaml 中的 Supabase anon key 读取 ICML / NeurIPS 会议论文。
--- - 修复 REST 查询返回 200 [] 的问题：RLS 开启后，没有 SELECT policy 时 anon 看不到行。
+-- - 让前端和会议检索链路使用 Supabase anon key 读取公开会议论文表。
+-- - 对齐生产库当前已经开放的 9 个会议源。
+-- - 修复 RLS 开启后没有 SELECT policy 导致 REST/RPC 查不到行的问题。
 --
 -- 安全边界：
 -- - 仅开放 SELECT，不开放 INSERT / UPDATE / DELETE。
@@ -14,13 +15,16 @@
 
 begin;
 
+grant usage on schema public to anon, authenticated;
+
+-- OpenReview 会议表
 alter table public.icml_openreview_papers enable row level security;
 alter table public.neurips_openreview_papers enable row level security;
-
-grant usage on schema public to anon, authenticated;
+alter table public.iclr_openreview_papers enable row level security;
 
 grant select on table public.icml_openreview_papers to anon, authenticated;
 grant select on table public.neurips_openreview_papers to anon, authenticated;
+grant select on table public.iclr_openreview_papers to anon, authenticated;
 
 drop policy if exists "public read icml openreview papers" on public.icml_openreview_papers;
 create policy "public read icml openreview papers"
@@ -40,30 +44,200 @@ using (
   source ~ '^NeurIPS-[0-9]{4}-(Accepted|Public|Rejected-Public|Withdrawn-Public)$'
 );
 
+drop policy if exists "public read iclr openreview papers" on public.iclr_openreview_papers;
+create policy "public read iclr openreview papers"
+on public.iclr_openreview_papers
+for select
+to anon, authenticated
+using (
+  source ~ '^ICLR-[0-9]{4}-(Accepted|Public|Rejected-Public|Withdrawn-Public)$'
+);
+
+-- Proceedings / anthology 会议表
+alter table public.aaai_papers enable row level security;
+alter table public.acl_papers enable row level security;
+alter table public.emnlp_papers enable row level security;
+alter table public.cvpr_papers enable row level security;
+alter table public.eccv_papers enable row level security;
+alter table public.ijcai_papers enable row level security;
+alter table public.osdi_papers enable row level security;
+alter table public.sosp_papers enable row level security;
+alter table public.ieee_sp_papers enable row level security;
+alter table public.ndss_papers enable row level security;
+
+grant select on table public.aaai_papers to anon, authenticated;
+grant select on table public.acl_papers to anon, authenticated;
+grant select on table public.emnlp_papers to anon, authenticated;
+grant select on table public.cvpr_papers to anon, authenticated;
+grant select on table public.eccv_papers to anon, authenticated;
+grant select on table public.ijcai_papers to anon, authenticated;
+grant select on table public.osdi_papers to anon, authenticated;
+grant select on table public.sosp_papers to anon, authenticated;
+grant select on table public.ieee_sp_papers to anon, authenticated;
+grant select on table public.ndss_papers to anon, authenticated;
+
+drop policy if exists "public read aaai papers" on public.aaai_papers;
+create policy "public read aaai papers"
+on public.aaai_papers
+for select
+to anon, authenticated
+using (
+  source ~ '^AAAI-[0-9]{4}-[A-Za-z0-9-]+$'
+);
+
+drop policy if exists "public read acl papers" on public.acl_papers;
+create policy "public read acl papers"
+on public.acl_papers
+for select
+to anon, authenticated
+using (
+  source ~ '^ACL-[0-9]{4}-[A-Za-z0-9-]+$'
+);
+
+drop policy if exists "public read emnlp papers" on public.emnlp_papers;
+create policy "public read emnlp papers"
+on public.emnlp_papers
+for select
+to anon, authenticated
+using (
+  source ~ '^EMNLP-[0-9]{4}-[A-Za-z0-9-]+$'
+);
+
+drop policy if exists "public read cvpr papers" on public.cvpr_papers;
+create policy "public read cvpr papers"
+on public.cvpr_papers
+for select
+to anon, authenticated
+using (
+  source ~ '^CVPR-[0-9]{4}-[A-Za-z0-9-]+$'
+);
+
+drop policy if exists "public read eccv papers" on public.eccv_papers;
+create policy "public read eccv papers"
+on public.eccv_papers
+for select
+to anon, authenticated
+using (
+  source ~ '^ECCV-[0-9]{4}-[A-Za-z0-9-]+$'
+);
+
+drop policy if exists "public read ijcai papers" on public.ijcai_papers;
+create policy "public read ijcai papers"
+on public.ijcai_papers
+for select
+to anon, authenticated
+using (
+  source ~ '^IJCAI-[0-9]{4}-[A-Za-z0-9-]+$'
+);
+
+drop policy if exists "public read osdi papers" on public.osdi_papers;
+create policy "public read osdi papers"
+on public.osdi_papers
+for select
+to anon, authenticated
+using (
+  source ~ '^OSDI-[0-9]{4}-[A-Za-z0-9-]+$'
+);
+
+drop policy if exists "public read sosp papers" on public.sosp_papers;
+create policy "public read sosp papers"
+on public.sosp_papers
+for select
+to anon, authenticated
+using (
+  source ~ '^SOSP-[0-9]{4}-[A-Za-z0-9-]+$'
+);
+
+drop policy if exists "public read ieee sp papers" on public.ieee_sp_papers;
+create policy "public read ieee sp papers"
+on public.ieee_sp_papers
+for select
+to anon, authenticated
+using (
+  source ~ '^IEEE-SP-[0-9]{4}-[A-Za-z0-9-]+$'
+);
+
+drop policy if exists "public read ndss papers" on public.ndss_papers;
+create policy "public read ndss papers"
+on public.ndss_papers
+for select
+to anon, authenticated
+using (
+  source ~ '^NDSS-[0-9]{4}-[A-Za-z0-9-]+$'
+);
+
+-- RPC execute grants
 grant execute on function public.match_icml_openreview_papers_exact(vector, int, timestamptz, timestamptz)
 to anon, authenticated;
-
 grant execute on function public.match_icml_openreview_papers_bm25(text, int, timestamptz, timestamptz)
 to anon, authenticated;
 
 grant execute on function public.match_neurips_openreview_papers_exact(vector, int, timestamptz, timestamptz)
 to anon, authenticated;
-
 grant execute on function public.match_neurips_openreview_papers_bm25(text, int, timestamptz, timestamptz)
 to anon, authenticated;
 
-commit;
+grant execute on function public.match_iclr_openreview_papers_exact(vector, int, timestamptz, timestamptz)
+to anon, authenticated;
+grant execute on function public.match_iclr_openreview_papers_bm25(text, int, timestamptz, timestamptz)
+to anon, authenticated;
 
--- ============================================================
--- 验证 SQL
--- ============================================================
---
--- 在 Supabase SQL Editor 执行上面的事务后，可以用 anon key 验证 REST 可见性：
---
--- curl "$SUPABASE_URL/rest/v1/icml_openreview_papers?select=id,title,source&source=like.ICML-2025*&limit=1" \
---   -H "apikey: $SUPABASE_ANON_KEY" \
---   -H "Authorization: Bearer $SUPABASE_ANON_KEY"
---
--- curl "$SUPABASE_URL/rest/v1/neurips_openreview_papers?select=id,title,source&source=like.NeurIPS-2025*&limit=1" \
---   -H "apikey: $SUPABASE_ANON_KEY" \
---   -H "Authorization: Bearer $SUPABASE_ANON_KEY"
+grant execute on function public.match_aaai_papers_exact(vector, int, timestamptz, timestamptz)
+to anon, authenticated;
+grant execute on function public.match_aaai_papers_bm25(text, int, timestamptz, timestamptz)
+to anon, authenticated;
+
+grant execute on function public.match_acl_papers_exact(vector, int, timestamptz, timestamptz)
+to anon, authenticated;
+grant execute on function public.match_acl_papers_bm25(text, int, timestamptz, timestamptz)
+to anon, authenticated;
+
+grant execute on function public.match_emnlp_papers_exact(vector, int, timestamptz, timestamptz)
+to anon, authenticated;
+grant execute on function public.match_emnlp_papers_bm25(text, int, timestamptz, timestamptz)
+to anon, authenticated;
+
+grant execute on function public.match_cvpr_papers_exact(vector, int, timestamptz, timestamptz)
+to anon, authenticated;
+grant execute on function public.match_cvpr_papers_bm25(text, int, timestamptz, timestamptz)
+to anon, authenticated;
+
+grant execute on function public.match_eccv_papers_exact(vector, int, timestamptz, timestamptz)
+to anon, authenticated;
+grant execute on function public.match_eccv_papers_bm25(text, int, timestamptz, timestamptz)
+to anon, authenticated;
+
+grant execute on function public.match_ijcai_papers_exact(vector, int, timestamptz, timestamptz)
+to anon, authenticated;
+grant execute on function public.match_ijcai_papers_bm25(text, int, timestamptz, timestamptz)
+to anon, authenticated;
+
+grant execute on function public.match_osdi_papers_exact(vector, int, timestamptz, timestamptz)
+to anon, authenticated;
+grant execute on function public.match_osdi_papers_bm25(text, int, timestamptz, timestamptz)
+to anon, authenticated;
+
+grant execute on function public.match_sosp_papers_exact(vector, int, timestamptz, timestamptz)
+to anon, authenticated;
+grant execute on function public.match_sosp_papers_bm25(text, int, timestamptz, timestamptz)
+to anon, authenticated;
+
+grant execute on function public.match_ieee_sp_papers_exact(vector, int, timestamptz, timestamptz)
+to anon, authenticated;
+grant execute on function public.match_ieee_sp_papers_bm25(text, int, timestamptz, timestamptz)
+to anon, authenticated;
+
+grant execute on function public.match_ndss_papers_exact(vector, int, timestamptz, timestamptz)
+to anon, authenticated;
+grant execute on function public.match_ndss_papers_bm25(text, int, timestamptz, timestamptz)
+to anon, authenticated;
+
+grant select on public.conference_papers_unified
+to anon, authenticated;
+
+grant execute on function public.match_conference_papers_exact(vector, int, text[])
+to anon, authenticated;
+grant execute on function public.match_conference_papers_bm25(text, int, text[])
+to anon, authenticated;
+
+commit;

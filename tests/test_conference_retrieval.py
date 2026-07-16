@@ -25,12 +25,30 @@ class ConferenceRetrievalTest(unittest.TestCase):
     def test_parse_conferences_supports_nips_alias_and_dedupes(self):
         self.assertEqual(self.mod.parse_conferences("NIPS,ICML,neurips"), ["neurips", "icml"])
 
+    def test_parse_conferences_supports_systems_and_security_aliases(self):
+        self.assertEqual(
+            self.mod.parse_conferences("OSDI,SOSP,S&P,ieee-sp,NDSS"),
+            ["osdi", "sosp", "ieee_sp", "ndss"],
+        )
+
     def test_parse_years_keeps_user_order_and_dedupes(self):
         self.assertEqual(self.mod.parse_years("2025,2024,2025"), [2025, 2024])
 
-    def test_year_window_uses_calendar_year(self):
+    def test_parse_conference_pairs_normalizes_aliases_and_dedupes(self):
+        self.assertEqual(
+            self.mod.parse_conference_pairs("ICLR:2025,nips:2024,S&P:2026,iclr:2025"),
+            [("iclr", 2025), ("neurips", 2024), ("ieee_sp", 2026)],
+        )
+
+    def test_conference_pairs_to_filter_pairs(self):
+        self.assertEqual(
+            self.mod.conference_pairs_to_filter_pairs([("iclr", 2025), ("neurips", 2024)]),
+            ["iclr:2025", "neurips:2024"],
+        )
+
+    def test_year_window_covers_prior_submission_year(self):
         start, end = self.mod.year_window(2025)
-        self.assertEqual(start.isoformat(), "2025-01-01T00:00:00+00:00")
+        self.assertEqual(start.isoformat(), "2024-01-01T00:00:00+00:00")
         self.assertEqual(end.isoformat(), "2026-01-01T00:00:00+00:00")
 
     def test_clone_queries_for_conference_does_not_mutate_original(self):
@@ -55,6 +73,27 @@ class ConferenceRetrievalTest(unittest.TestCase):
         self.assertEqual(backend["bm25_rpc"], "match_icml_openreview_papers_bm25")
         self.assertEqual(backend["vector_rpc_exact"], "match_icml_openreview_papers_exact")
 
+    def test_resolve_conference_backend_includes_new_public_pdf_sources(self):
+        cfg = {
+            "supabase": {
+                "url": "https://example.supabase.co",
+                "anon_key": "anon",
+                "schema": "public",
+            }
+        }
+        cases = {
+            "osdi": ("osdi_papers", "match_osdi_papers_bm25", "match_osdi_papers_exact"),
+            "sosp": ("sosp_papers", "match_sosp_papers_bm25", "match_sosp_papers_exact"),
+            "ieee_sp": ("ieee_sp_papers", "match_ieee_sp_papers_bm25", "match_ieee_sp_papers_exact"),
+            "ndss": ("ndss_papers", "match_ndss_papers_bm25", "match_ndss_papers_exact"),
+        }
+        for conference, expected in cases.items():
+            with self.subTest(conference=conference):
+                backend = self.mod.resolve_conference_backend(cfg, conference)
+            self.assertEqual(backend["papers_table"], expected[0])
+            self.assertEqual(backend["bm25_rpc"], expected[1])
+            self.assertEqual(backend["vector_rpc_exact"], expected[2])
+
     def test_save_result_writes_only_tagged_papers(self):
         paper = self.mod.PaperHit(id="p1", title="Paper", pdf_url="https://openreview.net/pdf?id=p1", best_score=1.0)
         paper.tags.add("query:test")
@@ -74,6 +113,24 @@ class ConferenceRetrievalTest(unittest.TestCase):
         finally:
             if path.exists():
                 path.unlink()
+
+
+class ConferenceSidebarNameTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        src_dir = root / "src"
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+        cls.mod = _load_module("conference_sidebar_mod", src_dir / "conference_sidebar.py")
+
+    def test_parse_conference_result_name_allows_ieee_sp_token(self):
+        conference, years = self.mod.parse_conference_result_name(
+            pathlib.Path("conference-ieee_sp-2024-2025.supabase.rrf.json")
+        )
+        self.assertEqual(conference, "IEEE_SP")
+        self.assertEqual(years, "2024,2025")
+        self.assertEqual(self.mod.build_conference_label(conference, years), "IEEE S&P 2024/2025")
 
 
 if __name__ == "__main__":

@@ -148,33 +148,101 @@
   <script>
     (function () {
       var DEFAULT_CDN_BASE = 'https://cdn.zwwen.online';
+      var DEFAULT_VERSION_PREFIX = 'dpr/assets';
       var ASSET_TIMEOUT_MS = 6000;
       var explicitBase = String(window.DPR_CDN_BASE || '').replace(/\/$/, '');
       var disabled = String(window.DPR_DISABLE_CDN || '').toLowerCase() === '1';
       var isLocalHost = /^(localhost|127\.0\.0\.1|::1)$/.test(String(location.hostname || '').toLowerCase());
       var candidateBase = disabled || (isLocalHost && !explicitBase) ? '' : (explicitBase || DEFAULT_CDN_BASE);
       var preferCdn = !!candidateBase;
+      var appAssetVersion = normalizeAssetVersion(window.DPR_APP_ASSET_VERSION);
+      var versionPrefix = normalizeVersionPrefix(window.DPR_CDN_VERSION_PREFIX || DEFAULT_VERSION_PREFIX);
+      var versionedAppCdnActive = preferCdn && !!appAssetVersion;
       window.DPR_CDN_ACTIVE = preferCdn;
       window.DPR_ASSET_BASE = preferCdn ? candidateBase : '';
+      window.DPR_APP_ASSET_VERSION = appAssetVersion;
+      window.DPR_VERSIONED_APP_CDN_ACTIVE = versionedAppCdnActive;
+      window.DPR_ASSET_JSON_PROMISES = window.DPR_ASSET_JSON_PROMISES || {};
 
       function normalizePath(path) {
         return String(path || '').replace(/^\/+/, '');
+      }
+
+      function trimSlashes(value) {
+        return String(value || '').trim().replace(/^\/+|\/+$/g, '');
+      }
+
+      function normalizeVersionPrefix(value) {
+        var text = trimSlashes(value || DEFAULT_VERSION_PREFIX);
+        if (!text || text.indexOf('..') !== -1 || !/^[A-Za-z0-9._/-]+$/.test(text)) {
+          return DEFAULT_VERSION_PREFIX;
+        }
+        return text;
+      }
+
+      function normalizeAssetVersion(value) {
+        var text = trimSlashes(value);
+        // latest/main/master 都是可变指针，会绕过 fork 的 Sync 控制，直接禁用。
+        if (!text || /^(latest|main|master)$/i.test(text)) return '';
+        if (text.indexOf('..') !== -1 || !/^[A-Za-z0-9._/-]+$/.test(text)) return '';
+        return text;
+      }
+
+      function encodePathSegments(path) {
+        return String(path || '')
+          .split('/')
+          .filter(Boolean)
+          .map(encodeURIComponent)
+          .join('/');
       }
 
       function localUrl(path) {
         return normalizePath(path);
       }
 
-      function cdnUrl(path) {
+      function cdnUrl(path, useVersionedPath) {
         if (!candidateBase) return localUrl(path);
+        if (useVersionedPath && appAssetVersion) {
+          return [
+            candidateBase,
+            encodePathSegments(versionPrefix),
+            encodePathSegments(appAssetVersion),
+            normalizePath(path),
+          ].filter(Boolean).join('/');
+        }
         return candidateBase + '/' + normalizePath(path);
+      }
+
+      function isVendorAsset(path) {
+        return /^app\/vendor\//i.test(normalizePath(path));
+      }
+
+      function isProjectAppAsset(path) {
+        var normalized = normalizePath(path);
+        return /^app\//i.test(normalized) && !isVendorAsset(normalized);
+      }
+
+      function shouldLoadAppAssetFromVersionedCdn(path, useCdn) {
+        return !!useCdn && versionedAppCdnActive && isProjectAppAsset(path);
+      }
+
+      function shouldLoadScriptFromCdn(path, useCdn) {
+        if (!useCdn) return false;
+        // 项目自有 app/*.js 只有在 fork 本地锁定了不可变版本后才走 CDN，
+        // 避免上游 latest 资源发布后绕过用户的 Sync fork 控制。
+        return isVendorAsset(path) || shouldLoadAppAssetFromVersionedCdn(path, useCdn);
       }
 
       function shouldLoadStylesheetFromCdn(path, useCdn) {
         if (!useCdn) return false;
+        if (!isVendorAsset(path) && !shouldLoadAppAssetFromVersionedCdn(path, useCdn)) return false;
         // KaTeX CSS 会继续请求 fonts/*.woff2。EdgeOne Pages 当前未给字体返回
         // Access-Control-Allow-Origin，本地/GitHub Pages 跨域引用会被浏览器拦截。
         return !/\/katex\.min\.css$/i.test(normalizePath(path));
+      }
+
+      function shouldLoadJsonFromCdn(path, useCdn) {
+        return !!useCdn && shouldLoadAppAssetFromVersionedCdn(path, useCdn);
       }
 
       function appendStylesheet(path, useCdn) {
@@ -194,7 +262,9 @@
             }
           }, ASSET_TIMEOUT_MS);
           link.rel = 'stylesheet';
-          link.href = useRemoteStylesheet ? cdnUrl(path) : localUrl(path);
+          link.href = useRemoteStylesheet
+            ? cdnUrl(path, shouldLoadAppAssetFromVersionedCdn(path, useCdn))
+            : localUrl(path);
           link.onload = function () {
             if (finished) return;
             finished = true;
@@ -218,22 +288,54 @@
       }
 
       function preloadScript(path, useCdn) {
+        var useRemoteScript = shouldLoadScriptFromCdn(path, useCdn);
         var link = document.createElement('link');
         link.rel = 'preload';
         link.as = 'script';
-        link.href = useCdn ? cdnUrl(path) : localUrl(path);
+        link.href = useRemoteScript
+          ? cdnUrl(path, shouldLoadAppAssetFromVersionedCdn(path, useCdn))
+          : localUrl(path);
         document.head.appendChild(link);
+      }
+
+      function preloadJsonAsset(path, useCdn) {
+        var key = normalizePath(path);
+        if (!key || typeof fetch !== 'function') return Promise.resolve(null);
+        if (window.DPR_ASSET_JSON_PROMISES[key]) return window.DPR_ASSET_JSON_PROMISES[key];
+
+        function requestJson(useRemoteJson) {
+          var url = useRemoteJson
+            ? cdnUrl(path, shouldLoadAppAssetFromVersionedCdn(path, useCdn))
+            : localUrl(path);
+          return fetch(url, { cache: 'force-cache' }).then(function (response) {
+            if (!response || !response.ok) {
+              throw new Error('静态 JSON 加载失败：' + path);
+            }
+            return response.json();
+          }).catch(function (err) {
+            if (useRemoteJson) {
+              console.warn('[DPR] CDN JSON 加载失败，回退本地：' + path);
+              return requestJson(false);
+            }
+            console.warn('[DPR] 静态 JSON 预取失败：' + path, err);
+            return null;
+          });
+        }
+
+        window.DPR_ASSET_JSON_PROMISES[key] = requestJson(shouldLoadJsonFromCdn(path, useCdn));
+        return window.DPR_ASSET_JSON_PROMISES[key];
       }
 
       function appendScript(path, useCdn) {
         return new Promise(function (resolve, reject) {
+          var useRemoteScript = shouldLoadScriptFromCdn(path, useCdn);
           var finished = false;
           var script = document.createElement('script');
           var timer = window.setTimeout(function () {
             if (finished) return;
             finished = true;
             script.remove();
-            if (useCdn) {
+            if (useRemoteScript) {
               console.warn('[DPR] CDN JS 加载超时，回退本地：' + path);
               appendScript(path, false).then(resolve, reject);
             } else {
@@ -241,7 +343,9 @@
             }
           }, ASSET_TIMEOUT_MS);
           script.async = false;
-          script.src = useCdn ? cdnUrl(path) : localUrl(path);
+          script.src = useRemoteScript
+            ? cdnUrl(path, shouldLoadAppAssetFromVersionedCdn(path, useCdn))
+            : localUrl(path);
           script.onload = function () {
             if (finished) return;
             finished = true;
@@ -253,7 +357,7 @@
             finished = true;
             window.clearTimeout(timer);
             script.remove();
-            if (useCdn) {
+            if (useRemoteScript) {
               console.warn('[DPR] CDN JS 加载失败，回退本地：' + path);
               appendScript(path, false).then(resolve, reject);
             } else {
@@ -277,12 +381,17 @@
       window.DPRLoadAssets = function (assets) {
         var styles = [];
         var scripts = [];
+        var jsons = [];
         assets.forEach(function (asset) {
           if (asset.type === 'style') styles.push(asset.path);
           if (asset.type === 'script') scripts.push(asset.path);
+          if (asset.type === 'json') jsons.push(asset.path);
         });
         scripts.forEach(function (path) {
           preloadScript(path, preferCdn);
+        });
+        jsons.forEach(function (path) {
+          preloadJsonAsset(path, preferCdn);
         });
         return Promise.all(styles.map(function (path) {
           return appendStylesheet(path, preferCdn);
@@ -380,12 +489,14 @@
       { type: 'script', path: 'app/gist-share-utils.js' },
       { type: 'script', path: 'app/zotero-meta-utils.js' },
       { type: 'script', path: 'app/zotero-chat-utils.js' },
+      { type: 'script', path: 'app/dpr-sidebar.js' },
       { type: 'script', path: 'app/docsify-plugin.js' },
       { type: 'script', path: 'app/vendor/docsify/4/lib/docsify.min.js' },
     ]).then(function () {
       document.addEventListener('dpr-docsify-ready', function loadDeferredAssetsOnce() {
         document.removeEventListener('dpr-docsify-ready', loadDeferredAssetsOnce);
         window.DPRLoadAssets([
+          { type: 'json', path: 'app/conference-stats.json' },
           { type: 'style', path: 'app/vendor/katex/0.16.9/dist/katex.min.css' },
           { type: 'script', path: 'app/vendor/katex/0.16.9/dist/katex.min.js' },
           { type: 'script', path: 'app/vendor/katex/0.16.9/dist/contrib/auto-render.min.js' },

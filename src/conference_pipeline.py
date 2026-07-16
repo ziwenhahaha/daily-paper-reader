@@ -18,7 +18,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
-from conference_retrieval import build_years_token, output_paths, parse_conferences, parse_years
+from conference_retrieval import (
+    build_years_token,
+    conference_pairs_to_filter_pairs,
+    output_paths,
+    parse_conference_pairs,
+    parse_conferences,
+    parse_years,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -124,6 +131,7 @@ def main() -> None:
     parser.add_argument("--config", type=str, default=str(ROOT_DIR / "config.yaml"))
     parser.add_argument("--conferences", "--conference", dest="conferences", type=str, required=True)
     parser.add_argument("--years", type=str, required=True)
+    parser.add_argument("--conference-pairs", type=str, default="")
     parser.add_argument("--top-k", type=int, default=50, help="BM25 / embedding 每个查询保留候选数。")
     parser.add_argument("--rrf-top-n", type=int, default=200, help="RRF 每个查询保留候选数。")
     parser.add_argument("--output-dir", type=str, default=str(ROOT_DIR / "archive" / TODAY_STR / "filtered"))
@@ -142,8 +150,20 @@ def main() -> None:
     parser.add_argument("--display-min-score", type=float, default=4.0, help="会议论文进入最终展示与本地落盘结果的最低 LLM 分数。")
     args = parser.parse_args()
 
-    conferences = parse_conferences(args.conferences)
-    years = parse_years(args.years)
+    pair_specs = parse_conference_pairs(args.conference_pairs) if str(args.conference_pairs or "").strip() else []
+    if pair_specs:
+        conferences = []
+        years = []
+        for conference, year in pair_specs:
+            if conference not in conferences:
+                conferences.append(conference)
+            if year not in years:
+                years.append(year)
+        filter_pairs = conference_pairs_to_filter_pairs(pair_specs)
+    else:
+        conferences = parse_conferences(args.conferences)
+        years = parse_years(args.years)
+        filter_pairs = []
     output_dir = Path(args.output_dir)
     if not output_dir.is_absolute():
         output_dir = ROOT_DIR / output_dir
@@ -177,6 +197,8 @@ def main() -> None:
         "--embedding-max-length",
         str(max(int(args.embedding_max_length or 1), 1)),
     ]
+    if filter_pairs:
+        retrieval_cmd.extend(["--conference-pairs", ",".join(filter_pairs)])
     run_step("Conference Supabase retrieval", retrieval_cmd)
 
     rrf_cmd = [
@@ -246,6 +268,7 @@ def main() -> None:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "conferences": conferences,
         "years": years,
+        "conference_pairs": filter_pairs,
         "top_k": max(int(args.top_k or 1), 1),
         "rrf_top_n": max(int(args.rrf_top_n or 1), 1),
         "run_rerank": should_run_rerank,

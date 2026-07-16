@@ -1,5 +1,5 @@
 -- ============================================================
--- CVPR 论文表的检索 RPC
+-- CVPR CVF Open Access 论文表的检索 RPC
 -- ============================================================
 
 create or replace function match_cvpr_papers_exact(

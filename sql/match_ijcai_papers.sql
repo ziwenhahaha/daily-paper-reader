@@ -1,5 +1,5 @@
 -- ============================================================
--- IJCAI 论文表的检索 RPC
+-- IJCAI Proceedings 论文表的检索 RPC
 -- ============================================================
 
 create or replace function match_ijcai_papers_exact(

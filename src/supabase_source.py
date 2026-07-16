@@ -487,6 +487,7 @@ def match_papers_by_embedding(
     end_dt: datetime | None = None,
     time_fields: tuple[str, ...] = ("published",),
     filter_sources: List[str] | None = None,
+    extra_payload: Dict[str, Any] | None = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
     调用 Supabase RPC，在数据库侧执行向量相似度检索。
@@ -511,6 +512,8 @@ def match_papers_by_embedding(
     }
     if isinstance(filter_sources, list) and filter_sources:
         payload["filter_sources"] = [str(item).strip() for item in filter_sources if str(item).strip()]
+    if isinstance(extra_payload, dict):
+        payload.update({key: value for key, value in extra_payload.items() if key})
     try:
         resp = _request_with_retries(
             "POST",
@@ -581,6 +584,7 @@ def match_papers_by_bm25(
     end_dt: datetime | None = None,
     time_fields: tuple[str, ...] = ("published",),
     filter_sources: List[str] | None = None,
+    extra_payload: Dict[str, Any] | None = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
     调用 Supabase RPC，在数据库侧执行 BM25 风格检索（PostgreSQL FTS）。
@@ -605,6 +609,8 @@ def match_papers_by_bm25(
     }
     if isinstance(filter_sources, list) and filter_sources:
         payload["filter_sources"] = [str(item).strip() for item in filter_sources if str(item).strip()]
+    if isinstance(extra_payload, dict):
+        payload.update({key: value for key, value in extra_payload.items() if key})
     try:
         resp = _request_with_retries(
             "POST",

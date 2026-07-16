@@ -2,6 +2,7 @@ import importlib.util
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 
 def _load_module(module_name: str, path: pathlib.Path):
@@ -99,6 +100,88 @@ class FetchOpenReviewConferenceTest(unittest.TestCase):
             public_only=True,
         )
         self.assertIsNone(paper)
+
+    def test_fetch_openreview_submissions_rest_fallback_paginates_and_keeps_public_pdf_only(self):
+        login_response = mock.Mock()
+        login_response.status_code = 200
+        login_response.json.return_value = {"token": "token-123"}
+        login_response.raise_for_status.return_value = None
+
+        group_response = mock.Mock()
+        group_response.status_code = 200
+        group_response.json.return_value = {
+            "groups": [
+                {
+                    "content": {
+                        "submission_id": {
+                            "value": "ICML.cc/2026/Conference/-/Submission",
+                        },
+                    },
+                },
+            ],
+        }
+        group_response.raise_for_status.return_value = None
+
+        def make_note(note_id, readers, pdf="/pdf/public.pdf"):
+            return {
+                "id": note_id,
+                "forum": note_id,
+                "readers": readers,
+                "cdate": 1760560023346,
+                "content": {
+                    "title": {"value": f"Paper {note_id}"},
+                    "abstract": {"value": "Abstract body"},
+                    "authors": {"value": ["Alice"]},
+                    "keywords": {"value": ["learning"]},
+                    "pdf": {"value": pdf},
+                    "venue": {"value": "ICML 2026 regular"},
+                },
+                "details": {"replies": []},
+            }
+
+        first_notes_response = mock.Mock()
+        first_notes_response.status_code = 200
+        first_notes_response.json.return_value = {
+            "notes": [
+                make_note("public-a", ["everyone"], "/pdf/a.pdf"),
+                make_note("private-b", ["ICML.cc/2026/Conference"], "/pdf/b.pdf"),
+            ],
+            "count": 3,
+        }
+        first_notes_response.raise_for_status.return_value = None
+
+        second_notes_response = mock.Mock()
+        second_notes_response.status_code = 200
+        second_notes_response.json.return_value = {
+            "notes": [
+                make_note("public-c", ["everyone"], "/pdf/c.pdf"),
+            ],
+            "count": 3,
+        }
+        second_notes_response.raise_for_status.return_value = None
+
+        session = mock.Mock()
+        session.post.return_value = login_response
+        session.get.side_effect = [group_response, first_notes_response, second_notes_response]
+
+        with mock.patch.object(self.mod.requests, "Session", return_value=session):
+            papers = self.mod.fetch_openreview_submissions_via_rest(
+                conference="ICML",
+                years=[2026],
+                username="user",
+                password="pass",
+                public_only=True,
+                page_size=2,
+            )
+
+        self.assertEqual([paper["source_paper_id"] for paper in papers], ["public-a", "public-c"])
+        self.assertEqual(papers[0]["pdf_url"], "https://openreview.net/pdf/a.pdf")
+        note_calls = [
+            call
+            for call in session.get.call_args_list
+            if call.kwargs.get("params", {}).get("invitation") == "ICML.cc/2026/Conference/-/Submission"
+        ]
+        self.assertEqual([call.kwargs["params"]["offset"] for call in note_calls], [0, 2])
 
 
 if __name__ == "__main__":

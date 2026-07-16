@@ -17,6 +17,7 @@ create table if not exists public.emnlp_papers (
   categories jsonb not null default '[]'::jsonb,
   published timestamptz,
   link text,
+  pdf_url text,
   embedding vector(384),
   embedding_model text,
   embedding_dim int,
