@@ -7,6 +7,11 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
+
+# 北京时区：用于首页/日报的"展示标签"（运行时间、最新运行日期、下次更新）。
+# 注意：归档 token（DPR_RUN_DATE）与 docs/、archive/ 路径仍用 UTC 日期，这里只影响人类可读标签。
+BJT = ZoneInfo("Asia/Shanghai")
 
 try:
     from source_config import get_source_backend, load_config_with_source_migration
@@ -69,7 +74,7 @@ def should_skip_fetch(config: dict | None = None) -> bool:
 
 def build_sidebar_date_label(days: int) -> str:
     safe_days = max(int(days), 1)
-    end_date = datetime.now(timezone.utc).date()
+    end_date = datetime.now(BJT).date()
     start_date = end_date - timedelta(days=safe_days - 1)
     return f"{start_date:%Y-%m-%d} ~ {end_date:%Y-%m-%d}"
 
@@ -103,11 +108,18 @@ def resolve_run_date_token(fetch_days: int | None) -> str:
 
 
 def resolve_sidebar_date_label(fetch_days: int | None) -> str | None:
+    """
+    返回用于首页/日报展示的"北京日期标签"：
+    - 大窗口模式（>=阈值）：返回北京时区下的日期区间，如 "2026-06-22 ~ 2026-06-30"。
+    - 单日模式：返回北京时区当日，如 "2026-06-30"。
+      （流水线在 UTC 18:30 = 北京 02:30 触发，token 用 UTC 日期即北京"昨天"，
+       展示标签改用北京日期，避免首页"最新运行日期"看起来滞后一天。）
+    """
     # 1) 显式传 --fetch-days 时，仅在大窗口模式下显示日期范围。
     if fetch_days is not None:
         if fetch_days >= LONG_RANGE_DAYS_THRESHOLD:
             return build_sidebar_date_label(fetch_days)
-        return None
+        return datetime.now(BJT).strftime("%Y-%m-%d")
 
     # 2) 未显式传入时，按 config 的 days_window 判断：
     #    仅在“大时间跨度”模式（默认阈值 >=10 天）自动显示区间标题。
@@ -118,7 +130,7 @@ def resolve_sidebar_date_label(fetch_days: int | None) -> str | None:
         days_window = MAIN_DEFAULT_DAYS
     if days_window >= LONG_RANGE_DAYS_THRESHOLD:
         return build_sidebar_date_label(days_window)
-    return None
+    return datetime.now(BJT).strftime("%Y-%m-%d")
 
 
 def normalize_arxiv_id(value: Any) -> str:
