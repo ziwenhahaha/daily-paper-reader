@@ -1,0 +1,1303 @@
+Title: Communication-free Sampling and 4D Hybrid Parallelism for Scalable Mini-batch GNN Training
+
+URL Source: https://arxiv.org/pdf/2604.02651v1
+
+Published Time: Mon, 06 Apr 2026 00:24:26 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# Communication-free Sampling and 4D Hybrid Parallelism for Scalable Mini-batch GNN Training 
+
+Cunyang Wei ∗, Siddharth Singh †, Aishwarya Sarkar ‡, Daniel Nichols §, Tisha Patel ∗,Aditya K. Ranjan ¶, Sayan Ghosh ∥, Ali Jannesari ‡, Nathan R. Tallent ∥, Abhinav Bhatele ∗∗University of Maryland, College Park, USA 
+
+†NVIDIA, Inc. 
+
+‡Iowa State University, USA 
+
+§Lawrence Livermore National Laboratory, USA 
+
+¶Google, Inc. 
+
+∥Pacific Northwest National Laboratory, USA E-mail: cunyang@umd.edu, sidsingh@nvidia.com, danielnichols@llnl.gov, tpatel21@terpmail.umd.edu, 
+
+{asarkar1,jannesari }@iastate.edu, adikranjan@google.com, {sayan.ghosh,tallent }@pnnl.gov, bhatele@cs.umd.edu 
+
+Abstract —Graph neural networks (GNNs) are widely used for learning on graph datasets derived from various real-world scenarios. Learning from extremely large graphs requires dis-tributed training, and mini-batching with sampling is a popular approach for parallelizing GNN training. Existing distributed mini-batch approaches have significant performance bottlenecks due to expensive sampling methods and limited scaling when using data parallelism. In this work, we present ScaleGNN, a 4D parallel framework for scalable mini-batch GNN training that combines communication-free distributed sampling, 3D parallel matrix multiplication (PMM), and data parallelism. ScaleGNN introduces a uniform vertex sampling algorithm, enabling each process (GPU device) to construct its local mini-batch, i.e., subgraph partitions without any inter-process communication. 3D PMM enables scaling mini-batch training to much larger GPU counts than vanilla data parallelism with significantly lower communication overheads. We also present additional optimiza-tions to overlap sampling with training, reduce communication overhead by sending data in lower precision, kernel fusion, and communication-computation overlap. We evaluate ScaleGNN on five graph datasets and demonstrate strong scaling up to 2048 GPUs on Perlmutter, 2048 GCDs on Frontier, and 1024 GPUs on Tuolumne. On Perlmutter, ScaleGNN achieves 3.5× end-to-end training speedup over the SOTA baseline on ogbn-products. 
+
+I. I NTRODUCTION 
+
+Graph neural networks or GNNs [1] are becoming increas-ingly popular for learning from graph datasets found in the real world around us. They power tasks such as recommen-dation systems [2], [3], fraud detection [4], and scientific discovery [5]. Most modern GNNs follow the message-passing pattern [6]: at each layer, a vertex aggregates information from its neighbors and then updates its embedding. Graph Convolutional Networks or GCNs [7] are a canonical and widely used instantiation of this pattern. GNN training has two paradigms: full-graph training and mini-batch training. Full-graph training processes all vertices in each iteration, offering a regular execution structure but quickly hitting memory and communication bottlenecks as graphs grow. Mini-batch training instead operates on sampled subgraphs, reducing the working set to fit within GPU mem-ory. Common sampling strategies include node-wise neighbor sampling [8], layer-wise sampling [9], [10], and subgraph-based sampling [11], [12]. Recent studies have demonstrated that mini-batch training can converge faster and reach higher accuracy than full-graph training [13], making it increasingly preferred in practice. GNN training workloads are irregular, memory-bound, and tightly coupled to graph structure, which makes them difficult to run efficiently on large GPU systems. Parallelization of full-graph GNN training typically requires 1D–3D algorithms to parallelize sparse and dense matrix operations, but full-graph iterations remain expensive on large graphs [14], [15], [16]. Parallel approaches for mini-batch training use vanilla data parallelism to assign mini-batches to workers (GPUs), and use neighbor sampling with remote feature fetching. However, their reliance on CPU-based sampling and cross-device feature access limits scalability [17], [18], [19], [20]. Hence, despite previous efforts, distributed mini-batch GNN training still struggles to scale efficiently on large GPU systems. We identify two key limitations. First, neighbor sampling pipelines often incur high sampling costs that can erase the benefits of mini-batching. In many frameworks, sampling is executed on CPUs and requires frequent communication for neighbor and feature access, making sampling a critical performance bottleneck. Second, most distributed mini-batch frameworks rely on vanilla data parallelism for scaling to mul-tiple GPUs. While data parallelism can improve throughput, our experiments show that it does not necessarily reduce end-to-end training time (Section VII-B). As a result, there is a need for a parallel GNN training framework that can sample efficiently on GPUs, preserve model accuracy, and scale to the largest HPC platforms. In this work, we introduce ScaleGNN, an open-source, highly scalable, 4D parallel framework for mini-batch GNN training. To address the sampling bottleneck, ScaleGNN uses a uniform vertex sampling algorithm that requires no inter-device communication. Every process constructs its local mini-batch subgraph partitions from local data alone. We further overlap sampling with training through a pipelined execution 
+
+> arXiv:2604.02651v1 [cs.LG] 3 Apr 2026
+
+schedule, effectively removing sampling from the critical path. For distributed training, ScaleGNN organizes GPUs into a 4D virtual grid, and combines data parallelism with 3D parallel matrix multiplication (PMM). Data parallelism enables each DP group to process independent mini-batches with gradient synchronization via all-reduce. 3D PMM [21], [16], [22], [23] is used to parallelize sparse and dense matrix multiplication operations of each GNN layer across a 3D virtual grid of GPUs. We further optimize ScaleGNN by incorporating low-precision collective communication, kernel fusion, and communication–computation overlap to reduce epoch time. Our design builds on and extends recent progress in 3D parallelism for full-graph GNN training [14], [16] and for large-scale deep learning [23], [24], [25]. We summarize our key contributions as follows:  
+
+> •
+
+We design and implement ScaleGNN, an open source 4D parallel mini-batch GNN training framework that com-bines distributed sampling, 3D PMM, and data parallel training. To the best of our knowledge, ScaleGNN is the first GNN framework to combine data parallelism, 3D PMM, and distributed sampling in a unified framework.  
+
+> •
+
+We propose a communication-free distributed sampling algorithm based on uniform vertex sampling. Our sam-pling strategy reaches 81.3% test accuracy on ogbn-products, outperforming both GraphSAINT [12] and GraphSAGE [8].  
+
+> •
+
+We identify several optimizations, including fully over-lapping sampling with training, low-precision collec-tive communication, kernel fusion, and communication-computation overlap.  
+
+> •
+
+We evaluate ScaleGNN on five graph datasets and demon-strate strong scaling up to 2048 GPUs on Perlmutter, 2048 GCDs on Frontier, and 1024 GPUs on Tuolumne. On Perlmutter, ScaleGNN achieves 3.5× end-to-end train-ing speedup over the state-of-the-art baseline on ogbn-products, while matching or exceeding their accuracy. II. B ACKGROUND AND RELATED WORK 
+
+This section reviews graph neural networks and mini-batch sampling strategies, then introduces distributed GNN training systems and identifies gaps that motivate our work. 
+
+A. Graph Neural Networks 
+
+Graph neural networks (GNNs) learn vertex representations by repeatedly aggregating information from neighboring ver-tices [1], [26], [27], [28], [29]. In a typical message-passing GNN with L layers, each layer l updates the embedding of every vertex v in two steps. First, an aggregation step collects embeddings from all neighbors u ∈ N (v):
+
+a(l) 
+
+> v
+
+= AGGREGATE 
+
+n 
+
+h(l−1)  
+
+> u
+
+: u ∈ N (v)
+
+o 
+
+, (1) where h(l−1)  
+
+> u
+
+is the embedding of vertex u from the previous layer. Then, an update step combines the aggregated message with the vertex embedding through a learnable transformation: 
+
+h(l) 
+
+> v
+
+= UPDATE 
+
+
+
+h(l−1)  
+
+> v
+
+, a(l)
+
+> v
+
+
+
+. (2) The input vertex features serve as the initial embeddings h(0)  
+
+> v
+
+.After L layers, each vertex embedding captures structural and feature information from its L-hop neighborhood. Graph Convolutional Networks (GCNs) [7] instantiate this framework with a specific choice: aggregation computes a normalized sum over neighbor embeddings, and update applies a shared weight matrix followed by a nonlinearity. Concretely, a GCN layer computes 
+
+H(l) = σ
+
+ ˆD− 12 ˆA ˆD− 12 H(l−1) W(l)
+
+, (3) where ˆA = A + I is the adjacency matrix with added self-loops, ˆD is the corresponding degree matrix, W(l) is a trainable weight matrix, and σ is a nonlinear activation. In matrix form, the forward pass of a GCN layer consists of sparse matrix multiplication (SpMM) for aggregation, fol-lowed by dense matrix multiplication (GEMM) for feature transformation. 
+
+B. Mini-batch GNN Training 
+
+Full-graph training updates embeddings for all vertices in every iteration. This approach is simple, but it quickly becomes memory- and communication-intensive at scale. Mini-batch training instead optimizes the same objective using stochastic gradients computed from a small set of target vertices and their sampled L-hop neighborhoods. Recent papers [13] also suggest that mini-batch training can converge faster and achieve higher accuracy than full-graph training, which further motivates scalable mini-batch GNN systems. 2-hop Sampling                                            
+
+> Node-wise sampling.
+> 1-hop Sampling 1st and 2nd Layer Sampling
+> 3rd Layer Sampling
+> Subgraph Sampling
+> 143567028143567028143567028
+> 012345678
+> 012345678
+> 012345678
+> 012345678
+> 012345678
+> 4357
+> Layer-wise sampling.
+> Subgraph-based sampling.
+> Fig. 1. Three families of sampling algorithms. (a) Node-wise sampling. (b) Layer-wise sampling. (c) Subgraph-based sampling.
+
+As shown in Figure 1, three families of sampling algorithms are widely used: 
+
+Node-wise sampling [8], [30] independently samples up to 
+
+kl neighbors per vertex at each layer, as popularized by GraphSAGE [8]. Its simplicity and accuracy make it common in practice, although it can suffer from neighborhood explosion 
+
+as fan-out grows with depth. 
+
+Layer-wise sampling [9], [31], [32], [10] bounds the num-ber of sampled vertices per layer. It avoids neighborhood explosion, but it can miss informative neighbors and increase gradient variance. 
+
+Subgraph-based sampling [33], [11], [12], [34] trains on connected subgraphs sampled from the original graph. Cluster-GCN [11] uses graph clustering, while GraphSAINT [12] uses random walk or edge sampling with normalization for bias correction. These methods offer good locality, but their performance depends on subgraph quality. 
+
+C. Distributed GNN Training Frameworks 
+
+A number of systems [35], [36], [37], [38] scale GNN training across multiple GPUs or machines. 
+
+Full graph systems. NeuGraph [39] and ROC [40] are among the first systems to distribute full-graph GNN training across GPUs. They partition the graph and schedule computation to reduce cross-device data movement. CAGNET [14], [15] formulates each GNN layer as sparse and dense matrix oper-ations and applies 1D, 1.5D, 2D, and 3D parallel algorithms drawn from distributed linear algebra. BNS-GCN [41] reduces communication in full-graph training by sampling boundary vertices. Plexus [16] is a full-graph GNN training system that uses 3D parallelism to distribute the workload across GPUs. GNNPipe [42] and Mithril [43] explore pipelined layer-level model parallelism, partitioning GNN layers across GPUs to reduce communication volume. These systems handle large-scale graphs effectively, but full-graph training remains expensive on very large graphs. 
+
+Mini-batch systems. DistDGL [17] extends the Deep Graph Library [44] to multiple machines. It partitions the graph and stores vertex features in a distributed key-value store. Each worker runs sampling and training locally but must fetch remote features through the network, which can become a bottleneck at scale. MassiveGNN [19] builds on DistDGL with optimized feature fetching and supports training on graphs with billions of edges. SALIENT++ [18] improves CPU-based sampling throughput and caches frequently accessed features to reduce remote feature fetches. Tripathy et al. [20] extend the CAGNET [14] approach to mini-batch training by using distributed SpGEMM to parallelize the neighbor sampling process. BGL [45] and FastGL [46] optimize GPU-side sampling and data I/O to reduce preprocessing overhead, while GSplit [47] introduces split-parallelism to eliminate redundant sampling across GPUs. However, none of these systems combines tensor parallelism with data parallelism for mini-batch GNN training or explores efficient communication-free sampling algorithms. ScaleGNN fills this gap. III. GNN M ODEL AND SAMPLING STRATEGY 
+
+This section describes the GNN architecture used in this paper and the operator-level forward and backward passes that underpin our 4D parallel training design in Section IV. 
+
+A. Architecture Overview 
+
+We build on GCN [7], one of the most widely adopted message-passing GNNs. Following recent findings that nor-malization, dropout, and residual connections substantially im-prove GNN accuracy on node classification benchmarks [27], we augment each GNN layer with these components as shown in Figure 2. The input projection first maps raw vertex features to a uniform hidden dimension dh, enabling residual connections across all layers. The projected features then pass through L stacked GNN layers, each consisting of a GCN convolution (SpMM + GEMM), RMS normalization, ReLU activation, dropout, and a residual connection. The output head projects the final hidden representation to class logits and computes the loss. Each component can be enabled or disabled without changing the parallelization strategy. 
+
+B. Forward Pass 
+
+We now walk through the detailed computation of each stage and explain the role of every operator. 
+
+1) Input Projection: The input projection maps raw vertex features Xin ∈ RN ×din to hidden dimension dh:
+
+Xh, 0 = Xin Win (GEMM) (4) where N is the number of vertices and Win ∈ Rdin ×dh .
+
+2) GNN Layers ( l ∈ { 1, . . . , L }): Each GNN layer applies the following sequence of operators: 
+
+GCN convolution has two steps: sparse neighborhood aggregation (SpMM) with normalized adjacency A =ˆD− 12 ˆA ˆD− 12 [7], followed by dense feature transformation (GEMM) with a learned weight matrix. This mix of sparse and dense computation characterizes GNN workloads and drives the parallelization strategies developed in Section IV. 
+
+Hagg ,l = A X h,l −1 (SpMM) (5) 
+
+Xconv ,l = Hagg ,l Wl (GEMM) (6) 
+
+RMS normalization [48] (Eq. 7) rescales each feature vector by its root mean square. Compared with layer normaliza-tion [49], it omits mean centering and reduces per-vertex computation while preserving training stability. 
+
+ReLU [50] (Eq. 8) applies an element-wise nonlinearity that enables the network to learn non-linear vertex representations. 
+
+Dropout [51] (Eq. 9) randomly zeros a fraction of activations during training to reduce overfitting. 
+
+Residual connections [52] (Eq. 10) add each layer’s input to its output, mitigating over-smoothing [53] and improving gradient flow. 
+
+Xn,l = RMSNorm (Xconv ,l ) (7) 
+
+Xr,l = ReLU (Xn,l ) (8) 
+
+Xd,l = Xr,l ⊙ Mdrop ,l (Dropout) (9) 
+
+Xh,l = Xd,l + Xh,l −1 (Residual Add) (10) 
+
+3) Output Head and Loss: The final hidden representation is projected to output logits, then compared with labels Y :
+
+O = Xh,L Wout (GEMM) (11) 
+
+L = Loss (O, Y ) (12) Adjacency  Matrix  (Graph)   
+
+> Aggregate (SPMM)
+> Update (GEMM)
+> RMSNorm
+> ReLU
+> Dropout
+> GCN
+> GNN layer 1
+> 0
+> 1
+> 0
+> 0
+> 1
+> 0
+> 0
+> 1
+> 0
+> 1
+> 1
+> 0
+> 0
+> 1
+> 0
+> 0
+> 1
+> 0
+> 0
+> 0
+> 1
+> 1
+> 1
+> 0
+> 0
+> Features
+> Output  Head (GEMM)
+> Residual Add
+> Input  Projection (GEMM)
+> GNN  layer  2
+> GNN  layer  N
+
+# ... Fig. 2. Model architecture in ScaleGNN. Vertex features and the graph adjacency matrix enter an input projection (GEMM) that maps features to a uniform hidden dimension. The projected features then pass through GNN layers, each comprising a GCN convolution (SpMM aggregation followed by GEMM update), RMSNorm, ReLU, dropout, and a residual connection. An output head (GEMM) produces the final class logits. 
+
+where Wout ∈ Rdh×dout and dout is the number of classes. We use cross-entropy for single-label classification and binary cross-entropy for multi-label tasks. 
+
+C. Backward Pass 
+
+The backward pass reverses the forward pass and propagates 
+
+∇O through all operators. 
+
+1) Output Head Backward: 
+
+∇Wout = XTh,L ∇O (GEMM) (13) 
+
+∇Xh,L = ∇O W T 
+
+> out
+
+(GEMM) (14) 
+
+2) GNN Layer Backward (for each l = L, . . . , 1): The gradient ∇Xh,l is split identically into the main branch and residual skip path. After element-wise backward operations (dropout mask, ReLU mask, RMSNorm backward), the main branch yields ∇Xconv ,l . The SpMM and GEMM gradients are: 
+
+∇Wl = HT 
+
+> agg ,l
+
+∇Xconv ,l (GEMM) (15) 
+
+∇Hagg ,l = ∇Xconv ,l W Tl (GEMM) (16) 
+
+∇Xconv  
+
+> h,l −1
+
+= AT ∇Hagg ,l (SpMM) (17) The final gradient merges both paths: ∇Xh,l −1 = ∇Xconv  
+
+> h,l −1
+
++
+
+∇Xskip 
+
+> h,l −1
+
+.
+
+3) Input Projection Backward: 
+
+∇Win = XT 
+
+> in
+
+∇Xh, 0 (GEMM) (18) 
+
+∇Xin = ∇Xh, 0 W T 
+
+> in
+
+(GEMM) (19) 
+
+D. Uniform Vertex Sampling 
+
+Mini-batch training reduces cost by operating on a sam-pled subgraph. When scaled to multi-GPU systems, how-ever, the two most widely adopted sampling algorithms both require cross-device communication: GraphSAGE [8] must fetch multi-hop neighbors from remote GPUs to construct each vertex’s receptive field, while GraphSAINT [12] requires normalization coefficients derived from global graph structure. As a result, distributed frameworks built on these sampling algorithms must perform extensive cross-device communica-tion during the sampling phase, making sampling a critical bottleneck in distributed mini-batch GNN training. We design 
+
+uniform vertex sampling with the explicit goal of eliminating all cross-device communication during sampling while pre-serving model accuracy. We describe the algorithm in detail below. 
+
+1) Vertex Sampling: At each training step, we sample a subset S ⊂ V of B vertices uniformly without replacement: 
+
+S ∼ Uniform 
+
+ VB
+
+ 
+
+, |S| = B. (20) Every vertex v ∈ V has inclusion probability Pr[ v ∈ S ] = 
+
+B/N . The sampled set S is used as both target vertices (for predictions and loss) and source vertices (for aggregation). 
+
+2) Induced Subgraph Construction: Given S, we construct the vertex-induced subgraph GS = ( S, E S ) with edges whose endpoints are both in S:
+
+ES = {(u, v ) ∈ E | u ∈ S ∧ v ∈ S} . (21) The adjacency AS ∈ RB×B inherits normalized weights from 
+
+A, and AT 
+
+> S
+
+is built alongside it for backward SpMM (Eq. 17). The same subgraph GS is reused across all L layers. 
+
+3) Unbiased Edge Rescaling: Using only the induced sub-graph drops edges to neighbors outside S, so mini-batch aggregation for sampled vertex v ∈ S is 
+
+˜hv = X 
+
+> u∈N (v)∩S
+
+avu xu, (22) which underestimates full-graph aggregation hv =P  
+
+> u∈N (v)
+
+avu xu. For sampled v ∈ S and neighbor u̸ = v,the conditional inclusion probability is 
+
+p = Pr[ u ∈ S | v ∈ S ] = B − 1
+
+N − 1 . (23) We define rescaled adjacency 
+
+˜avu =
+
+(
+
+avu /p if u̸ = v, avv if u = v, (24) GPU0       
+
+> 1
+> 1
+> 0
+> 1
+> 0
+> 1
+> 1
+> 1
+> 1
+> 1
+> 0
+> 0
+> 1
+> 11
+> 1
+> 1
+> 0
+> 1
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> GPU1
+> N4 N5 N7 N17 N19 N20
+
+Full  Adjacency  Matrix             
+
+> N19
+> N17
+> N7
+> N5
+> N4
+> 0
+> 0
+> 1
+> 1
+> 0
+> 0
+> 0
+> 1
+> 0
+> 1
+> 0
+> 1
+> 1
+> 1
+> 1
+> 1
+> 0
+> 1
+> 0
+> 0
+> 0
+> 1
+> 0
+> 0
+> 0
+> Inductive Subgraph Adjacency Matrix
+> CSR-based Extraction
+> N20 00011
+> 1
+> 1
+> 0
+> 0
+> 0
+> 0
+> Only connections between selected nodes
+
+Original  Graph 
+
+25 24 23 22 21 20 19 18 17 15 16 14 13 12 11 10 98
+
+76 53
+
+421                                                               
+
+> 011
+> 0
+> ...
+> 00
+> ... ...
+> 0
+> 0
+> 0
+> 0
+> ...
+> 1
+> 0
+> 0
+> 1
+> 1
+> 0
+> 0
+> ...
+> 0
+> 0
+> 0
+> 0
+> ...
+> 0
+> 0
+> 1
+> 1
+> 1
+> 1
+> 0
+> 0
+> 0
+> 0
+> 0
+> ...
+> 1
+> 1
+> 0
+> 1
+> 1
+> 0
+> 1
+> 0
+> 0
+> 0
+> 0
+> ...
+> 0
+> 0
+> 1
+> 1
+> 0
+> 1
+> 1
+> 0
+> 0
+> 0
+> 0
+> ...
+> 1
+> 1
+> 1
+> 0
+> 0
+> 1
+> 0
+> 0
+> 0
+> 0
+> ...
+> 1
+> 0
+> 0
+> 1
+> 0
+> 1
+> 0
+> 0
+> 0
+> 1
+> ...
+> 0
+> 1
+> 1
+> 1
+> 0
+> 1
+> 1
+> 1
+> 0
+> 0
+> ...
+> 1
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> ...
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 1
+> 0
+> 0
+> 1
+> ...
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 1
+> 0
+> 1
+> ...
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 1
+> 0
+> 0
+> 0
+> ...
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> 00000010…
+> ... ... ... ... ... ... ... ... …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> 101110000000……
+> N20
+> N19
+> N18
+> N17
+> ...
+> N7
+> N6
+> N5
+> N4
+> N3
+> N2
+> N1
+> N25
+> ...
+> N5
+> N1
+> N2
+> N3
+> N4
+> N6
+> N7... N17
+> N18
+> N19
+> N20
+> N25
+> ...
+> GPU3 GPU2
+> 0
+> 0
+> 0
+> 0
+> 0
+> 1
+> 000
+> Independent Extraction
+> Serial  Sampling
+> Shared Matrix to multi-GPUs
+> 0
+> ...
+> 00
+> ... ...
+> 0
+> 0
+> 0
+> 0
+> ...
+> 1
+> 0
+> 0
+> 1
+> 1
+> 0
+> 1
+> 0
+> ...
+> 0
+> 0
+> 0
+> 0
+> ...
+> 0
+> 0
+> 1
+> 1
+> 1
+> 1
+> 0
+> 0
+> 0
+> 0
+> 0
+> ...
+> 1
+> 1
+> 0
+> 1
+> 1
+> 0
+> 1
+> 0
+> 0
+> 0
+> 0
+> ...
+> 0
+> 0
+> 1
+> 1
+> 0
+> 1
+> 1
+> 0
+> 0
+> 0
+> 0
+> ...
+> 1
+> 1
+> 1
+> 0
+> 0
+> 1
+> 1
+> 0
+> 0
+> 0
+> 0
+> ...
+> 1
+> 0
+> 0
+> 1
+> 0
+> 1
+> 0
+> 0
+> 0
+> 0
+> 1
+> ...
+> 0
+> 1
+> 1
+> 1
+> 0
+> 1
+> 0
+> 1
+> 1
+> 0
+> 0
+> ...
+> 1
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> ...
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 1
+> 0
+> 0
+> 1
+> ...
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 1
+> 0
+> 1
+> ...
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 1
+> 0
+> 0
+> 0
+> ...
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> 00000010…
+> ... ... ... ... ... ... ... ... …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> …
+> 101110000000……
+> GPU0 GPU2
+> GPU1 GPU3
+> Distributed  Sampling
+
+Fig. 3. ScaleGNN uniform vertex sampling. (Left) Uniform vertex sampling on the original graph. Selected vertices are shown in green. (Upper right) The full adjacency matrix with sampled rows and columns highlighted, and the induced subgraph adjacency retaining only edges between selected vertices. (Lower right) Distributed sampling: the adjacency matrix is partitioned across GPUs, each independently sampling its local shard. 
+
+leaving self-loops unchanged because v is always present in its own sample. Then mini-batch aggregation is an unbiased estimator of full-graph aggregation at each layer: 
+
+ES
+
+ X
+
+u∈N (v)∩S 
+
+˜avu xu v ∈ S 
+
+
+
+= avv xv + X
+
+u∈N (v), u ̸=v
+
+avu xu = hv . (25) This importance-sampling rescaling is a standard technique in subgraph-based GNN training. GraphSAINT [12] and BNS-GCN [41] apply similar edge normalization to correct for sampling bias. Crucially, our rescaling factor p depends only on global constants B and N , so each GPU can apply it independently without any communication. Section IV-B describes how multiple GPUs collaboratively construct the distributed mini-batch subgraph. 
+
+4) Feature and Label Slicing: We extract features and labels for the sampled vertices: 
+
+XS = Xin [S] ∈ RB×din , YS = Y [S]. (26) All intermediate activations therefore have row dimension B
+
+instead of N , and the loss is computed only on sampled vertices. 
+
+5) Mini-batch Training Step: Algorithm 1 summarizes a complete mini-batch training step. Each iteration uniformly samples B vertices to form S, extracts the vertex-induced subgraph, and rescales edge weights for unbiased aggregation 
+
+Algorithm 1 Mini-batch GNN Training Step 
+
+Require: Graph G = ( V, E ) with adjacency A, features Xin ,labels Y , batch size B
+
+1: S ∼ Uniform 
+
+ VB
+
+
+
+{Eq. 20 }
+
+2: ES ← { (u, v ) ∈ E | u ∈ S ∧ v ∈ S} { Eq. 21 }
+
+3: ˜AS ← rescale AS via Eq. 24 
+
+4: XS ← Xin [S]; YS ← Y [S] {Eq. 26 }
+
+5: O ← FORWARD PASS ( ˜AS , X S ) {Section III }
+
+6: L ← LOSS (O, Y S )
+
+7: Backpropagate using ˜AT
+
+S ; update parameters (Eq. 25). All subsequent computation, including the forward pass, loss evaluation, backpropagation, and parameter updates, operates on a compact subgraph of B vertices rather than the full graph of N vertices. Crucially, when distributed to multiple processes, every step in Algorithm 1 depends only on the local graph partition. The entire sampling and subgraph construction procedure is therefore communication-free. We detail the distributed implementation in Section IV. IV. 4D GNN M INI -BATCH TRAINING 
+
+We organize the total G GPUs into a virtual 4D grid of size 
+
+Gd ×Gx ×Gy ×Gz . The four dimensions serve complementary roles. Data parallelism ( Gd) replicates the training pipeline across independent groups, with each group processing a different mini-batch and synchronizing gradients through all-reduce. Within each group, 3D PMM ( Gx × Gy × Gz ) dis-tributes the sparse and dense matrix operations across GPUs. Every GPU also runs a communication-free sampling pipeline that constructs the mini-batch subgraph partitions from local data. 
+
+A. Data Parallelism 
+
+We partition the G GPUs into Gd groups of Gx × Gy × Gz
+
+GPUs each. Each group holds a full copy of the model, distributed across GPUs via 3D PMM (Section IV-C), and processes a distinct mini-batch at every training step. The 
+
+Gd groups synchronize weight gradients through all-reduce after the backward pass, followed by the optimizer step. Since each group trains on an independently sampled mini-batch, the effective batch size and aggregate throughput scale proportionally with Gd, while per-group computation and communication remain unchanged. This design fundamentally differs from other baseline frameworks compared in our experiments (Section VI). In these systems, the graph is partitioned across all processes, and each process must fetch remote neighbors from other pro-cesses during sampling. In ScaleGNN, tensor parallelism (3D PMM) keeps the entire graph within each data-parallel group, eliminating all graph data movement. The only communica-tion between data-parallel groups is gradient synchronization, which accounts for only a small fraction of per-epoch time as shown in our scaling experiments (Figure 8). 
+
+B. Distributed Sampling and Subgraph Construction 
+
+Within a single data-parallel group of Gx × Gy × Gz GPUs, each GPU holds a 2D shard of the adjacency matrix. The central challenge is to construct a consistent B × B mini-batch subgraph across all GPUs without inter-device commu-nication. Uniform vertex sampling (Section III-D) makes this possible. Because the sampled vertex set S depends only on a shared random seed and the graph size N , every GPU can independently derive the same S and extract its local portion of the induced subgraph. Algorithm 2 formalizes this per-GPU procedure in four phases, and Figure 3 illustrates the distributed extraction. We now walk through Algorithm 2 in detail. During process group initialization, all GPUs within a data-parallel group share a single random seed. At each training step, every GPU uses this seed together with the step index to derive the identical sorted sample S independently (Line 1). 
+
+Local range identification (Lines 3–5). Each GPU owns a contiguous row range [R0, R 1) and column range [C0, C 1).Since S is sorted, the local subsets Sr and Sc can be located via binary search in O(log B), avoiding a linear scan over the full sample. 
+
+Vectorized CSR row extraction (Lines 6–10). To handle the irregular layout of sampled CSR rows, we vectorize the extraction with a prefix-sum-based indexing scheme. We first read per-row nonzero counts from the CSR row pointer, compute a prefix sum to obtain a flat offset array, and use a sorted search to map each flat index back to its owning row. 
+
+Algorithm 2 Distributed Subgraph Construction (per GPU) 
+
+Require: Local CSR shard (rp , ci , val ) with row range 
+
+[R0, R 1) and column range [C0, C 1), base seed s, step t,batch size B, graph size N 
+
+> 1:
+
+S ← SORT 
+
+ RAND PERM (N, seed =s+t) [: B] 
+
+> 2:
+
+p ← (B−1) /(N −1) {inclusion probability, Eq. 23 } 
+
+> 3:
+
+{Phase 1: Locate local sample ranges } 
+
+> 4:
+
+Sr ← { v ∈ S : R0 ≤ v < R 1} via B INARY SEARCH 5: Sc ← { v ∈ S : C0 ≤ v < C 1} via B INARY SEARCH 6: {Phase 2: Vectorized CSR row extraction } 
+
+> 7:
+
+r ← rp [Sr +1] − rp [Sr ] {nnz per sampled row } 
+
+> 8:
+
+P ← PREFIX SUM (r) 
+
+> 9:
+
+own ← SEARCH SORTED 
+
+ P, ARANGE (P[−1])  
+
+> 10:
+
+Gather (ig , jg , ve) from CSR via own  
+
+> 11:
+
+{Phase 3: Column filtering and compact remapping } 
+
+> 12:
+
+mask ← MEMBERSHIP (jg , Sc) {binary search } 
+
+> 13:
+
+(ig , jg , ve) ← apply mask  
+
+> 14:
+
+(ic, jc) ← TAG REMAP (ig , jg , t ) {O(B) map update } 
+
+> 15:
+
+{Phase 4: Rescale and assemble } 
+
+> 16:
+
+ve[k] ← ve[k]/p for all k where ig [k]̸ = jg [k] 
+
+> 17:
+
+˜Aloc , ( ˜AT )loc ← BUILD CSR (ic, jc, ve) 
+
+> 18:
+
+XS ← X[Sr ]; YS ← Y [Sr ]
+
+All triples are then extracted through one coalesced gather in 
+
+O(nnz S ) work with full GPU parallelism. 
+
+Column filtering and compact remapping (Lines 11–15). 
+
+We retain only edges whose target vertex belongs to Sc via binary-search membership testing, and remap the surviving global indices to a dense [0 , B ) namespace. Rather than zeroing an N -element map at every step, we maintain a persistent map tagged with the current step counter t, so only 
+
+O(B) entries require updating per iteration. 
+
+Rescaling and assembly (Lines 15–18). For unbiased aggre-gation, we divide off-diagonal edge weights by p (Eq. 23). We then assemble both the forward and transpose CSR matrices in a single pass from the compact triples. All four phases execute independently on each GPU with no inter-device communication, and together they produce a local shard of the mini-batch subgraph. 
+
+C. 3D Parallel Matrix Multiplication (3D PMM) 
+
+Given the mini-batch subgraph from distributed sampling, the next challenge is to distribute the forward and backward passes of each GNN layer across the Gx × Gy × Gz GPUs within a data-parallel group. We adapt Agarwal et al.’s 3D PMM algorithm [21] to the mixed sparse-dense computation of GCN layers. 
+
+1) Matrix Distribution: We distribute the matrices involved in each GNN layer across orthogonal planes of the 3D grid (Figure 4). In the following, we focus on the first layer. The distribution strategy for other layers is similar. For the input projection, we shard the raw input features across the ZX -plane and the weight matrix across the Y Z -plane. The result-ing projected features F , sharded across the XY -plane, serve as input to the SpMM aggregation in the first GCN layer. For A10 A11                                                      
+
+> A00 A01
+> F01 F11
+> F00 F10
+> X
+> YZ
+> 3D parallel
+> A10 A11
+> A00 A01
+> F01 F11
+> F00 F10
+> F10 F11
+> F00 F01
+> F10 F11
+> F00 F01
+> IN 01 IN 11
+> IN 00 IN 10
+> IN 01 IN 11
+> IN 00 IN 10
+> F01 F11
+> F00 F10
+> F01 F11
+> F00 F10
+> W01 W11
+> W00 W10
+> W01 W11
+> W00 W10
+> W01
+> W00
+> W10
+> W11 W01
+> W00
+> W10
+> W11 H01
+> H00
+> H11
+> H10
+> H01
+> H00
+> H11
+> H10
+> Input Projection Aggregate (SPMM) Update (GEMM)
+> Allreduce
+> Allreduce
+> Allreduce Fig. 4. 3D PMM forward pass in ScaleGNN with eight GPUs arranged in a 2×2×2grid ( X×Y×Z). Left: the input projection multiplies the input feature shards (IN, on the ZX -plane) by weight shards ( W, on the XY -plane) and an all-reduce along Zproduces the projected features ( F, on the XY -plane). Center: SpMM aggregation multiplies adjacency shards ( A, on the ZX -plane) by F, followed by an all-reduce along Xto obtain the aggregated features (H). Right: the GEMM update multiplies Hby weight shards ( W, on the Y X -plane), and an all-reduce along Yyields the layer output.
+
+the first GCN layer, we shard the adjacency matrix ˜AS across the ZX -plane and replicate it along Y , and shard the weight matrix W across the XY -plane and replicate it along Z. This layout ensures that each GPU stores only a small fraction of each matrix and can perform local matrix multiplications with minimal communication overhead. For the other layers and output projection, the sharding dimensions depend on the number of GCN layers. We refer to this cyclic reassignment as layer rotation and describe it in Section IV-C3. 
+
+2) Parallel GCN Convolution: Aggregation (SpMM). 
+
+Each GPU multiplies its local adjacency shard by its local matrix F . Because ˜AS and F reside on different planes, each local product is a partial sum that an all-reduce across the X-parallel group combines into the complete aggregated features: 
+
+Hagg = AllReduce X
+
+  ˜A local  
+
+> S
+
+· F local . (27) 
+
+Combination (GEMM). Each GPU then multiplies the ag-gregated features by its local weight shard, and an all-reduce across the Y -parallel group combines the partial outputs: 
+
+Hout = AllReduce Y
+
+ Hagg · W local . (28) The backward pass (Eqs. 15–17) follows the same parallel structure, replacing ˜AS with its transpose and reversing the order of operations. 
+
+3) Layer Rotation: After the first GCN layer, the output lives on the ZX -plane and serves as the feature matrix F
+
+for the next layer. However, this layout differs from the 
+
+XY -plane distribution that the first layer assumed for F , so reusing the same ZX -plane adjacency shard would produce an incompatible local multiplication. To resolve this, we store a separate adjacency shard for each of the next two layers, 
+
+˜A(1)  
+
+> S
+
+on the Y Z -plane and ˜A(2)  
+
+> S
+
+on the XY -plane, so that the adjacency layout always aligns with the current feature distribution. The third layer’s output returns to the XY -plane, and the cycle repeats with period three. This scheme requires at most three adjacency shards per GPU and adds no communication overhead [16]. 
+
+4) Other Parallel Operators: Linear layers. We parallelize the input projection ( Xin Win ) and output head ( Xh,L Wout ) in the same way as the GEMM in Eq. 28. 
+
+Parallel RMS normalization. Because features are sharded along the column dimension across GPUs, computing the sum of squares requires an all-reduce across the group that holds different feature columns: 
+
+RMS( x) = 
+
+r 1
+
+dh
+
+AllReduce  ∥xlocal ∥2. (29) We then apply the normalization and learnable scale parameter locally without further communication. 
+
+Residual connections. The residual add Xh,l = Xd,l +Xh,l −1
+
+requires the layer input and output to share the same sharding layout. However, layer rotation (Section IV-C3) changes the distribution plane at each layer. For example, layer l’s output may reside on the ZX -plane while its input Xh,l −1 lives on the 
+
+XY -plane. To resolve this mismatch, we reshard the residual tensor before the addition. The resharding communication can overlap with compute kernels in the forward pass, such as SpMM, GEMM, and RMSNorm, further hiding its latency. 
+
+Element-wise operators. ReLU and dropout operate indepen-dently on each element and require no communication. V. O PTIMIZATION 
+
+This section presents four optimizations that collectively reduce epoch time by 1.75 × on eight GPUs and 1.66 × on 32 GPUs over the baseline 4D pipeline. We first profile the baseline on ogbn-products with a 2×2×2 3D PMM grid (Fig-ure 5, leftmost bars). On eight GPUs (DP1), 3D PMM (tensor parallelism) all-reduce collectives account for 47% of epoch time and sampling accounts for 26%; the remaining 27% is split among element-wise operations, SpMM, GEMM, and other overhead. The breakdown at 32 GPUs (DP4) is similar, with an additional DP all-reduce for gradient synchronization across data-parallel replicas. The following subsections target these costs. 
+
+A. Overlapping Sampling with Training 
+
+Sampling and training stress complementary hardware. Sampling is bounded by GPU compute and memory band-width, while training at scale is dominated by collective communication. We exploit this by prefetching the next mini-batch. Sampling and subgraph construction for step t+1 run on a dedicated CUDA stream concurrently with the forward and backward passes of step t. The two streams are synchro-nized via a CUDA event before step t+1 begins. The same Baseline Overlap             
+
+> Sampling
+> BF16
+> Allreduce
+> Kernel
+> Fusion
+> Overlap
+> Comm
+> DP1 DP4 DP1 DP4 DP1 DP4 DP1 DP4 DP1 DP4
+> 0
+> 100
+> 200
+> 300
+> 400
+> 500
+> 600
+> 700
+> Time per Epoch (ms)
+> Optimization Breakdown
+> TP Allreduce
+> Others
+> Elementwise
+> SPMM
+> GEMM
+> Sampling
+> DP Allreduce Fig. 5. Breakdown of epoch times on ogbn-products with a 2×2×2grid per data-parallel group (DP1: 8 GPUs; DP4: 32 GPUs) as each optimization is applied cumulatively.
+
+mechanism extends across epoch boundaries. The last step of epoch e prefetches the first mini-batch of epoch e+1 , so no step ever pays the full sampling latency. This overlap reduces epoch time by 24% for both DP1 and DP4. 
+
+B. Low-Precision Communication 
+
+With sampling off the critical path, all-reduce collectives become the dominant bottleneck. Mixed-precision training is well established in deep learning [54], [55]. However, research shows that naively running full GNN layers in half precision degrades accuracy [56]. Inspired by this line of work, we apply reduced precision selectively to communication rather than computation. We cast FP32 partial sums to BF16 before the all-reduce and cast back afterward, but only for the collectives arising from 3D PMM. For numerically sensitive reductions, such as all-reduce in parallel RMSNorm and logit reduction in parallel cross-entropy, we retain FP32 to preserve numerical stabil-ity. All local computation in SpMM, GEMM, and element-wise operations remains in FP32. This strategy halves the communication volume of the dominant collectives while avoiding precision loss in numerically sensitive operations. We verified this approach across multiple runs on ogbn-products and Reddit datasets and found that the test-accuracy curves of BF16 communication are indistinguishable from full FP32 training. This approach further reduces epoch time by 17% (DP1) and 16% (DP4). 
+
+C. Kernel Fusion 
+
+With communication reduced, element-wise operators be-come a visible fraction of epoch time. In the baseline, each GNN layer applies RMSNorm, ReLU, and dropout as three separate CUDA kernels with redundant memory round-trips. We use torch.compile to fuse these into a single kernel that eliminates intermediate HBM transfers. Because the fused operations are purely element-wise, no change to the commu-nication structure is required. The compilation overhead is a one-time cost. This further reduces epoch time by 6% (DP1) and 4% (DP4). 
+
+D. Overlapping Communication with Computation 
+
+In the backward pass, 3D PMM requires multiple all-reduces per layer on orthogonal process groups ( X-, Y -, and Z-groups). Since NCCL schedules operations on different communicators independently, we overlap the feature gradient all-reduce ( ∇Hagg ) with the local weight gradient computation (∇W ), and further overlap the weight gradient synchronization with the feature gradient communication. Similarly, within the linear layers, the input gradient all-reduce ( ∇X ) and the weight gradient all-reduce ( ∇W ) operate on orthogonal groups and thus run concurrently. This further reduces epoch time by 3% (DP1) and 2% (DP4), bringing the cumulative speedup to 1.75 × (DP1) and 1.66 × (DP4) over the baseline. VI. E XPERIMENTAL SETUP 
+
+This section describes the experimental setup, including the target systems, graph datasets, and baseline frameworks. 
+
+A. Systems and Environment 
+
+Perlmutter is an HPE Cray EX system at NERSC. We use its GPU nodes, each with four NVIDIA A100 GPUs. Nodes are connected through HPE Slingshot-11 in a dragonfly topology, and four Cassini NICs per node provide 100 GB/s aggregate injection bandwidth. 
+
+Frontier is an HPE Cray EX exascale system at OLCF. Each compute node contains four AMD Instinct MI250X GPUs. Each MI250X comprises two GPU dies (GCDs) with 64 GB HBM2e per GCD, yielding eight GCDs per node. Frontier uses the same HPE Slingshot-11 interconnect, with four NICs per node and 100 GB/s aggregate bandwidth. 
+
+Tuolumne is an HPE Cray EX system at LLNL. Each compute node contains four AMD MI300A APUs, each integrating GPU and CPU dies on a single package with 128 GB unified HBM3 memory. Nodes are connected through HPE Slingshot-11, with four NICs per node providing 100 GB/s aggregate injection bandwidth. 
+
+B. Baseline Frameworks 
+
+We compare ScaleGNN against four distributed GNN train-ing systems that represent distinct parallelization and sam-pling strategies. For all baseline frameworks, we combine the configurations recommended in their papers with our own hyperparameter sweeps to select the best-performing settings. BNS-GCN [41] performs full-graph training and reduces cross-partition communication by sampling boundary vertices. We use a sampling ratio of 0.1, which the authors report as optimal. DistDGL [17] extends the Deep Graph Library [44] to multi-node clusters by partitioning the graph and storing vertex features in a distributed key-value store, with each worker running neighbor sampling and training locally. MassiveGNN [19] builds on DistDGL with optimized distributed feature fetching for GraphSAGE-style neighbor sampling. SALIENT++ [18] accelerates GraphSAGE-style neighbor sampling on CPUs and uses feature caching to reduce remote memory accesses. C. Datasets and Evaluation Methodology 
+
+We evaluate ScaleGNN on five graph datasets that span different domains and scales. ogbn-products [57] (product category prediction) and Reddit [8] (community classification) are widely used benchmarks for distributed GNN training. We use them to validate model accuracy and compare end-to-end training performance against baseline frameworks. We additionally select three larger datasets to demonstrate the scal-ing capability of ScaleGNN. Isolate-3-8M [58] is a subgraph extracted from a protein similarity network with 3.8 M ver-tices. Products-14M [59] is a larger Amazon product network with 14 M vertices and 115 M edges. ogbn-papers100M [57] is a citation network with 111 M vertices and 1.6 B edges. For datasets that do not include node features (Isolate-3-8M and Products-14M), we generate random input features with dimension 128 and assign 32 synthetic classes proportional to vertex degree. Since these two datasets are used to measure scaling efficiency rather than model accuracy, the synthetic features do not affect the validity of the results. 
+
+a) Cross-framework comparison.: Unlike images or text, graph data is not independently and identically distributed (i.i.d.). Each mini-batch subgraph captures only a partial view of the global graph structure, and its information content depends on the sampling algorithm. Different sampling algo-rithms produce mini-batches with different structural coverage and statistical properties. Aggregating the mini-batches within a single epoch does not recover the full graph, and the gap varies across methods. Consequently, time per epoch is only a meaningful metric when comparing runs that use the same sampling algorithm. An “epoch” under one sampling strategy is therefore not comparable to an epoch under an-other, so comparing time per epoch across frameworks is not meaningful. We instead adopt end-to-end training time to a target test accuracy as the primary metric for cross-framework comparison, which reflects the real cost a practitioner faces. We report total wall-clock time to reach a target test accuracy of 95% on Reddit and 79% on ogbn-products, which reflect the converged GCN accuracy reported across multiple prior works [12], [8], [41], [57]. The reported times in this paper include only training time. 
+
+b) Scaling experiments.: To understand the scaling be-havior of ScaleGNN, we evaluate it on all five datasets and report time per epoch as the performance metric. VII. R ESULTS 
+
+This section presents the results of our end-to-end training and scaling experiments across five graph datasets, and com-pares ScaleGNN with four baseline frameworks. 
+
+A. Sampling Accuracy 
+
+We first verify that our uniform vertex sampling with unbiased edge rescaling does not sacrifice model quality. We compare against two representative sampling strategies. GraphSAINT [12] is a widely used subgraph sampling method. We compare with its node sampling variant, which is closest to our approach. GraphSAGE [8] is a neighbor sampling method adopted by several baseline systems including DistDGL, Mas-siveGNN, and SALIENT++.           
+
+> TABLE I TEST ACCURACY (%) COMPARISON
+> System Reddit ogbn-products
+> GraphSAINT (node) 96.2 80.2 GraphSAGE 95.4 79.6 ScaleGNN 96.3 81.3
+
+Table I reports the best test accuracy achieved by each algorithm. On both datasets, ScaleGNN matches or slightly ex-ceeds the accuracy of GraphSAINT node sampling and Graph-SAGE neighbor sampling. On ogbn-products, ScaleGNN achieves 81.3%, outperforming GraphSAINT (80.2%) by 1.1 percentage points and GraphSAGE (79.6%) by 1.7 percent-age points. This confirms that uniform vertex sampling with unbiased edge rescaling (Eq. 24) preserves model quality. The following sections demonstrate the strong performance and scalability enabled by communication-free sampling algo-rithm, through end-to-end training and scaling experiments. 
+
+B. End-to-End Performance 
+
+Figure 6 reports end-to-end training time to target accuracy on Reddit and ogbn-products on both Perlmutter and Fron-tier. On Frontier, BNS-GCN and SALIENT++ do not pro-vide ROCm support, so we compare ScaleGNN only against DistDGL and MassiveGNN. Additionally, MassiveGNN only supports multi-node execution, so its smallest configuration is 8 GPUs on Perlmutter and 16 GCDs on Frontier. On Reddit (Figure 6, first panel), ScaleGNN trains to target accuracy in 1.33 s at 4 GPUs and 0.98 s at 16 GPUs, consistently outperforming all baselines. SALIENT++ starts at 1.83 s on 4 GPUs but slows to 3.13 s on 16 GPUs. BNS-GCN shows a similar trend, rising from 7.92 s to 11.7 s. DistDGL and MassiveGNN are over an order of magnitude slower. At 16 GPUs, ScaleGNN achieves a 3.2× speedup over SALIENT++ and 11 .9× over BNS-GCN. On ogbn-products (Figure 6, second panel), ScaleGNN reaches the target accuracy in 7.83 s at 8 GPUs, compared with 11.19 s for SALIENT++ and 20.02 s for BNS-GCN, yielding speedups of 1.4× and 2.6×. At 64 GPUs, ScaleGNN finishes in 3.80 s, while SALIENT++ requires 13.25 s and BNS-GCN 40.46 s, yielding speedups of 
+
+3.5× and 10 .6×, respectively. On Frontier, ScaleGNN shows similar advantages over the two available baselines. On Reddit, ScaleGNN reaches the target accuracy in 0.98 s at 16 GCDs, while DistDGL re-quires 596.09 s and MassiveGNN 296.69 s. On ogbn-products, ScaleGNN finishes in 10.2 s at 32 GCDs, compared with 1651.73 s for MassiveGNN and 2321.34 s for DistDGL, yield-ing speedups of 162 × and 228 ×. DistDGL on ogbn-products at 8 and 16 GCDs did not reach the 79% target accuracy. For frameworks that fail to reduce end-to-end training time with more GPUs, we observe that increasing data parallelism raises the number of epochs needed to reach the target accu-racy. Additionally, these baselines do not proportionally reduce 4 8 16 
+
+> Number of GPUs
+> 10 0
+> 10 1
+> End-to-end Time (s)
+> Reddit (Perlmutter)
+
+3.2 ×   
+
+> 816 32 64
+> Number of GPUs
+> 10 0
+> 10 1
+> 10 2
+> ogbn-products (Perlmutter)
+
+3.5 ×  
+
+> 4816
+> Number of GCDs
+> 10 0
+> 10 1
+> 10 2
+> Reddit (Frontier)
+
+302.7 ×  
+
+> 816 32
+> Number of GCDs
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> ogbn-products (Frontier)
+
+161.9 ×        
+
+> DistDGL MassiveGNN BNS-GCN SALIENT++ ScaleGNN Did not reach 79% Fig. 6. End-to-end training time to reach target test accuracy on Perlmutter and Frontier (log scale). Lower is better. Points marked with ×did not reach the target accuracy. We report the time to their best observed accuracy. On Perlmutter: DistDGL 78.57% at 8 GPUs, 78.95% at 16 GPUs; MassiveGNN 78.59% at 8 GPUs. On Frontier: DistDGL on ogbn-products 77.45% at 8 GCDs, 78.9% at 16 GCDs. Annotations compare ScaleGNN to SALIENT++ (Perlmutter) and MassiveGNN (Frontier) at the largest GPU/GCD count for each dataset.
+
+epoch time with additional GPUs. The extra epochs outweigh the throughput gain, resulting in longer end-to-end time.           
+
+> TABLE II TIME PER EVALUATION ROUND
+> System Reddit (4 GPUs) ogbn-products (8 GPUs)
+> DistDGL / MassiveGNN 12.50 s 20.82 s SALIENT++ 1.13 s 10.12 s BNS-GCN 1.79 s 6.89 s ScaleGNN 0.05 s 0.19 s
+
+Although the training times in Figure 6 exclude evaluation, evaluation costs can significantly impact end-to-end wall-clock time in practice. Table II compares the time of each evaluation round. Because ScaleGNN distributes the full graph and model across GPUs via 3D PMM, it performs full-graph evaluation with a single distributed forward pass and no sampling overhead. In contrast, all four baselines use data-parallel training with a fully replicated model, and their eval-uation pipelines cannot leverage multiple GPUs effectively. SALIENT++ and DistDGL/MassiveGNN rely on neighbor sampling during evaluation to fit within GPU memory, so evaluation still requires the same multi-hop sampling and remote feature fetching pipeline used during training, incurring substantial overhead. BNS-GCN avoids fanout-based sampling but falls back to single-process full-graph inference on the CPU, so it cannot leverage GPU acceleration or distribute the evaluation workload at all. On ogbn-products at eight GPUs, ScaleGNN evaluates in 0.19 s per round, 36 × faster than BNS-GCN (6.89 s), 54 × faster than SALIENT++ (10.12 s), and 111 × faster than DistDGL/MassiveGNN (20.82 s). On Reddit at four GPUs, ScaleGNN finishes in 0.05 s per round, achieving 36 ×, 23 ×, and 250 × speedups over BNS-GCN, SALIENT++, and DistDGL/MassiveGNN, respectively. 
+
+C. Scaling Results 
+
+Figure 7 reports epoch time on Perlmutter (left), Frontier (center), and Tuolumne (right). Following prior work on 3D PMM [21], [16], [23], [22], we choose Gx × Gy × Gz
+
+to be as close to a cube as possible, as this is the most efficient configuration. For each dataset, the leftmost point in the scaling curve corresponds to Gd = 1 , i.e., pure tensor parallelism with no data-parallel replication. We then scale to larger GPU counts by increasing Gd while keeping the 3D PMM configuration fixed. On Perlmutter, ScaleGNN demonstrates consistent strong scaling across all datasets. On ogbn-papers100M, ScaleGNN scales from 64 to 2048 GPUs with a 21 .7× speedup, reduc-ing epoch time from 4095 ms to 189 ms. On Products-14M, ScaleGNN achieves 19 .8× speedup from 32 to 1024 GPUs. On Isolate-3-8M, scaling from 16 to 256 GPUs yields a 16 .2×
+
+speedup. On ogbn-products, the smallest dataset, ScaleGNN scales from 8 to 128 GPUs with a 7.8× speedup. On Frontier, ScaleGNN shows similar scaling trends. On Products-14M, ScaleGNN achieves 22 .4× speedup from 32 to 1024 GCDs, reducing epoch time from 8809 ms to 394 ms. On Isolate-3-8M, scaling from 16 to 512 GCDs yields a 21 .2×
+
+speedup. On ogbn-papers100M, ScaleGNN scales from 64 to 2048 GCDs with a 20 .3× speedup. Epoch times on Frontier are higher than on Perlmutter due to differences in GPU architectures and communication libraries. Prior work [60] has also shown that RCCL achieves lower communication throughput than NCCL at scale. Despite this, the scaling efficiency remains comparable across both systems. On Tuolumne, ScaleGNN achieves 17 .2× speedup on Products-14M from 32 to 1024 GPUs, reducing epoch time from 9710 ms to 566 ms. On ogbn-papers100M, scaling from 64 to 1024 GPUs yields a 15 .9× speedup. On Isolate-3-8M, scaling from 16 to 512 GPUs yields a 13 .2× speedup. Figure 8 breaks down epoch time by component on Products-14M as we increase Gd. At Gd = 1 , the all-reduce for data-parallel gradient synchronization is absent, and epoch time is dominated by the tensor-parallel (3D PMM) collectives and compute kernels. As Gd grows, the data-parallel all-reduce cost rises from negligible to an increasing fraction of epoch time, reflecting the growing communication volume of gradi-ent synchronization across more replica groups. Meanwhile, the time spent on 3D PMM operations and sampling remains roughly constant, confirming that data parallelism scales the 8 16 32 64 128 256 512 1024 2048 
+
+Number of GPUs 
+
+25
+
+27
+
+29
+
+211 
+
+213 
+
+> Time per epoch (ms)
+
+Perlmutter 
+
+8 16 32 64 128 256 512 1024 2048 
+
+Number of GCDs 
+
+25
+
+28
+
+211 
+
+214 
+
+217 Frontier 
+
+8 16 32 64 128 256 512 1024 
+
+Number of GPUs 
+
+27
+
+29
+
+211 
+
+213 
+
+215 Tuolumne 
+
+ogbn-papers100M Products-14M Isolate-3-8M ogbn-products Fig. 7. Strong scaling on Perlmutter (left), Frontier (center), and Tuolumne (right). Each curve starts at the smallest 3D PMM configuration ( Gd=1 ) and scales out by increasing data-parallel replicas Gd.32 64 128 256 512 1024      
+
+> Number of GPUs
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Breakdown (%)  1.2s 606ms 307ms 168ms 77ms 54ms
+
+Scaling Breakdown on Products-14M (Perlmutter) 
+
+> TP Allreduce
+> Others
+> Elementwise
+> SPMM
+> GEMM
+> Sampling
+> DP Allreduce
+
+Fig. 8. Epoch time breakdown on Products-14M on Perlmutter. 
+
+training pipeline without inflating per-group work. VIII. C ONCLUSION 
+
+We present ScaleGNN, a 4D parallel framework for scalable mini-batch GNN training that unifies distributed communication-free sampling, 3D parallel matrix multipli-cation, and data parallelism. ScaleGNN extends 3D PMM to GNN layers by distributing both graph data and model weights across a 3D processor grid, enabling training on graphs and models that exceed single-GPU memory. We introduce a uniform vertex sampling strategy that enables communication-free distributed sampling. We further explore several optimization strategies to reduce training time. Experiments on five graph datasets show that ScaleGNN’s sampling strategy matches or exceeds the accuracy of Graph-SAINT and GraphSAGE. On Perlmutter, ScaleGNN achieves 
+
+3.5× end-to-end training speedup over the SOTA baseline on ogbn-products. Strong scaling experiments demonstrate efficient scaling to 2048 GPUs on Perlmutter, 2048 GCDs on Frontier, and 1024 GPUs on Tuolumne. ACKNOWLEDGMENT 
+
+This material is based upon work supported by the National Science Foundation under Grant No. 2047120. This research used resources of the National Energy Research Scientific Computing Center (NERSC), a U.S. Department of Energy (DOE) Office of Science User Facility, operated under Con-tract No. DE-AC02-05CH11231 using NERSC awards DDR-ERCAP0034262 and ALCC-ERCAP0034775, and that of the Oak Ridge Leadership Computing Facility at the Oak Ridge National Laboratory, which is supported by the Office of Science of the U.S. DOE under Contract No. DE-AC05-00OR22725. This work was performed under the auspices of the U.S. Department of Energy (DOE) by Lawrence Livermore National Laboratory under Contract DE-AC52-07NA27344 (LLNL-CONF-XXX). REFERENCES [1] F. Scarselli, M. Gori, A. C. Tsoi, M. Hagenbuchner, and G. Monfar-dini, “The graph neural network model,” IEEE transactions on neural networks , vol. 20, no. 1, pp. 61–80, 2008. [2] C. Gao, Y. Zheng, N. Li, Y. Li, Y. Qin, J. Piao, Y. Quan, J. Chang, D. Jin, X. He et al. , “A survey of graph neural networks for recommender systems: Challenges, methods, and directions,” ACM Transactions on Recommender Systems , vol. 1, no. 1, pp. 1–51, 2023. [3] W. Fan, Y. Ma, Q. Li, Y. He, E. Zhao, J. Tang, and D. Yin, “Graph neural networks for social recommendation,” in The world wide web conference , 2019, pp. 417–426. [4] M. Weber, G. Domeniconi, J. Chen, D. K. I. Weidele, C. Bellei, T. Robinson, and C. E. Leiserson, “Anti-money laundering in bitcoin: Experimenting with graph convolutional networks for financial foren-sics,” arXiv preprint arXiv:1908.02591 , 2019. [5] G. Corso, H. Stark, S. Jegelka, T. Jaakkola, and R. Barzilay, “Graph neural networks,” Nature Reviews Methods Primers , vol. 4, no. 1, p. 17, 2024. [6] B. Sanchez-Lengeling, E. Reif, A. Pearce, and A. B. Wiltschko, “A gentle introduction to graph neural networks,” Distill , 2021, https://distill.pub/2021/gnn-intro. [7] T. N. Kipf and M. Welling, “Semi-supervised classification with graph convolutional networks,” CoRR , vol. abs/1609.02907, 2016. [Online]. Available: http://arxiv.org/abs/1609.02907 [8] W. L. Hamilton, R. Ying, and J. Leskovec, “Inductive representation learning on large graphs,” 2018. [Online]. Available: https://arxiv.org/ abs/1706.02216 [9] J. Chen, T. Ma, and C. Xiao, “Fastgcn: Fast learning with graph convolutional networks via importance sampling,” 2018. [Online]. Available: https://arxiv.org/abs/1801.10247 [10] D. Zou, Z. Hu, Y. Wang, S. Jiang, Y. Sun, and Q. Gu, “Layer-dependent importance sampling for training deep and large graph convolutional networks,” 2019. [Online]. Available: https://arxiv.org/abs/1911.07323 [11] W.-L. Chiang, X. Liu, S. Si, Y. Li, S. Bengio, and C.-J. Hsieh, “Cluster-gcn: An efficient algorithm for training deep and large graph convolutional networks,” in Proceedings of the 25th ACM SIGKDD International Conference on Knowledge Discovery & Data Mining , ser. KDD ’19. ACM, Jul. 2019. [Online]. Available: http://dx.doi.org/10.1145/3292500.3330925 [12] H. Zeng, H. Zhou, A. Srivastava, R. Kannan, and V. Prasanna, “Graph-saint: Graph sampling based inductive learning method,” arXiv preprint arXiv:1907.04931 , 2019. [13] S. Bajaj, H. Son, J. Liu, H. Guan, and M. Serafini, “Graph neural network training systems: A performance comparison of full-graph and mini-batch,” Proceedings of the VLDB Endowment , vol. 18, no. 4, pp. 1196–1209, 2024. [14] A. Tripathy, K. Yelick, and A. Buluc ¸, “Reducing communication in graph neural network training,” in Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis , ser. SC ’20. IEEE Press, 2020. [15] U. Mukhopadhyay, A. Tripathy, O. Selvitopi, K. Yelick, and A. Buluc, “Sparsity-aware communication for distributed graph neural network training,” in Proceedings of the 53rd International Conference on Parallel Processing , ser. ICPP ’24. New York, NY, USA: Association for Computing Machinery, 2024, p. 117–126. [Online]. Available: https://doi.org/10.1145/3673038.3673152 [16] A. K. Ranjan, S. Singh, C. Wei, and A. Bhatele, “Plexus: Taming billion-edge graphs with 3D parallel full-graph GNN training,” in 
+
+Proceedings of the ACM/IEEE International Conference for High Performance Computing, Networking, Storage and Analysis , ser. SC ’25. ACM, Nov. 2025. [Online]. Available: https://doi.acm.org/10. 1145/3712285.3759890 [17] D. Zheng, C. Ma, M. Wang, J. Zhou, Q. Su, X. Song, Q. Gan, Z. Zhang, and G. Karypis, “Distdgl: Distributed graph neural network training for billion-scale graphs,” in 2020 IEEE/ACM 10th Workshop on Irregular Applications: Architectures and Algorithms (IA3) . IEEE, 2020, pp. 36–44. [18] T. Kaler, A. Iliopoulos, P. Murzynowski, T. Schardl, C. E. Leiserson, and J. Chen, “Communication-efficient graph neural networks with proba-bilistic neighborhood expansion analysis and caching,” Proceedings of Machine Learning and Systems , vol. 5, pp. 477–494, 2023. [19] A. Sarkar, S. Ghosh, N. R. Tallent, and A. Jannesari, “Massivegnn: Efficient training via prefetching for massively connected distributed graphs,” in 2024 IEEE International Conference on Cluster Computing (CLUSTER) . IEEE, 2024, pp. 62–73. [20] A. Tripathy, K. Yelick, and A. Buluc ¸, “Distributed matrix-based sam-pling for graph neural network training,” Proceedings of Machine Learning and Systems , vol. 6, pp. 253–265, 2024. [21] R. C. Agarwal, S. M. Balle, F. G. Gustavson, M. Joshi, and P. Palkar, “A three-dimensional approach to parallel matrix multiplication,” IBM Journal of Research and Development , vol. 39, no. 5, pp. 575–582, 1995. [22] S. Singh, P. Singhania, A. Ranjan, J. Kirchenbauer, J. Geiping, Y. Wen, N. Jain, A. Hans, M. Shu, A. Tomar, T. Goldstein, and A. Bhatele, “Democratizing AI: Open-source scalable LLM training on GPU-based supercomputers,” in Proceedings of the ACM/IEEE International Con-ference for High Performance Computing, Networking, Storage and Analysis , ser. SC ’24, Nov. 2024. [23] S. Singh and A. Bhatele, “AxoNN: An asynchronous, message-driven parallel framework for extreme-scale deep learning,” in Proceedings of the IEEE International Parallel & Distributed Processing Symposium ,ser. IPDPS ’22. IEEE Computer Society, May 2022. [24] S. Li, H. Liu, Z. Bian, J. Fang, H. Huang, Y. Liu, B. Wang, and Y. You, “Colossal-AI: a unified deep learning system for large-scale parallel training,” in Proceedings of the 52nd International Conference on Parallel Processing , ser. ICPP ’23. New York, NY, USA: Association for Computing Machinery, 2023, p. 766–775. [25] “Oslo: Open source for large-scale optimization,” https://github.com/ EleutherAI/oslo, 2021. [26] L. Ma, Z. Sheng, X. Li, X. Gao, Z. Hao, L. Yang, X. Nie, J. Jiang, W. Zhang, and B. Cui, “Acceleration algorithms in gnns: A survey,” 
+
+IEEE Transactions on Knowledge and Data Engineering , 2025. [27] Y. Luo, L. Shi, and X.-M. Wu, “Classic gnns are strong baselines: Re-assessing gnns for node classification,” Advances in Neural Information Processing Systems , vol. 37, pp. 97 650–97 669, 2024. [28] Z. Wu, S. Pan, F. Chen, G. Long, C. Zhang, and P. S. Yu, “A comprehensive survey on graph neural networks,” IEEE transactions on neural networks and learning systems , vol. 32, no. 1, pp. 4–24, 2020. [29] X. Liu, M. Yan, L. Deng, G. Li, X. Ye, D. Fan, S. Pan, and Y. Xie, “Sur-vey on graph neural network acceleration: An algorithmic perspective,” 
+
+arXiv preprint arXiv:2202.04822 , 2022. [30] H. Dai, Z. Kozareva, B. Dai, A. Smola, and L. Song, “Learning steady-states of iterative algorithms over graphs,” in International conference on machine learning . PMLR, 2018, pp. 1106–1114. [31] D. Zou, Z. Hu, Y. Wang, S. Jiang, Y. Sun, and Q. Gu, “Layer-dependent importance sampling for training deep and large graph convolutional networks,” Advances in neural information processing systems , vol. 32, 2019. [32] W. Huang, T. Zhang, Y. Rong, and J. Huang, “Adaptive sampling towards fast graph representation learning,” Advances in neural information processing systems , vol. 31, 2018. [33] H. Zeng, H. Zhou, A. Srivastava, R. Kannan, and V. Prasanna, “Accurate, efficient and scalable graph embedding,” in 2019 IEEE International Parallel and Distributed Processing Symposium (IPDPS) . IEEE, 2019, pp. 462–471. [34] J. Bai, Y. Ren, and J. Zhang, “Ripple walk training: A subgraph-based training framework for large and deep graph neural network,” in 2021 International Joint Conference on Neural Networks (IJCNN) . IEEE, 2021, pp. 1–8. [35] M. Besta and T. Hoefler, “Parallel and distributed graph neural networks: An in-depth concurrency analysis,” IEEE Transactions on Pattern Anal-ysis and Machine Intelligence , vol. 46, no. 5, pp. 2584–2606, 2024. [36] Y. Shao, H. Li, X. Gu, H. Yin, Y. Li, X. Miao, W. Zhang, B. Cui, and L. Chen, “Distributed graph neural network training: A survey,” ACM Computing Surveys , vol. 56, no. 8, pp. 1–39, 2024. [37] H. Lin, M. Yan, X. Ye, D. Fan, S. Pan, W. Chen, and Y. Xie, “A comprehensive survey on distributed training of graph neural networks,” 
+
+Proceedings of the IEEE , vol. 111, no. 12, pp. 1572–1606, 2023. [38] C. Wan, Y. Li, C. R. Wolfe, A. Kyrillidis, N. S. Kim, and Y. Lin, “Pipegcn: Efficient full-graph training of graph convolutional networks with pipelined feature communication,” 2022. [Online]. Available: https://arxiv.org/abs/2203.10428 [39] L. Ma, Z. Yang, Y. Miao, J. Xue, M. Wu, L. Zhou, and Y. Dai, “{NeuGraph }: Parallel deep neural network computation on large graphs,” in 2019 USENIX Annual Technical Conference (USENIX ATC 19) , 2019, pp. 443–458. [40] Z. Jia, S. Lin, M. Gao, M. Zaharia, and A. Aiken, “Improving the accuracy, scalability, and performance of graph neural networks with roc,” Proceedings of Machine Learning and Systems , vol. 2, pp. 187– 198, 2020. [41] C. Wan, Y. Li, A. Li, N. S. Kim, and Y. Lin, “Bns-gcn: Efficient full-graph training of graph convolutional networks with partition-parallelism and random boundary node sampling,” 2022. [Online]. Available: https://arxiv.org/abs/2203.10983 [42] J. Chen, Z. Chen, and X. Qian, “Gnnpipe: Scaling deep gnn training with pipelined model parallelism,” arXiv preprint arXiv:2308.10087 , 2023. [43] ——, “Mithril: A scalable system for deep gnn training,” in 2025 IEEE International Symposium on High Performance Computer Architecture (HPCA) . IEEE, 2025, pp. 1052–1065. [44] M. Wang, D. Zheng, Z. Ye, Q. Gan, M. Li, X. Song, J. Zhou, C. Ma, L. Yu, Y. Gai, T. Xiao, T. He, G. Karypis, J. Li, and Z. Zhang, “Deep graph library: A graph-centric, highly-performant package for graph neural networks,” 2020. [Online]. Available: https://arxiv.org/abs/1909.01315 [45] T. Liu, Y. Chen, D. Li, C. Wu, Y. Zhu, J. He, Y. Peng, H. Chen, H. Chen, and C. Guo, “ {BGL }:{GPU-Efficient }{ GNN } training by optimizing graph data {I/O } and preprocessing,” in 20th USENIX Symposium on Networked Systems Design and Implementation (NSDI 23) , 2023, pp. 103–118. [46] Z. Zhu, P. Wang, Q. Hu, G. Li, X. Liang, and J. Cheng, “Fastgl: A gpu-efficient framework for accelerating sampling-based gnn training at large scale,” in Proceedings of the 29th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 4 , 2024, pp. 94–110. [47] S. Polisetty, J. Liu, K. Falus, Y. R. Fung, S.-H. Lim, H. Guan, and M. Serafini, “Gsplit: Scaling graph neural network training on large graphs via split-parallelism,” arXiv preprint arXiv:2303.13775 , 2023. [48] B. Zhang and R. Sennrich, “Root mean square layer normalization,” 
+
+Advances in neural information processing systems , vol. 32, 2019. [49] J. L. Ba, J. R. Kiros, and G. E. Hinton, “Layer normalization,” 2016. [Online]. Available: https://arxiv.org/abs/1607.06450 [50] B. Xu, N. Wang, T. Chen, and M. Li, “Empirical evaluation of rectified activations in convolutional network,” 2015. [51] N. Srivastava, “Improving neural networks with dropout,” University of Toronto , vol. 182, no. 566, p. 7, 2013. [52] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image recognition,” in 2016 IEEE Conference on Computer Vision and Pattern Recognition (CVPR) , 2016, pp. 770–778. [53] Q. Li, Z. Han, and X.-M. Wu, “Deeper insights into graph convolu-tional networks for semi-supervised learning,” in Proceedings of the Thirty-Second AAAI Conference on Artificial Intelligence and Thirtieth Innovative Applications of Artificial Intelligence Conference and Eighth AAAI Symposium on Educational Advances in Artificial Intelligence , ser. AAAI’18/IAAI’18/EAAI’18. AAAI Press, 2018. [54] P. Micikevicius, S. Narang, J. Alben, G. Diamos, E. Elsen, D. Garcia, B. Ginsburg, M. Houston, O. Kuchaiev, G. Venkatesh, and H. Wu, “Mixed precision training,” in International Conference on Learning Representations , 2018. [Online]. Available: https: //openreview.net/forum?id=r1gs9JgRZ [55] D. Kalamkar, D. Mudigere, N. Mellempudi, D. Das, K. Banerjee, S. Avancha, D. T. Vooturi, N. Jammalamadaka, J. Huang, H. Yuen 
+
+et al. , “A study of bfloat16 for deep learning training,” arXiv preprint arXiv:1905.12322 , 2019. [56] A. K. Tarafder, Y. Gong, and P. Kumar, “Optimization of gnn training through half-precision,” in Proceedings of the 34th International Sympo-sium on High-Performance Parallel and Distributed Computing , 2025, pp. 1–13. [57] W. Hu, M. Fey, M. Zitnik, Y. Dong, H. Ren, B. Liu, M. Catasta, and J. Leskovec, “Open graph benchmark: Datasets for machine learning on graphs,” 2021. [Online]. Available: https://arxiv.org/abs/2005.00687 [58] A. Azad, G. A. Pavlopoulos, C. A. Ouzounis, N. C. Kyrpides, and A. Buluc ¸, “Hipmcl: a high-performance parallel implementation of the markov clustering algorithm for large-scale networks,” Nucleic Acids Research , vol. 46, no. 6, pp. e33–e33, 01 2018. [Online]. Available: https://doi.org/10.1093/nar/gkx1313 [59] J. Ni, J. Li, and J. McAuley, “Justifying recommendations using distantly-labeled reviews and fine-grained aspects,” in Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-IJCNLP) , K. Inui, J. Jiang, V. Ng, and X. Wan, Eds. Hong Kong, China: Association for Computational Linguistics, Nov. 2019, pp. 188–197. [Online]. Available: https: //aclanthology.org/D19-1018/ [60] S. Singh, M. Singh, and A. Bhatele, “The big send-off: High per-formance collectives on gpu-based supercomputers,” arXiv preprint arXiv:2504.18658 , 2025.

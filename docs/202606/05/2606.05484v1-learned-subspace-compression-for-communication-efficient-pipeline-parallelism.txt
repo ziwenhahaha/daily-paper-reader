@@ -1,0 +1,682 @@
+Title: Learned Subspace Compression for Communication-Efficient Pipeline Parallelism
+
+URL Source: https://arxiv.org/pdf/2606.05484v1
+
+Published Time: Fri, 05 Jun 2026 00:21:03 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# Learned Subspace Compression for Communication-Efficient Pipeline Parallelism 
+
+Paul Janson 1,2 Edouard Oyallon 3 Eugene Belilovsky 1,21Concordia University 2Mila Quebec AI Institute 3 CNRS, Sorbonne University 
+
+## Abstract 
+
+Pipeline parallelism enables training of large language models that exceed single-device memory, yet inter-stage activation communication becomes the dominant bottleneck when trained on low-bandwidth networks. Recent work in this area has proposed using fixed orthogonal projections to compress activations. However, this still results in a significant performance degradation and requires a number of non-standard adaptations to constrain the optimization. A natural alternative is to learn a low rank projection for each pipeline stage, however maintaining the necessary orthogonality of these projectors during training remains a challenge. We present Manifold Aware Projection Learning ( MAPL ), a method that treats inter-stage compression as a learnable orthogonal projection under explicit Stiefel manifold (orthogonal matrices) constraints. Rather than prescribing a fixed global subspace, MAPL lets each pipeline stage discover and continuously adapt its own task-optimal compression subspace via manifold-constrained steepest descent. To recover token-specific signals at stage boundaries, we introduce per-stage factorized anchor embeddings that allow for full-rank activation reconstruction with negligible communication overhead. We further show that we can incorporate residual vector quantization after projection with a streaming codebook synchronization protocol that amortizes dictionary communication. Across LLaMA [ 50 ] models from 150M to 1B parameters we show that MAPL can be easily applied to the existing pipeline and can achieve high compression with neglibile performance degradation with a drastically improved tradeoffs in performance vs. compression compared to Subspace Networks. 
+
+## 1 Introduction 
+
+Training large-scale foundation models across geographically distributed, heterogeneous hardware introduces communication challenges that centralized distributed training systems [ 41 ] were not designed to handle [ 12 , 19 , 42 , 46 , 31 , 38 ]. Centralized systems assume tightly coupled accelerator clusters with high-bandwidth interconnects and large memory for each accelerator, but real-world low-bandwith deployments often rely on lower resource accelerators as their backbone and must operate over commodity wide-area networks with limited bandwidth and memory. Since, modern models have grown well beyond the memory capacity of these individual accelerators, model parallelism is a practical necessity. Pipeline parallelism [ 17 ] responds by partitioning parameters across devices, allowing GPUs to easily host a few layers each. However, this introduces a new bottleneck that every micro-batch triggers activation exchanges across stages in both the forward and backward passes inducing a significant communication cost. This communication cost motivates low-bandwidth pipeline-parallel training , in which intermediate activations are aggressively compressed before transmission [ 42 ]. Beyond accessibility, compressing inter-stage activations is empirically well-motivated. There is growing evidence that foundation models converge to intrinsically low-rank solutions [ 20 , 42 , 62 , 14 ], suggesting that the full-rank         
+
+> Preprint. Corresponding author: paul.janson@mila.quebec
+> arXiv:2606.05484v1 [cs.LG] 3 Jun 2026 128
+> (16×)
+> 256
+> (8×)
+> 512
+> (4×)
+> 1024
+> (2×)
+> 2048
+> (1×)
+> Bytes / token (compression ratio)
+> 3.2
+> 3.4
+> 3.6
+> 3.8
+> 4.0
+> Validation cross-entropy
+> r=64 r=128 r=256 r=512
+> Pareto frontier —150M, P= 4, DCLM-10B
+> (Rank r controls the size; lower-left is better)
+> Uncompressed
+> SSN (AdamW version)
+> SSN
+> Ours
+
+Figure 1: Pareto frontier for compressed pipeline-parallel training. Validation cross-entropy versus communication cost (bytes per token, with the corresponding compression ratio relative to the 2048-byte uncompressed baseline) for a 150M-parameter model trained with P = 4 pipeline stages on DCLM-10B using the Muon optimizer [ 21 ] unless otherwise stated. Lower-left is better. We compare our learned projection (“Ours,” green) against uncompressed training ( ⋆) and two SSN [ 42 ]baselines, SSN (AdamW [ 23 ] version) and SSN. For all methods, the projection rank r sets the activation size and hence the compression level ( r = 64 , 128 , 256 , 512 → 128 –1024 bytes/token). Our approach traces the Pareto frontier across all regimes, staying within ≈0.08 cross-entropy of uncompressed training even at 16 × compression, whereas both SSN baselines degrade sharply as compression increases. activation tensors exchanged between pipeline stages carry significant redundancy. Exploiting this structure allows us to eliminate communication overhead and transmit only the information that actually drives learning. Activation compression, however, is fundamentally harder than compression in data-parallel training [ 46 , 52 ], where compressed gradients are computed independently across identical model replicas, compression errors can average out across workers, and distortions remain largely decoupled from the forward computation. In pipeline parallelism, stages hold complementary, non-overlapping subsets of the model, so the compressed activation produced by one stage becomes the direct input to the next; any transmission distortion therefore propagates through subsequent forward layers and backward gradients, accumulating across stages and potentially corrupting the learning signal even when the artifact is small. Recent work on Subspace Networks (SSNs) [ 42 ] addresses this by constraining each activation of width d to a fixed, shared low-rank subspace of rank r defined by an orthogonal matrix Ur ∈ Rd×r .Specifically, they transmit activations h ∈ Rd as low-dimensional coordinates z = U ⊤ 
+
+> r
+
+h and reconstruct them locally as ˆh = Ur z. Notably [ 42 ] does not strictly constrain the activations to lie in the subspace thus the fixed projections cannot be removed at test time without performance degradation (See §B). In this sense SSNs represent an architectural modification. While SSNs confirm that architectural modification is a viable design space for communication-efficient training, the approach requires intrusive constrained optimization: model weights are restricted to a common low-rank subspace, a modified AdamW [ 23 , 34 ] optimizer is needed to maintain a weight in the subspace, and a static embedding offset is applied at each stage (See §A). Consequently, we observe substantial accuracy degradation under a token-matched setting relative to uncompressed baselines. Rather than prescribing a global basis for all layers, we let each pipeline stage learn its own communication subspace jointly with the task objective. Intermediate activations exhibit substantial low-rank structure even under modern optimizers [21, 33], suggesting that communication-efficient representations can naturally emerge end-to-end. However naively learning these projectors degrades the performance because standard gradient updates carry projectors off the Stiefel manifold (the set of all matrices with orthonormal columns), destroying the orthonormality on which isometric compression depends. Once a projector escapes the manifold, the model begins encoding features 2outside the intended subspace, leading to severe performance degradation. Crucially, we observe that these unconstrained models underperform even fixed orthogonal baselines, confirming that naive learning without manifold awareness is strictly worse than no learning at all (see §C). We identify this manifold escape as the principal failure mode and address it using manifold-constrained steepest-descent updates [ 63 ], which keep projectors strictly on the Stiefel manifold throughout training. Furthermore, removing the global subspace eliminates the need for SSN-style embedding decompositions. Instead, we introduce factorized anchor embeddings [26], a low-rank factorization 
+
+E = Esmall  
+
+> p
+
+Pp with fully trainable matrix Esmall  
+
+> p
+
+∈ RV ×r and a frozen matrix Pp ∈ Rr×d, where V
+
+is the vocabulary size. This approach keeps the parameter count low while permitting the effective embedding to recover its full rank at each stage. Finally, we further reduce bandwidth via vector quantization (VQ) on the low-rank manifold, employing a lightweight dictionary-stream protocol that amortizes codebook synchronization across many activation exchanges. To this end, we introduce Manifold Aware Projection Learning (MAPL) , which treats inter-stage communication as a learnable geometric projection rather than a fixed architectural constraint. We make the following contributions. We show that enforcing a shared global subspace across pipeline stages degrades learning in token-matched settings and instead propose allowing each stage to learn its own compression subspace on the Stiefel manifold, which we find is better suited to low-bandwidth activation transmission (§ 3.2). Second, we introduce a low-rank embedding factorization that replaces the fixed token embedding decomposition used in SSN-style approaches with stage-specific learnable embeddings. Combined with vector quantization and a streaming codebook synchronization protocol, this design further reduces inter-stage bandwidth while requiring only integer token IDs to be transmitted between stages (§ 3.5). Third, we evaluate MAPL on models from 150M to 1B parameters, where it recovers downstream performance to within 1% of the uncompressed baseline in token-matched settings and outperforms SSNs by 5% across all evaluated scales (§ 4.2). As Fig. 1 shows, MAPL traces the Pareto frontier of cross-entropy versus compression, improving the achievable tradeoff over prior methods. 
+
+## 2 Related works 
+
+Low Bandwidth Pre-training. The growing utility of large AI systems has motivated efforts to democratize large-scale model training across decentralized bodies of participants connected over bandwidth-constrained networks such as the open internet. Early works on decentralized optimization established theoretical foundations: [ 30 ] showed that decentralized SGD can match centralized convergence rates, while subsequent analyses unified gossip-based optimization with compressed communication and local updates [ 25 , 24 ]. To make distributed training communication-efficient, a rich line of work explored gradient compression through sparsification [ 55 , 58 , 32 ], scalar and sign-based quantization [ 1, 3, 49 , 9 ], low-rank approximation [ 53 ], and error-feedback mechanisms that correct biased compressors [ 61 , 22 ]. Building on these foundations, volunteer-style collaborative training was demonstrated by DeDLOC [ 10 ] and CocktailSGD [ 56 ] for training over slow networks. Recent work has focused on data-parallel pre-training over the internet: DiLoCo-style methods [ 12 , 46 , 19 , 11 ] adapt federated-averaging [ 47 ] to drastically reduce synchronization frequency. DeMo [ 40 ] exploits fast orthonormal transforms, top-k sparsification, and error feedback to enable multi-datacenter training. ACCO [ 37 ] overlaps the synchronization of delayed gradients with the computation of new gradients to increase GPU utilization. SparseLoCo [ 46 ] unifies error feedback, sparsification, and quantization to achieve internet-scale decentralized training [ 31 ]. However, all of these methods assume that each accelerator can hold a complete model replica. Pipeline-parallel training exhibits fundamentally different dynamics from DDP: SWARM [ 44 ] identified the square-cube law, showing that computation scales cubically while communication scales quadratically, and prior work explored decentralized model parallelism via mixture-of-experts routing [ 45 ] and reversible architectures that decouple forward and backward passes across stages [ 43 ]. Several works expanded on compressing activations [ 6 , 4 ] and the change in activations [ 57 ]. Subspace Networks [ 42 ]exploited the empirical rank collapse of transformer residual streams to project boundary activations onto a fixed orthonormal basis. While effective, this imposes a single representational space across all transformer layers. In our work, we challenge this assumption to learn specialized, per-stage compression. 
+
+Efficient language models. A parallel line of work has investigated low-rank geometric structure for memory-efficient gradient compression and model compression, motivated by the empirical 3Per Stage anchor  
+
+> Embedding Table
+> Layer 1
+> Subtract embeddings
+> Stage 1 Stage 2
+> Learnable orthogonal projection
+> …P
+> Token Ids
+
+## A p A pT  
+
+> [b, n]
+> [b,n,d] [b,n,d]
+> [b, n, r]
+> [b, n, d]
+> [b, n]
+> [b, n, r]
+> [b, n, d]
+> Projector
+> Token ids
+> Layer 2 [b,n,d]
+> Subtract embeddings
+
+Figure 2: Overview of MAPL compression at a pipeline stage boundary, repeated across all P − 1 inter-stage boundaries. At each boundary, the token-dependent offset is subtracted from the boundary activation Xbp ∈ Rb×n×d before transmission (red arrow): the first stage subtracts the original token embeddings, while subsequent stages subtract their per-stage factorized anchor embeddings Esmall  
+
+> p
+
+[tids ] Pp, where Pp is a frozen orthogonal projector. The residual is then projected to a low-dimensional representation Zbp ∈ Rb×n×r via a learnable orthogonal projector 
+
+Ap ∈ St( d, r ), reducing inter-stage communication volume by a factor of d/r . At the receiving stage, 
+
+A⊤ 
+
+> p
+
+reconstructs the full-dimensional activation, to which the destination-stage factorized anchor is added to restore the offset. Integer token IDs are transmitted alongside the compressed activation on the same channel at negligible cost (blue dashed line), enabling each stage to look up its local anchor without additional bandwidth overhead. observation that deep networks converge to low-rank solutions [ 27 , 64 , 35 , 62 , 13 , 14 ]. GaLore [ 68 ]style methods [ 7, 29 ] projected stochastic gradients onto low-rank subspaces to reduce optimizer state memory, enabling full-parameter pre-training under tight memory budgets. Several works [ 20 ,36 , 59 ] further explored training low-rank factorized weights to reduce memory and communication requirements. LTE [ 18 ] used parallel LoRA-style adapters to pre-train models from scratch with reduced memory and bandwidth across parallel accelerators. Pufferfish [ 54 ] modified the architecture to obtain trained factorized layers that reduce communication costs, but focused on data parallelism. Our work similarly modifies the transformer architecture, but with the complementary goal of enabling efficient inter-stage activation communication for pipeline parallelism. 
+
+## 3 Manifold Aware Projection Learning 
+
+Figure 2 summarizes MAPL. At each of the inter-stage boundaries, We subtract the token embeddings and project the boundary activations to a low-dimensional subspace via a learnable orthogonal projector, transmitted, and reconstructed at the receiving stage. We derive this design bottom-up — beginning from an empirical observation about the structure of boundary activations (§3.1), which motivates the construction (§3.2) and its optimization procedure (§3.3). We validate each component ablatively in §3.4 and sketch a composable vector-quantization extension in §3.5. 
+
+3.1 Boundary activations are intrinsically low-rank Setup Pipeline parallelism partitions the L layers of a decoder-only Transformer [ 51 ] into P con-tiguous stages S1, . . . , SP , each residing on a dedicated device. Let E denote the embedding table and tids the input token indices. At each inter-stage boundary p ∈ { 1, . . . , P −1}, the forward pass communicates the boundary activation Xbp ∈ RB×T ×d, while the backward pass transmits its gradient; B, T , and d denote batch size, sequence length, and hidden dimension, respectively. 
+
+Motivating example We profile a 150M-parameter LLaMA model [ 50 ] trained for 3,000 steps on DCLM [ 28 ] with the Muon optimizer [ 21 ] at P =8 pipeline stages. To isolate representational structure of the residual stream, we subtract the token embeddings and analyze the residual Xres =
+
+Xbp − E[tids ], reshaped to (B·T ) × d, via singular value decomposition (SVD). We quantify spectral 40 50 100 150 200 250 
+
+Rank index 
+
+> 10 3
+> 10 4
+> 10 5
+> Singular value
+
+(a) Singular spectrum      
+
+> Boundary 0
+> Boundary 1
+> Boundary 2
+> Boundary 3
+> Boundary 4
+> Boundary 5
+> Boundary 6
+> 050 100 150 200 250
+
+Rank kept 
+
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> Cumulative energy
+
+(b) Cumulative energy vs rank Figure 3: Boundary activations exhibit intrinsic low-rank structure across all pipeline stages, with rank-250 truncation retaining ≥99% of activation energy. (a) Singular value spectra of the centered boundary activations Xbp − E[tids ] (reshaped to (B · T ) × d) for all P − 1 = 7 inter-stage boundaries of a 150M LLaMA model ( d = 1024 , P = 8 ) trained with Muon [ 21 ] on DCLM [ 28 ]. The x-axis indexes singular values in descending order; the y-axis is on a log scale. Each colored line corresponds to a distinct pipeline boundary. (b) Cumulative energy   
+
+> Pri=1 σ2
+> iPdi=1 σ2
+> i
+
+as a function of retained rank r. Color coding is shared across both panels. concentration through the cumulative energy ratio: 
+
+E(r) = 
+
+Pri=1 σ2
+
+> i
+
+Pdi=1 σ2
+
+> i
+
+.
+
+As shown in Figure 3, boundary activations exhibit pronounced low-rank structure across all pipeline stages: a rank of r ≈ 250 suffices to retain ≥99% of the total activation energy, despite the ambient dimension d=1024 . The inter-stage signal therefore concentrates near a submanifold of effective dimension roughly one quarter of the full representation space. This finding extends [ 42 ], which observed rank collapse in projection matrices and responded by explicitly constraining weight rows to a shared low-rank subspace. Crucially, our setting requires 
+
+no such contraint on weights: the low-rank structure emerges organically during training, without regularization or weight constraints. We therefore define a rank-r projector ( r < d ) as information-preserving for this signal, and argue that a learned projection can discover —rather than impose— the latent subspace the activations already inhabit, enabling principled compression of inter-stage communication. 
+
+3.2 Compression via per-stage learned orthogonal projectors 
+
+We introduce, at each pipeline-stage boundary p, a learnable orthogonal projector Ap that lies on the Stiefel manifold 
+
+St( d, r ) = {A ∈ Rd×r : A⊤A = Ir }.
+
+We equip each boundary with a per-stage anchor Esmall  
+
+> p
+
+[tids ] and a companion projector Pp that absorbs the high-rank, token-driven offset of the residual stream. Forward compression and recon-struction then proceed as 
+
+Zbp =  Xbp − Esmall  
+
+> p
+
+[tids ]Pp
+
+ Ap ∈ RB×T ×r , (1) 
+
+ˆXbp = Zbp A⊤ 
+
+> p
+
++ Esmall  
+
+> p+1
+
+[tids ]Pp+1 ∈ RB×T ×d. (2) By enforcing the Stiefel constraint, we guarantee that A⊤ 
+
+> p
+
+is the exact inverse of Ap. Projection and reconstruction are therefore isometric on the column space of Ap and the method achieves an exact compression ratio of r/d . In the backward pass we symmetrically route the gradient ∂L/∂X bp
+
+through the same orthogonal projector Ap.The rank-r projector Ap captures the dominant low-rank component of the boundary activation Xbp
+
+while deliberately leaving the token-frequency offset unaddressed; this offset is inherently high-rank 5Algorithm 1 MAPL: per-boundary compression and projector update. 
+
+Require: Boundary activation Xbp , projector Ap ∈ St( d, r ), momentum buffer mp, anchor Esmall  
+
+> p
+
+,companion projector Pp, token IDs tids , projector learning rate α, momentum β. 
+
+> 1:
+
+Project (sender): Zbp ←  Xbp − Esmall  
+
+> p
+
+[tids ] Pp
+
+ Ap 
+
+> 2:
+
+Transmit Zbp and tids  
+
+> 3:
+
+Reconstruct (receiver): ˆXbp ← Zbp A⊤ 
+
+> p
+
++ Esmall  
+
+> p+1
+
+[tids ] Pp+1  
+
+> 4:
+
+Projector update (SPEL):  
+
+> 5:
+
+g ← ∂L/∂A p 
+
+> 6:
+
+gR ← g − Ap sym( A⊤ 
+
+> p
+
+g) {tangent projection}  
+
+> 7:
+
+mp ← β m p + (1 − β) gR {momentum}  
+
+> 8:
+
+d ← PolarExpress( mp) {LMO direction}  
+
+> 9:
+
+Ap ← PolarExpress( Ap − α d ) {retraction} and would otherwise exhaust projector capacity. In SSN [ 42 ], the embedding table is decoupled into static high rank and learnable low rank components. Each stage added a static high rank offset as the learnable token embeddings forced to be in the same subspace as the weights [ 42 ]. We instead add a learnable offset. To reduce the parameter pressure at each stage, we factorize the offset as 
+
+Esmall  
+
+> p
+
+[ids ] Pp, Esmall  
+
+> p
+
+∈ RV ×r , Pp ∈ Rr×d, (3) where Esmall  
+
+> p
+
+is a trainable embedding table and Pp is a fixed random orthonormal matrix. Only the integer token IDs cross the communication channel for this reconstruction. Consequently, the anchor adds negligible bandwidth overhead. 
+
+3.3 Optimization via SPEL 
+
+We update each Ap jointly with the model weights via SPEL (Spectral Steepest Descent on the Stiefel Manifold) [ 63 ], using the task loss as the only signal. Given the Euclidean gradient gt = ∂L/∂A p at step t and learning rate α, update consists of: 
+
+gRt = gt − Ap sym( A⊤ 
+
+> p
+
+gt), (tangent projection) (4) 
+
+mt = β m t−1 + (1 − β) gRt , (heavy-ball momentum) (5) 
+
+dt = PolarExpress( mt), (spectral LMO direction) (6) 
+
+Ap ← PolarExpress  Ap − α d t
+
+, (retraction onto St( d, r )) (7) where sym( M ) = 12 (M + M ⊤). Polar express [ 2] calculates the spectral norm LMO direction which is a similar parameter update as Muon [ 21 ] and retracts the matrix back to the stiefel manifold. SPEL inherits the O(1 /√T ) convergence rate of first-order methods on smooth manifolds [ 63 ]. We send the updated Ap to the next stage after every optimizer step. This is a minimal communication cost when compared with activationa and gradient communication. Unlike SSN’s Grassmann update that refresh every ∼500 steps [ 42 ], SPEL updates Ap at every step, letting the subspace track the evolving activation geometry. In practice we choose a learning rate an order smaller than parameter updates ( ×0.1). Algorithm 1 summarizes the full per-boundary update. 
+
+3.4 Empirical Validation 
+
+We validate three properties of our method (§3.2) and show learning the projection is naturally more favorable compression than having a fixed projector. We show that per-boundary projectors discover geometrically distinct subspaces for each different stage. The learned Ap captures substantially more activation energy than a fixed orthonormal basis of equal rank, and the learned projection faithfully preserves pairwise token similarity after compression. 
+
+Each stage learns a distinct subspace. Figure 4 (a) reports pairwise mean principal angles be-tween the seven learned projectors of all boundaries, computed as ¯θ = 1
+
+> r
+
+Prk=1 arccos  σk(A⊤ 
+
+> i
+
+Aj ).Off-diagonal angles range from 53 ◦ to 72 ◦, with adjacent stages exhibiting the greatest overlap and distant stages approaching near-orthogonality. This change in subspace alignment is consistent with 60 1 2 3 4 5 6                                                          
+
+> Bridge j
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> Bridge  i
+> 558 65 70 72 72 72
+> 58 462 68 71 72 72
+> 65 62 454 66 71 72
+> 70 68 54 453 67 72
+> 72 71 66 53 454 69
+> 72 72 71 67 54 459
+> 72 72 72 72 69 59 4
+> (a) Principal angles (deg)
+> 01000 2000 3000
+> Training step
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> ‖Xres Ap‖2
+> F/‖Xres ‖2
+> F
+> (b) Energy of residual in Ap
+> Learnable Stiefel r= 128
+> Fixed orthogonal r= 128
+> 101
+> cos( xi, x j)full
+> 1.0
+> 0.5
+> 0.0
+> 0.5
+> 1.0
+> cos( xiAp, x jAp)
+> Pearson r= 0 .992
+> (c) Cosine preservation
+> y=x
+
+Figure 4: Empirical validation of learned orthogonal projectors for activation compression in pipeline-parallel training. (a) Pairwise mean principal angles (degrees) between learned Stiefel man-ifold projectors across pipeline stages i and j, computed via arccos( σk(A⊤ 
+
+> i
+
+Aj )) . Large off-diagonal angles (up to 72 ◦) confirm that projectors across non-adjacent stages converge to geometrically distinct subspaces, while near-zero diagonal values verify self-consistency. (b) Frobenius-norm energy of residual activations preserved under projection, ∥Xres Ap∥2 
+
+> F
+
+/∥Xres ∥2 
+
+> F
+
+, as a function of training step for learned Stiefel ( r = 128 , red) versus fixed orthogonal ( r = 128 , blue) projectors. Learned projectors retain approximately 2.2× more residual energy ( ∼ 0.80 vs. ∼ 0.36 ), demon-strating superior task-adaptive compression. (c) Cosine similarity preservation between token pairs: 
+
+cos( xiAp, x j Ap) versus cos( xi, x j ) evaluated on the full-dimensional representations. A Pearson correlation of r = 0 .992 confirms that the learned projection Ap faithfully preserves the pairwise relational geometry of the activation space, closely tracking the identity line ( y = x). the residual stream transitioning from lexical to task-specific representations across depth [65]. 
+
+The learned projector captures substantially more energy. Figure 4 (b) compares the residual energy retained under projection, ∥Xres Ap∥2 
+
+> F
+
+/∥Xres ∥2 
+
+> F
+
+, between a fixed random orthonormal basis and the jointly trained Ap at matching rank r=128 . Note that ∥A∥2 
+
+> F
+
+= P 
+
+> i
+
+σ2 
+
+> i
+
+. The fixed basis plateaus near 36% of captured energy while the learned projector reaches ∼80% within 1,500 steps and continues to improve—a factor-of-two gain in effective rank utilization. Inspection of weight stable rank confirms that the preceding attention out projection and MLP projection layers adapt to this space defined by (Ap) (Appendix D). We see that the compression actively induces the low rank structure. 
+
+The learned projection preserves pairwise token geometry. Figure 4 (c) plots the cosine simi-larity between projected token pairs, cos( xiAp, x j Ap), against their full-dimensional counterpart 
+
+cos( xi, x j ). The Pearson correlation of r = 0 .992 with the identity line demonstrates that Ap
+
+behaves as a near-isometry over the empirical token distribution and the relative angular structure in the activation space is preserved under compression. This property is not enforced explicitly and it emerges from Stiefel optimization alone and provides geometric evidence that the transmitted representation retains the relational information downstream stages require for computation. 
+
+3.5 Composing with vector quantization 
+
+To minimize communication overhead during pipeline-parallel training, we employ Multi-Codebook Vector Quantization (MCVQ) for compressing both forward activations and backward gradients. The method operates on a low-rank projected representation, decomposed into G groups, and applies R
+
+rounds of residual quantization to achieve high compression ratios while preserving representational fidelity. 
+
+Quantization Scheme Formally, the projected representation is compressed via residual vector quantization using a per-stage codebook. Zbp ∈ RB×T ×r is compressed using a per-stage codebook 
+
+Cp ∈ Rr×K . Each stage quantizes the residual error from the previous round, enabling progressive refinement of the compressed representation across R rounds. 
+
+Codebook Synchronization Sender and receiver nodes synchronize Cp through a streaming dictionary update protocol: the codebook is partitioned into random subsets, with a 1 
+
+> K
+
+fraction of codes transmitted per micro-batch. This design is motivated by the empirical observation of [ 67 ] that 7VQ codebooks evolve slowly over the course of training, ensuring that the staleness introduced by incremental updates remains negligible with respect to overall bandwidth and convergence. 
+
+## 4 Experiments 
+
+4.1 Experimental Setup Architecture and scales. We evaluate our method on decoder-only transformers based on the LLaMA [ 50 ] architecture across three parameter scales: 150M, 500M, and 1B. All models employ a context length of 2048 tokens and are trained with the LLaMA tokenizer (vocabulary size 32,000) in bf16 precision. All models are pre-trained on the DCLM corpus [ 28 ], with 5M tokens held out uniformly at random as a validation set. Following the Chinchilla compute-optimal scaling regime [ 16 ], each model is trained on a token budget of 20 tokens per parameter. Implementation details are provided in Appendix E. All the methods are compared at equal token budgets. 
+
+Optimization We adopt a hybrid optimizer configuration in which the 2D hidden weight matrices are updated using Muon [ 21 ], while embeddings, biases, and the output projection are updated with AdamW [ 34 ]. The Muon learning rate is set to ημ = 0 .02 for the 150M, 500M sizes and ημ = 0 .01 
+
+for the 1B case, and the AdamW learning rate is coupled to it via a multiplier of 0.5, yielding 
+
+ηadam = 0 .5 · ημ. Training uses a global batch size of 512. We choose the multiplier of 0.1 for learning rate we use to update the projector using § 3.3. Our primary experiments are conducted under pipeline-parallel configurations with P ∈ { 4, 8} stages. 
+
+Baselines. We compare against methods while holding all shared hyperparameters fixed to ensure a fair comparison. Uncompressed transmits activations and gradients across pipeline boundaries at the full model width and therefore serves as an upper bound on attainable quality. SSN [42 ]projects inter-stage tensors onto a learned low-rank subspace(§ A). SSN (AdamW version) use SSN with AdamW optimizer for all the parameters. MAPL applies our proposed compression scheme to inter-stage activations and gradients. Finally, MAPL+ VQ augments our approach with vector quantization of the projected representation, effectively doubling the compression ratio. 
+
+Evaluation We report cross-entropy validation loss on the held-out DCLM split as our primary metric, together with the relative degradation ∆% with respect to the Uncompressed baseline at the same scale. We additionally evaluate zero-shot downstream accuracy on HellaSwag [ 66 ], PIQA [ 5], ARC-Easy, and ARC-Challenge [ 8] using lm-evaluation-harness [15 ]. We also report average accuracy across all the tasks. 
+
+4.2 Main Results MAPL closes the gap to the uncompressed baseline across all scales, Table 1 shows that, at 4×
+
+compression on the 150M model, MAPL achieves validation losses of 3.156 (P =4 ) and 3.165 (P =8 ). This is just 0.84% and 1.11% above the uncompressed reference of 3.13 . At this scale, we can see that SSN degrades much higher in performance in both pipeline cases of pipeline split. Scaling to 500M parameters under 6× compression, MAPL tracks the baseline within 1.90% (P =4 ) and 0.08% 
+
+(P =8 ); at 1B under 8× compression, it holds losses of 2.72 and 2.73 , degrading by only 1.38% and 
+
+2.02% respectively. At all scales the SSN performs much worse and looses a maximum of nearly 14% performance compared to uncompressed baseline. We attribute the stability of MAPL across model scales to the per-stage Stiefel-constrained projec-tors, which faithfully capture the intrinsic low-rank geometry of the activations identified in §3.1. Composing MAPL with residual vector quantization (§3.5) doubles the compression ratio while incurring only marginal additional loss. At 1B parameters, MAPL+VQ achieves 16 × inter-stage compression at 3.01% (P =4 ) and 2.30% (P =8 ) degradation. We trace this behavior to the empirical near-isometry of the learned projector (Figure 4c).By preserving pairwise similarity on the low-rank manifold, the codebook in Rr inherits a well-conditioned distribution that aligns itself naturally for vector quantization. 
+
+MAPL preserves downstream performance on various tasks. Validation-loss improvements translate directly to zero-shot performance as shown in Table 2. Across the tested downstream tasks, MAPL closely tracks the uncompressed baseline at every scale. At 500M parameters, the average accuracy gap is 0.2 points at P =4 (41 .8 vs. 42 .0) and 0.4 points at P =8 (41 .6 vs. 42 .0); at 1B, 8Scale Method Bytes/token Comp. P=4 Loss P=4 ∆ % P=8 Loss P=8 ∆ %
+
+150M Uncompressed 2048 — 3.13 — 3.13 —150M SSN [42] (AdamW [23] version) 512 4× 3.49 11.49% 3.52 12.46% 150M SSN [42] 512 4× 3.39 8.37% 3.40 8.63% 150M MAPL 512 4× 3.156 0.84% 3.165 1.11% 
+
+150M MAPL+ VQ 256 8× 3.165 1.11% 3.170 1.28% 500M Uncompressed 3072 — 2.84 — 2.84 —500M SSN [42] (AdamW [23] version) 512 6× 3.25 14.34% 3.29 15.90% 500M SSN [42] 512 6× 3.09 8.92% 3.12 9.90% 500M MAPL 512 6× 2.79 -1.90% 2.84 0.00% 
+
+500M MAPL+ VQ 256 12 × 2.92 2.75% 2.88 1.49% 1B Uncompressed 4096 — 2.68 2.68 1B SSN [42] (AdamW [23] version) 512 8× 3.38 26.34% 3.39 26.42% 1B SSN [42] 512 8× 3.05 13.93% 3.08 15.05% 1B MAPL 512 8× 2.72 1.38% 2.73 2.02% 
+
+1B MAPL+ VQ 256 16 × 2.76 3.01% 2.74 2.30% 
+
+Table 1: MAPL closes the performance gap to uncompressed training across all model scales while delivering 4–16 × communication compression. Cross entropy validation loss and compres-sion results for 150M, 500M, and 1B parameter models under pipeline-parallel settings with P=4 and P=8 show that both MAPL and its vector-quantized variant consistently match or approach the uncompressed baseline. In contrast, they substantially outperform the SSN baselines in accuracy. Best uncompressed values are marked with bold text the corresponding gaps are 0.8 and 1.5 average points. SSN baselines, by contrast, suffer accuracy drops as large as 8.8 points at 1B. This shows that the learning capacity is restricted due to the global-subspace weight constraint and shows degraded performance at token matched comparisons. The MAPL+VQ variant incurs a more pronounced performance loss in downstream tasks.                                                                                                                                                                     
+
+> Size Config P=4 P=8
+> HellaSwag PIQA ARC-E ARC-C Avg HellaSwag PIQA ARC-E ARC-C Avg 150M
+> Uncompressed 28.1 60.1 38.2 22.8 37.3 28.1 60.1 38.2 22.8 37.3 SSN [42] (AdamW [23] version) 26.5 56.1 32.5 20.6 33.9 26.8 56.0 32.1 20.6 33.9 SSN [42] 27.6 56.7 34.4 20.9 34.9 27.0 56.3 33.8 21.7 34.7 MAPL 28.0 59.4 37.0 22.6 36.7 27.8 59.3 37.8 21.5 36.6
+> MAPL + VQ 28.4 52.8 31.7 22.7 33.9 26.4 50.5 29.1 25.9 33.0 500M
+> Uncompressed 35.7 64.4 43.2 24.8 42.0 35.7 64.4 43.2 24.8 42.0 SSN [42] (AdamW [23] version) 27.0 59.5 35.6 21.2 35.8 27.4 57.9 34.6 22.1 35.5 SSN [42] 29.1 59.8 38.5 22.3 37.4 28.5 59.1 37.2 22.2 36.7 MAPL 35.1 64.0 43.6 24.3 41.8 34.5 64.7 42.4 24.7 41.6
+> MAPL + VQ 25.9 50.8 26.6 26.7 32.5 26.9 51.2 27.2 24.3 32.4 1B
+> Uncompressed 38.8 66.3 46.8 24.5 44.1 38.8 66.3 46.8 24.5 44.1 SSN [42] (AdamW [23] version) 27.5 57.9 35.1 20.8 35.3 27.4 57.6 35.6 20.7 35.3 SSN [42] 29.1 61.4 37.1 22.7 37.6 28.7 60.6 37.2 21.8 37.1 MAPL 37.1 65.7 45.7 24.5 43.3 36.2 64.8 45.2 24.1 42.6
+> MAPL + VQ 25.9 49.6 26.6 27.6 32.4 25.8 49.8 27.1 28.0 32.7
+
+Table 2: Zero-shot downstream benchmark accuracy under pipeline-parallel communication compression. Accuracy on HellaSwag, PIQA, ARC-Easy (ARC-E), and ARC-Challenge (ARC-C) for 150M, 500M, and 1B parameter models trained with P =4 and P =8 pipeline stages. MAPL consistently approaches the uncompressed baseline across all benchmarks and scales— averaging within ∼1 point at 500M and 1B—while SSN baselines suffer larger accuracy drops (up to ∼9
+
+average points at 1B scale). The vector-quantized variant (MAPL + VQ) achieves higher compression ratios but at a notable accuracy cost. Averages (Avg) are reported across all four tasks. The best compressed values marked with bold text. 
+
+## 5 Conclusion 
+
+We introduced MAPL , a communication-efficient pipeline-parallel training method that learns stage-specific orthogonal compression subspaces directly on the Stiefel manifold using manifold-9constrained optimization. By combining adaptive low-rank projectors with lightweight factorized anchor embeddings and optional residual vector quantization, MAPL enables aggressive inter-stage activation compression while preserving training quality. Across LLaMA-style models ranging from 150M to 1B parameters and pipeline configurations with 4 and 8 stages, MAPL achieves 
+
+4×–8× communication compression within approximately 1–2% of the uncompressed validation loss. It extends to 16 × compression with only modest additional degradation when combined with vector quantization. The method consistently outperforms recent work subspace networks [ 42 ] while maintaining strong downstream zero-shot accuracy. Our results suggest that inter-stage transformer activations naturally admit adaptive low-dimensional structure that can be learned jointly with the task objective, rather than imposed through a fixed global subspace. More broadly, this work highlights manifold-constrained representation learning as a practical mechanism for reducing communication costs in distributed foundation-model training. 
+
+Limitations. Our experiments are limited to models up to 1B parameters, and further evaluation at larger scales and under real heterogeneous network conditions remains necessary. In addition, although MAPL substantially reduces the degradation associated with activation compression, per-formance still declines under extreme compression ratios, particularly when vector quantization is applied. 
+
+## References 
+
+[1] Dan Alistarh, Demjan Grubic, Jerry Li, Ryota Tomioka, and Milan Vojnovic. Qsgd: Communication-efficient sgd via gradient quantization and encoding. Advances in neural information processing systems , 30, 2017. [2] Noah Amsel, David Persson, Christopher Musco, and Robert M Gower. The polar express: Optimal matrix sign methods and their application to the muon algorithm. International Conference on Learning Representations (ICLR) , 2026. [3] Jeremy Bernstein, Yu-Xiang Wang, Kamyar Azizzadenesheli, and Animashree Anandkumar. signsgd: Compressed optimisation for non-convex problems. In International conference on machine learning , pages 560–569. PMLR, 2018. [4] Song Bian, Dacheng Li, Hongyi Wang, Eric P Xing, and Shivaram Venkataraman. Does compressing activations help model parallel training? Proceedings of Machine Learning and Systems , 6:239–252, 2024. [5] Yonatan Bisk, Rowan Zellers, Jianfeng Gao, Yejin Choi, et al. Piqa: Reasoning about phys-ical commonsense in natural language. In Proceedings of the AAAI conference on artificial intelligence , volume 34, pages 7432–7439, 2020. [6] Jianfei Chen, Lianmin Zheng, Zhewei Yao, Dequan Wang, Ion Stoica, Michael Mahoney, and Joseph Gonzalez. Actnn: Reducing training memory footprint via 2-bit activation compressed training. In International Conference on Machine Learning , pages 1803–1813. PMLR, 2021. [7] Xi Chen, Kaituo Feng, Changsheng Li, Xunhao Lai, Xiangyu Yue, Ye Yuan, and Guoren Wang. Fira: Can we achieve full-rank training of LLMs under low-rank constraint? In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. [8] Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457 , 2018. [9] Tim Dettmers, Mike Lewis, Sam Shleifer, and Luke Zettlemoyer. 8-bit optimizers via block-wise quantization. In International Conference on Learning Representations , 2022. [10] Michael Diskin, Alexey Bukhtiyarov, Max Ryabinin, Lucile Saulnier, Anton Sinitsin, Dmitry Popov, Dmitry V Pyrkin, Maxim Kashirin, Alexander Borzunov, Albert Villanova del Moral, et al. Distributed deep learning in open collaborations. Advances in Neural Information Processing Systems , 34:7879–7897, 2021. 10 [11] Arthur Douillard, Yani Donchev, J Keith Rush, Satyen Kale, Zachary Charles, Gabriel Teston, Zachary Garrett, Jiajun Shen, Ross McIlroy, David Lacey, Alexandre Rame, Arthur Szlam, MarcAurelio Ranzato, and Paul R Barham. Streaming diloco with overlapping communication. In Second Conference on Language Modeling , 2025. [12] Arthur Douillard, Qixuang Feng, Andrei A. Rusu, Rachita Chhaparia, Yani Donchev, Adhiguna Kuncoro, Marc’Aurelio Ranzato, Arthur Szlam, and Jiajun Shen. Diloco: Distributed low-communication training of language models. CoRR , abs/2311.08105, 2023. [13] Jonathan Frankle and Michael Carbin. The lottery ticket hypothesis: Finding sparse, trainable neural networks. In International Conference on Learning Representations , 2019. [14] Tomer Galanti, Zachary S Siegel, Aparna Gupte, and Tomaso A Poggio. Sgd with weight decay secretly minimizes the ranks of your neural networks. In The Second Conference on Parsimony and Learning (Proceedings Track) , 2025. [15] Leo Gao, Jonathan Tow, Baber Abbasi, Stella Biderman, Sid Black, Anthony DiPofi, Charles Foster, Laurence Golding, Jeffrey Hsu, Alain Le Noac’h, Haonan Li, Kyle McDonell, Niklas Muennighoff, Chris Ociepa, Jason Phang, Laria Reynolds, Hailey Schoelkopf, Aviya Skowron, Lintang Sutawika, Eric Tang, Anish Thite, Ben Wang, Kevin Wang, and Andy Zou. The language model evaluation harness, 07 2024. [16] Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, et al. Training compute-optimal large language models. arXiv preprint arXiv:2203.15556 , 2022. [17] Yanping Huang, Youlong Cheng, Ankur Bapna, Orhan Firat, Dehao Chen, Mia Chen, Hy-oukJoong Lee, Jiquan Ngiam, Quoc V Le, Yonghui Wu, et al. Gpipe: Efficient training of giant neural networks using pipeline parallelism. Advances in neural information processing systems ,32, 2019. [18] Minyoung Huh, Brian Cheung, Jeremy Bernstein, Phillip Isola, and Pulkit Agrawal. Training neural networks from scratch with parallel low-rank adapters. arXiv preprint arXiv:2402.16828 ,2024. [19] Sami Jaghouar, Jack Min Ong, and Johannes Hagemann. Opendiloco: An open-source frame-work for globally distributed low-communication training, July 2024. [20] Paul Janson, Edouard Oyallon, and Eugene Belilovsky. Stabilizing native low-rank LLM pretraining. In Forty-third International Conference on Machine Learning , 2026. [21] Keller Jordan, Yuchen Jin, Vlado Boza, Jiacheng You, Franz Cesista, Laker Newhouse, and Jeremy Bernstein. Muon: An optimizer for hidden layers in neural networks, 2024. [22] Sai Praneeth Karimireddy, Quentin Rebjock, Sebastian Stich, and Martin Jaggi. Error feedback fixes signsgd and other gradient compression schemes. In International conference on machine learning , pages 3252–3261. PMLR, 2019. [23] Diederik P Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In Interna-tional Conference on Learning Representations (ICLR) , 2015. [24] Anastasia Koloskova, Nicolas Loizou, Sadra Boreiri, Martin Jaggi, and Sebastian Stich. A unified theory of decentralized sgd with changing topology and local updates. In International conference on machine learning , pages 5381–5393. PMLR, 2020. [25] Anastasia Koloskova, Sebastian Stich, and Martin Jaggi. Decentralized stochastic optimization and gossip algorithms with compressed communication. In International conference on machine learning , pages 3478–3487. PMLR, 2019. [26] Zhenzhong Lan, Mingda Chen, Sebastian Goodman, Kevin Gimpel, Piyush Sharma, and Radu Soricut. Albert: A lite bert for self-supervised learning of language representations. In 
+
+International Conference on Learning Representations , 2020. 11 [27] Yann LeCun, John Denker, and Sara Solla. Optimal brain damage. Advances in neural information processing systems , 2, 1989. [28] Jeffrey Li, Alex Fang, Georgios Smyrnis, Maor Ivgi, Matt Jordan, Samir Yitzhak Gadre, Hritik Bansal, Etash Kumar Guha, Sedrick Scott Keh, Kushal Arora, Saurabh Garg, Rui Xin, Niklas Muennighoff, Reinhard Heckel, Jean Mercat, Mayee F. Chen, Suchin Gururangan, Mitchell Wortsman, Alon Albalak, Yonatan Bitton, Marianna Nezhurina, Amro Abbas, Cheng-Yu Hsieh, Dhruba Ghosh, Josh Gardner, Maciej Kilian, Hanlin Zhang, Rulin Shao, Sarah M. Pratt, Sunny Sanyal, Gabriel Ilharco, Giannis Daras, Kalyani Marathe, Aaron Gokaslan, Jieyu Zhang, Khyathi Raghavi Chandu, Thao Nguyen, Igor Vasiljevic, Sham M. Kakade, Shuran Song, Sujay Sanghavi, Fartash Faghri, Sewoong Oh, Luke Zettlemoyer, Kyle Lo, Alaaeldin El-Nouby, Hadi Pouransari, Alexander Toshev, Stephanie Wang, Dirk Groeneveld, Luca Soldaini, Pang Wei Koh, Jenia Jitsev, Thomas Kollar, Alex Dimakis, Yair Carmon, Achal Dave, Ludwig Schmidt, and Vaishaal Shankar. Datacomp-lm: In search of the next generation of training sets for language models. In Amir Globersons, Lester Mackey, Danielle Belgrave, Angela Fan, Ulrich Paquet, Jakub M. Tomczak, and Cheng Zhang, editors, Advances in Neural Information Processing Systems 38: Annual Conference on Neural Information Processing Systems 2024, NeurIPS 2024, Vancouver, BC, Canada, December 10 - 15, 2024 , 2024. [29] Vladislav Lialin, Sherin Muckatira, Namrata Shivagunde, and Anna Rumshisky. ReloRA: High-rank training through low-rank updates. In The Twelfth International Conference on Learning Representations , 2024. [30] Xiangru Lian, Ce Zhang, Huan Zhang, Cho-Jui Hsieh, Wei Zhang, and Ji Liu. Can decentralized algorithms outperform centralized algorithms? a case study for decentralized parallel stochastic gradient descent. Advances in neural information processing systems , 30, 2017. [31] Joel Lidin, Amir Sarfi, Erfan Miahi, Quentin Anthony, Shivam Chauhan, Evangelos Pappas, Benjamin Thérien, Eugene Belilovsky, and Samuel Dare. Covenant-72b: Pre-training a 72b llm with trustless peers over-the-internet. arXiv preprint arXiv:2603.08163 , 2026. [32] Yujun Lin, Song Han, Huizi Mao, Yu Wang, and Bill Dally. Deep gradient compression: Reducing the communication bandwidth for distributed training. In International Conference on Learning Representations , 2018. [33] Jingyuan Liu, Jianlin Su, Xingcheng Yao, Zhejun Jiang, Guokun Lai, Yulun Du, Yidao Qin, Weixin Xu, Enzhe Lu, Junjie Yan, Yanru Chen, Huabin Zheng, Yibo Liu, Shaowei Liu, Bohong Yin, Weiran He, Han Zhu, Yuzhi Wang, Jianzhou Wang, Mengnan Dong, Zheng Zhang, Yongsheng Kang, Hao Zhang, Xinran Xu, Yutao Zhang, Yuxin Wu, Xinyu Zhou, and Zhilin Yang. Muon is scalable for llm training, February 2025. [34] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In 7th International Conference on Learning Representations, ICLR 2019, New Orleans, LA, USA, May 6-9, 2019 .OpenReview.net, 2019. [35] Charles H Martin and Michael W Mahoney. Implicit self-regularization in deep neural networks: Evidence from random matrix theory and implications for learning. Journal of Machine Learning Research , 22(165):1–73, 2021. [36] Zhanfeng Mo, Long-Kai Huang, and Sinno Jialin Pan. Parameter and memory efficient pretraining via low-rank riemannian optimization. In The Thirteenth International Conference on Learning Representations , 2025. [37] Adel Nabli, Louis Fournier, Pierre Erbacher, Louis Serrano, Eugene Belilovsky, and Edouard Oyallon. Acco: Accumulate while you communicate for communication-overlapped sharded llm training. arXiv preprint arXiv:2406.02613 , 2024. [38] Adel Nabli, Louis Fournier, Pierre Erbacher, Louis Serrano, Eugene Belilovsky, and Edouard Oyallon. Acco: Accumulate while you communicate for communication-overlapped sharded llm training. In The Thirty-ninth Annual Conference on Neural Information Processing Systems ,2025. 12 [39] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, et al. Pytorch: An imperative style, high-performance deep learning library. Advances in neural information processing systems , 32, 2019. [40] Bowen Peng, Jeffrey Quesnelle, and Diederik P Kingma. Decoupled momentum optimization. 
+
+arXiv preprint arXiv:2411.19870 , 2024. [41] Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase, and Yuxiong He. Zero: Memory optimiza-tions toward training trillion parameter models. In SC20: international conference for high performance computing, networking, storage and analysis , pages 1–16. IEEE, 2020. [42] Sameera Ramasinghe, Thalaiyasingam Ajanthan, Gil Avraham, Yan Zuo, and Alexander Long. Subspace networks: Scaling decentralized training with communication-efficient model par-allelism. In The Thirty-ninth Annual Conference on Neural Information Processing Systems ,2025. [43] Stephane Rivaud, Louis Fournier, Thomas Pumir, Eugene Belilovsky, Michael Eickenberg, and Edouard Oyallon. PETRA: Parallel end-to-end training with reversible architectures. In The Thirteenth International Conference on Learning Representations , 2025. [44] Max Ryabinin, Tim Dettmers, Michael Diskin, and Alexander Borzunov. Swarm parallelism: Training large models can be surprisingly communication-efficient. In International Conference on Machine Learning , pages 29416–29440. PMLR, 2023. [45] Max Ryabinin and Anton Gusev. Towards crowdsourced training of large neural networks using decentralized mixture-of-experts. Advances in Neural Information Processing Systems ,33:3659–3672, 2020. [46] Amir Sarfi, Benjamin Thérien, Joel Lidin, and Eugene Belilovsky. Communication efficient llm pre-training with sparseloco. arXiv preprint arXiv:2508.15706 , 2025. [47] Sebastian U Stich. Local sgd converges fast and communicates little. In International Conference on Learning Representations , 2019. [48] Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. Roformer: Enhanced transformer with rotary position embedding. Neurocomputing , 568:127063, 2024. [49] Hanlin Tang, Shaoduo Gan, Ammar Ahmad Awan, Samyam Rajbhandari, Conglong Li, Xiangru Lian, Ji Liu, Ce Zhang, and Yuxiong He. 1-bit adam: Communication efficient large-scale training with adam’s convergence speed. In International Conference on Machine Learning ,pages 10118–10129. PMLR, 2021. [50] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne Lachaux, Timo-thée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal Azhar, et al. Llama: Open and efficient foundation language models. arXiv preprint arXiv:2302.13971 , 2023. [51] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288 , 2023. [52] Thijs Vogels, Sai Praneeth Karimireddy, and Martin Jaggi. Powersgd: Practical low-rank gradient compression for distributed optimization. In Hanna M. Wallach, Hugo Larochelle, Alina Beygelzimer, Florence d’Alché-Buc, Emily B. Fox, and Roman Garnett, editors, Advances in Neural Information Processing Systems 32: Annual Conference on Neural Information Processing Systems 2019, NeurIPS 2019, December 8-14, 2019, Vancouver, BC, Canada , pages 14236–14245, 2019. [53] Thijs Vogels, Sai Praneeth Karimireddy, and Martin Jaggi. Powersgd: Practical low-rank gradient compression for distributed optimization. Advances in Neural Information Processing Systems , 32, 2019. 13 [54] Hongyi Wang, Saurabh Agarwal, and Dimitris Papailiopoulos. Pufferfish: Communication-efficient models at no extra cost. Proceedings of Machine Learning and Systems , 3:365–386, 2021. [55] Jialei Wang, Mladen Kolar, Nathan Srebro, and Tong Zhang. Efficient distributed learning with sparsity. In International conference on machine learning , pages 3636–3645. PMLR, 2017. [56] Jue Wang, Yucheng Lu, Binhang Yuan, Beidi Chen, Percy Liang, Christopher De Sa, Christopher Re, and Ce Zhang. Cocktailsgd: Fine-tuning foundation models over 500mbps networks. In 
+
+International Conference on Machine Learning , pages 36058–36076. PMLR, 2023. [57] Jue Wang, Binhang Yuan, Luka Rimanic, Yongjun He, Tri Dao, Beidi Chen, Christopher Ré, and Ce Zhang. Fine-tuning language models over slow networks using activation quantization with guarantees. Advances in Neural Information Processing Systems , 35:19215–19230, 2022. [58] Jianqiao Wangni, Jialei Wang, Ji Liu, and Tong Zhang. Gradient sparsification for communication-efficient distributed optimization. Advances in Neural Information Processing Systems , 31, 2018. [59] Xiuying Wei, Skander Moalla, Razvan Pascanu, and Caglar Gulcehre. Building on efficient foundations: Effective training of llms with structured feedforward layers. In A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang, editors, Advances in Neural Information Processing Systems , volume 37, pages 4689–4717. Curran Associates, Inc., 2024. [60] Thomas Wolf, Lysandre Debut, Victor Sanh, Julien Chaumond, Clement Delangue, Anthony Moi, Pierric Cistac, Tim Rault, Rémi Louf, Morgan Funtowicz, et al. Huggingface’s transform-ers: State-of-the-art natural language processing. arXiv preprint arXiv:1910.03771 , 2019. [61] Jiaxiang Wu, Weidong Huang, Junzhou Huang, and Tong Zhang. Error compensated quantized sgd and its applications to large-scale distributed optimization. In International conference on machine learning , pages 5325–5333. PMLR, 2018. [62] Greg Yang, James B Simon, and Jeremy Bernstein. A spectral condition for feature learning. 
+
+arXiv preprint arXiv:2310.17813 , 2023. [63] Kaiwei Yang and Lexiao Lai. Manifold constrained steepest descent. arXiv preprint arXiv:2601.21487 , 2026. [64] Xiyu Yu, Tongliang Liu, Xinchao Wang, and Dacheng Tao. On compressing deep models by low rank and sparse decomposition. In Proceedings of the IEEE conference on computer vision and pattern recognition , pages 7370–7379, 2017. [65] Matthew D Zeiler and Rob Fergus. Visualizing and understanding convolutional networks. In 
+
+European conference on computer vision , pages 818–833. Springer, 2014. [66] Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. Hellaswag: Can a machine really finish your sentence? In Proceedings of the 57th annual meeting of the association for computational linguistics , pages 4791–4800, 2019. [67] Baoquan Zhang, Huaibin Wang, Chuyao Luo, Xutao Li, Guotao Liang, Yunming Ye, Xiaochen Qi, and Yao He. Codebook transfer with part-of-speech for vector-quantized image modeling. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition ,pages 7757–7766, 2024. [68] Jiawei Zhao, Zhenyu Zhang, Beidi Chen, Zhangyang Wang, Anima Anandkumar, and Yuandong Tian. Galore: Memory-efficient llm training by gradient low-rank projection, 2024. 14 A Background: Subspace networks 
+
+SSN [ 42 ] exploits a structural property of trained Transformers: the output projection weights 
+
+W ℓ 
+
+> 2
+
+∈ Rdff ×d and attention projection weights W ℓ 
+
+> 1
+
+∈ Rd×d undergo rank collapse during training, with their effective row space converging to a low-dimensional subspace S ⊂ Rd of dimension 
+
+k ≪ d. This collapse arises naturally from AdamW’s adaptive scaling, which attenuates gradient components aligned with negligible singular directions. SSN operationalizes this observation via five steps. (1) A fixed orthonormal basis Uk ∈ Rd×k
+
+is constructed by QR decomposition of a random matrix. (2) The rows of each W ℓ 
+
+> 2
+
+and W ℓ 
+
+> 1
+
+are constrained to span( Uk) by replacing the per-parameter adaptive scaling in AdamW with a row-wise constant variant. (3) Deterministic components—positional embeddings PE and fixed token embeddings Tfixed —are subtracted from Xbp before compression. (4) The stage transmits the compressed activation 
+
+Zbp =  Xbp − PE − Tfixed 
+
+ Uk ∈ RB×T ×k, (8) achieving a compression ratio of k/d . (5) The receiving stage reconstructs ˆXbp = Zbp U ⊤ 
+
+> k
+
++ PE + 
+
+Tfixed .Because weight confinement ensures Xbp − PE − Tfixed ∈ span( Uk) exactly, SSN’s compression is architecturally lossless on its modified model, though it incurs loss relative to an unconstrained baseline. The basis Uk is refined via Grassmann manifold updates every ∼500 steps. 
+
+Limitations. SSN’s losslessness is contingent on strict weight confinement. The subspace is fixed at initialization and only coarsely adapted; the model is forced to conform to a predetermined geometry rather than discovering a task-optimal one. In §3.1, we showed that pipeline boundary activations exhibit low-rank structure intrinsically —even when trained with a modern optimizer [ 21 ] without any architectural constraint—motivating a jointly learned subspace that adapts to the activation geometry rather than imposing it. Table 3: Comparison of architectural features between Subspace Networks (SSN) and MAPL. Our method enables high-ratio compression without constraining model weights to low-rank subspaces, while maintaining compatibility with diverse optimizers through Stiefel manifold learning.                   
+
+> Feature Subspace Networks (SSN) MAPL (Ours) MAPL + VQ
+> Unconstrained Full-Rank Weights ×✓✓
+> Learnable Projection Basis Slow grassman updates ✓✓
+> Decoupled low rank Embeddings ✓××
+> Learnable Per-Stage Anchor ×✓✓
+> Discrete Vector Quantization ××✓
+
+## B Evaluating SSN without Subspace Projection 
+
+We ran probe evaluations on 16 sequences of 2048 tokens drawn from the DCLM validation set [ 28 ]. In this ablation, we replaced the subspace projection matrix Uk with an identity matrix at inference time and replaced the decoupled low rank embedding table with its projections T E @ U ⊤ 
+
+> k
+
+.As a reference, the uniform-distribution baseline (i.e., random guessing over the vocabulary) yields a loss of ≈ 10 .38 . Any value above this threshold indicates performance worse than chance. The learned subspace projection matrices Uk do more than compress information—they form an integral part of the model’s learned representations. When we replace them with the identity matrix at inference time (while keeping all weights trained with active projection), the model suffers severe degradation across every tested configuration. Losses increase by between +3 .44 and +8 .25 , and several P = 8 runs exceed the uniform baseline entirely. See Table 4. This effect holds consistently across model scales (150M–1B), optimizers (Muon [ 21 ] and AdamW [ 23 ]), and degrees of parallelism. These results show that the network internalizes represen-tations tightly coupled to the projected subspaces. Removing the projection does not simply degrade the model but breaks it. 15 Table 4: Loss with trained Uk versus identity ablation ( Uk = I). Values above ≈ 10 .38 (uniform random baseline) indicate worse-than-chance predictions. 
+
+Size pp Optimizer k Step Loss (trained) Loss ( Uk=I) ∆
+
+150M 4 Muon 256 2,861 3.357 7.528 +4 .17 
+
+150M 4 AdamW 256 2,861 3.474 6.911 +3 .44 
+
+150M 8 Muon 256 2,861 3.371 11.588 +8 .22 
+
+150M 8 AdamW 256 2,861 3.489 11.138 +7 .65 
+
+500M 4 Muon 256 9,535 3.061 9.043 +5 .98 
+
+500M 4 AdamW 256 9,535 3.213 8.432 +5 .22 
+
+500M 8 Muon 256 9,535 3.088 11.342 +8 .25 
+
+500M 8 AdamW 256 9,535 3.262 10.040 +6 .78 
+
+1B 4 Muon 256 19,072 3.051 10.023 +6 .97 
+
+1B 4 AdamW 256 19,072 3.374 8.602 +5 .23 
+
+1B 8 Muon 256 19,072 3.081 11.108 +8 .03 
+
+1B 8 AdamW 256 19,072 3.361 11.510 +8 .15 
+
+## C Keeping Projectors in the Stiefel Manifold 
+
+In this section, we demonstrate the necessity of constraining subspace projectors to the Stiefel mani-fold during training. If the subspace projectors are trained naively, standard optimizer updates cause them to deviate from the manifold, thereby violating the orthonormality constraint. Consequently, the projection loses its isometric properties, allowing the model to learn representations outside the intended subspace. To empirically validate this, we train a 150M parameter model under three distinct projection configurations. In the baseline setup, we initialize an orthogonal projector and freeze it for the duration of training. In the second configuration, the projector is updated using standard Euclidean gradients without any manifold constraints. As anticipated, these unconstrained updates cause the weight matrix to escape the manifold and lose its orthogonality, which actively degrades performance—yielding worse results than simply utilizing a fixed projection. Finally, enforcing the manifold constraint via SPEL [ 63 ] updates resolves this issue and achieves the lowest validation loss. These results are summarized in Table 5. Table 5: Impact of Stiefel manifold constraints on validation loss for a 150M parameter model. Unconstrained updates (Muon) degrade performance compared to a fixed projection, while SPEL updates successfully optimize the projector while maintaining orthogonality. 
+
+Optimizer Val loss Delta 
+
+Fixed orthogonal (No updates) 3.1673 1.19% Learnable orthogonal (Muon) 3.2101 2.56% Learnable orthogonal + SPEL updates (SPEL) 3.1564 0.84% 
+
+## D Rank Collapse in Weight Matrices 
+
+Figure 5 illustrates the induced rank collapse observed when co-training the projection matrix on the Stiefel manifold. Learning the projection encourages the model to develop a low-rank structure that aligns closely with the learned basis. Consequently, the model exhibits a significantly more pronounced rank collapse compared to a fixed orthogonal projection. This structural adaptation accounts for the higher percentage of residual energy captured within the subspace. 
+
+## E Implementation Details 
+
+In this section, we provide a comprehensive overview of the models, datasets, and hyperparameters used across all experiments. Our goal is to ensure full reproducibility of the pipeline-parallel 16 0 1000 2000 3000 
+
+Training step 
+
+> 5
+> 10
+> 15
+> Stable rank
+
+(a) Attention output      
+
+> No compression
+> Learnable Stiefel r=128
+> Fixed orthogonal k=128
+> 01000 2000 3000
+
+Training step 
+
+> 4
+> 6
+> 8
+> Stable rank
+
+(b) MLP output   
+
+> No compression
+> Learnable Stiefel r=128
+> Fixed orthogonal k=128
+
+Figure 5: Dynamics of the stable rank, defined as srank( A) = ∥A∥2
+
+> F
+> ∥A∥22
+
+, for layers adjacent to the compression boundary over the course of training. (a) Under a learnable Stiefel compression ( r =128 ), the attention output projection rapidly collapses to a severely low-rank structure, converging toward near rank-1 behavior. In contrast, a fixed orthogonal compression initially triggers a large transient increase in stable rank before partially collapsing. (b) Similarly, the MLP output projection adapts toward a lower rank under the learned projector, whereas the fixed orthogonal basis maintains a substantially higher stable rank throughout training. Together, these results demonstrate that jointly learning the projection matrix compels the network to reorganize its activations into a compact, low-dimensional subspace aligned with the communication rank. This explains the substantially higher residual energy retention achieved by the learned projector. compression results presented in the main text. We ran our experiments of nodes consisting of 4× Nvidia H100 GPUs with precision bf16, we used Pytorch [ 39 ] framework with huggingface transformers [ 60 ] implementation of Llama 2 [ 51 ], with RoPE[ 48 ] positional embeddings. We used Python 3.10. 
+
+E.1 Model Architectures 
+
+All experiments evaluate decoder-only transformers based on the LLaMA 2 architecture [ 51 ]. We define three scales of models: 150M, 500M, and 1B parameters. To ensure stable comparisons across scales, all models use a context sequence length of 2048 tokens and process inputs using a vocabulary size of 32,000. The structural hyper-parameters for each model scale are as follows: • 150M: dmodel = 1024 , nlayers = 9 , nheads = 8 , dffn = 2688 
+
+• 500M: dmodel = 1536 , nlayers = 18 , nheads = 12 , dffn = 4096 
+
+• 1B: dmodel = 2048 , nlayers = 20 , nheads = 16 , dffn = 5440 
+
+E.2 Dataset and token budget 
+
+Models were pre-trained on the DCLM dataset [ 28 ]. For all runs, we adhered to the Chinchilla compute-optimal scaling regime [ 16 ], defining our total training steps such that the models process 20 tokens per parameter. For example, the 150M model was trained on roughly 3 billion tokens, the 500M model on 10 billion tokens, and the 1B model on 20 billion tokens. A uniform 5M token split from DCLM was held out entirely for validation. 
+
+E.3 Optimizer Configuration 
+
+We employed a hybrid optimizer approach. The 2D hidden weight matrices (attention projections and MLP matrices) were updated using the Muon optimizer [ 21 ], using PolarExpress [ 2 ] algorithm for orthogonalizing the updates. The 1D parameters, including biases, layer normalizations, token embeddings, and the final language modeling head, were updated using AdamW [34]. 17 Hyperparameter Sharing Strategy: To ensure a fair comparison between the baseline (uncom-pressed) models and our proposed methods and baselines (MAPL, SSN, etc.), we used the exact same optimizer learning rates and weight decay as the uncompressed baselines across all compressed experiments, and we did not tune them specifically for the compression techniques. For the main model parameters, we set the Muon learning rate to ημ = 0 .02 and the AdamW learning rate to 
+
+ηadam = 0 .01 (a 0.5× multiplier on the Muon rate). For the 1B model experiments , we used 
+
+ημ = 0 .01 and ηadam = 0 .005 . We use a global batch size of 512 for all runs. 
+
+E.4 MAPL Compression Hyperparameters 
+
+Our method relies on learning an orthogonal projector Ap ∈ St( d, r ) per pipeline stage boundary. We optimized these Stiefel manifold projectors using the manifold constrained steepest descent algorithm [ 63 ] via a Polar Express retraction [ 2]. We found empirically that the projector optimization benefits from a slightly reduced learning rate compared to the main model weights; therefore, we set the projector learning rate to be 0.1× the main Muon learning rate. For the Vector Quantized (MAPL + VQ) experiments, we used a codebook size of K = 256 
+
+and applied R = 2 residual quantization rounds with a group dimension of G = 2 , utilizing an asynchronous streaming dictionary of steaming interval 5, to amortize codebook synchronization costs across micro-batches. 
+
+## F Amortizing VQ: Streaming Codebook Synchronization 
+
+For our vector-quantized variant (MAPL + VQ), both the sender and receiver stages must maintain identical codebooks. Transmitting the full codebook Cp ∈ Rr×K across the network at every micro-batch would severely erode the bandwidth savings achieved by quantization. Motivated by the observation that VQ codebooks evolve slowly over training [ 67 ], we introduced an asynchronous streaming dictionary update protocol (§3.5). Instead of full synchronization, the sender transmits only a small, randomly sampled subset of the codebook (e.g., 1/K of the codes) alongside the quantized activations in each micro-batch. To validate that this partial synchronization does not degrade representational fidelity, we conducted an ablation comparing full codebook synchronization against our streaming protocol on a 150M model (P = 4 , 8× compression). The model trained with full synchronization achieved a validation loss of 3.1647 , while the model trained with the streaming dictionary protocol achieved an essentially identical validation loss of 3.1651 . This result confirms that continuous, fractional codebook updates are sufficient to maintain alignment between pipeline stages without incurring the communication penalty of full synchronization. 
+
+## G Ablation of Factorized Anchors 
+
+In Section 3.2, we hypothesized that the token-driven offset in the residual stream is inherently high-rank and consumes projector capacity if not explicitly modeled. To validate this, we ablate the anchor formulation on a 150M model across an 8-stage pipeline ( P = 8 , 4× compression), a depth where compression errors severely compound. As shown in Table 6, removing the anchor entirely degrades the validation loss to 3.209 (a +2 .39% 
+
+degradation relative to the uncompressed baseline). Adding a static, frozen embedding projection (analogous to the static offset in SSN) fails to improve performance ( 3.212 ). Conversely, utilizing a fully trainable per-stage anchor recovers performance to 3.149 , almost matching the uncompressed baseline ( 3.134 ), but incurs an unacceptable parameter overhead (an additional full embedding table per stage). Our proposed factorized anchor strikes the optimal balance: by learning a low-rank trainable compo-nent ( Esmall  
+
+> p
+
+) against a frozen random projection ( Pp), it recovers the majority of the performance (3.165 , only +1 .11% degradation) while adding negligible parameter overhead to the pipeline stages. 
+
+## H Summary of Hyperparameters 
+
+18 Table 6: Ablation of anchor embedding strategies (150M model, P = 8 , 4 × compression). The factorized anchor recovers performance comparable to a fully trainable anchor but with negligible parameter overhead. 
+
+Anchor Strategy Validation Loss ∆ % vs Baseline 
+
+Uncompressed Baseline ( P = 8 ) 3.134 —No Anchor 3.209 +2.39% Decoupled embedding (SSN [42] style) 3.212 +2.48% Full Trainable Anchor 3.149 +0.47% Factorized Anchor (Ours) 3.165 +1.11% Table 7: Hyperparameters shared across all methods and scales. 
+
+Hyperparameter Value 
+
+Global batch size 512 Micro-batch size 4Sequence length 2048 Pipeline-parallel degree P {4, 8}
+
+Precision bf16 Attention implementation SDPA Muon momentum 0.95 Weight decay 0.01 Gradient clipping off (1.0 for VQ runs at 1B) Validation split 5M tokens, held-out from DCLM [28] 
+
+Table 8: Method-specific hyperparameters for the runs in Table 1. “LR scale” is ηadam /η μ, the AdamW-to-Muon learning-rate multiplier on the 1D parameters (embeddings, biases, LayerNorms, LM head). The SSN baselines update the shared subspace Uk via Grassmann manifold steps every 
+
+500 optimizer steps with a fixed Grassmann learning rate of 0.01 . “Compression” values are reported relative to a 2-byte (bf16) per-channel payload at the corresponding hidden dimension; SSN, MAPL, and MAPL+VQ are all rank-matched at r=256 . Identical values across the three model scales are denoted “–”. 
+
+Method Hyperparameter 150M 500M 1B 
+
+Uncompressed Optimizer (2D / 1D) Muon / AdamW – –LR scale ( ηadam /η μ) 0.5 – –SSN (AdamW) Subspace rank k 256 – –Grassmann update period / LR 500 steps / 1×10 −2 – –Optimizer AdamW – –AdamW learning rate 3×10 −3 3×10 −3 2×10 −3
+
+SSN + Muon Subspace rank k 256 – –Grassmann update period / LR 500 steps / 1×10 −2 – –LR scale ( ηadam /η μ) 0.1 – –MAPL Projection rank r 256 – –Compression ratio (vs. bf16) 4× 6× 8×
+
+Anchor rank ( Esmall  
+
+> p
+
+∈ RV ×r ) 256 – –Anchor projector Pp frozen, random orthonormal – –SPEL LR multiplier α/η μ 0.1 – –SPEL retraction (LMO / projection steps) 5 / 7, Polar Express [2] – –MAPL + VQ All MAPL hyperparameters (as above) – –Codebook size K / residual rounds R 256 / 2 – –VQ group size G 2 – –Streaming dictionary refresh 1/5 codes per micro-batch – –Compression ratio (vs. bf16) 8× 12 × 16 ×
+
+19

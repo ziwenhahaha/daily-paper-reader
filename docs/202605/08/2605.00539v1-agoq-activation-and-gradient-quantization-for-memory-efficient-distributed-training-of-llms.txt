@@ -1,0 +1,933 @@
+Title: AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs
+
+URL Source: https://arxiv.org/pdf/2605.00539v1
+
+Published Time: Mon, 04 May 2026 00:50:41 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs 
+
+Wenxiang Lin 1 Juntao Huang 1 Luhan Zhang 1 Laili Li 1 Xiang Bao 2 Mengyang Zhang 2 Bing Wang 2
+
+Shaohuai Shi 1
+
+## Abstract 
+
+Quantization is a key method for reducing the GPU memory requirement of training large lan-guage models (LLMs). Yet, current approaches are ineffective for 4-bit activations and 8-bit gradi-ents, which would easily cause slow convergence or accuracy loss. To address this, we introduce AGoQ, incorporating two new techniques: 1) a layer-aware activation quantization algorithm that allocates appropriate bit-widths for activations of various layers based on their types and pipeline stages to achieve near 4-bit activation storage, and 2) a gradient quantization algorithm that re-duces memory usage and shortens communica-tion time by employing 8-bit gradient storage and precision-preserving 8-bit All-Reduce communi-cation. We conduct extensive experiments using different sizes of LLMs on two GPU clusters (up to 64 GPUs), and the experimental results show that our AGoQ reduces the memory by up to 52% and achieves up to 1.34 × improvement of train-ing speed compared to state-of-the-art training systems Megatron-LM (w/ or w/o ZeRO), COAT and DeepSpeed with 8B to 32B LLaMA models, while achieving convergence loss on pretraining and comparable accuracy on downstream tasks with LLaMA architectures. 
+
+## 1. Introduction 
+
+Distributed training has become a de-facto approach to accel-erate the training process of deep neural networks (DNNs) on multi-GPU/TPU clusters (Dean et al., 2012; Jia et al., 2018; Narayanan et al., 2021). Particularly, data parallelism (DP) has been widely used by distributing training data to different workers (or GPUs) to train a model collabora-tively (Dean et al., 2012). However, with the model size 
+
+> 1
+
+School of Computer Science and Technology, Harbin Institute of Technology, Shenzhen 2Huawei Technologies Ltd. Correspon-dence to: Shaohuai Shi <shaohuais@hit.edu.cn >.
+
+Preprint. May 4, 2026. 
+
+significantly increased as seen in large language models (LLMs), the memory requirement for training LLMs be-comes a significant pressure (Brown et al., 2020). Thus, training LLMs typically requires using model parallelism, including tensor parallelism (TP) (Narayanan et al., 2021) and pipeline parallelism (PP) (Huang et al., 2019), which partition model parameters across different devices so that each GPU has enough memory to store the required data. DP, TP, and PP have been default features in the popular LLM training framework Megatron-LM (Narayanan et al., 2021). Another popular memory-efficient training system, DeepSpeed (Rasley et al., 2020) exploits the zero redun-dancy optimizer (ZeRO) series (ZeRO-1/2/3) (Rajbhandari et al., 2020; Ren et al., 2021; Rajbhandari et al., 2021) to save memory in LLM training. The newly introduced fully sharded data parallelism (FSDP) (Zhao et al., 2023) in Py-Torch’s ecosystem has a similar idea to ZeRO-3. The device memory occupation of training an LLM mainly consists of model parameters, gradients, optimizer states, and temporary activations. Among them, the activations typically occupy the largest proportion of memory and are linearly increased with the increase of sequence length and batch size, which are two common hyper-parameters. There have been extensive studies aimed at reducing the memory footprint by reducing the occupation of activations including activation recomputation or offloading (Chen et al., 2016; Yuan et al., 2024; Wu et al., 2025) and activation quanti-zation (Evans & Aamodt, 2021; Liu et al., 2022; Xi et al., 2024; 2025; Shamshoum et al., 2025; Chen et al., 2025). Activation recomputation (or offloading) is a system-level optimization technique; thus, it has no side effects on model accuracy, but it introduces extra overhead by recomputing (or uploading) activations for backpropagation. Activation quantization, on the other hand, uses low-precision formats (e.g., INT8 (Xi et al., 2024) and FP8 (Xi et al., 2025)) to store activation values and dequantizes them back to BF16/FP16 for backpropagation. However, the quantiza-tion and dequantization processes (even when using only 8-bit INT8 or FP8) result in accuracy loss compared to pure BF16/FP16 (Xi et al., 2024; 2025). Jetfire (Xi et al., 2024) and COAT (Xi et al., 2025) attempt to address the accuracy loss problem of 8-bit activation quantization by employing 1
+
+> arXiv:2605.00539v1 [cs.CL] 1 May 2026 AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs
+
+dynamic quantization and block-wise quantization, but they are still not applicable to lower-bit formats (e.g., 4-bit) .Furthermore, in terms of gradient memory, although there are extensive works (Tang et al., 2021; Bai et al., 2021; Shi et al., 2021; Peng et al., 2023a; Huang et al., 2024; Wang et al., 2024) trying to compress gradients to reduce communication overheads, the gradients are still stored in high-precision (FP32) and quantized to low-precision for communication, which means the gradients still occupy the same size of memory as model parameters. One notable study by Microsoft (Peng et al., 2023b) tries to use FP8 format for gradients by using scaling factors to preserve model convergence; however, it still easily causes conver-gence slowdown in training LLMs due to the accuracy loss of gradient accumulation in FP8 .To this end, in this work, we aim to push activation quan-tization and gradient quantization a step further and make them practical in LLM training. Specifically, we pro-pose AGoQ with A ctivation quantization that can use ap-proximate 4-bit precision and G radient quantization with 8-bit for memory-efficient storage and communication-efficient collective, which are compatible with o ptimizer state Q uantization (Dettmers et al., 2022) without sacrific-ing model convergence. To preserve model accuracy and improve system throughput, AGoQ is equipped with our several novel techniques: 1) a layer-aware activation quanti-zation (LAAQ) algorithm (§4) that assigns a proper number of bits for activations of different layers according to their layer types and PP stages, which achieves near 4 bits for each element of activation, 2) a precision-preserved quan-tized gradient storage and communication algorithm named QuanGrad (§5) that uses 8-bit representation (FP8) to store gradients for local accumulation to save memory and for All-Reduce communication to reduce communication time. We conduct extensive experiments using different sizes (from 8B to 34B) of LLMs on a 64-GPU cluster, and the experi-mental results show that our AGoQ reduces memory by up to 52% and achieves a 1.34 × improvement in training speed without sacrificing training loss or accuracy compared to state-of-the-art training systems, including Megatron-LM (w/ or w/o ZeRO), DeepSpeed, and COAT. 
+
+## 2. Preliminaries 
+
+2.1. Transformer Layer 
+
+Currently, LLMs with transformer architecture (Vaswani et al., 2017) are the most popular, and a transformer is typically composed of multiple stacked transformer layers. One transformer layer consists of two main sub-components: a self-attention mechanism and a Multi-Layer Perceptron (MLP) typically with two Feed Forward Networks (FFNs). To help easily understand our error analysis in §4.1, we illustrate their equations. 
+
+Attention The attention layer (Vaswani et al., 2017) consists of several linear layers that project the input into queries (Q), keys (K), and values (V). The scaled dot-product attention is then computed as: Attention (Q, K, V ) = softmax 
+
+ QK T
+
+√d
+
+
+
+V, (1) where d is the dimension of the key vectors. 
+
+MLP The multi-layer perceptron (MLP) block in Trans-former layers consists of two linear transformations with a non-linear activation function in between. Typically, the MLP first expands the feature dimension from M to 4M
+
+(or 8M on LLaMa models (Dubey et al., 2024)) with the first linear layer and then projects it back to the original dimension, which can be represented as: MLP (X) = W2 × actfunc (W1 × X), (2) where W1 ∈ RM ×4M , W2 ∈ R4M ×M are weight matrices, and actfunc is an activation function like SiLU (Ramachan-dran et al., 2017). 
+
+SiLU The Sigmoid Linear Unit (SiLU) is a smooth, non-monotonic activation function defined as: SiLU (X) = X ⊙ σ(X), (3) where ⊙ denotes the Hadamard product and σ(X) is the sigmoid function. 
+
+LayerNorm Layer normalization (LayerNorm) (Ba et al., 2016) is applied to normalize the inputs across the feature dimension for each token independently. RMSNorm (Zhang & Sennrich, 2019) is one of the most famous LayerNorm functions: RMSNorm (X) = γ X
+
+q 1 
+
+> d
+
+∥X∥22 + ϵ, (4) where ∥X∥22 = P X2 
+
+> i
+
+, γ is a trainable parameter, d is the number of elements of X, and ϵ is a small constant for numerical stability. For each hidden layer, its input X must be saved during the forward pass and reused during backpropagation to compute gradients with respect to activations and, for trainable layers, weights. This requirement leads to substantial memory usage. Since different layers perform different types of computations, we observe that compressing X into a low-bit format can introduce varying and potentially large errors in the resulting gradient calculations (details in §4.1). 
+
+2.2. Paradigms of Parallelism Data Parallelism (DP) distributes a mini-batch of samples to multiple workers. During backpropagation, the gradients 2AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs 1 12 23 34 456                                                                                           
+
+> 1122334
+> 11234
+> 123412
+> 122334451627384556677885678
+> 31423456123456785678785678
+> 1234781234567856785678
+> 12341234567856785678
+> 56
+> 7
+> 4
+> 8
+> Forward Pass
+> Backward Pass
+> S1:
+> S2:
+> S3:
+> S4:
+
+Figure 1. An example of Interleaved 1F1B PP with four stages and each mini-batch divided into eight micro-batches. 
+
+of each worker in the same DP group are aggregated through an All-Reduce operation so that they can use the identical gradient to update the model parameters. The All-Reduce operation accumulates distributed gradients (say Xi at i
+
+worker) from all workers (say P workers) using a reduction operation (typically sum or mean in training), which can be formally represented 
+
+X = AllReduce (X1, X 2, ..., X P ) = 
+
+> P
+
+X
+
+> i=1
+
+Xi. (5) The gradients have the same dimensionality as the model weights, which means additional memory is required to store them for communication and updating the model. Compress-ing the gradient using 8-bit easily causes accuracy loss due to the data overflow of the summation of AllReduce (Peng et al., 2023b). 
+
+Pipeline Parallelism (PP) (Huang et al., 2019; Narayanan et al., 2021) is a commonly used model partitioning strategy for distributed traininge. In PP, the layers of the model are distributed across multiple devices. For models composed of repeated transformer blocks, this typically means assigning an equal number of consecutive transformer layers to each device. To leverage parallelism within a batch, each batch is further divided into smaller mini-batches. The execution of these mini-batches is then pipelined across devices, overlap-ping the process of different transformer layers on different devices. To reduce the bubbles, the variant PP known as Interleaved 1F1B (Narayanan et al., 2021), as illustrated in Fig. 1, has been widely used in Megatron-LM. In this scheme, after a mini-batch passes through the entire device sequence (from the first to the last device), it is sent back to the first device and traverses the device sequence again. This requires partitioning the model into more granular segments and placing these segments evenly across devices according to the order in which the mini-batch will traverse them. Additionally, each forward pass in Fig. 1 stores a portion of activations in GPU memory for the subsequent backward pass, while each backward pass releases part of these activa-tions after computation. When PP is employed, the amount of concurrently stored activations differs across devices, which will be discussed in Section 4.2. Layer 1 Mini-Batch  Layer 2 Act. 1  Act. 2         
+
+> Mini-Batch 1 Forward &
+> Backward
+> Local Gradient 1
+> Mini-Batch 2 Forward &
+> Backward
+> Local Gradient 2
+> Q-Main Gradient
+> FP32-Main Gradient
+> +
+> Dequantize
+> Quantize & Copy
+> Local Accumulation
+> Local Accmulation Q-Main Gradient
+> GPU 1 Train Step Q-Main Gradient
+> GPU 2 Train Step Q-Main Gradient
+> Precision-Preserved
+> FP8 All Reduce
+> Q-Main Gradient
+> Q-Main Gradient
+> Layer N
+> Gradient Layer N Gradient
+> Q-Act. 2
+> Layer 2
+> Q-Act. 1
+> Layer 1
+> Dequantize
+> Quantize
+> Forward
+> Backward
+
+Figure 2. The integration of activation and gradient quantization with Megatron-LM. 
+
+Figure 3. Training memory consumption on an OLMo-1B model. 
+
+## 3. AGoQ: System Overview 
+
+To significantly reduce the GPU memory footprint of LLM training, we design our AGoQ to compress activations to nearly 4 bits and gradients to 8 bits, which is also compatible with the 8-bit Adam optimizer (Dettmers et al., 2022) atop Megatron-LM. As shown in Fig. 2, AGoQ introduces two new components: nearly 4-bit activation quantization and 8-bit gradient quantization. First, for activation quantization, the forward pass first gen-erates full-precision activations, which are then quantized and stored in approximately 4-bit precision. During the backward pass, the quantized activations are dequantized to BF16/FP16 before gradient computation. In principle, 4-bit activations require only one quarter of the memory of FP16/BF16. However, naively quantizing the activations of all layers to 4 bits leads to substantial accuracy degradation. To gain the memory advantages of 4-bit while maintaining model performance, we introduce layer-aware activation quantization (§4). Second, for gradient quantization, at each GPU, the local gradient is first computed via forward and backward passes 3AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs 
+
+per mini - batch, then accumulated with the main gradient through local gradient accumulation. This process involves dequantizing the quantized main gradient (Q -Main Gradi-ent), adding it to the local gradient in high precision, and quantizing the sum back to 8 - bit format before copying it to the Q -Main Gradient. After local accumulation, GPUs per-form a precision -preserved FP8 All -Reduce across GPUs, as described in §5. As shown in Fig. 3 with an OLMo-1B model (Groeneveld et al., 2024), we compare the memory footprint across dif-ferent components for the BF16 baseline, Transformer En-gine (TE) (NVIDIA, 2024), FP8-LM (Peng et al., 2023c), COAT (Xi et al., 2025), and our method. AGoQ achieves further compression on both activations (§4) and gradients (§5): compared to COAT, we reduce activation memory by an additional 30% and gradient memory by 75%. 
+
+## 4. Layer-Aware Activation Quantization 
+
+To minimize accuracy degradation while maximizing overall memory savings, we first identify which layers’ activations are appropriate for 4-bit compression through a theoretical analysis, since different layer types (e.g., Attention, FFN, LayerNorm) exhibit distinct computation patterns as intro-duced in §2.1. Second, the PP training paradigm leads to uneven memory usage across different PP stages, which can be leveraged to design a dynamic quantization compensa-tion strategy that takes advantage of underutilized memory resources. 
+
+4.1. Error Analysis of Activation Quantization 
+
+To minimize accuracy loss, we perform a numerical analy-sis to determine which activations should be quantized for different types of layers. We first categorize different modules into two types based on whether they need to save additional activations beyond the input during computation. The matrix multiplication (GEMM) module in MLP only needs to save input activa-tions. The modules that require saving additional activations include RMSNorm, SiLU & Multiply and attention modules. To illustrate the difference between the two types, we take RMSNorm (Eq. 4) as an example. Let 
+
+r =
+
+r 1
+
+d ∥X∥22 + ϵ, (6) then it can be written as Y = RMSNorm (X) = γX/r . The gradient matrix is expressed as: 
+
+J = diag( γ)
+
+r − 1
+
+d
+
+diag( γ)XX T
+
+r3 . (7) Therefore, to compute the gradient, we need to store both 
+
+X and r. Here, r represents the additional activations that should also be cached. When using recomputation tech-niques, we do not store r; instead, during the backward pass, 
+
+r is recomputed from X before the gradient calculation. For modules requiring additional activations, we primarily analyze gradient errors under two scenarios: 
+
+Case 1 (Recompute intermediate values) : Only the quan-tized input activations are stored, and the originally required additional activations are recomputed during gradient calcu-lation using the quantized input activations. 
+
+Case 2 (Cache intermediate values) : Both the quantized input activations and the quantized additional activations are stored. When analyzing GEMM computations adjacent to oper-ations like RMSNorm or SiLU, we specifically compare two gradient computation strategies: one where only the quantized inputs to the preceding operation (e.g., RMSNor-m/SiLU) are stored and the GEMM inputs are recomputed from these quantized values during backpropagation (also called Case 1), versus an alternative approach where the GEMM inputs themselves are directly stored in quantized form to avoid recomputation (Case 2). In the following derivations, we make use of three standard norm inequalities. For vectors X, Y ∈ Rd, the ℓ2-norm of their element-wise product satisfies 
+
+∥X ⊙ Y ∥2 ≤ ∥ X∥2 ∥Y ∥∞. (8) For matrices A ∈ Rm×k and B ∈ Rk×n, the spectral norm is sub-multiplicative: 
+
+∥AB ∥2 ≤ ∥ A∥2 ∥B∥2 (9) 
+
+∥AB ∥2 ≤ ∥ A∥2 ∥B∥∞ (10) 4.1.1. RMSN ORM 
+
+RMSNorm and its gradient are defined as Eq. 4 to Eq. 7. 
+
+Case 1 (Recompute intermediate values): Only the quan-tized input x is stored. We assume the error introduced by quantization can be modeled as a multiplicative perturba-tion: 
+
+X′ = X ⊙ (1 + δX ), r′ = r(X′), J′ = J(X′). (11) Let ∆J = J′ − J. Performing first-order expansion: 
+
+r′ = r + ∆ r, ∆r ≈ 12r
+
+2
+
+d
+
+X X2 
+
+> i
+
+δX i. (12) We obtain: 
+
+∆
+
+ 1
+
+r
+
+
+
+≈ − ∆rr2 , ∆
+
+ 1
+
+r3
+
+
+
+≈ − 3 ∆rr4 . (13) 4AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs  
+
+> Table 1. Activation memory of different operations. U is a unit to measure memory usage, where 1U = Batch Size × Sequence Length × Hidden Size × 2 bytes (for BF16). Act Func refers to SiLU & Multiply.
+
+QKV Attention Linear RMSNorm FFN1 Act Func FFN2 Total 
+
+Megatron-LM (w/ BF16) 1U 5U 1U 4U 1U 12U 4U 28U COAT 1U 5U 1U 1U 0.5U 6U 2U 16.5U AGoQ 0 5U 0.25U 0.5U 0 2U 0 7.75U Denoting Dγ = diag (γ) and substituting into ∆J, we have                        
+
+> ∆J≈Dγ
+> "
+> ∆
+> 1
+> r
+> 
+> I−1
+> d
+> 
+> ∆
+> 1
+> r3
+> 
+> XX T+ 1
+> r3∆( XX T)
+> #
+> =−∆rr2Dγ+ 3∆ rdr 4DγXX T
+> −1
+> dr 3Dγ
+> h
+> X(δX ⊙X)T+ ( δX ⊙X)XTi
+
+Using Eq. 8 to Eq. 10, we have        
+
+> ∥∆J∥2≲∥γ∥∞
+> |∆r|
+> r2+ 3|∆r|
+> dr 4∥X∥22+2
+> dr 3∥X∥22∥δX ∥∞
+> !
+> ,
+> (14)
+
+where || γ|| ∞ = max |γi|. Further substituting Eq. 12, then we have 
+
+∥∆J∥2 ≲ 3|| γ|| ∞∥δX ∥∞
+
+ ∥X∥22
+
+dr 3 + ∥X∥42
+
+d2r5
+
+
+
+. (15) Typically ϵ is constant and r ≈ p∥X∥22/d , so the leading order is O(|| γ|| ∞∥δX ∥∞/r ).
+
+Case 2 (Cache intermediate values): Both the quantized input X and the quantized additional activation r are stored. In this case, the error is expressed as: X′ = X ⊙ (1 + δX )
+
+and r′ = r(1 + δr ) be quantized, with |δr |, ∥δX ∥∞ ≤ εq .The perturbed Jacobian is 
+
+J′ = Dγ
+
+r′ − 1
+
+dDγ X′(X′)T
+
+(r′)3 . (16) Expanding to first order: 
+
+1
+
+r′ ≈ 1
+
+r (1 − δr ), 1(r′)3 ≈ 1
+
+r3 (1 − 3δr ),X′(X′)T ≈ XX T + X(X ⊙ δX )T + ( X ⊙ δX )XT .
+
+(17) Thus                  
+
+> J′≈Dγ
+> r−δr r Dγ+ 3δr dr 3DγXX T
+> −1
+> dr 3Dγ
+> h
+> XX T+X(X⊙δX )T+ ( X⊙δX )XTi
+> .
+> (18)
+
+Subtracting the exact J = Dγ 
+
+> r
+
+− 1 
+
+> dr 3
+
+Dγ XX T yields the first-order perturbation:               
+
+> ∆J≈ − δr r Dγ−1
+> dr 3Dγ
+> X(X⊙δX )T+ ( X⊙δX )XT
+> + 3δr dr 3DγXX T.
+> (19)
+
+Taking 2-norm bounds by Eq. 8 to Eq. 10 gives 
+
+∥∆J∥2 ≲ 6∥γ∥∞ εq
+
+r . (20) According to Eq. 15 and Eq. 20, we conclude that storing only the quantized input activations and recomputing inter-mediate values during gradient calculation yields the same asymptotic error order as caching intermediate values, with only constant-factor differences — and notably, the con-stant factor for the recomputation approach appears tighter. 
+
+Given that recompute also reduces memory footprint, for RMSNorm, we store the input activations as 4-bit and recompute their intermediate values for gradient computation. 
+
+4.1.2. O THER OPERATIONS 
+
+The detailed analyses of other operations like SiLU & Multi-ply, RMSNorm+GEMM, and Attention have similar deriva-tions to RMSNorm, so they are provided in Appendix 8.1 and we conclude the following results. We apply the Case 1 recomputation strategy to Q, K, V , in-termediate activations of RMSNorm and SiLU & Multiply, input activations of two FFNs in MLP of each transformer layer, eliminating storage for those values. Based on the analysis in Appendix 8.1, the gradient error of quantizing activations of attention modules is significantly larger than that of other modules, so we do not quantize the activations of attention modules. Other activations are quantized to 4 bits via block - wise FP4 quantization (Dettmers et al., 2022; Li et al., 2023) with the blocksize of 128. As shown in Ta-ble 1, our approach reduces RMSNorm memory from 4U 1
+
+to 0.5U (4 - bit), and SiLU & Multiply activations from 12U to 2U. Attention remains at 5U as reported in (Xi et al., 2025). Overall, activation memory drops from 28U in Megatron - LM to 7.75U in our method—an approximate three-fold reduction. 
+
+4.2. Dynamic Bit-width Compensation 
+
+Interleaved 1F1B PP leads to imbalanced memory footprints across devices. As illustrated in Fig. 1 (four PP stages with 8 mini -batches), different devices store varying numbers of 
+
+> 1Note that in Megatron-LM with BF16 training, RMSNorm still uses FP32 for better convergence.
+
+5AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs 
+
+activation batches—e.g., Device 1 holds 11 mini - batch acti-vations at peak, while Devices 2, 3, and 4 store only 9, 7, and 5, respectively. This results in significant under - utilization of GPU memory, with Device 1 occupying 2.2 × more acti-vation memory than Device 4. To exploit the under-utilized memory, we propose Dynamic Bit - width Compensation for Activation with Pipeline Paral-lelism (DBCA - PP). Devices storing fewer activation batches are assigned higher quantization bit - widths, thereby com-pensating for quantization -induced precision loss without increasing peak memory usage. This strategy makes full use of the otherwise wasted memory across the pipeline, while keeping nearly 4-bit activation storage. Formally, in Interleaved 1F1B PP, the number of activation mini-batches Ni stored at stage i (with totally n stages) can be expressed as: 
+
+Ni = n + 2 · i − 1, 1 ≤ i ≤ n. (21) Based on the memory availability per stage, the quantiza-tion bit-width Bi (with a minimum of 4) for activations at stage i can be set as inversely proportional to the number of activation mini-batches Ni:
+
+Bi = 4 · N1
+
+Ni
+
+, 1 ≤ i ≤ n. (22) It is worth mentioning that the bit-width configuration gen-erated for a lower number of stages can also be directly applied to a setup with a higher number of stages. In other words, directly reusing the bit assignment scheme from a lower-stage configuration in a higher-stage setup with DBCA-PP would not increase the peak GPU memory usage of the higher-stage setup. 
+
+4.3. Kernel Fusion of Quantization/Dequantization and GEMM 
+
+The activation quantization and dequantization require extra computation overheads. To address this problem, we fuse these operations along with nearby GEMM computations into a single GPU kernel. This is motivated by the fact that quantization and dequantization are mainly element-wise operations, thus only utilize CUDA cores, whereas GEMM leverages Tensor Cores on modern GPUs. To achieve this goal, we carefully schedule the execution of activation quantization, dequantization, and GEMM op-erations during LLM training as shown in Fig. 4. During the forward pass, we fuse the quantization process with its subsequent GEMM operation. During the backward pass, we fuse dequantization with the GEMM operation that is responsible for computing activation gradients. This ap-proach can almost eliminate the computation overheads of activation quantization, thus improving execution efficiency. Quantize     
+
+> Query, Key and Value Attention Linear LayerNorm
+> Quantize
+> Fusion Fusion
+> Linear
+> dy/dw
+> Linear
+> dy/dx
+> Attention
+> Backward
+> QKV
+> dy/dx
+> Recompute
+> LayerNorm Dequantize
+> QKV
+> dy/dw
+> Fusion Fusion
+> Dequantize
+> Forward
+> Backward
+
+(a) Attention Quantize     
+
+> FFN1 SiLU FFN2 LayerNorm
+> Quantize
+> Fusion Fusion
+> FFN2
+> dy/dx
+> FFN2
+> dy/dx
+> Recompute
+> LayerNorm Dequantize
+> FFN1
+> dy/dw
+> Fusion Fusion
+> Dequantize
+> Forward
+> Backward
+> Recompute
+> SiLU
+> FFN2
+> dy/dw
+
+(b) MLP 
+
+Figure 4. The forward and backward passes of attention and MLP for kernel fusion of quantization/dequantization and GEMM. A1             
+
+> A2
+> A3
+> A4
+> B1
+> B2
+> B3
+> B4
+> C1
+> C2
+> C3
+> C4
+> D1
+> D2
+> D3
+> D4
+> GPU1 GPU2 GPU3 GPU4
+> A1
+> B1
+> C1
+> D1
+> A2
+> B2
+> C2
+> D2
+> A3
+> B3
+> C3
+> D3
+> A4
+> B4
+> C4
+> D4
+> GPU1 GPU2 GPU3 GPU4
+> All-to-All
+> GPU1 GPU2 GPU3 GPU4
+> Reduce
+> A1+B1
+> +C1+D1
+> A2+B2
+> +C2+D2
+> A3+B3
+> +C3+D3
+> A4+B4
+> +C4+D4
+> A1+B1
+> +C1+D1
+> A2+B2
+> +C2+D2
+> A3+B3
+> +C3+D3
+> A4+B4
+> +C4+D4
+> A1+B1
+> +C1+D1
+> A2+B2
+> +C2+D2
+> A3+B3
+> +C3+D3
+> A4+B4
+> +C4+D4
+> A1+B1
+> +C1+D1
+> A2+B2
+> +C2+D2
+> A3+B3
+> +C3+D3
+> A4+B4
+> +C4+D4
+> A1+B1
+> +C1+D1
+> A2+B2
+> +C2+D2
+> A3+B3
+> +C3+D3
+> A4+B4
+> +C4+D4
+> GPU1 GPU2 GPU3 GPU4
+> All Gather
+
+Figure 5. The illustration of our process to perform All-Reduce by combining All-to-All with All-Gather. GPU1     
+
+> GPU2
+> Quantize
+> 32bit 8bit 8bit
+> Dequantize
+> All-to-All
+> 32bit
+> +
+> +
+> 32bit
+> All Gather
+> Quantize
+> 8bit 8bit
+
+Figure 6. The illustration of our process to combine gradients from different GPUs. 
+
+## 5. Precision-Preserved Gradient Quantization 
+
+To minimize both the memory usage associated with storing gradients and the communication overhead during gradient All-Reduce, we introduce an 8-bit block-wise (Dettmers et al., 2022) gradient quantization technique. This method maintains precision throughout the All-Reduce operation and effectively mitigates two distinct overflow issues found within the accumulation process. First, in LLM training, a global batch is typically divided 6AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs 
+
+into multiple mini-batches whose gradients are locally ac-cumulated before communication with other DP workers. When we store the main gradients with FP8, directly accu-mulating gradients from different mini-batches would easily cause overflow. Thus, in local gradient accumulation, we dequantize the FP8 main gradient to FP16/BF16 for high-precision addition of different mini-batch gradients, and the final results are then quantized to FP8 as shown in Fig. 2. Second, the gradients should be aggregated among DP work-ers via an All-Reduce operation, which can be divided into Reduce-Scatter and All-Gather. However, Reduce-Scatter requires performing addition during communication, which could easily cause an overflow in FP8. Thus, we split the All-Reduce operation into an All-to-All operation with a local reduce followed by an All-Gather operation as shown in Fig. 5. As shown in Fig. 6, the FP8 gradients are commu-nicated via an All-to-All communication to send the com-pressed data to all devices. Each device then dequantizes the data received from different devices to FP32, performs local reduce operations, and then quantizes the result again for its following All-Gather operation. After that, we perform All-Gather on the summed data to complete the All-Reduce operation. 
+
+## 6. Evaluation 
+
+6.1. Experimental Settings Testbeds. Experiments are mainly carried out on a 64-GPU cluster connected with 200Gb/s InfiniBand comprising 8 nodes, each of which is equipped with eight Nvidia A6000 GPUs. In the comparative experiments with COAT (Xi et al., 2025), we used two nodes, each equipped with 8 NVIDIA Pro 6000 GPUs, to support the FP8 format required by COAT. The software environments are Ubuntu-20.04, CUDA-12.1, PyTorch-2.1.2, and NCCL-2.18.5. Our system also supports Huawei Ascend 910 NPUs (more results can be found in Appendix 8.2). 
+
+Baselines. We implement our AGoQ atop Megatron-LM. We compare our AGoQ with three representative base-lines Megatron-LM (Narayanan et al., 2021) (w/o and w/ ZeRO (Rajbhandari et al., 2020)), DeepSpeed (Rasley et al., 2020), and COAT (Xi et al., 2025). 
+
+Models. We primarily conduct pre-training experiments to verify convergence on LLaMA2-7B (Touvron et al., 2023) due to extremely high training costs, and perform training time comparison experiments on larger models including LLaMA3-8B (Dubey et al., 2024), LLaMA2-13B (Touvron et al., 2023), and CodeLLaMA-34B (Roziere et al., 2023). When comparing with COAT, we employed the OLMo-1B model (Groeneveld et al., 2024) provided by the original COAT paper (Xi et al., 2025).                                                     
+
+> Table 2. Performance Comparison of AGoQ, Megatron-LM and ZeRO-1 on LLaMA2-13B. R means the number of recomputed transformer layers. The unit of time is milliseconds (ms). Sequence Megatron-LM ZeRO-1 AGoQ Length RTime RTime RTime 32K 337635 237038 036568 40K 451922 451418 045590 48K 667932 667928 057047 56K 888200 886601 069544 64K 8104444 8103706 082519 72K 10 128085 10 128152 097615 80K 10 149667 10 149288 0111422
+
+6.2. End-to-end Training Time Comparison LLaMA2-13B . To assess the effectiveness of our method, we compare AGoQ with Megatron-LM without ZeRO-1 and with ZeRO-1. We benchmark training speed on LLaMA2-13B with sequence lengths from 32K to 80K. Under limited GPU memory, we adopt selective activation recomputation: instead of caching all intermediate activations after the for-ward pass, we recompute them via an extra forward pass during backpropagation. The number of transformer lay-ers that use recomputation is adaptively tuned based on real-time memory usage. Table 2 reports results on 64 GPUs with mini-batch size 1, global batch size 16, PP=4 and TP=8. Overall, AGoQ achieves an average speedup of 1.22 × over Megatron-LM and 1.21 × over its ZeRO-1 variant (we focus on ZeRO-1 here because ZeRO-2 and ZeRO-3 introduce additional communication overhead, typ-ically reducing throughput, as shown in §8.2 in Appendix). The speedup grows with sequence length, confirming the benefit of our approach; for instance, at 80K tokens, AGoQ is about 1.34 × faster than both Megatron-LM and ZeRO-1. 
+
+Performance under Different Configurations . To further evaluate our method, we broaden the experimental settings. We vary the sequence length from 16K to 32K or from 32K to 80K, set pipeline parallelism (PP) from 1 up to the number of nodes, tensor parallelism (TP) in 4, 8, and the number of GPUs in 8, 16, 32, 64. We test three models: LLaMA3-8B, LLaMA2-13B, and CodeLLaMA-34B. The detailed config-urations are summarized in Appendix 8.2, where we run 124 experiments each for Megatron-LM, ZeRO-1, and AGoQ, for a total of 372 experiments. Of these, 69 runs failed due to out-of-memory (OOM) errors (AGoQ, Megatron-LM, and ZeRO-1 have 16, 33, and 20 OOM cases, respectively), and 303 runs completed successfully. Overall, the results show that AGoQ delivers an average speedup of 1.23 × over Megatron-LM and 1.19 × over ZeRO-1. We next examine the impact of GPU count, sequence length, model size, and PP separately. Resutls are shown in Fig. 7, which indicates that AGoQ consistently achieves substantial improvements over Zero-1 and Megatron-LM across different GPU counts 7AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs                       
+
+> (a) Varied number of GPUs (b) Varied degree of PP
+> Figure 7. Speedups of our AGoQ and ZeRO-1 over Megatron-LM on varied configurations.
+> Table 3. Time and memory at different sequence lengths. Seq. Len. Method Time (ms) Memory (MB) 24k COAT 6291 94100 AGoQ 6161 66852 32k COAT 8861 95664 AGoQ 8076 86012
+> (a) Llama2-7B (b) Llama3-8B
+> Figure 8. Training loss of Megatron (w/ BF16), FP8-AllReduce and ours (A+O+G) on LLaMA2-7B and LLaMA3-8B.
+
+and degree of PP. 
+
+Comparison with COAT . We further compare AGoQ with COAT, using two nodes with 8 Pro6000 GPUs to support COAT’s FP8 format. With a global batch size of 64 and sequence lengths of 24K and 32K, we evaluate the OLMo-1B model. For 32K sequences, COAT encounters OOM errors, requiring recomputation for half of the transformer layers. Results in Table 3 show that at 24K, our AGoQ reduces memory by 31% over COAT while matching train-ing speed; at 32K, with recomputation enabled for COAT, AGoQ achieves a 1.1 × end-to-end speedup. Due to our hardware limit, we only conduct the experiments on 16 Blackwell GPUs. It is expected to achieve higher speedups over COAT on larger clusters since AGoQ allows 8-bit com-munication to significantly reduce DP communication over-head. 
+
+6.3. Convergence Loss 
+
+We evaluate the convergence of AGoQ by pretraining LLaMA2-7B and LLaMA3-8B on 2B tokens from Open-WebText (Peterson et al., 2019). We evaluate the robustness of our method by testing it with different global batch sizes on two models: 512 in LLaMA2 - 7B and 4 in LLaMA3-8B. Using an interleaved 1F1B schedule with 4 pipeline stages,  
+
+> Figure 9. Iteration time (in seconds) comparison on LLaMA2-13B.
+
+we apply DBCA-PP with activation bit-widths of 4, 5, 6, and 8 per stage according to Eq. 22, matching the peak memory footprint of uniform 4-bit compression. During the training of LLaMA2 -7B, we additionally tested the train-ing curve of FP8 - AllReduce (Microsoft’s FP8 AllReduce method (Peng et al., 2023b)). As shown in Fig. 8, our ap-proach closely track the baseline loss, while FP8-AllReduce shows significantly higher loss. 
+
+Comparison of Different Optimizations . We also vali-dated the individual contributions of activation quantization, gradient quantization, and optimizer quantization modules, while simultaneously examining the differences between DeepSpeed, ZeRO-1, ZeRO-2, and ZeRO-3. Under the con-figuration of PP=1 and sequence length=48K, we conducted experiments on LLaMA2-13B with three different settings: “A+O+G” (i.e., AGoQ), “A+O” (only applying activation and optimizer quantization) and “O” (only applying 8-bit optimizer quantization) shown in Fig. 9, demonstrate that iteration time progressively decreases as additional quan-tization modules are incorporated. It also indicates that the training speed decreases from ZeRO-1 to ZeRO-2 and ZeRO-3, and our AGoQ significantly outperforms Megatron-LM, DeepSpeed, and ZeRO series. In the Appendix 8.2, we also present several ablation studies. 
+
+## 7. Conclusion 
+
+In this work, we addressed the critical challenge of GPU memory consumption in LLM training through a holistic quantization approach. Specifically, we present AGoQ, which integrates: 1) a layer-aware activation quantization strategy that assigns suitable bits for storing activations based on layer types and pipeline parallelism stages, and 2) a gradient quantization algorithm that conserves memory and reduces communication time by using low-bit gradient stor-age and precision-preserved low-bit data All-Reduce com-munication. Extensive experiments on two GPU clusters (up to 64 GPUs) demonstrate that AGoQ reduces memory usage by 52% compared to full-precision training and improves end-to-end training throughput up to 1.34 × over state-of-the-art systems including Megatron-LM, DeepSpeed, ZeRO and COAT, while maintaining competitive accuracy on downstream tasks with LLaMA architectures. 8AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs 
+
+## References 
+
+Ba, J. L., Kiros, J. R., and Hinton, G. E. Layer normalization. 
+
+arXiv preprint arXiv:1607.06450 , 2016. Bai, Y., Li, C., Zhou, Q., Yi, J., Gong, P., Yan, F., Chen, R., and Xu, Y. Gradient compression supercharged high-performance data parallel dnn training. In Proceedings of the ACM SIGOPS 28th Symposium on Operating Systems Principles , pp. 359–375, 2021. Bisk, Y., Zellers, R., Gao, J., Choi, Y., et al. Piqa: Reasoning about physical commonsense in natural language. In Pro-ceedings of the AAAI conference on artificial intelligence ,volume 34, pp. 7432–7439, 2020. Brown, T., Mann, B., Ryder, N., Subbiah, M., Kaplan, J. D., Dhariwal, P., Neelakantan, A., Shyam, P., Sastry, G., Askell, A., et al. Language models are few-shot learners. 
+
+Advances in neural information processing systems , 33: 1877–1901, 2020. Chen, P., Deng, Z., Li, P., He, S., Zhu, H., Zheng, Y., Wang, Z., Huai, B., and Guo, M. Adacc: An adaptive framework unifying compression and activation recomputation for llm training. arXiv preprint arXiv:2508.00806 , 2025. Chen, T., Xu, B., Zhang, C., and Guestrin, C. Training deep nets with sublinear memory cost. arXiv preprint arXiv:1604.06174 , 2016. Clark, P., Cowhey, I., Etzioni, O., Khot, T., Sabharwal, A., Schoenick, C., and Tafjord, O. Think you have solved question answering? try arc, the ai2 reasoning challenge. 
+
+arXiv preprint arXiv:1803.05457 , 2018. Dean, J., Corrado, G., Monga, R., Chen, K., Devin, M., Mao, M., Ranzato, M., Senior, A., Tucker, P., Yang, K., et al. Large scale distributed deep networks. Advances in neural information processing systems , 25, 2012. Dettmers, T., Lewis, M., Shleifer, S., and Zettlemoyer, L. 8-bit optimizers via block-wise quantization. In Interna-tional Conference on Learning Representations , 2022. Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models. arXiv e-prints , pp. arXiv–2407, 2024. Evans, R. D. and Aamodt, T. Ac-gc: Lossy activation compression with guaranteed convergence. Advances in Neural Information Processing Systems , 34:27434– 27448, 2021. Groeneveld, D., Beltagy, I., Walsh, P., Bhagia, A., Kin-ney, R., Tafjord, O., Jha, A., Ivison, H., Magnusson, I., Wang, Y., Arora, S., Atkinson, D., Authur, R., Chandu, K. R., Cohan, A., Dumas, J., Elazar, Y., Gu, Y., Hessel, J., Khot, T., Merrill, W., Morrison, J. D., Muennighoff, N., Naik, A., Nam, C., Peters, M. E., Pyatkin, V., Ravichan-der, A., Schwenk, D., Shah, S., Smith, W., Strubell, E., Subramani, N., Wortsman, M., Dasigi, P., Lambert, N., Richardson, K., Zettlemoyer, L., Dodge, J., Lo, K., Sol-daini, L., Smith, N. A., and Hajishirzi, H. Olmo: Acceler-ating the science of language models. arXiv preprint ,2024. URL https://api.semanticscholar. org/CorpusID:267365485 .Huang, J., Di, S., Yu, X., Zhai, Y., Liu, J., Huang, Y., Raffenetti, K., Zhou, H., Zhao, K., Lu, X., et al. gzccl: Compression-accelerated collective communica-tion framework for gpu clusters. In Proceedings of the 38th ACM International Conference on Supercomputing ,pp. 437–448, 2024. Huang, Y., Cheng, Y., Bapna, A., Firat, O., Chen, D., Chen, M., Lee, H., Ngiam, J., Le, Q. V., Wu, Y., et al. Gpipe: Efficient training of giant neural networks using pipeline parallelism. Advances in neural information processing systems , 32, 2019. Jia, X., Song, S., Shi, S., He, W., Wang, Y., Rong, H., Zhou, F., Xie, L., Guo, Z., Yang, Y., Yu, L., Chen, T., Hu, G., and Chu, X. Highly scalable deep learning training system with mixed-precision: Training ImageNet in four minutes. In Proc. of Workshop on Systems for ML and Open Source Software, collocated with NeurIPS 2018 ,2018. Li, B., Chen, J., and Zhu, J. Memory efficient optimiz-ers with 4-bit states. Advances in Neural Information Processing Systems , 36:15136–15171, 2023. Liu, X., Zheng, L., Wang, D., Cen, Y., Chen, W., Han, X., Chen, J., Liu, Z., Tang, J., Gonzalez, J., et al. Gact: Activation compressed training for generic network ar-chitectures. In International Conference on Machine Learning , pp. 14139–14152. PMLR, 2022. Narayanan, D., Shoeybi, M., Casper, J., LeGresley, P., Pat-wary, M., Korthikanti, V., Vainbrand, D., Kashinkunti, P., Bernauer, J., Catanzaro, B., et al. Efficient large-scale language model training on GPU clusters using Megatron-LM. In Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis , pp. 1–15, 2021. NVIDIA. Transformer engine: An efficient library for training transformer models, 2024. URL https: //github.com/NVIDIA/TransformerEngine .Accessed: 2024-09-19. Peng, H., Qin, S., Yu, Y., Wang, J., Wang, H., and Li, G. Birder: communication-efficient 1-bit adaptive optimizer 9AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs 
+
+for practical distributed dnn training. Advances in Neu-ral Information Processing Systems , 36:39529–39552, 2023a. Peng, H., Wu, K., Wei, Y., Zhao, G., Yang, Y., Liu, Z., Xiong, Y., Yang, Z., Ni, B., Hu, J., Li, R., Zhang, M., Li, C., Ning, J., Wang, R., Zhang, Z., Liu, S., Chau, J., Hu, H., and Cheng, P. FP8-LM: training FP8 large language models. CoRR , abs/2310.18313, 2023b. Peng, H., Wu, K., Wei, Y., Zhao, G., Yang, Y., Liu, Z., Xiong, Y., Yang, Z., Ni, B., Hu, J., et al. Fp8-lm: Training fp8 large language models. arXiv preprint arXiv:2310.18313 , 2023c. Peterson, J., Meylan, S., and Bourgin, D. Open clone of openai’s unreleased webtext dataset scraper, 2019. Rajbhandari, S., Rasley, J., Ruwase, O., and He, Y. Zero: Memory optimizations toward training trillion parameter models. In SC20: International Conference for High Per-formance Computing, Networking, Storage and Analysis ,pp. 1–16. IEEE, 2020. Rajbhandari, S., Ruwase, O., Rasley, J., Smith, S., and He, Y. Zero-infinity: Breaking the gpu memory wall for extreme scale deep learning. In Proceedings of the international conference for high performance computing, networking, storage and analysis , pp. 1–14, 2021. Ramachandran, P., Zoph, B., and Le, Q. V. Searching for activation functions. arXiv preprint arXiv:1710.05941 ,2017. Rasley, J., Rajbhandari, S., Ruwase, O., and He, Y. Deep-speed: System optimizations enable training deep learn-ing models with over 100 billion parameters. In Proceed-ings of the 26th ACM SIGKDD international conference on knowledge discovery & data mining , pp. 3505–3506, 2020. Ren, J., Rajbhandari, S., Aminabadi, R. Y., Ruwase, O., Yang, S., Zhang, M., Li, D., and He, Y. {Zero-offload }:Democratizing {billion-scale } model training. In 2021 USENIX Annual Technical Conference (USENIX ATC 21) , pp. 551–564, 2021. Roziere, B., Gehring, J., Gloeckle, F., Sootla, S., Gat, I., Tan, X. E., Adi, Y., Liu, J., Sauvestre, R., Remez, T., et al. Code llama: Open foundation models for code. arXiv preprint arXiv:2308.12950 , 2023. Sakaguchi, K., Bras, R. L., Bhagavatula, C., and Choi, Y. Winogrande: An adversarial winograd schema challenge at scale. Communications of the ACM , 64(9):99–106, 2021. Shamshoum, Y., Hodos, N., Sieradzki, Y., and Schuster, A. Compact: Compressed activations for memory-efficient llm training. In Proceedings of the 2025 Conference of the Nations of the Americas Chapter of the Association for Computational Linguistics: Human Language Tech-nologies (Volume 1: Long Papers) , pp. 1511–1524, 2025. Shi, S., Zhou, X., Song, S., Wang, X., Zhu, Z., Huang, X., Jiang, X., Zhou, F., Guo, Z., Xie, L., et al. Towards scalable distributed training of deep learning on public cloud clusters. Proceedings of Machine Learning and Systems , 3:401–412, 2021. Tang, H., Gan, S., Awan, A. A., Rajbhandari, S., Li, C., Lian, X., Liu, J., Zhang, C., and He, Y. 1-bit adam: Communication efficient large-scale training with adam’s convergence speed. In International Conference on Ma-chine Learning , pp. 10118–10129. PMLR, 2021. Touvron, H., Martin, L., Stone, K., Albert, P., Almahairi, A., Babaei, Y., Bashlykov, N., Batra, S., Bhargava, P., Bhosale, S., et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288 ,2023. Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, Ł., and Polosukhin, I. At-tention is all you need. Advances in neural information processing systems , 30, 2017. Wang, G., Qin, H., Jacobs, S. A., Wu, X., Holmes, C., Yao, Z., Rajbhandari, S., Ruwase, O., Yan, F., Yang, L., and He, Y. ZeRO++: Extremely efficient collective communication for large model training. In The Twelfth International Conference on Learning Representations ,2024. Welbl, J., Liu, N. F., and Gardner, M. Crowdsourc-ing multiple choice science questions. arXiv preprint arXiv:1707.06209 , 2017. Wu, K., Park, J. B., Zhang, X., Hidayeto ˘glu, M., Mailthody, V. S., Huang, S., Lumetta, S., and Hwu, W.-M. Ssdtrain: An activation offloading framework to ssds for faster large language model training. In 2025 62nd ACM/IEEE Design Automation Conference (DAC) , pp. 1–7. IEEE, 2025. Xi, H., Chen, Y., Zhao, K., TEH, K. J., Chen, J., and Zhu, J. Jetfire: efficient and accurate transformer pretraining with int8 data flow and per-block quantization. In Proceed-ings of the 41st International Conference on Machine Learning , pp. 54049–54063, 2024. Xi, H., Cai, H., Zhu, L., Lu, Y., Keutzer, K., Chen, J., and Han, S. COAT: Compressing optimizer states and activa-tions for memory-efficient FP8 training. In The Thirteenth 
+
+10 AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs 
+
+International Conference on Learning Representations ,2025. URL https://openreview.net/forum? id=XfKSDgqIRj .Yuan, T., Liu, Y., Ye, X., Zhang, S., Tan, J., Chen, B., Song, C., and Zhang, D. Accelerating the training of large lan-guage models using efficient activation rematerialization and optimal hybrid parallelism. In 2024 USENIX Annual Technical Conference (USENIX ATC 24) , pp. 545–561, 2024. Zhang, B. and Sennrich, R. Root mean square layer nor-malization. Advances in neural information processing systems , 32, 2019. Zhao, Y., Gu, A., Varma, R., Luo, L., Huang, C.-C., Xu, M., Wright, L., Shojanazeri, H., Ott, M., Shleifer, S., et al. Pytorch fsdp: Experiences on scaling fully sharded data parallel. Proceedings of the VLDB Endowment , 16(12): 3848–3860, 2023. 11 AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs 
+
+## 8. Appendix 
+
+8.1. Error Analysis of Activation Quantization 
+
+We conduct an error analysis for SiLU & Multiply, RM-SNorm+GEMM, and Attention mentioned in § 4.1. 8.1.1. S ILU & M ULTIPLY 
+
+SiLU & Multiply is an element-wise operation that takes two inputs, denoted as X and Y . For a pair of corresponding elements x and y from these inputs, the SiLU & Multiply operation is defined as: 
+
+z = xyσ (y)
+
+where σ is the sigmoid function. Its derivatives are 
+
+∂z ∂x = yσ (y), ∂z ∂y = xσ (y) + xyσ (y)(1 − σ(y)) ,
+
+and perturbations are 
+
+x′ = x(1 + δx ), y′ = y(1 + δy ).
+
+Case 1 (Recompute intermediate values) 
+
+∆ ∂z ∂x ≈ (σ(y) + yσ ′(y)) yδy. 
+
+|∆ ∂z ∂x | ≤ | y|(σ(y) + |y|σ(y)(1 − σ(y))) |δy |≤ O (|y|2|δy |).
+
+For ∂z/∂y :
+
+∆ ∂z ∂y ≈xσ (y)(1 + y(1 − σ(y))) δx 
+
++ xσ (y)(1 − σ(y))(2 + y(1 − 2σ(y))) yδy. 
+
+|∆ ∂z ∂y | ≤| x|σ(y)|1 + y(1 − σ(y)) || δx |
+
++ |x|σ(y)(1 − σ(y)) |y|| 2 + y(1 − 2σ(y)) || δy |.
+
+Asymptotically: O(|x|| δx | + |x|| y|| δy |).
+
+Case 2 (Cache intermediate values) 
+
+σ′ ≈ σ(y)(1+ δs ), ∂z ′
+
+∂x ′ = y′σ′ ≈ y(1+ δy )σ(y)(1+ δs ).
+
+∆ ∂z ∂x ≈ yσ (y)( δy + δs ).
+
+|∆ ∂z ∂x | ≤ | y|σ(y)( |δy | + |δs |) ≤ O  |y|(|δy | + |δs |).
+
+For ∂z ′ 
+
+> ∂y ′
+
+:
+
+∂z ′
+
+∂y ′ = x′σ′ + x′y′σ′(1 − σ′).
+
+Expanding to first order: 
+
+∂z ′
+
+∂y ′ ≈ xσ (y)1 + δx + δs 
+
++ xyσ (y)(1 − σ(y)) 1 + δx + δy + δs − σ(y)1−σ(y) δs .
+
+Subtracting the exact ∂z ∂y = xσ (y) + xyσ (y)(1 − σ(y)) :
+
+∆ ∂z ∂y ≈ xσ (y)1 + y(1 − σ(y)) δx 
+
++ xyσ (y)(1 − σ(y)) δy 
+
++ xσ (y)1 + y(1 − 2σ(y)) δs. 
+
+∆ ∂z ∂y ≤ | x|σ(y) 1 + y(1 − σ(y)) |δx |
+
++ |x|| y|σ(y)(1 − σ(y)) |δy |
+
++ |x|σ(y) 1 + y(1 − 2σ(y)) |δs |.
+
+Asymptotically: 
+
+|∆ ∂z ∂y | = O |x|(|δx | + |δy | + |y|| δs |).
+
+Comparing the two cases for the SiLU & Multiply operation, under the common scenario where the inputs x and y are mostly smaller than 1, **Case 1 (recomputing intermediate values) gives a strictly smaller error upper bound** than Case 2 (caching intermediate values). For ∂z/∂x , Case 1 yields O(|y|2|δy |) while Case 2 yields O(|y|(|δy | + |δs |)) ;because |y| ≤ 1 implies |y|2|δy | ≤ | y|| δy | ≤ | y|(|δy | +
+
+|δs |), the recompute bound is always tighter. For ∂z/∂y ,Case 1’s asymptotic bound O(|x|| δx | + |x|| y|| δy |) is also lower than Case 2’s O(|x|(|δx | + |δy | + |y|| δs |)) , since the latter contains an extra term proportional to |δs | that is absent when the sigmoid is recomputed exactly from the perturbed input. Thus, as long as the cache error δs 
+
+is non -negligible and the typical input magnitudes satisfy 
+
+|x|, |y| < 1, recomputing the intermediate values on the fly produces a provably smaller worst - case gradient error. 
+
+Therefore, for SiLU computation, we only store the quan-tized input activations and recompute the necessary in-termediate values during the backward pass. 
+
+8.1.2. RMSN ORM + GEMM Consider Y = W U , where U = RMSNorm (X). The gradient w.r.t. W is 
+
+∂Y ∂W = U T , U = γX/r. 
+
+Case 1 (Recompute intermediate values) 
+
+Input perturbation: 
+
+X′ = X ⊙ (1 + δX ), r′ = r(X′), U ′ = γX ′/r ′.
+
+12 AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs 
+
+Gradient error: 
+
+∆
+
+ ∂Y ∂W 
+
+
+
+= U ′T − U T .
+
+First-order expansion: 
+
+∥U ′ − U ∥2 ≤ ∥ γ∥∞
+
+ ∥X∥2
+
+r2 + ∥X∥32
+
+dr 4
+
+
+
+∥δX ∥∞.
+
+Asymptotically: O(d∥γ∥∞∥δX ∥∞/∥X∥2).
+
+Case 2 (Cache intermediate values) 
+
+Uc = U ⊙ (1 + δU ).
+
+Gradient error bound: 
+
+∥∆U ∥2 = ∥U ⊙ δU ∥2 ≤ ∥ U ∥2∥δU ∥∞.
+
+Asymptotically: O(∥U ∥2∥δU ∥∞).Two cases yield the same asymptotic error order, with only constant-factor differences. Given that recompute also reduces memory footprint, for GEMM computation, we only keep the quantized input activations of RMSNorm. 
+
+Similarly, it was found that storing only the input activa-tions of SiLU and recalculating the input of GEMM during gradient computation for GEMM after SiLU also decreases the upper bound on gradient error. 8.1.3. A TTENTION 
+
+A single-head attention is: 
+
+A = P V = softmax (S)V, S = QK T
+
+√d .
+
+Its gradients are 
+
+∂A ∂V = P ⊤, ∂A ∂P = V ⊤,∂A ∂S = P ( ∂A ∂P − z1⊤), z = rowsum (P ∂A ∂P ),∂A ∂Q = 1
+
+√d∂A ∂S K, ∂A ∂K = 1
+
+√d ( ∂A ∂S )⊤Q, 
+
+and perturbations are 
+
+Q′ = Q⊙(1+ δQ ), K′ = K⊙(1+ δK ), V ′ = V ⊙(1+ δV ).
+
+Case 1 (Recompute intermediate values). 
+
+A′ = attention (Q′, K ′, V ′)
+
+Thus, the gradient errors can be represented as: 
+
+∥∆A∥2 ≤ ∥ ∆S∥2∥V ∥2 + ∥V ⊙ δV ∥2
+
+∥∆ ∂A ∂V ∥2 ≤ 1
+
+√d ∥Q ⊙ δQK ⊤ + Q(K ⊙ δK )⊤∥2
+
+= O
+
+ ∥Q∥2∥K∥2
+
+√d (∥δQ ∥∞ + ∥δK ∥∞)
+
+
+
+.
+
+∥∆ ∂A ∂K ∥2 ≤ ∥V ∥2∥K∥2
+
+d ∥Q ⊙ δQK ⊤ + Q(K ⊙ δK )⊤∥2
+
+= O
+
+ ∥Q∥2∥K∥2∥V ∥2
+
+d (∥δQ ∥∞ + ∥δK ∥∞)
+
+
+
+.
+
+∥∆ ∂A ∂Q ∥2 ≤ ∥V ∥2∥Q∥2
+
+d ∥Q ⊙ δQK ⊤ + Q(K ⊙ δK )⊤∥2
+
+= O
+
+ ∥V ∥2∥Q∥2∥K∥2
+
+d (∥δQ ∥∞ + ∥δK ∥∞)
+
+
+
+.
+
+Case 2 (Cache intermediate values). 
+
+Since 
+
+A′ = A ⊙ (1 + δA ),
+
+the gradient errors in this case are: 
+
+∥∆ ∂A ∂V ∥2 ≤ ∥A∥2
+
+∥V ∥2
+
+ 1
+
+√d ∥Q ⊙ δQK ⊤
+
++Q(K ⊙ δK )⊤∥2 + ∥A ⊙ δA ∥2
+
+
+
+= O
+
+ ∥Q∥2∥K∥2
+
+√d (∥δQ ∥∞ + ∥δK ∥∞)
+
+
+
+.
+
+∥∆ ∂A ∂K ∥2 ≤ 2
+
+√d ∥V ∥2∥Q ⊙ δQK ⊤ + Q(K ⊙ δK )⊤∥2
+
++ 2 ∥V ∥2∥δV ∥∞ + ∥A ⊙ δA ∥2
+
+= O
+
+ ∥Q∥2∥K∥22∥V ∥2
+
+d (∥δQ ∥∞ + ∥δK ∥∞)
+
+
+
+.
+
+∥∆ ∂A ∂Q ∥2 ≤ 1
+
+√d
+
+ 2
+
+√d ∥V ∥2∥K∥2∥Q ⊙ δQK ⊤
+
++ Q(K ⊙ δK )⊤∥2 + 2 ∥V ∥2∥K∥2∥δV ∥∞
+
++∥K∥2∥A ⊙ δA ∥2 + ∥V ∥2∥δK ∥∞]= O
+
+ ∥V ∥2∥Q∥22∥K∥2
+
+d (∥δQ ∥∞ + ∥δK ∥∞)
+
+
+
+.
+
+Based on the derived error bounds under the “recompute intermediate values” case (Case 1), we compare the gradi-ent perturbations of RMSNorm and the attention operation. According to Eq. 15 and the subsequent analysis, the RM-SNorm gradient error satisfies ∥∆J∥2 = O(η) under stan-dard Transformer assumptions ( ∥X∥22 = Θ( d), r = Θ(1) ,and ∥γ∥∞ = Θ(1) ), where η = ∥δX ∥∞ is the normal-ized input perturbation level. In contrast, the attention gra-dient errors scale much more severely with the sequence length L and the per-head dimension dk. For ∂A/∂V we obtain ∥∆( ∂A/∂V )∥2 = O(ηL √dk), while for ∂A/∂K 
+
+13 AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs 
+
+Table 4. GPU and NPU Memory Usage (GB) Comparison 
+
+GPU/NPU AGoQ O+G O Megatron-LM 
+
+GPU 22.3 35.3 37.7 46.1 NPU 29.7 40.5 45.3 55.2 
+
+Figure 10. Speedups of our AGoQ and ZeRO-1 over Megatron-LM on varied models. 
+
+and ∂A/∂Q the bounds grow to O(ηL 3/2√dk). These quantities are larger than the RMSNorm error by factors of Θ( L√dk) and Θ( L3/2√dk), respectively. Such a multi-plicative gap explains why activation quantization applied to the Q, K, V projections leads to severely amplified gradient errors and training instability, whereas RMSNorm can be safely quantized. Therefore, for the attention operation, we choose not to apply activation quantization. 
+
+Table 5. Experimental configurations. 
+
+# of GPUs Model Seq. Len. TP PP 
+
+8 LLaMA3-8B 16K–32K 4 18 LLaMA3-8B 32K–80K 8 116 LLaMA2-13B 32K–80K 8 [1,2] 32 LLaMA2-13B 32K–80K 8 [1,2,4] 32 CodeLLaMA-34B 32K–80K 8 [1,2,4] 64 LLaMA2-13B 32K–80K 8 [1,2,4,8] 64 CodeLLaMA-34B 32K–80K 8 [1,2,4,8] 
+
+8.2. Ablation Studies Performance on Varied Models. To evaluate improve-ments in our methods across different models, we orga-nize the experiments according to the setup in Table 5. Specifically, we compare the speedup of Zero-1 and AGoQ against Megatron-LM on LLaMA3-8B, LLaMA2-13B, and CodeLLaMA-34B, as shown in Fig. 10. The results demon-strate that our method consistently delivers substantial gains across all models. Detail configurations are shown in Ta-ble. 5. 
+
+Zero-shot Accuracy. We further assess zero-shot accuracy of LLaMA2-7B trained on 2B tokens and LLaMA3.2-1B 
+
+Table 6. Accuracy changes ( ∆ Acc) of AGoQ compared to the Megatron-LM FP16 baseline across datasets. Results are shown for LLaMA2-7B (2B tokens) and LLaMA3.2-1B (10B tokens).                                            
+
+> Dataset LLaMA2-7B (2B tokens) LLaMA3.2-1B (10B tokens) Baseline AGoQ ∆Baseline AGoQ ∆
+> arc c 0.1988 0.1834 -0.0154 0.1877 0.2099 +0.0222 arc e 0.4179 0.4158 -0.0021 0.4571 0.4714 +0.0143 hellas. 0.2886 0.2897 +0.0011 0.3276 0.3298 +0.0022 piqa 0.5990 0.6039 +0.0049 0.6219 0.6284 +0.0065 sciq 0.7260 0.7280 +0.0020 0.7180 0.7100 -0.0080 winog. 0.4830 0.5036 +0.0206 0.5193 0.5185 -0.0008
+
+Table 7. Speedups of kernel fusion of GEMM and quantization/de-quantization over sequential operations. 
+
+m k n Speedup 
+
+16,384 14,336 4,096 1.08x 16,384 4,096 14,336 1.03x 16,384 4,096 12,288 1.04x 16,384 4,096 4,096 1.11x tained on 10B tokens using ARC-Challenge (Clark et al., 2018), ARC-Easy (Clark et al., 2018), HellaSwag (Clark et al., 2018), PIQA (Bisk et al., 2020), SciQ (Welbl et al., 2017), and Winogrande (Sakaguchi et al., 2021). Table 6 shows that the mean accuracy across all six datasets remains high with no degradation. 
+
+Memory Footprint Reduction. We also compare the ef-fects of activation quantization, gradient quantization, and optimizer quantization on memory reduction in Table 4 with TP=8, PP=1, sequence length of 12K on LLaMA2-13B with GPUs and NPUs. As can be seen from the table, each quantization module contributes significantly to reducing memory usage. Specifically, only applying 8-bit optimizer quantization (“O”) (Dettmers et al., 2022), it saves around 8G memory size on GPU and 10G on NPU, while our acti-vation and gradient quantization further save 13G and 2.4G memory on GPU while 10.8G and 4.8G on NPU, respec-tively. Notably, our AGoQ (“A+O+G”) achieves a 53% 
+
+reduction of the peak memory footprint over Megatron-LM on GPU while 46% on NPU. 
+
+Improvement of kernel fusion. We test the speedup achieved by kernel fusion (§4.3) of GEMM computation with quantization or dequantization operations. As shown in Table 7, we demonstrate several major matrix shapes for GEMM from LLaMA3-8B as examples, where m, k, n 
+
+represent the dimensions of GEMM C = A × B, where 
+
+A ∈ Rm×k and B ∈ Rk×n. The results demonstrate that our kernel fusion approach achieves an average speedup of 1.07 × over the sequential version of GEMM and quantiza-tion/dequantization, which results in an end-to-end speedup of 1.05 × on LLaMA3-8B with PP=1, TP=8 and sequence length of 16K. 14 AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs 
+
+Ablation for DBC (Dynamic Block Compression). We conducted an ablation study comparing training with and without DBC. Table 8 shows that DBC consistently im-proves accuracy on most tasks. Notably, DBC configured under low pipeline parallelism (PP) can be applied to high PP without increasing peak memory, highlighting its flexi-bility.                   
+
+> Table 8. Ablation study of DBC: accuracy (%) with and without DBC on six datasets.
+> arc c arc e hellas. piqa sciq winog. w/o DBC 17.66 41.88 28.53 60.12 71.20 50.83 w/ DBC 18.34 41.58 28.97 60.39 72.80 50.36
+
+Ablation for Layer-Aware Bit Width. We compared our layer-aware mixed-precision quantization against a na ¨ıve uniform 4-bit quantization applied to all activations. The uniform 4-bit baseline failed to converge, underscoring the importance of adaptive precision. 
+
+Actual Per-Layer Gradient Error. We measured the gradi-ent error of input activations for each layer (mean absolute error and normalized L2 distance) introduced by AGoQ compared to full-precision gradients, sampled from a model trained after 10B tokens. For GEMM, we additionally com-pare the gradient error of the weight. Table 9 reports the results. The normalized L2 errors for Attention (0.14–0.15) are the largest among all layers, which aligns with our theo-retical analysis and explains why we exclude Attention from quantization. For other layers, the minimum normalized er-ror is 0.003 (LayerNorm) and the maximum is 0.051 (SiLU), both of which have negligible impact on convergence.  
+
+> Table 9. Per-layer gradient error (mean absolute error and normal-ized L2 distance) introduced by AGoQ.
+
+Layer MAE Normalized L2 LayerNorm 2.8 × 10 −10 0.003 GEMM (Weight) 5.3 × 10 −7 0.026 SiLU 2.6 × 10 −9 0.051 Attention Q 2.5 × 10 −9 0.14 Attention K 1.7 × 10 −9 0.15 Attention V 2.0 × 10 −9 0.059 
+
+Extended Throughput Analysis (2k/4k/8k). We extended our throughput analysis to sequence lengths of 2k, 4k, and 8k. When memory is sufficient and recomputation is not required, we recommend enabling only gradient compres-sion, as it effectively reduces communication overhead. Ta-ble 10 shows the throughput (samples/sec) comparison with Megatron-LM and ZeRO-1 baselines. Our method con-sistently outperforms both baselines across all sequence lengths, achieving speedups of up to 1.33 × over Megatron-LM and 1.16 × over ZeRO-1 at 2k sequence length.  
+
+> Table 10. Throughput (samples/sec) comparison at sequence lengths 2k, 4k, and 8k.
+
+Seq. Megatron-LM ZeRO-1 AGoQ (Ours) 2k 2862.22 2498.13 2148.82 4k 4626.94 4261.65 3968.20 8k 8188.41 7848.12 7755.74 
+
+Memory Reduction at 32k/64k Sequence Lengths. We conducted memory usage experiments on Llama3-8B with extended sequence lengths under memory constraints. For 32k sequence length, we configured 36 layers; for 64k, we used 16 layers due to memory limitations. As shown in Table 11, AGoQ achieves substantial memory savings, reducing footprint by up to 66% at 32k and 59% at 64k, demonstrating its effectiveness in memory-constrained long-sequence scenarios.  
+
+> Table 11. Memory consumption (MB) for Llama3-8B at 32k and 64k sequence lengths.
+
+Sequence Length Baseline (MB) AGoQ (MB) 32k (36 layers) 48606 16594 64k (16 layers) 46681 19267 
+
+Wall-Clock Time Breakdown. We performed a detailed timing breakdown for a single Transformer decoder layer (ms). Due to Megatron’s sequence parallelism (SP), All-Gather costs are doubled during backward pass. Quantiza-tion/dequantization are fused into GEMM kernels. Table 12 and Table 13 report the breakdowns for the baseline and AGoQ, respectively. The results show that AGoQ introduces minimal overhead in compute-bound operations while ef-fectively saving memory. The fused quantization/dequan-tization adds negligible latency, as evidenced by the small increase in FFN forward time (13.3 → 15.64 ms), FFN back-ward time (28.6 → 32.54 ms), Attn forward time (19.3 →
+
+20.6 ms) and Attn backward time (45.1 → 47.8 ms).                                                   
+
+> Table 12. Baseline wall-clock time breakdown (ms) per Trans-former decoder layer.
+> Phase ln ag/rs Attn rs/ag ln ag/rs FFN rs/ag Forward 1.3 17.02 19.34 21.79 1.3 17 13.3 23.01 Backward 2.85 23.21 45.06 35.4 3.2 22.62 28.6 34
+> Table 13. AGoQ wall-clock time breakdown (ms) per Transformer decoder layer.
+> Phase ln ag/rs Attn rs/ag ln ag/rs FFN rs/ag Forward 1.3 16.82 20.62 21.65 1.3 17 15.64 21.78 Backward 2.9 22.82 47.86 34.56 3.4 22.58 32.54 33.54
+
+Gradient Norm Monitoring. We conducted an extended training run on Llama3-8B with a per-iteration token bud-15 AGoQ: Activation and Gradient Quantization for Memory-Efficient Distributed Training of LLMs  
+
+> Table 14. Communication latency breakdown (ms) under 200Gbps and 10Gbps bandwidth.
+
+Message Size All-Reduce All-to-All Quant/Dequant All-Gather AGoQ 
+
+230 (1GB) 4292.77 / 50365.45 599.28 / 7297.73 31.03 / 31.07 556.47 / 226.58 1186.78 / 7555.38 
+
+225 (32MB) 131.23 / 1603.78 18.81 / 233.34 0.99 / 1.10 19.37 / 197.92 39.17 / 432.36 
+
+220 (1MB) 4.13 / 51.07 0.83 / 5.52 0.07 / 0.07 0.55 / 7.87 1.45 / 13.46 
+
+215 (32KB) 0.83 / 3.93 0.35 / 0.38 0.05 / 0.05 0.41 / 0.83 0.81 / 1.26 get of 32k, spanning 100,000 iterations. Table 15 reports average gradient norms at 10k-iteration intervals. AGoQ maintains gradient norms closely aligned with the baseline throughout training, with stable convergence.  
+
+> Table 15. Gradient norm comparison every 10k iterations over 100k iterations.
+
+Iteration Range AGoQ Baseline 0–10k 7.28 7.10 10k–20k 4.33 4.38 20k–30k 3.79 3.77 30k–40k 3.64 3.36 40k–50k 3.38 3.20 50k–60k 3.32 3.10 60k–70k 3.17 3.15 70k–80k 3.32 3.29 80k–90k 3.20 3.37 90k–100k 3.08 3.21 
+
+Communication Savings on Commodity Bandwidth (e.g., 100Gbps). We evaluated communication efficiency under two representative bandwidth conditions: 200Gbps (our primary testbed) and 10Gbps (to simulate commodity con-straints). Table 14 reports latency breakdowns for both configurations (200Gbps / 10Gbps) under TP=8, DP=8. At 32MB under 200Gbps, our decomposed approach achieves a 3.4 × speedup (39.17 ms vs. 131.23 ms). Under 10Gbps, the speedup increases to 3.7 × (432.36 ms vs. 1603.78 ms), confirming that our method delivers substantial communica-tion savings across diverse bandwidth settings. 16

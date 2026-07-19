@@ -1,0 +1,835 @@
+Title: CommFuse: Hiding Tail Latency via Communication Decomposition and Fusion for Distributed LLM Training
+
+URL Source: https://arxiv.org/pdf/2604.24013v2
+
+Published Time: Thu, 30 Apr 2026 01:01:02 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# CommFuse : Hiding Tail Latency via Communication De-composition and Fusion for Distributed LLM Training 
+
+Rezaul Karim ∗ rezaul.karim3@huawei.com Toronto Ascend Team 
+
+Austin Wen austin.wen1@huawei.com Toronto Ascend Team 
+
+Wang Zongzuo wangzongzuo@huawei.com Toronto Ascend Team 
+
+Weiwei Zhang weiwei.zhang2@huawei.com Toronto Ascend Team 
+
+Yang Liu yang.liu8@huawei.com Toronto Ascend Team 
+
+Walid Ahmed walid.ahmed1@huawei.com Toronto Ascend Team 
+
+# Abstract 
+
+The rapid growth in the size of large language models has necessitated the partitioning of computational workloads across accelerators such as GPUs, TPUs, and NPUs. However, these parallelization strategies incur substantial data communication overhead significantly hindering computational efficiency. While communication-computation overlap presents a promising direction, existing data slicing based solutions suffer from tail latency. To over-come this limitation, this research introduces a novel communication-computation overlap technique to eliminate this tail latency in state of the art overlap methods for distributed LLM training. The aim of this technique is to effectively mitigate communication bottleneck of tensor parallelism and data parallelism for distributed training and inference. In partic-ular, we propose a novel method termed CommFuse that replaces conventional collective operations of reduce-scatter and all-gather with decomposed peer-to-peer (P2P) communi-cation and schedules partitioned computations to enable fine-grained overlap. Our method provides an exact algorithm for reducing communication overhead that eliminates tail la-tency. Moreover, it presents a versatile solution compatible with data-parallel training and various tensor-level parallelism strategies, including TPSP and UP. Experimental evalua-tions demonstrate that our technique consistently achieves lower latency, superior Model FLOPS Utilization (MFU), and high throughput. 
+
+# 1 Introduction 
+
+The rapid growth in the size of large language models has made distributed training and inference essen-tial, requiring multi-dimensional parallelism across accelerators such as GPUs,TPUs and NPUs [26, 15, 7]. These distributed strategies partition computational workloads across clusters of accelerators which require collective communication among the the accelerators, often resulting in substantial performance bottleneck from the communication overhead as revealed in both theoretical analysis and empirical studies evident from   
+
+> ∗This manuscript is an early preprint and has not been rigorously revised for typos or minor errors. Feedback is very welcome. Corresponding author: rezaul.karim3@huawei.com .
+
+1
+
+> arXiv:2604.24013v2 [cs.LG] 29 Apr 2026
+
+recent insights [27, 1]. This communication overhead can result from both waiting for a communication to complete and synchronization requirement at the communication operators. As a direct impact, research in hiding communication over computation in distributed parallel strategies has become an active area of research for efficient AI. This research presents a communication-computation overlap method applicable to multiple parallelism strategies that can overcome the limitation of state of the art approaches with the benefit of potential to fully hide the communication overhead as pictorially shown in Figure 1.                 
+
+> Compute overhead
+> RS
+> No overlap
+> Compute Compute overhead
+> RS RS
+> Data Slicing
+> Compute Compute Compute Compute overhead
+> RS RS RS RS
+> Increasing the number of data slices
+> Compute Compute Compute Compute
+> P2P P2P P2P
+> CommFuse ( Ours )
+
+Figure 1: A graphical example showing how the pro-posed solution can hide the communication overhead under computation and hence overcome the limitations of state of the art approaches. Widely used parallelism strategies exhibit distinct communication patterns. Data Parallelism (DP) [8, 16] with weight sharding relies on reduce-scatter (RS) operations during the backward pass. Tensor Parallelism (TP) [19] incurs all-reduce (AR) opera-tions, while Tensor Parallelism combined with se-quence parallelism (TPSP) [12] involves both RS and all-gather (AG) operations in the forward and backward passes. Ulysses Parallelism (UP) [10] uses all-to-all communication, for which no efficient computation-communication algorithm has been re-ported to date. These communication overheads can significantly limit training and inference efficiency when parallelization is employed. Recent research addressed to overcome the commu-nication overhead by hiding communication under computation. Previous works typically follows two broad categories of approaches: decomposing the data into smaller chunks vs. decomposing the col-lective communication algorithm. The former direc-tion works by decomposing the data into chunks and interleaving the computation of one chunk with an asynchronous communication of other chunk so that the computation and communication occurs in par-allel. This type of approach is currently used in mainstream platforms, such as Megatron [20, 18] and MindSpeed [2]. The other direction decomposes the collective communication to a set of different communi-cation pattern, such as peer to peer, and decouple the interdependency to improve the overlap ratio. There has been application of these approach of TPUs [23]. In addition, fusing the kernels are used for efficient implementation for all type of approaches [4, 5, 29]. Despite the recent progress, there still exist numerous limitation requiring further attention and room for improvement. The major drawbacks of decomposing data-based approaches is the tail overhead. Although the approaches split data and can overlap the communication of intermediate chunks when communication time is less than compute time, there is an overhead of communication time of last chunk. Again, making too small split to make to tail overhead smaller is not always beneficial for reasons of reduced arithmetic intensity and operations to become memory bound. Furthermore, inter-node collective communication is not efficient which limits the sweet spot of intra-layer model parallelism to be used across accelerators within a single node. Conversely, the major drawbacks of prior art following decomposing collective communication algorithm faces challenges in strict synchronization requirement at intermediate steps, and increased total communication volume. Although these types of approaches are expected to potentially achieve better overlap than the previous category, the above limitations hinder the use of the full potential. This work addresses several critical challenges in distributed model training and inference. First, it signifi-cantly reduces communication overhead in intra-layer model parallelism—including TP, TPSP, and UP—by overlapping computation and communication, making it applicable to a wide range of architectures such as Transformers, Mamba, and Hybrid models. This reduction directly improves training and inference latency, decreases time per output token, and increases overall system throughput, contributing to lower operational costs and greater energy efficiency. Moreover, by alleviating the synchronization and communication bot-tlenecks that typically constrain TP and TPSP to a single node, our approach enables intra-layer model 2parallelism to scale across multiple nodes. This extension supports the training and inference of extremely large models with higher parameters per layer, opening the door for TP/TPSP deployments beyond the single-node limit imposed by existing state-of-the-art methods. To address the aforementioned challenges, we propose CommFuse , a novel method that decomposes reduce-scatter (RS) and all-gather (AG) into peer-to-peer (P2P) communications and schedules partitioned com-putations for fine-grained overlap. We refer to these instantiations as FuseRS and FuseAG . Unlike prior approaches, CommFuse provides an exact algorithm that eliminates tail overhead, supports data parallel (DP) training, and is compatible with tensor-level parallelism strategies such as TPSP and UP. Across multiple accelerators and model architectures, our method consistently improves Model FLOPS Utilization (MFU) resulting in reduced latency. 
+
+CommFuse is a unified framework for fully overlapping communication and computation in distributed sequence models. First, we decompose the reduce-scatter collective into an asynchronous point-to-point (P2P) communication framework, eliminating intermediate synchronization and enabling flexible scheduling across participants. Second, we propose a rank-adaptive partial output scheduling strategy that prioritizes communication-dependent computations while deferring communication-free outputs, thereby mitigating tail latency. Third, we present the first solution that achieves full overlap between communication and compu-tation, effectively eliminating communication overhead when communication latency is amortized by com-putation and minimizing it otherwise. Fourth, our design is unified across training and inference (including both prefill and decode phases), removing the need for separate parallelization strategies. Fifth, the pro-posed overlap mechanism is batch-size agnostic, maintaining efficiency even in small-batch or long-context regimes where prior batch-splitting approaches degrade. Finally, the method is orthogonal to attention implementations and remains fully compatible with optimized kernels such as Flash Attention. The main contributions of this paper are: 
+
+• Eliminating tail overhead and synchronization constraints. CommFuse fully overlaps com-munication and computation for RS and AG, removing tail overhead and reducing intermediate synchronization requirements. 
+
+• Versatile parallelization. The method efficiently supports DP, TP, UP across diverse models, enabling low-latency, high-MFU distributed training and inference. 
+
+• Robust and flexible. CommFuse is effective across varying batch sizes and context lengths and is compatible with techniques such as flash attention for transformer-based models. 
+
+# 2 Related Works 
+
+A central challenge in overlapping computation and communication lies in managing data dependencies. Weak dependencies, such as the all-reduce in the backward pass of data parallelism (DP), contrast with strong dependencies, such as reduce-scatter and all-reduce in tensor parallelism (TP/TPSP). Algorithms that integrate computation and communication must explicitly account for these dependency constraints, while optimized fused kernels can further benefit from low-level performance improvements. Existing re-search broadly follows two directions: (1) approximate or compressed communication (e.g., Flash Commu-nication [14]), and (2) exact communication with improved decomposition and scheduling algorithms (e.g., Decompose [23]). Key directions in exact solutions focus on data decomposition and algorithm restructuring, often leveraging fused kernels for additional performance gains [24]. Widely used frameworks, such as Megatron [18] uses overlap of communication considering data slicing based approach. For DP, it allows to overlap the reduce-scatter of backward to overlap with the computation of forward of another data block. For TP/TPSP, it allows tiling of data into small chunks and overlap computation and communication of independent chunks. MindSpeed [2] also follows similar approach known as Ascend MC2. Yet another similar approach is Ascend CoC [3]. The direction of algorithm restructuring decompose the collective operation algorithm in addition to de-composing the data and schedules compute and communication for better overlapping. General direction 3is to use graph transformation for transforming the fine grained computation to semantically equivalent graph with decoupled asynchronous instruction scheduling that allow higher overlapping. By breaking down blocking collective communication into a sequence of single-step non-blocking collectives, a better overlap can be achieved. The Decompose [23] algorithm decomposes computation operations into finer-grained tasks and overlaps with the decomposed non blocking communications and executes then in a simple sequence to accumulate partial results. Fine-grained implementation optimizations to improve compute–communication overlap often utilizes kernel fusion or scheduling. MiCS [28] reduces communication overhead via scale-aware partitioning, hierarchical communication, and 2-hop gradient synchronization. CoCoNet [11] uses operator fusion with a compiler-based system to co-optimize computation and communication. Oases [17] introduces automated tensor model parallelism with fine-grained scheduling to maximize overlapping dependent operations. Flux [4] over-decomposes operations into thread-block tasks and fuses them into larger kernels for fine-grained overlap. ISO [25] targets sequence-level overlap for LLM inference prefill stages. Concerto [6] and TileLink [29] explore automated kernel optimization and scheduling to enhance overlap. These works provide complementary solutions, but are less directly related to algorithm-level decomposition. The proposed method of this research adopts algorithm-level decomposition and fusion to avoids strict syn-chronization constraints and tail overheads of prior methods, while presenting a versatile solution extending to multiple parallelization applications. This aligns closely with the algorithm restructuring approaches discussed above, while remaining orthogonal to the efficient kernel implementation techniques. 
+
+# 3 Method 
+
+The proposed CommFuse builds upon the novel Fuse All Gather ( FuseAG ) and Fuse Reduce Scatter ( FuseRS )primitives. These two algorithms can be directly instantiated for DP and TPSP, while a subtle extension enables support for UP. We begin by briefly reviewing the fundamentals of these parallelism strategies and their associated collective communication patterns, and then transition to a discussion of the proposed approach. Throughout this paper, we use the term rank to denote a compute unit in a distributed setting; we also use the terms accelerator or device to refer to the physical instantiation of a compute rank. 
+
+3.1 Preliminaries 
+
+Parallelization. Zero Data Parallelism (Zero-DP) is a distributed training strategy in which model pa-rameters, gradients, and optimizer states are partitioned across multiple accelerators to reduce memory redundancy while preserving data-parallel semantics. In this setting, the forward pass requires an all-gather operation to materialize the full set of model weights on each rank for computation, whereas the back-ward pass employs all-reduce or reduce-scatter operations to aggregate and distribute gradients across ranks efficiently. Tensor Parallelism (TP) distributes large model tensors across multiple accelerators by partitioning them and coordinating computation through collective communication primitives. Specifically, TP typically relies on all-reduce operations to combine partial results across ranks and may use all-gather to assemble intermediate activations when required, thereby enabling efficient computation and improved memory utilization. Tensor-Parallel Sequence Parallelism (TPSP) integrates Tensor Parallelism (TP) with Sequence Parallelism (SP), where SP partitions input sequences across ranks and commonly utilizes all-gather and reduce-scatter operations to manage activations and gradients across sequence partitions. Within this framework, SP is primarily applied to normalization layers, while TP is employed in the MLP and attention layers, collectively optimizing parallel execution and communication efficiency across model components. Ulysses Parallelism is a sequence-level parallelism strategy that partitions long input sequences across mul-tiple GPUs and redistributes attention heads using all-to-all communication. This design enables efficient multi-GPU computation of attention over extremely long contexts by ensuring that each rank receives the necessary sequence segments and attention heads for localized computation while maintaining global consis-tency. 4Figure 2: All Gather (AG) operation showing initial state and communication pattern on the left and final state on the right. 
+
+Figure 3: Reduce-Scatter (RS) operation showing initial state and communication pattern on the left and final state on the right. 
+
+Common collective communications. The All-Gather operation collects data from all participating devices such that, upon completion, every device holds an identical copy of the aggregated data. For example, consider a system with four ranks, where each rank initially contains a distinct data element: rank 0 holds a, rank 1 holds b, rank 2 holds c, and rank 3 holds d. After the All-Gather operation, each rank possesses the complete set of elements, i.e., (a, b, c, d ). A visual illustration is provided in Figure 2. In practice, the All-Gather (AG) collective communication is commonly implemented using a multi-step ring-based communication pattern, as illustrated in Figure 4. The Reduce-Scatter (RS) operation, in contrast, partitions data across ranks by slice index and redistributes these slices such that each rank aggregates the corresponding slice from all other ranks. Consequently, after the RS operation, each compute rank retains a unique portion of the globally reduced data, consisting of the aggregation of that specific slice across all ranks. For example, consider four compute ranks initially holding the data sequences (a0, a 1, a 2, a 3), (b0, b 1, b 2, b 3), (c0, c 1, c 2, c 3), and (d0, d 1, d 2, d 3), respectively. When ap-plying RS with summation as the reduction operator, each rank receives the aggregated slice corresponding to its index, resulting in (a0 + b0 + c0 + d0), (a1 + b1 + c1 + d1), (a2 + b2 + c2 + d2), and (a3 + b3 + c3 + d3)
+
+across the four ranks. A visual illustration of this process is shown in Figure 3. Similarly, the Reduce-Scatter (RS) collective communication is typically realized through a multi-step ring communication scheme, as shown in Figure 5. The proposed approach leverages this ring-based implemen-tation of collective communication, although alternative bidirectional peer-to-peer communication patterns may also be employed. 5Figure 4: Ring implementation of All-Gather operation showing example for four compute ranks. 
+
+Figure 5: Ring implementation of Reduce-Scatter operation showing example for four compute ranks. 
+
+3.2 CommFuse 
+
+The proposed method overlaps collective communication with computation to hide the overhead of all-gather and reduce-scatter operations in TPSP, as well as all-to-all communication in UP. The approach decomposes computations into multiple iterative steps and collective communications into peer-to-peer exchanges. Arank-wise adaptive scheduling is employed to maximize the overlap between computation and communi-cation, ensuring that tail computations—such as the sequence slice remaining on the current rank—do not require further communication. This strategy effectively conceals communication latency under computation. Consequently, a sequence of length S is partitioned into m × N slices for computation, where m ∈ { 1, 2, . . . }
+
+defines the slicing granularity and N denotes the number of compute nodes. For simplicity, a typical value of m = 1 is used throughout this work, and m is omitted from the algorithm descriptions unless stated otherwise. The overall algorithm for communication overlaps for tensor level model parallelism includes ‘Fuse All Gather’ and ‘Fuse Reduce Scatter’ which uses overlapped computation and replaces conventional collective communi-cation of ’All Gather’ and ‘Reduce Scatter’. Both of the algorithm uses the same principle of breaking down the collective communication into an efficient decomposed algorithm of a sequence of peer-to-peer communi-cations, and schedule computation of partial outputs in a way that eliminate tail overhead. It is achieved by considering the nature of communication and existing data in each compute node where the algorithms for all-gather and reduce-scatter differs. All gather communication begins with a slice of data in each compute nodes and gathers data from multiple ranks for compute. Hence, the all gather commutes data before the computation. Considering this case of all-gather, we schedule the compute of existing data slice to happen first and then we schedule compute of received. On the other hand, reduce-scatter communication happens of computed outputs, and hence, we schedule the compute of the data slice that will remain in the current compute node to happen as the last step. In the following, we present these as two different algorithm both of which built on the same principle with particular order of compute and communication depending on the collective communication nature. We describe embodiment of these algorithms to particular layer types (such as MLP, Attention and Mamba) in following Section. 
+
+Fuse All Gather. An algorithm for “Fuse All Gather” is presented in Algorithm 1. This instantiation considers a ring-based communication in the clockwise direction; however, alternative instantiations are possible by changing the communication direction while preserving all key principles. These variations are 6considered implementation-specific extensions of the main approach. The symbols used follow conventional meanings: B denotes batch size, S sequence length, D model dimension, X input, O output, r tensor parallel rank, T tensor parallel world size, and N the number of computation decompositions. When m = 1 , N = T .The function compute_partial_output represents a high-level abstraction of the computation of a partial output corresponding to a decomposed slice or chunk of the input; for example, Orj denotes the partial output at rank r of sequence chunk j. In specific implementations, compute_partial_output is replaced with the corresponding operations, typically a column-shard linear projection. When the peer-to-peer transfer time 
+
+Tcomm of an output chunk Orj of shape B × S/N × D is less than its compute time Tcomp , the communication overhead can be fully hidden; otherwise, this algorithm achieves the maximum possible reduction of over-head. Further optimization is possible at the implementation level by developing fused kernels that integrate computation and communication. Figure 6 illustrates a four-node configuration executing Fuse Reduce Scat-ter , where the Reduce Scatter collective is decomposed into a sequence of peer-to-peer communication steps with interleaved computation arranged to maximize compute–communication overlap. Although alternative schedules are possible, including bidirectional peer-to-peer decompositions with different ordering strategies, we present the ring-based ordering to clearly demonstrate the core mechanism. 
+
+Algorithm 1 FuseAllGather  
+
+> 1:
+
+Input: Rank r Sequence Xr ∈ RB× ST ×D 
+
+> 2:
+
+Parameters: Rank r Column Shard Parameters, W r 
+
+> 3:
+
+Output: Output Tensor Or 
+
+> 4:
+
+r ← current _rank ▷ Rank of current computing node  
+
+> 5:
+
+T ← group _size ▷ Number of nodes in the group  
+
+> 6:
+
+N ← T ▷ Number of sequence slices  
+
+> 7:
+
+Ors|s∈{ 0,...,N −1} ← init_output_sequence_list ▷ Placeholder for output  
+
+> 8:
+
+Brin ∈ RB× ST ×D ← init_receive_buffer ▷ Buffer to receive data  
+
+> 9:
+
+Brout ∈ RB× ST ×D ← init_send_buffer ▷ Buffer for sending data  
+
+> 10:
+
+Brout ← Xr ▷ Begin with the existing sequence slice  
+
+> 11:
+
+for i = 0 to N − 1 do ▷ N iterations  
+
+> 12:
+
+j = ( r + 1) mod N ▷ Send data to next rank  
+
+> 13:
+
+k = ( r − 1 + N ) mod N ▷ Receive data from previous rank  
+
+> 14:
+
+l = ( r − i + N ) mod N ▷ Compute slice index  
+
+> 15:
+
+if i < N − 1 then ▷ Decomposed communication  
+
+> 16:
+
+p2p_send (data = Brout , rank = j, async ) 
+
+> 17:
+
+p2p_recv (data = Brin , rank = k, async ) 
+
+> 18:
+
+end if  
+
+> 19:
+
+Ors [l] ← compute _partial _output (Brout , W r ) ▷ Decomposed compute  
+
+> 20:
+
+Wait for communication to complete  
+
+> 21:
+
+Brout ← Brin ▷ Forward the received data slice to next rank  
+
+> 22:
+
+end for  
+
+> 23:
+
+Or ← Concatenate_Sequences (Ors ) ▷ Concatenate the sequence slices  
+
+> 24:
+
+return Or
+
+Fuse Reduce Scatter. The Fuse Reduce Scatter method is shown in Algorithm 2. Similar to the previ-ous algorithm, the symbols follow their conventional meanings: B denotes the batch size, S the sequence length, D the model dimension, X the input, O the output, r the tensor-parallel rank, T the tensor-parallel world size, and N the number of decompositions of the computation; when m = 1 , we have N = T . The function compute_partial_output abstracts the decomposed computation that produces a partial output for a specific slice of the input, where Orj denotes the partial output at rank r for sequence chunk j. In most cases this corresponds to a row-sharded linear projection, though additional operations may be incorporated to enhance compute–communication overlap depending on the layer type (e.g., MLP, Attention, Mamba), and in concrete implementations it is replaced with the appropriate layer-specific computation. When the point-to-point transfer time Tcomm of an output chunk Orj of shape B × (S/N ) × D is lower than the compute time Tcomp for that chunk, communication can be fully hidden; when Tcomp < T comm , the algorithm still 7Figure 6: Four-rank example of Fuse All Gather , showing the ring-ordered breakdown of the collec-tive into peer-to-peer communication steps with interleaved partial-output computation to achieve com-pute–communication overlap. achieves the maximum possible reduction in overhead. Depending on hardware capabilities, the aggregation over the N buffers may be decomposed and performed incrementally within the loop, and further optimiza-tions—such as fused compute–communication kernels—can be applied at the implementation level. Figure 7 illustrates a four-node configuration executing Fuse Reduce Scatter , where the Reduce-Scatter collective is decomposed into a sequence of peer-to-peer communication steps with interleaved computation arranged to maximize compute–communication overlap. Although alternative schedules are possible, including bidirec-tional peer-to-peer decompositions with different ordering strategies, we present the ring-based ordering to clearly demonstrate the core mechanism. 
+
+Algorithm 2 FuseReduceScatter  
+
+> 1:
+
+Input: Rank r Sequence Xr ∈ RB×S× DT 
+
+> 2:
+
+Parameters: Rank r Row Shard Projection Parameters, W r 
+
+> 3:
+
+Output: Output Tensor Or 
+
+> 4:
+
+r ← current _rank ▷ Rank of current computing node  
+
+> 5:
+
+T ← group _size ▷ Number of nodes in the group  
+
+> 6:
+
+N ← T ▷ Number of sequence slices  
+
+> 7:
+
+Ors|s∈{ 0,...,N −1} ← init_sequence_as_sequence_list (Xr , N ) 
+
+> 8:
+
+Brin ∈ RB× ST ×D ← init_receive_buffer ▷ Buffer to receive data  
+
+> 9:
+
+Brout ∈ RB× ST ×D ← init_send_buffer ▷ Buffer for sending data  
+
+> 10:
+
+for i = 0 to N − 1 do ▷ N iterations  
+
+> 11:
+
+j = ( r + 1) mod N ▷ Send data to next rank  
+
+> 12:
+
+k = ( r − 1 + N ) mod N ▷ Receive data from previous rank  
+
+> 13:
+
+l = ( r − i − 1 + N ) mod N ▷ Compute slice index  
+
+> 14:
+
+Or ← compute _partial _output (Xs[l], W r ) ▷ Decomposed compute  
+
+> 15:
+
+if i > 0 then ▷ Aggregate result from second to last steps  
+
+> 16:
+
+Or ← Brin + Or 
+
+> 17:
+
+end if  
+
+> 18:
+
+if i < N − 1 then ▷ Decomposed communication  
+
+> 19:
+
+Brout ← Or 
+
+> 20:
+
+p2p_send (data = Brout , rank = j, async ) 
+
+> 21:
+
+p2p_recv (data = Brin , rank = k, async ) 
+
+> 22:
+
+end if  
+
+> 23:
+
+end for  
+
+> 24:
+
+return Or
+
+# 4 Architectural Instantiations 
+
+The presented solution can be applied for a wide range of layer types including MLP, Attention [21], and Mamba [9, 22, 13] layers. Using the ‘Fuse All Gather’ and ‘Fuse Reduce Scatter’, we built ‘Fuse TPSP’ for 8Figure 7: Four-rank example of Fuse Reduce Scatter , showing the ring-ordered breakdown of the Reduce Scatter collective into peer-to-peer communication steps with interleaved partial-output computation to achieve compute–communication overlap. TPSP with full communication/compute overlap. We also apply the key principles of the method into ‘Fuse All-to-All’ for Ulysses Parallel Attention (UP). In the following we discuss the detailed instantiation for each of these layer types. 
+
+Algorithm 3 FuseReduceScatter:RowParallelProjection  
+
+> 1:
+
+Input: Rank r Sequence Xr ∈ RB×S× DT 
+
+> 2:
+
+Parameters: Rank r Row Shard Projection Parameters, W ro ∈ R DT ×D 
+
+> 3:
+
+Output: Output Tensor Or 
+
+> 4:
+
+r ← current _rank ▷ Rank of current computing node  
+
+> 5:
+
+T ← group _size ▷ Number of nodes in the group  
+
+> 6:
+
+N ← T ▷ Number of sequence slices  
+
+> 7:
+
+Ors|s∈{ 0,...,N −1} ← init_sequence_as_sequence_list (Xr , N ) 
+
+> 8:
+
+Brin ∈ RB× ST ×D ← init_receive_buffer ▷ Buffer to receive data  
+
+> 9:
+
+Brout ∈ RB× ST ×D ← init_send_buffer ▷ Buffer for sending data  
+
+> 10:
+
+for i = 0 to N − 1 do ▷ N iterations  
+
+> 11:
+
+j = ( r + 1) mod N ▷ Send data to next rank  
+
+> 12:
+
+k = ( r − 1 + N ) mod N ▷ Receive data from previous rank  
+
+> 13:
+
+l = ( r − i − 1 + N ) mod N ▷ Compute slice index  
+
+> 14:
+
+Orj ← W ro ∗ Xs[j] ▷ Modified decomposed compute  
+
+> 15:
+
+if i > 0 then ▷ Aggregate result from second to last steps  
+
+> 16:
+
+Or ← Brin + Or 
+
+> 17:
+
+end if  
+
+> 18:
+
+if i < N − 1 then ▷ Decomposed communication  
+
+> 19:
+
+Brout ← Or 
+
+> 20:
+
+p2p_send (data = Brout , rank = j, async ) 
+
+> 21:
+
+p2p_recv (data = Brin , rank = k, async ) 
+
+> 22:
+
+end if  
+
+> 23:
+
+end for  
+
+> 24:
+
+return Or
+
+4.1 Row Parallel Projection 
+
+The implementation of the “Fuse Reduce Scatter” operation in Algorithm 2 is realized via a row-shard lin-ear projection. We further consider alternative implementations of “Fuse Reduce Scatter” that enable the overlap of computation and communication, such as in the context of attention computation. Additionally, we examine an Ulysses Parallelism-specific all-to-all variant, termed “Fuse All-to-All,” as another embod-iment for the attention mechanism. Given that these constitute non-trivial extensions of Algorithm 2, we provide a more detailed discussion of these implementations. We first present the generic implementation of “Fuse Reduce Scatter” using row-shard linear projection while we also present some additional layer spe-9cific implementation in later section. Hence, in this generic row parallel projection implementation, the 
+
+compute _partial _output is implemented as a row sharded projection layer similart to megatron style row parallel projection with the equation: Orj ← W ro × Xs[j]. In this equation, Orj is partial output from rank i
+
+for index j, W ro is row sharded linear projection weight parameters, and Xs[j] is a slice of input partitioned in sequence dimension. Since generic, this row parallel projection is applicable to all type of layer which has a tensor parallel sharded projection layer followed by a reduce-scatter, such as MLP, Attention and Mamba. The detail algorithm of this embodiment is shown in Algorithm 3. 
+
+Algorithm 4 FuseReduceScatter:QuerySplitAttention  
+
+> 1:
+
+Input: Qr , K r , V r ∈ RB× aT ×S×Dh ▷ Head dim , D h = Da 
+
+> 2:
+
+Parameters: Rank r Row Shard Projection Parameters, W ro ∈ R DT ×D 
+
+> 3:
+
+Output: Output Tensor Or 
+
+> 4:
+
+r ← current _rank ▷ Rank of current computing node  
+
+> 5:
+
+T ← group _size ▷ Number of nodes in the group  
+
+> 6:
+
+N ← T ▷ Number of sequence slices  
+
+> 7:
+
+Qrs|s∈{ 0,...,N −1} ← init_sequence_as_sequence_list (Qr , N ) 
+
+> 8:
+
+Brin ∈ RB× ST ×D ← init_receive_buffer ▷ Buffer to receive data  
+
+> 9:
+
+Brout ∈ RB× ST ×D ← init_send_buffer ▷ Buffer for sending data  
+
+> 10:
+
+for i = 0 to N − 1 do ▷ N iterations  
+
+> 11:
+
+j = ( r + 1) mod N ▷ Send data to next rank  
+
+> 12:
+
+k = ( r − 1 + N ) mod N ▷ Receive data from previous rank  
+
+> 13:
+
+l = ( r − i − 1 + N ) mod N ▷ Compute slice index  
+
+> 14:
+
+attention _scores r ← Qrs[l] ∗ Kr T ▷ Attention Score for Query Slice  
+
+> 15:
+
+attention _weight r ← Sof tmax (attention _scores r ) ▷ For a Query Slice  
+
+> 16:
+
+˜Or ← attention _weight r ∗ V r ▷ Attention Output for Query Slice  
+
+> 17:
+
+Or ← W ro ∗ ˜Or ▷ Decomposed Projection  
+
+> 18:
+
+if i > 0 then ▷ Aggregate result from second to last steps  
+
+> 19:
+
+Or ← Brin + Or 
+
+> 20:
+
+end if  
+
+> 21:
+
+if i < N − 1 then ▷ Decomposed communication  
+
+> 22:
+
+Brout ← Or 
+
+> 23:
+
+p2p_send (data = Brout , rank = j, async ) 
+
+> 24:
+
+p2p_recv (data = Brin , rank = k, async ) 
+
+> 25:
+
+end if  
+
+> 26:
+
+end for  
+
+> 27:
+
+return Or
+
+4.2 Column Parallel Projection 
+
+The implementation of the “Fuse All Gather” operation in Algorithm 1 is realized via a column-shard linear projection. This column-shard linear projection is employed as the initial layer of the MLP, the QKV projection within the Attention mechanism, and the in-projection of the Mamba layer. In practice this can be used as an efficient alternative to the column parallel projection in Megatron-LM [18]. Analogous implementations can be applied to any other layer type that leverages a column-shard linear projection. The proposed implementation is achieved by instantiating the compute_partial_output routine utilizing the column-shard linear projection. Since the procedure is intuitive, we omit an explicit algorithmic description for this case. 
+
+4.3 Query Split Attention 
+
+An attention specific implementation in addition to the previously mentioned ‘row parallel embodiment’ in the output projection is decomposing attention computation with splitting the queries into slices. This implementation splits the query, Q, of attention into N slices/chunks where N can be equal or a multiple 10 of group size (assuming m=1 for simplicity of explanation). And then it iteratively computes outputs for each query chunk, Qi, for different attention heads at different TP ranks. The outputs corresponding to each Query slice is communicated after each iteration using peer to peer communication. Hence, the 
+
+compute _partial _output is implemented as computing attention of a slice of query with the equations: 
+
+scores r ← Qrs[j] × (Kr )T ; weight rj ← Sof tmax (scores rj ); Orj ← weight rj × V r ; Orj ← W ro × (Orj ). The slices scheduling is done as mentioned in the generic algorithm. This results in more computation to be overlapped with the communication where only linear projection computation is not sufficient for full overlap, making suitable for high flops low bandwidth hardware. Yet this implementation still remains orthogonal to flash-attention. Details are shown in in Algorithm 4. 
+
+4.4 Attention UP 
+
+All-to-all communication in Ulysses Parallelism is a collective operation that redistributes activation tensors across accelerators. At the onset of attention computation, an all-to-all operation applied to Q, K, and V
+
+assigns each accelerator a subset of attention heads spanning the full input sequence, while computation is restricted to non-overlapping subsets of attention heads, thereby enabling sequence parallelism. Following attention computation, a second all-to-all operation restores the original sequence partitioning by redistribut-ing to each accelerator a subset of the sequence, now enriched by contributions from all attention heads. The final all-to-all operation can further leverage the proposed approach, termed Fuse All-to-All (Algorithm 5), wherein the compute_partial_output routine is defined as the computation of attention over a slice of the query without the output projection, i.e., scores rj ← Qrs[j]( Kr )⊤, weight rj ← Softmax (scores rj ), and 
+
+˜Orj ← weight rj V r . Notably, the final output projection is not sharded in Ulysses Parallelism and is therefore excluded from the overlapped computation; further details are provided in Algorithm 5. 
+
+Algorithm 5 FuseAllToAll:UlyssesParallelAttention  
+
+> 1:
+
+Input: Qr , K r , V r ∈ RB× aT ×S×Dh ▷ Head dim , D h = Da 
+
+> 2:
+
+Parameters: None, the overlap happens with attention compute  
+
+> 3:
+
+Output: Output Tensor Or 
+
+> 4:
+
+r ← current _rank ▷ Rank of current computing node  
+
+> 5:
+
+T ← group _size ▷ Number of nodes in the group  
+
+> 6:
+
+N ← T ▷ Number of sequence slices  
+
+> 7:
+
+Qrs|s∈{ 0,...,N −1} ← init_sequence_as_sequence_list (Qr , N ) 
+
+> 8:
+
+Brout ∈ RB× ST ×D ← init_send_buffer ▷ Buffer for sending data  
+
+> 9:
+
+Ors|s∈{ 0,...,N −1} ← init_output_list ▷ Placeholder for output and receive data  
+
+> 10:
+
+for i = 0 to N − 1 do ▷ N iterations  
+
+> 11:
+
+j ← (r + i + 1)% N ▷ Send rank  
+
+> 12:
+
+k ← (r − i − 1 + N )% N ▷ Receive rank  
+
+> 13:
+
+l ← j ▷ Compute slice index  
+
+> 14:
+
+attention _scores rl ← Qrs[l] ∗ transpose (Kr ) ▷ For current query slice  
+
+> 15:
+
+attention _weight rl ← Sof tmax (attention _scores rl ) 
+
+> 16:
+
+Orl ← attention _weight rl ∗ V r 
+
+> 17:
+
+if i < N − 1 then  
+
+> 18:
+
+Brout ← Orl 
+
+> 19:
+
+p2p_send (data = Brout , rank = j, async ) 
+
+> 20:
+
+p2p_recv (data = Or [k], rank = k, async ) 
+
+> 21:
+
+else  
+
+> 22:
+
+Or [l] ← Orl 
+
+> 23:
+
+end if  
+
+> 24:
+
+end for  
+
+> 25:
+
+Wait for all communication to complete  
+
+> 26:
+
+Or ← Concatenate_Feature_Dimension (Ors )
+
+11 Table 1: Performance comparison of different approaches under configuration: dmodel = 4096 , tensor paral-lelism (TP) = 4 , input tensor shape (b, s, d ) = (32 , 4096 , 4096) , and averaged over 10 iterations for forward pass to the layer.                 
+
+> Algorithm Forward Compute Time (ms) Communication Overhead (ms) End-to-End Latency (ms) Overhead Reduction (%) Latency Reduction (%)
+> Vanilla Baseline 78.5 43.8 122.3 ––Data Slicing Approach 76.9 7.1 83.9 83.9 31.4 Ours 77.0 0.1 77.1 99.8 36.9
+
+# 5 Evaluation 
+
+To empirically verify the effectiveness of the CommFuse approach, we adopt FuseRS as a representative collective communication primitive. We investigate its application in conjunction with tensor parallelism and sequence parallelism (TPSP). Specifically, we first conduct an empirical validation of the FuseRS im-plementation, focusing on row-parallel linear layers within the MLP and query-split attention within the attention layer. 
+
+Sanity Check. We first perform a sanity check to validate the application of TPSP with the proposed row-parallel linear layers and query-split attention. To this end, we compare the outputs of layers configured with TPSP against those of the same layers without TPSP. Both configurations produce consistent outputs, thereby passing the sanity check. 
+
+MLP Layer. We first implement the MLP layer using the proposed row-parallel linear projection with 
+
+Fuse Reduce Scatter (FuseRS) as a core building block. For the column-parallel linear projection, we retain the conventional design, similar to that used in Megatron, as our objective in this experiment is to isolate and evaluate the benefit of a single component. We compare our method against a baseline implementation without overlap, following a data-decomposition approach, across varying sequence lengths. Table 1 presents the performance comparison across different approaches. The vanilla baseline incurs a substantial communication overhead of 43.8 ms per iteration, leading to an end-to-end latency of 122.3 ms. The data slicing approach significantly reduces the communication overhead to 7.1 ms, achieving an 83.9% reduction and lowering the overall latency to 83.9 ms (31.4% reduction). In contrast, our proposed method further reduces the communication overhead to 0.1 ms, corresponding to a 99.8% reduction, and achieves the lowest end-to-end latency of 77.1 ms, yielding a 36.9% improvement over the baseline. Compared to the data slicing approach, our method provides an additional latency reduction of 8.1%, computed as (83 .9 − 77 .1) /83 .9 × 100% . Overall, our method is able to hide over 99% of the communication overhead, compared to approximately 84% for the data slicing approach. From a theoretical perspective, the proposed approach is expected to fully hide (i.e., 100%) the communication overhead; we expect which could potentially achievable using a fully fused kernel implementation. These results highlight the effectiveness of the proposed method in overlapping communication with computation under realistic experimental settings. 
+
+Scaling with Input Size. We compare the performance of our method and the data slicing approach against the vanilla baseline under varying input sizes. Figure 8 illustrates the communication overhead reduc-tion (higher is better) relative to the baseline. Our method consistently hides over 99% of the communication overhead across all sequence lengths, demonstrating robust scalability. The experimental configuration uses dmodel = 4096 and tensor parallelism (TP) = 4 . For input scaling, we start with a sequence length of 1K and batch size of 128, and progressively double the sequence length while halving the batch size to maintain memory constraints. This results in input shapes (b, s ) = (128 , 1024) ,
+
+(64 , 2048) , (32 , 4096) , (16 , 8192) , and (8 , 16384) . The latency observed for these configurations for baseline, data slicing and our method are presented in Table 2. 12 Table 2: Example resized table with fixed column widths Method Sequence Length 1K 2K 4K 8K 16K Slicing latency (ms) 83.8 83.7 83.9 83.7 83.9 Ours Latency (ms) 77.1 77.2 77.1 77.2 77.2 Improvement (%) ( ↑)8.0 7.9 8.1 7.8 8.0 Table 3: Communication overhead reduction (%) and end-to-end latency improvement (%) compared to the vanilla baseline across sequence lengths.                             
+
+> Experiment Method Sequence Length 1K 2K 4K 8K 16K
+> Comm. Overhead Reduction (%) Data Slicing 77.9 78.9 83.9 82.7 85.2 Ours 99.7 99.7 99.8 99.8 99.8 Latency Improvement (%) Data Slicing 29.9 35.0 31.4 29.5 33.5 Ours 35.8 40.2 36.9 35.0 38.8
+
+Table 3 summarizes both the communication overhead reduction and end-to-end latency improvement rel-ative to the vanilla baseline. The data slicing approach achieves communication reduction in the range of 77.9% to 85.2%, whereas our method consistently achieves approximately 99.7%–99.8% reduction across all sequence lengths. In terms of latency, our method also consistently outperforms the data slicing approach, delivering higher end-to-end latency improvements for all configurations. These results demonstrate that the proposed method not only effectively hides communication overhead but also translates this advantage into tangible end-to-end performance gains across a wide range of input scales. Figure 8 summarizes the trend over sequence length showing consistent improvement. 
+
+Attention Layer. For the attention layer, we consider two instantiation of CommFuse-TPSP. The first one uses the newly proposed row parallel linear projection with the FuseRS as a drop in replacement of traditional chunking based row parallel linear projection used in Megatron. The second implementation is for overlaping more compute using the proposed query split attention with FuseRS. We compare both of the implementation with a baseline without overlap and conventional chunking/data decomposing based approach. The comparison of latency for the forward pass over an attention layer for different data shapes are reported in table 4. Data (B x S) Latency (ms) (Change % )Baseline Slicing Row Parallel Query Split 
+
+64 × 1024 196.2 179.6 170.7 164.2 
+
+32 × 2048 222.8 202.2 200.7 181.2 
+
+16 × 4096 270.1 246.1 230.9 215.8 
+
+4 × 8192 195.6 279.7 174.6 145.1 Table 4: Latency for the forward pass of an attention layer for different sequence lengths. Here B and S are batch and sequence length; all data uses same embedding dimension of 4096. 13 1 2 4 8 16 
+
+0
+
+20 
+
+40 
+
+60 
+
+80 
+
+100 
+
+Sequence Length (xK) 
+
+> Comm. Overhead Reduction (%)
+> Data Slicing
+> Ours
+
+1 2 4 8 16 
+
+0
+
+20 
+
+40 
+
+60 
+
+80 
+
+100 
+
+Sequence Length (xK) 
+
+> Latency Improvement (%)
+> Data Slicing
+> Ours
+
+Figure 8: Comparison across sequence lengths. Left: Communication Overhead Reduction. Right: End-to-End Latency Improvement. 
+
+# 6 Conclusion 
+
+The method presented in this work offers an exact and broadly applicable solution for achieving full com-pute–communication overlap in intra-layer model parallelism across modern deep neural network architec-tures. By eliminating approximation and preserving model accuracy, it provides a practical path to improving latency and throughput in large-scale training and inference, particularly for transformer-based LLMs, vision transformers, Mamba models, and multimodal systems. The approach generalizes across attention, MLP, and Mamba layers, supports both TPSP and UP parallelism, and applies consistently from pretraining through inference. As model sizes and deployment demands continue to grow, the ability to overlap computation with communication at fine granularity offers a scalable and architecture-agnostic mechanism for improving efficiency in contemporary AI workloads. 
+
+Broader Impact Statement 
+
+This work introduces a method for improving the efficiency of parallelism in large-scale neural networks. By enabling full compute–communication overlap across transformer, Mamba, and hybrid architectures, the method can reduce latency during both training and inference without affecting model accuracy. These efficiency gains may help lower the resource requirements associated with large language models, vision transformers, and multi-modal systems, potentially reducing energy consumption and broadening access to high-capacity models in research and industry. At the same time, increased efficiency may accelerate the deployment of large models in real-world applica-tions, amplifying both their benefits and their risks. More accessible large-scale models can support advances in education, accessibility, scientific discovery, and automation. On the other hand, they may also exacerbate concerns related to fairness, misuse, and the societal impact of widespread AI adoption. As with any en-abling technology, the broader consequences depend on how the resulting systems are developed, governed, and applied. We encourage practitioners to pair the technical improvements presented here with responsible deployment practices and ongoing evaluation of downstream impacts. 14 References 
+
+[1] Hossam Amer, Rezaul Karim, Ali Pourranjbar, Weiwei Zhang, Walid Ahmed, and Boxing Chen. Dis-tributed hybrid parallelism for large language models: Comparative study and system design guide. 
+
+arXiv preprint arXiv:2602.09109 , 2026. [2] Ascend. Mindspeed llm, 2025. URL https://gitee.com/ascend/MindSpeed-LLM .[3] Ascend Team. Coc (communication over computation). https://gitee.com/ascend/MindSpeed-LLM/ blob/master/docs/features/communication-over-computation.md , 2025. Accessed: 2025-09-10. [4] Li-Wen Chang, Wenlei Bao, Qi Hou, Chengquan Jiang, Ningxin Zheng, Yinmin Zhong, Xuanrun Zhang, Zuquan Song, Chengji Yao, Ziheng Jiang, et al. Flux: fast software-based communication overlap on gpus through kernel fusion. arXiv preprint arXiv:2406.06858 , 2024. [5] Chang Chen, Xiuhong Li, Qianchao Zhu, Jiangfei Duan, Peng Sun, Xingcheng Zhang, and Chao Yang. Centauri: Enabling efficient scheduling for communication-computation overlap in large model training via communication partitioning. In Proceedings of the 29th ACM International Conference on Archi-tectural Support for Programming Languages and Operating Systems, Volume 3 , pp. 178–191, 2024. [6] Shenggan Cheng, Shengjie Lin, Lansong Diao, Hao Wu, Siyu Wang, Chang Si, Ziming Liu, Xuanlei Zhao, Jiangsu Du, Wei Lin, et al. Concerto: Automatic communication optimization and scheduling for large-scale deep learning. In Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1 , pp. 198–213, 2025. [7] Jiangfei Duan, Shuo Zhang, Zerui Wang, Lijuan Jiang, Wenwen Qu, Qinghao Hu, Guoteng Wang, Qizhen Weng, Hang Yan, Xingcheng Zhang, et al. Efficient training of large language models on distributed infrastructures: a survey. arXiv preprint arXiv:2407.20018 , 2024. [8] Priya Goyal, Piotr Dollár, Ross Girshick, Pieter Noordhuis, Lukasz Wesolowski, Aapo Kyrola, Andrew Tulloch, Yangqing Jia, and Kaiming He. Accurate, large minibatch sgd: Training imagenet in 1 hour. 
+
+arXiv preprint arXiv:1706.02677 , 2017. [9] Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces. In First conference on language modeling , 2024. [10] Sam Ade Jacobs, Masahiro Tanaka, Chengming Zhang, Minjia Zhang, Shuaiwen Leon Song, Samyam Rajbhandari, and Yuxiong He. Deepspeed ulysses: System optimizations for enabling training of extreme long sequence transformer models. arXiv preprint arXiv:2309.14509 , 2023. [11] Abhinav Jangda, Jun Huang, Guodong Liu, Amir Hossein Nodehi Sabet, Saeed Maleki, Youshan Miao, Madanlal Musuvathi, Todd Mytkowicz, and Olli Saarikivi. Breaking the computation and communi-cation abstraction barrier in distributed machine learning workloads. In Proceedings of the 27th ACM International Conference on Architectural Support for Programming Languages and Operating Systems ,pp. 402–416, 2022. [12] Vijay Anand Korthikanti, Jared Casper, Sangkug Lym, Lawrence McAfee, Michael Andersch, Moham-mad Shoeybi, and Bryan Catanzaro. Reducing activation recomputation in large transformer models. 
+
+Proceedings of Machine Learning and Systems , 5:341–353, 2023. [13] Aakash Lahoti, Kevin Y Li, Berlin Chen, Caitlin Wang, Aviv Bick, J Zico Kolter, Tri Dao, and Albert Gu. Mamba-3: Improved sequence modeling using state space principles. arXiv preprint arXiv:2603.15569 , 2026. [14] Qingyuan Li, Bo Zhang, Liang Ye, Yifan Zhang, Wei Wu, Yerui Sun, Lin Ma, and Yuchen Xie. Flash communication: Reducing tensor parallelization bottleneck for fast large language model inference. 
+
+arXiv preprint arXiv:2412.04964 , 2024. [15] Rui Li, Deji Fu, Chunyu Shi, Zhilan Huang, and Gang Lu. Efficient llms training and inference: An introduction. IEEE Access , 2024. 15 [16] Shen Li, Yanli Zhao, Rohan Varma, Omkar Salpekar, Pieter Noordhuis, Teng Li, Adam Paszke, Jeff Smith, Brian Vaughan, Pritam Damania, et al. Pytorch distributed: Experiences on accelerating data parallel training. arXiv preprint arXiv:2006.15704 , 2020. [17] Shengwei Li, Zhiquan Lai, Yanqi Hao, Weijie Liu, Keshi Ge, Xiaoge Deng, Dongsheng Li, and Kai Lu. Automated tensor model parallelism with overlapped communication for efficient foundation model training. arXiv preprint arXiv:2305.16121 , 2023. [18] NVIDIA. Nvidia/megatron-lm: Ongoing research training transformer models at scale. https:// github.com/NVIDIA/Megatron-LM , 2025. Accessed: 2025-09-04. [19] A. L. Samuel. Some studies in machine learning using the game of checkers. IBM Journal of Research and Development , 3(3):211–229, 1959. [20] Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper, and Bryan Catan-zaro. Megatron-lm: Training multi-billion parameter language models using model parallelism. arXiv preprint arXiv:1909.08053 , 2019. [21] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural information processing systems , 30, 2017. [22] Roger Waleffe, Wonmin Byeon, Duncan Riach, Brandon Norick, Vijay Korthikanti, Tri Dao, Albert Gu, Ali Hatamizadeh, Sudhakar Singh, Deepak Narayanan, et al. An empirical study of mamba-based language models. arXiv preprint arXiv:2406.07887 , 2024. [23] Shibo Wang, Jinliang Wei, Amit Sabne, Andy Davis, Berkin Ilbeyi, Blake Hechtman, Dehao Chen, Karthik Srinivasa Murthy, Marcello Maggioni, Qiao Zhang, et al. Overlap communication with depen-dent computation via decomposition in large deep learning models. In Proceedings of the 28th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1 , pp. 93–106, 2022. [24] Yunze Wei, Tianshuo Hu, Cong Liang, and Yong Cui. Communication optimization for distributed training: architecture, advances, and opportunities. IEEE Network , 2024. [25] Bin Xiao and Lei Su. Iso: Overlap of computation and communication within seqenence for llm inference. 
+
+arXiv preprint arXiv:2409.11155 , 2024. [26] Fanlong Zeng, Wensheng Gan, Yongheng Wang, and Philip S Yu. Distributed training of large language models. In 2023 IEEE 29th International Conference on Parallel and Distributed Systems (ICPADS) ,pp. 840–847. IEEE, 2023. [27] Fanlong Zeng, Wensheng Gan, Yongheng Wang, and Philip S Yu. Distributed training of large language models: A survey. Natural Language Processing Journal , pp. 100174, 2025. [28] Zhen Zhang, Shuai Zheng, Yida Wang, Justin Chiu, George Karypis, Trishul Chilimbi, Mu Li, and Xin Jin. Mics: near-linear scaling for training gigantic model on public cloud. arXiv preprint arXiv:2205.00119 , 2022. [29] Size Zheng, Jin Fang, Xuegui Zheng, Qi Hou, Wenlei Bao, Ningxin Zheng, Ziheng Jiang, Dongyang Wang, Jianxi Ye, Haibin Lin, et al. Tilelink: Generating efficient compute-communication overlapping kernels using tile-centric primitives. arXiv preprint arXiv:2503.20313 , 2025. 16 A Appendix: Illustrative Example of FuseRS Decomposition 
+
+A.1 Overview 
+
+Our solution belongs to the class of methods that decompose collective communication into peer-to-peer (P2P) communications to enable overlap with computation. We propose multiple decomposition strategies that are generally applicable across models. 
+
+A.2 Running Example 
+
+Here we present an example case for FuseRS. Consider a setup with four devices: A, B, C, D . Each device initially holds a sequence: 
+
+A : [ a1, a 2, a 3, a 4]
+
+B : [ b1, b 2, b 3, b 4]
+
+C : [ c1, c 2, c 3, c 4]
+
+D : [ d1, d 2, d 3, d 4]
+
+After a reduce-scatter operation, the result is: 
+
+[a1 + b1 + c1 + d1], [a2 + b2 + c2 + d2], [a3 + b3 + c3 + d3], [a4 + b4 + c4 + d4]
+
+To achieve this, each device must send data slices to others: 
+
+• A → { B, C, D }: a2, a 3, a 4
+
+• B → { C, D, A }: b3, b 4, b 1
+
+• C → { D, A, B }: c4, c 1, c 2
+
+• D → { A, B, C }: d1, d 2, d 3
+
+Here are the various ways of scheduling decomposed communications, which we used in empirical ablation. 
+
+A.3 (a) Pairwise Bidirectional P2P 
+
+The 12 send operations can be decomposed into 6 bidirectional peer-to-peer (P2P) exchanges across 3 rounds: 
+
+• Round 1: (A ↔ B), (C ↔ D)
+
+• Round 2: (A ↔ C), (B ↔ D)
+
+• Round 3: (A ↔ D), (B ↔ C)
+
+This schedule ensures: 
+
+• n/ 2 simultaneous transfers per round, 
+
+• Completion in n − 1 rounds (for even n), 
+
+• Elimination of tail overhead by overlapping communication with computation. This pattern is analogous to a round-robin tournament where each participant plays every other participant exactly once. 17 A.4 (b) Circular P2P 
+
+An alternative approach is a unidirectional ring communication pattern: 
+
+A → B → C → D → A
+
+Each device maintains a buffer ( m1, m 2, m 3, m 4), initialized to zero. 
+
+Round-wise Execution 
+
+• Round 1: 
+
+m1 = b1, m 2 = c2, m 3 = d3, m 4 = a4 (rotated clockwise) 
+
+• Round 2: 
+
+m1 = b1 + c1, m 2 = c2 + d2, m 3 = d3 + a3, m 4 = a4 + b4
+
+• Round 3: 
+
+m1 = b1 + c1 + d1, m 2 = c2 + d2 + a2, m 3 = d3 + a3 + b3, m 4 = a4 + b4 + c4
+
+• Round 4: 
+
+m1 = a1 + b1 + c1 + d1,
+
+m2 = a2 + b2 + c2 + d2,
+
+m3 = a3 + b3 + c3 + d3,
+
+m4 = a4 + b4 + c4 + d4
+
+At the end of Round 4, each device holds its final reduced value. No further communication is required. This method: 
+
+• Uses strictly local, circular communication, 
+
+• Avoids tail latency, 
+
+• Naturally overlaps communication and computation. 
+
+A.5 (c) Circular Computation Slices 
+
+A third approach reorganizes computation itself in a circular fashion over data slices. This improves memory locality by ensuring contiguous access across rounds. In this scheme: 
+
+• Communication alternates between circular ring transfers and pairwise P2P, 
+
+• Computation is aligned with data movement, 
+
+• Subsequent rounds benefit from improved cache and memory efficiency. 
+
+# B Appendix: Illustrative Example of Query Split Attention 
+
+Figure 9 presents a visual comparison of the computation and communication patterns in Tensor Parallel attention using reduce-scatter and those of the proposed Query-Split attention.. 18 (a) Attention with tensor parallelism (TP) using non overlapped reduce-scatter resulting in communication overhead. 
+
+(b) Computation of the Query-Split FuseRS Attention with TP using asynchronous P2P decomposed communication overlapping with computations. 
+
+Figure 9: Example of decomposed query split attention for FuseRS showing the benefit of asynchronous P2P decomposed communication eliminating communication overhead. 19

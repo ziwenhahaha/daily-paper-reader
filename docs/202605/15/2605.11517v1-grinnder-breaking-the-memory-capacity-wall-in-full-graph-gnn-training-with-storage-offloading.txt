@@ -1,0 +1,1061 @@
+Title: GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading
+
+URL Source: https://arxiv.org/pdf/2605.11517v1
+
+Published Time: Wed, 13 May 2026 00:44:17 GMT
+
+Number of Pages: 29
+
+Markdown Content:
+# GRI NN DER : B REAKING THE MEMORY CAPACITY WALL IN 
+
+# FULL -G RAPH GNN T RAINING WITH STORAGE OFFLOADING 
+
+Jaeyong Song 1 Seongyeon Park 1 Hongsun Jang 1 Jaewon Jung 1 Hunseong Lim 1 Junguk Hong 1 Jinho Lee 1
+
+https://github.com/AIS-SNU/GriNNder 
+
+## ABSTRACT 
+
+Full-graph training of graph neural networks (GNNs) is widely used as it enables direct validation of algorithmic improvements by preserving complete neighborhood information. However, it typically requires multiple GPUs or servers, incurring substantial hardware and inter-device communication costs. While existing single-server methods reduce infrastructure requirements, they remain constrained by GPU and host memory capacity as graph sizes increase. To address this limitation, we introduce GriNNder , which is the first work to leverage storage devices to enable full-graph training even with limited memory. Because modern NVMe SSDs offer multi-terabyte capacities and bandwidths exceeding 10 GB/s, they provide an appealing option when memory resources are scarce. Yet, directly applying storage-based methods from other domains fails to address the unique access patterns and data dependencies in full-graph GNN training. GriNNder tackles these challenges by structured storage offloading (SSO) , a framework that manages the GPU-host-storage hierarchy through coordinated cache ,
+
+(re)gather , and bypass mechanisms. To realize the framework, we devise (i) a partition-wise caching strategy for host memory that exploits the observation on cross-partition dependencies, (ii) a regathering strategy for gradient computation that eliminates redundant storage operations, and (iii) a lightweight partitioning scheme that mitigates the memory requirements of existing graph partitioners. In experiments performed over various models and datasets, GriNNder achieves up to 9.78 × speedup over state-of-the-art baselines and throughput comparable to distributed systems, enabling previously infeasible large-scale full-graph training even on a single GPU. 
+
+## 1 INTRODUCTION 
+
+Graph neural networks (GNNs) have emerged as essen-tial tools for learning from graph-structured data, targeting social networks (Sharma et al., 2024), molecular interac-tions (R ´eau et al., 2023), and computer vision (Chen et al., 2024). As graphs can capture arbitrary relationships among entities, GNNs hold broad potential across diverse domains. Among GNN training paradigms, full-graph training (Wan et al., 2022b;a; Jia et al., 2020a; Fey et al., 2021; Shi et al., 2023; Peng et al., 2022; Song et al., 2024) processes the entire graph per iteration, avoiding information loss. This provides high accuracy and theoretical guarantees, simpli-fying algorithmic validation. Our survey on recent GNN publications (Appendix A) reveals that many of them select full-graph training for these advantages, especially when the accuracy upper bound is unknown for new tasks or methods. However, full-graph training requires storing all node ac-tivations and gradients across all GNN layers in memory,     
+
+> 1Department of Electrical and Computer Engineering, Seoul National University, Seoul, South Korea. Correspondence to: Jinho Lee <leejinho@snu.ac.kr >.
+> Proceedings of the 9th MLSys Conference , Bellevue, WA, USA, 2026. Copyright 2026 by the author(s).
+
+easily exceeding modern GPU capacity. Some single-server methods (Yang et al., 2023; Wang et al., 2023a) have been proposed, but remain fundamentally limited by GPU or host memory capacity for large graphs (Appendix B). While dis-tributing workload across multiple GPUs is possible, this introduces significant hardware cost and inter-device com-munication overhead, often leading to poor scalability (Peng et al., 2022; Wan et al., 2022b). These hardware-imposed limitations constrain researchers from flexibly designing and validating algorithms. Many studies in our survey (Appendix A) either co-design compli-cated memory-saving algorithms (e.g., sampling (Hamilton et al., 2017)) to fit data in memory (Bajaj et al., 2025), or report out-of-memory failures with large graphs rather than scaling to distributed environments. To address this, we introduce GriNNder, the first framework that breaks through GPU and host memory limitations by leveraging storage as an additional memory hierarchy tier. Modern NVMe SSDs provide TB-scale storage and exceed 10 GB/s in bandwidth, making them practical for storing large volumes of intermediate training data. However, no prior full-graph training system has effectively exploited this storage tier—not because of fundamental hardware con-straints, but because of the rigidity of existing frameworks. 
+
+> arXiv:2605.11517v1 [cs.DC] 12 May 2026
+
+GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+One might expect that storage-based methods from other domains could alleviate GPU and host memory limits. How-ever, these solutions cannot be directly applied to full-graph GNN training. LLM frameworks (Rajbhandari et al., 2021; Sheng et al., 2023) mainly offload model weights, but the weights’ memory is negligible in GNNs because parameters are shared across all vertices. Similarly, mini-batch-based GNN training systems with storage (Park et al., 2022; Wal-effe et al., 2023; Liu et al., 2025; Jiang et al., 2024) leverage storage only to cache input features rather than intermedi-ate activations and gradients. Extending them to full-graph settings (so-called micro-batch training (Yang et al., 2023)) inherits the same constraints while still suffering from GPU out-of-memory due to neighbor explosion (Appendix C). When employing storage for full-graph GNN training, three key system-level challenges emerge: 1. Storage I/O Bottlenecks : Despite improved NVMe SSD bandwidth, storage remains far slower than host mem-ory and suffers from inefficient I/O due to fixed page granularity and random access patterns. 2. Data Amplification : Existing frameworks (Paszke et al., 2017; Fey & Lenssen, 2019; Wang et al., 2023a) utilize activation snapshots to enable sequential accesses. How-ever, this becomes impractical when used with storage, substantially inflating both memory usage and I/O traffic. 3. Memory-Hungry Partitioning : Full-graph training re-quires partitioning the graph until memory require-ments fit GPU capacity. However, the standard parti-tioner (Karypis & Kumar, 1998; Karypis et al., 1997; LaSalle & Karypis, 2013) used in prior approaches (Yang et al., 2023; Wang et al., 2023a) often exceeds host mem-ory limits during partitioning itself, necessitating a sepa-rate large-memory server that may harm practicality. To address these challenges, we propose GriNNder , which introduces structured storage offloading ( SSO ), a general framework for managing the GPU-host-storage memory hi-erarchy in full-graph GNN training. SSO orchestrates three coordinated mechanisms— cache , (re)gather , and bypass —to enable efficient storage-aware training. This strategy is realized through the following specialized methods: • Partition-wise graph caching: We observe that cross-partition dependencies follow a power-law distribution, similar to the degree distributions of real-world graphs. Exploiting this, we design partition-wise caching that uses host memory as an efficient cache with optimized I/O policies, minimizing inefficient storage access. • Grad-engine activation regathering: A regathering strat-egy for the automatic gradient computation engine. It eliminates inefficient activation snapshotting in existing offloading solutions, thereby minimizing redundant data storage and movement. (c) Full-graph training procedure                
+
+> Snapshot Act. Gather Scatter Accum. Gathered : 1st Layer : 2nd Layer
+> Forward Backward W1abgaghii
+> ...
+> abgaW2ghii
+> ...
+> abgaW1W2abgaghii
+> ... ...  ghii
+> Aggregate
+> (a) Toy graph
+> abefdcigh
+> (b) Full-graph dependency & message passing
+> abghiefcdab
+> Message Passing
+> 1st layer propagation for a, b Gather Scatter & Acc.
+
+Figure 1. Full-graph training procedure with a two-layer GNN. 
+
+• Switching-aware partitioning: A lightweight, memory-efficient partitioning algorithm specifically designed for host-memory-limited environments, avoiding the high memory footprint of standard graph partitioners. We implement GriNNder as PyGriNNder , enabling users to leverage existing PyTorch Geometric (Fey & Lenssen, 2019) code by simple inheritance. Notably, GriNNder does not modify the training algorithm itself, ensuring seamless migration without risk of accuracy degradation. Our exper-iments demonstrate that GriNNder achieves up to 9.78 ×
+
+speedup over the state-of-the-art and throughput compara-ble to distributed baselines, enabling previously infeasible large-scale full-graph training even on a single GPU. 
+
+## 2 BACKGROUND : F ULL -G RAPH GNN TRAINING 
+
+Full-graph GNN training (Jia et al., 2020a; Tripathy et al., 2020; Peng et al., 2022; Wan et al., 2022a;b) processes the entire graph in each training iteration without sam-pling, propagating information through message passing across multiple layers. Unlike subgraph training (e.g., mini-batch (Hamilton et al., 2017)), it uses all edge connections, preserving complete neighborhood information. This ap-proach simplifies algorithmic validation but requires storing intermediate activations/gradients for all |V | vertices across all |L| layers simultaneously with |H| hidden dimensions— often TBs for large graphs. Figure 1 illustrates full-graph training using a two-layer GNN on the toy graph in Figure 1a. Figure 1b shows the two-layer dependency structure derived from this topology. Starting from input features (denoted with circled vertex IDs), features are propagated via message passing to desti-nation vertices in the intermediate layer (e.g., a , b , g , h , e −→ a , b , shaded blue). The second layer applies the same process using these intermediate features to produce the final output embeddings. GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading Act. Gather Scatter Accum. Gathered Snapshot : Redundancy : 1st Layer Act/Grad : 2nd Layer Act/Grad Save Snapshot    
+
+> GPU Storage
+> abgaghiiabgaghii
+> ...
+> Random Gather
+> ...
+> abgaW2abgaghiiW2abgaabgaghii
+> ... ...
+> Forward Backward
+> ①②③
+
+Figure 2. Na¨ ıve storage extension of full-graph training. 
+
+Figure 1c illustrates the layer-by-layer training procedure. 
+
+Forward Pass. To compute an output feature vector, fea-tures from source vertices in the previous layer must be 
+
+aggregated (e.g., averaged). For example, vertex feature a depends on a , b , and g , including an implicit self-loop. After aggregation, the features are multiplied with the shared weight matrix (e.g., W1), then processed through operations such as normalization and activation to produce the layer’s output features (denoted by ). For the next layer, these output features are gathered to create inputs for aggregation following the same dependency structure (blue arrows). The gathered activations are saved as snapshots in GPU or host memory for use in the backward pass. 
+
+Backward Pass. During backpropagation, the dependency flow is inverted. The gradient of vertex feature a is prop-agated to a , b , and g to compute their gradients. This requires loading the previously saved snapshots (red arrows), then scatter-accumulating the computed gradients to the ver-tices of the previous layer (green arrows). When workloads fit in GPU memory, this procedure enables fast training through massive parallelism and high mem-ory bandwidth. However, severe capacity pressure arises: the entire intermediate data, including activations/gradients, must fit within GPU memory. A straightforward solution is distributed training (Tripathy et al., 2020; Peng et al., 2022), but this incurs substantial hardware costs and inter-device communication overhead (often 80–98%, see Appendix B). To mitigate GPU memory constraints, single-server meth-ods (Yang et al., 2023; Wang et al., 2023a) have been re-cently proposed. However, they remain limited by GPU and host memory capacity and require memory-hungry partition-ing operations that consume hundreds of GBs. We provide a detailed analysis of these limitations in Appendix B. 
+
+Na ¨ıve Storage Employment. Given full-graph training as described in Figure 1, a straightforward method would place the small weights (and gradients) on the GPU and large ac-tivations (and gradients) on storage. Figure 2 illustrates an example procedure for processing a single vertex, a . Since G                   
+
+> Forward-Pass
+> GA pl-1 Apl
+> Activation Regathering @ BW (Sec. 5)
+> Apl
+> Direct Offload (Bypass)
+> GA pl-1
+> GriNNder Partitioner (Sec. 6) Partition-Wise Cache Manager (Sec. 4) Gather Yes No Fit GPU?
+> Storage Partitions Tp
+> Host
+> Graph GAct. of l-1 Apl-1 Act. of lApl
+> For Each Layer lFor Each Partition p
+> Partition-Wise Caching
+> GPU
+
+Figure 3. Overall workflow with cache-(re)gather-bypass. 
+
+the neighbors of a ( a , b , and g ) fit within GPU mem-ory, training can proceed. However, this approach yields sub-optimal performance for three main reasons: 1 Ensur-ing gathered neighbor features fit within GPU memory is challenging due to power-law degree distributions. Memory requirements per partition vary dramatically, making GPU capacity violations difficult to avoid without memory-aware partitioning. 2 Gathering feature vectors requires random reads from storage. Since storage devices operate at page granularity (e.g., 16 KiB for NVMe SSDs), random access leads to severe read amplification and bandwidth saturation. 3 While existing snapshot features in PyTorch (Paszke et al., 2017) and prior methods (Wang et al., 2023a) enable sequential access, they introduce significant redundancy ,inflating write traffic. For instance, g appears redundantly in snapshots of all neighboring vertices— a , h , and i . 
+
+## 3 STRUCTURED STORAGE OFFLOADING :CACHE -(R E)G ATHER -B YPASS 
+
+To address the limitations identified in Section 2, we propose GriNNder, the first framework enabling storage-offloaded full-graph GNN training to break the GPU and host memory wall. As na ¨ıve storage employment demonstrates, efficient storage-based full-graph training requires a fundamentally different approach than simple offloading. We introduce 
+
+structured storage offloading , a systematic framework for orchestrating data movement across the GPU-host-storage hierarchy, specifically designed for full-graph GNN training. The core of structured storage offloading is the cache-(re)gather-bypass mechanism. The workflow is illustrated in Figure 3 (see Appendix D for the procedure). Assuming that the graph G is partitioned into small subgraphs ( Tp)(Section 6), the workflow is organized as follows: • Cache. To avoid frequent fine-grained random accesses, the vertex activations are loaded from storage and cache d in the host memory at per-partition and per-layer granularity. For processing layer l, only the partitions from layer l − 1
+
+need to be accessed from the storage. Thus, we can signif-icantly reduce the working set, enabling efficient caching despite the limited capacity of host memory (Section 4). • (Re)gather. In the GPU, the vertices in a single destina-tion partition of layer l are processed in a batch, which re-GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading Forward       
+
+> GA0 A1 aabeghbA1 (A0~A3) ab23ef234ghicd
+> Vertex Activations
+> Pt.0
+> Topologies Vertex Gradients
+> ab23ef234ghicd(A1~ A0) ∆∆
+> 4
+
+(b) Backward pass of GriNNder. 
+
+> GPU Host Storage
+> ②’②
+> Vertex Activations
+> Pt.0
+> Topologies
+> (A0~A3) ab23ef234ghicd
+> ③④
+
+(a) Forward pass of GriNNder.                  
+
+> 5②’2
+> Host Cache
+> (A0) ab23ef234ghicd
+> Act.  Gather abeghA / Act. / Grad. A∆ Host - GPU Intra-Device Op. Host - Storage GPU - Storage
+> (A0) ∆
+> ab23ef234ghicd
+> Host Cache
+> Act.  Regather
+> abegh(A0) ab23ef234ghicd
+> Vertex Act. Vertex Grad.
+> Weight GA0 T0
+> Bypass
+> Partition-Wise Caching ①
+> Vertex Act.
+> Bypass
+> Backward
+> A1 ∆ GA0 A1 aabeghbababaeghbaeghbGA0 ∆
+> 3
+> A1 ∆
+> A1 T0 GA0 GA0 ∆
+> GPU Host Storage
+> Partition-Wise Caching 1
+> Bypass
+> 2
+> Gradient Scatter & Accum. (Skip Snapshot)
+
+Figure 4. GriNNder forward and backward procedures for layer 1. 
+
+quires their source vertex activations in layer l − 1. Because transferring the source vertex data in a partition granularity would be too costly, the host processor gather s and transfers the union of the source vertices of all destination vertices in the current partition ( GA l−1 
+
+> p
+
+), from the cached data. Unlike existing approaches, which snapshot the gathered input acti-vation for the backward, we opt to regather it just-in-time at the backward. This significantly reduces the redundant I/O and memory pressure on the host/storage (Section 5). • Bypass. Meanwhile, some data do not benefit from caching, such as the topology and the resulting output acti-vation ( Alp) for the destination partition. These data bypass 
+
+the host memory, and are written directly to the storage to prevent pressure on the host memory cache. 
+
+Detailed Procedure. Figure 4 details the forward/backward passes (we use A0 to denote A0 for brevity). Figure 4a de-picts the forward pass for partition 0 of layer 1. 1 ( Cache )Layer 0 activations ( A0) are loaded into the host cache at partition granularity. 2 Partitioned graph structure T0
+
+uploads to GPU. 2 ’ ( Gather ) Required vertex activations 
+
+GA 0 are gathered in host memory and transferred to GPU. 3 GPU executes the forward pass to output A1. 4 ( Bypass )Computed activations A1 are offloaded to storage via GPU Direct Storage (GDS) (NVIDIA, 2021), skipping snapshots to reduce redundancy (Section 5). Figure 4b illustrates backward for the same partition. The procedure mirrors forward in reverse with added complex-ity from activation gradients ( ∇A1, ∇GA 0). 1 (Cache )Activations ( A0) are cached in host memory partition-wise for frequent reuse. 2 ( Bypass ) Activations A1 and gradi-ents ∇A1 load directly from storage. Backward takes A1,
+
+∇A1, GA 0 as inputs producing ∇GA 0. 2 ’ ( Regather )
+
+GA 0 is fetched from the host cache through regathering, not snapshots (Section 5). 3 GPU computes activation gradients ( ∇GA 0) using loaded activations/gradients. 4(c) Partition-wise cache management                              
+
+> Host Storage
+> Discard
+> Storage  Partition-Wise Upload
+> abcdabi
+> Reuse
+> Host
+> ihgefefhgabiefhgihgefcdcd
+> Buffer abeghBuffer cdef
+> Storage Page #Vertices in a Page: 2 : Out-of-Scope Vertices
+> Target: Partition 1 Target: Partition 0
+> cdPartition 1 cdefPt.1 Pt.2 Intra-Layer Reuse
+> Partition 0 aabeghbPt.2 Pt.3 Pt.0 x
+
+α
+
+> Expansion Ratio ...
+> Time
+
+(b) Expansion & intra-layer reuse  
+
+> 18 15 22 29 36 43 50 57 Sorted Partition IDs 20k 40k 60k #Required Vertices from Others Partitions
+
+(a) Partition dependency profile 
+
+Figure 5. Details and rationales of partition-wise graph caching. 
+
+Pt.1 denotes Partition 1.
+
+Source vertex gradients ( ∇GA 0) update in host memory via scattered accumulation, ensuring correctness for ver-tices shared across partitions. Host memory serves as a write-back buffer for vertex activation gradients. 5 Af-ter processing the entire layer, gradients are offloaded to storage. 
+
+## 4 PARTITION -W ISE GRAPH CACHING 
+
+Key takeaway : Similar to vertex degrees in real-world graphs, cross-partition dependencies also follow a power-law distribution. Exploiting this characteristic enables effi-cient storage I/O management through targeted caching. 
+
+Structured storage offloading manages host memory cache at partition granularity, exploiting locality while avoiding fine-grained storage access patterns. The cache replacement policy operates in two modes. Under sufficient host mem-ory capacity, the cache retains complete layers, maximizing reuse across partition iterations. When host memory cannot accommodate all layers, the policy evicts entire layers in LRU order. For extreme cases where a single layer exceeds host memory capacity (observed only in Papers dataset in Section 8.2 and IGBM with reduced cache in Section 8.3), the policy degrades gracefully to partition-wise eviction. We now present the design rationale and mechanisms underly-ing this hierarchical cache management strategy. Cross-partition access patterns exhibit power-law distri-butions analogous to vertex degree distributions in real-world graphs, emerging from inherent clustering tenden-cies (Leskovec et al., 2005). Figure 5a validates this on the IGBM dataset. For each partition (y-axis), we mea-sure the required vertices from other partitions. Sorting these counts (x-axis) reveals that among 64 partitions, de-pendencies concentrate within approximately 10 partitions GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+(additional datasets in Appendix E). We exploit this skewed distribution through two mechanisms. 
+
+Layer-Wise Partition Caching : Within a layer, partitions share activations and gradients due to cross-partition edges. In Figure 5b, vertex e’s activation is used in both partitions 
+
+0 and 1. With average expansion ratio α (#required/#target), activations are reused α − 1 times within that layer, causing redundant storage accesses. To mitigate this inefficiency, we introduce intra-layer reuse , caching frequently reused partitions in host memory. Data with minimal intra-layer reuse (graph topology, output activations) are placed in storage and bypass host memory using GPUDirect Stor-age (NVIDIA, 2021) (GDS), reducing I/O traffic and cache conflicts. Note that this design can be used in general even when GDS is unavailable (see Appendix S). 
+
+Partition-Wise Cache Management : GriNNder uses par-titions as the load/evict granularity for host memory cache. Alternatively, vertex granularity would require reading sin-gle vertex features (64–1,024B) on cache misses. Since stor-age devices access data at page granularity (e.g., 16KiB), this incurs substantial unnecessary I/O. Partition-wise man-agement reduces this overhead as partition sizes are typically a few GBs. For instance, processing partition 0 (vertices a,
+
+b) with dependencies to a, b, e, g, h loads three partitions (0, 2, 3) to host memory (Figure 5c). For partition 1 with depen-dencies to c, d, e, f spanning partitions 1 and 2, we reuse cached partition 2 and only load partition 1, evicting unused partition 0. This reuses vertex features without fine-grained random accesses. During this procedure, we keep a small buffer to send each partition’s input activations from the host to the GPU. In the worst case, partition-wise management in-curs overhead when dependencies are uniformly distributed across many partitions. However, as shown in Figure 5a, the dependencies within a partition are concentrated in a few partitions, enabling stable caching performance. For the detailed comparison between the partition-wise and vertex-wise management, see Appendix F. We further minimize latency by overlapping processing with cache management and maximizing sequential GPU access (Appendix G). 
+
+## 5 GRAD -E NGINE ACTIVATION 
+
+## REGATHERING 
+
+Key takeaway : PyTorch’s autograd engine requires re-dundant snapshot storage, causing α-fold 1 data amplifica-tion. Our grad-engine activation regathering, a regathering-based gradient engine for just-in-time activation reconstruc-tion, eliminates snapshots and reduces storage I/O. 
+
+One of the key challenges for employing storage in full-graph GNN training is data amplification , where repeated snapshots of input activations inflate memory capacity and storage I/O demands. As described in the previous sec-(a) PyTorch autograd engine Snapshot Store                    
+
+> ababeghabeghabeghabababababeghabeghabeghabeghabeghabegh
+> Backward
+> A1 A1 ∆
+> GA0 Act. Norm. Agg. GA0 ∆
+> I0’ I0 A1 GA0 Agg. Norm. Act. I0 I0’
+> Forward
+> abab
+> Load Features Store Intermed. Load Intermed. Feat. Snap. Host
+> A0 ab234ghi23ef
+> Intermed.
+> abI0 A1 abghiefab234ehiabI0’
+> Snapshot Load (c) Grad-engine activation regathering (Ours) Feat.
+> A1 abghief
+> Storage Load Features Feat. Host
+> A0 ab234ghi23ef
+> Intermed.
+> A1
+> Snap.
+> ababeghabeghabeghababababeghabeghabeghabeghabeghabegh
+> Backward
+> A1 A1 ∆
+> GA0 Act. Norm. Agg. GA0 ∆
+> I0’ I0 A1 GA0 Agg. Norm. Act. I0 I0’
+> Forward
+> abababab234ehi
+> Gather
+> ab234ehi
+> Regather
+> Recomp. Load Features
+> Snapshot Store
+> Load Features Feat. Snap. Host
+> A0 ab234ghi23efA1 abghiefab234ehi
+> Intermed. Snapshot Load
+> ababeghabeghabeghababababeghabeghabeghabeghabeghabegh
+> Backward
+> A1 A1 ∆
+> GA0 Act. Norm. Agg. GA0 ∆
+> I0’ I0 A1 GA0 Agg. Norm. Act. I0 I0’
+> Forward
+> ababab
+> Recompute (b) HongTu’s gradient engine
+
+Figure 6. Advantage of (c) grad-engine activation regathering com-pared to (a) PyTorch autograd and (b) HongTu. 
+
+tion, GriNNder partitions the graph and caches graph fea-tures/gradients in the host memory at partition granularity. However, existing autograd engines (Paszke et al., 2017; Fey & Lenssen, 2019) such as torch.autograd from PyTorch, even with generic activation checkpointing (Chen et al., 2016), are not designed with such optimizations and require substantial host memory when employing offload-ing, as illustrated in Figure 6a. The vanilla autograd engine stores activation snapshots (‘Snap.’) and intermediate snap-shots of all operations (‘Intermed.’), such as normalization (I0) and activation function ( I0′). While this design is reasonable for vision or language models with bounded activation sizes, it incurs significant memory overhead for GNNs, where activation (snapshot) sizes scale with graph size and the number of partitions with the magnitude of α.The amplification problem reveals three core challenges. First, GNN propagation requires graph-topology-aware re-construction rather than generic recomputation of tensor op-erations. Second, partition-wise caching necessitates coor-dinated optimization across the GPU-host-storage memory hierarchy. Third, the α-fold snapshot amplification (where 
+
+α ≈ 8 for large graphs) incurs a huge memory footprint, as all partition snapshots are required during backpropaga-tion. Prior techniques address related but distinct problems. Generic activation checkpointing (Chen et al., 2016) trades computation for memory but cannot account for graph topol-ogy or partition granularity. HongTu (Wang et al., 2023a) recomputes intermediate activations but still requires storing 
+
+> 1
+
+While α, the average expansion ratio of partitions (#re-quired/#target), was used to express the reusability in Section 4, it becomes a critical amplification factor here. GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+α-fold amplified snapshots, which will be discussed in the next paragraph. Ginex (Park et al., 2022) optimizes cache management for mini-batch training but does not address full-graph training’s snapshot amplification. HongTu (Wang et al., 2023a) (Figure 6b) mitigates PyTorch autograd’s issue of snapshotting intermediates (e.g., I0 and 
+
+I0′) by recomputing intermediate activations on demand. It employs a gradient engine to snapshot the gathered acti-vations to reduce latency (by enabling sequential access to snapshots), but at the cost of increased snapshots and redun-dant vertex data across partitions. As a result, each vertex may be stored up to α times, which adversely impacts mem-ory consumption and bandwidth requirements, particularly for large datasets. This is because it assumes abundant host memory and does not consider the use of storage, which has much lower bandwidth than host memory. To address these limitations, we introduce grad-engine acti-vation regathering , illustrated in Figure 6c, which eliminates snapshot redundancy through three optimizations. First, we observe that the activation snapshot GA 0 is essentially a reorganization of activations A0 according to graph topol-ogy. Rather than pre-storing these reorganized snapshots, we regather them on-demand during backpropagation from the original activations A0 by applying the gather operation. While this introduces an additional regather operation at the host, it eliminates snapshot storage (proportional to α)and the associated I/O overhead. Critically, since storing all snapshots would overflow typical host memory capac-ity, pre-storing snapshots mandates additional storage I/O, which incurs far greater overhead than our regathering ap-proach. Second, intermediate values are removed from the host memory and recomputed just in time from the regath-ered GA 0. In the figure, I0 is recomputed by aggregation using the topology, and I0′ is obtained by further applying normalization. This shares the same principle as existing recomputation techniques (Wang et al., 2023a; Chen et al., 2016), but is merged with the regathering mechanism. Fi-nally, to further reduce host memory pressure, the output feature A1 is bypassed and written directly to storage. The combination of these optimizations enables grad-engine ac-tivation regathering to operate with minimal host memory footprint while substantially reducing storage I/O volume. It is also worth mentioning HongTu’s additional optimiza-tion, which is specific to GCN-like models. On top of the default HongTu engine depicted in Figure 6b, the opti-mization stores a snapshot of the aggregated intermediate activations ( I0) instead of gathered activations ( GA 0) to reduce host-GPU traffic from αD to D. This is only pos-sible because ∇GA 0 can be directly computed from I0 in GCN. Therefore, this is infeasible for GAT-like models that apply additional attention operations during aggregation. Moreover, this additional method still requires D × L of additional host memory ( D = |V || H|). In host-memory-constrained settings, this can easily cause OOM, thereby converting host-GPU traffic into slower storage traffic. We can analyze the advantage of grad-engine activation regathering compared to this additional optimization as fol-lows. In the forward pass, HongTu is slower than GriNNder because it additionally snapshots D activations, whereas grad-engine activation regathering eliminates snapshotting by regathering in the backward pass. In the backward pass, assuming HongTu’s D × L additional memory usage forces host-GPU traffic to spill into slow OS swap storage traffic, HongTu loads 2D activations and D gradients from stor-age, while offloading αD gradients to storage. On the other hand, GriNNder loads (α+1) D activations and D gradients from host memory, offloading αD gradients to host memory. Omitting computation, which is often negligible compared to I/O in resource-limited environments, and denoting host-GPU bandwidth as Bhost (typically x16 lanes) and SSD bandwidth as BSSD (typically x4 lanes), GriNNder is faster in the backward pass if: 
+
+(2 D + D + αD )/B SSD > [( α + 1) D + D + αD ]/B host 
+
+This simplifies to Bhost /B SSD > 2( α+1) /(α+3) ≈ 1.2−
+
+1.6 for practical α = 2 − 8. Since physical lane differences typically yield Bhost /B SSD ≥ 2−4, grad-engine activation regathering is usually preferable. HongTu’s intermediate snapshotting is only effective when host memory is abundant or when graphs are small (i.e., when the host memory can accommodate the additional D × L). 
+
+I/O Volume and Memory Footprint. Let D = |V || H|.During the forward pass of a layer, the baseline autograd engine consumes (2 α + 3) D traffic between the GPU and the host, for the gathered input activations ( αD ), snapshots (αD ), intermediate values ( 2D), and outputs ( D). Since the baseline easily exceeds the host memory limit, it mandates using OS swap memory with storage, and most of that traffic becomes the IO between the GPU/host and the storage. GriNNder only consumes αD between the GPU and the host, D between the GPU and the storage, and D between the host and the storage while caching (when only cold misses exist). In other words, while the baseline suffers from huge and slow storage traffic proportional to α, grad-engine activation regathering only requires a 2D amount of storage traffic. In terms of the memory footprint during the forward, the baseline stores snapshots (αD ), activations ( D), and intermediate values ( 2D) per layer. On the other hand, grad-engine activation regathering only occupies D space in the host memory, and D in the storage for the outputs without redundancy. In the worst case, where the baseline utilizes OS swap memory with storage, this represents a  
+
+> 2α+3 2
+
+≈ 8.5× reduction in storage I/O for typical α ≈ 8.For more in-depth analyses (with another baseline (Wang et al., 2023a)), see Appendix H. GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+## 6 SWITCHING -A WARE PARTITIONING 
+
+Key takeaway : Existing partitioning algorithms (e.g., METIS-based) often incur a significant memory footprint, harming the practicality of iterative partitioning workflows in full-graph GNN training environments. 
+
+Graph partitioning is a critical enabler that allows GriNNder to efficiently utilize GPU memory, manage caches with min-imal storage bandwidth, and minimize the traffic between host and GPU by reducing the expansion ratio ( α). Although existing partitioners used in GNN domains produce near-optimal partitions, they often exceed single-server memory limits (Figure 7a, measured with MT-METIS (LaSalle & Karypis, 2013)) for large datasets such as Papers (Hu et al., 2020). Crucially, partitioning must be performed iteratively to find an adequate #partitions that fit within GPU memory constraints—a process that becomes prohibitively expensive when each iteration requires external servers with sufficient host memory. This could harm the practicality of full-graph GNN training workflows, clearly demonstrating the need for a lightweight partitioner. Inspired by streaming partitioning approaches for dis-tributed cloud systems (Spinner (Martella et al., 2017)), we devise a lightweight switching-aware partitioning with low memory consumption. The key is to minimize the use of auxiliary data structures, whose size often largely surpasses that of the graph itself. From an arbitrary initial partition, we iteratively refine the partition assignments to reduce the number of dependent partitions until convergence. Detailed procedures and design insights are provided in Appendix I. 
+
+Algorithm Overview. Figure 7 outlines switching-aware partitioning’s procedure and implementation, with exact preference scores and objective functions omitted for clarity. At a high level, the algorithm attempts to move vertices to the partition with the most neighbors to reduce the number of dependent partitions while keeping partition sizes similar. Figure 7b illustrates an example intermediate state during partitioning. Following the CSR format, our data structure comprises source pointers ( SrcPtr ) and destination in-dices ( DstIdx ). We manage an additional array ( Dst’s Partition ) and fill this array with the partition ID of each destination index in DstIdx . For example in Figure 7b, vertex 0 has neighbors {1, 2, 5, 7, 4, 3}, and we fill Dst’s Partition with their partition IDs: {2, 2, 2, 0, 1, 1}.In this state, vertex 0 prefers partition 2 (denoted as ‘1st Pref.’ in Figure 7c) because most of its neighbors reside in partition 2. We compute such preferences for each source vertex in parallel using source-level parallelism without ad-ditional memory usage, as illustrated in Figure 7c. After computing preferences, we relocate each source vertex to its preferred partition (label propagation). For example, ver-tex 0 moves to partition 2, as depicted in Figure 7d. Since (b) Intermediate partition and data structure. (c) Thread-wise preference calculation. (d) Thread-wise partition update.                                                                                     
+
+> 0125347Pt.1 Pt.0 Pt.2 SrcPtr 010 18 DstIdx 125743Dst’s Partition 2220118 10 9 21263VertexId 36Partition 0 130Destination-Level Parallelism SrcPtr 010 DstIdx 125743Dst’s Partition 222110VertexId 0 3Partition 22012220112221102220320210120012Thread 128 10 9 212
+> 00Pt.0 Pt.2
+> Source-Level Parallelism SrcPtr 010 DstIdx 125743Dst’s Partition 2220110 1 2 0 1 2 Thread VertexId 0 31st Pref. Partition 0 18 10 9 212
+> 0125347Pt.1 Pt.0 Pt.2
+> (a) METIS mem. requirement.
+> 0200 400 600 800 1000 Products IGBM Papers Mem. Req. (GB) Host Limit
+
+Figure 7. Motivation and a high-level overview of switching-aware partitioning. 
+
+vertex 0 now belongs to partition 2, all entries in Dst’s Partition pointing to vertex 0 must be updated to re-flect this change. We perform this update efficiently using destination-level parallelism (Figure 7d), where threads in-dependently update entries corresponding to different desti-nation vertices. By iteratively updating preferred partitions following this procedure until convergence, we minimize the average expansion ratio ( α) across partitions. For the initial state, we randomly assign vertices to parti-tions and observe stable behavior across runs, with partition quality largely insensitive to this random initialization. In other words, while starting from a good initial state could reduce the number of iterations required for convergence, the final converged state is empirically independent of the initial state. Additionally, the partition sizes across parti-tions are balanced via an explicit size-based penalty in the partition scoring function as follows (see Appendix I for details). Given state Si and partition Pj :
+
+P enalty (i,j ) = |Pj |/(αbalance × | V |/p ), (0 ≤ j < p )
+
+where |Pj | is the current partition size, |V | is the total num-ber of vertices, p is the number of partitions, and αbalance 
+
+controls balance strictness (default αbalance = 1 .1, allow-ing partitions to be ∼10% larger than the equal size). This discourages the growth of oversized partitions and maintains balance during partitioning. 
+
+Memory Usage and Convergence. Switching-aware parti-tioning uses only a CSR representation ( SrcPtr , DstIdx )and a Dst’s Partition array to record each neighbor’s current partition. This totals O(2 |V | + 2 |E|) space com-pared to METIS’ O(2 |V | + |E| + PSi=1 
+
+ |Ei| + |Vi|) re-quirement (Kaur & Gupta, 2021), where S is the number of partitioning stages in METIS. In practice, this achieves 7.10–24.37 × memory reduction on large graphs (Table 4). GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading User Level    
+
+> Middleware Hardware GPU FW/BW WModel Host Activation AGradient ∆
+> Storage Activation AGradient ∆
+> Topology Dataloader GriNNder Base PyG Model GriNNder Dataloader PyG Dataloader GriNNder Partitioner AIO Engine (e.g. Tensor NVMe) GriNNder Offloading Engine Stoarge Offloader Cache Handler SPytorch Geometric Kernels GDS Engine (e.g. KvikIO) User’s Custom Code
+
+Figure 8. Framework structure of GriNNder. 
+
+Switching-aware partitioning converges in 30–50 itera-tions, consuming only 0.07%/0.02%/0.39% of total training time on Products/IGBM/Papers datasets (Appendix O)—a negligible overhead for practical workflows. Despite its lightweight design, switching-aware partitioning achieves competitive partitioning quality compared to state-of-the-art lightweight partitioners (Section 8.5). 
+
+Integration with Training. We use METIS when host memory is sufficient, as it produces high-quality partitions. However, when memory constraints mandate partitioning on external infrastructure, switching-aware partitioning of-fers a fast and memory-efficient alternative with competi-tive partition quality. For detailed comparisons with Spin-ner (Martella et al., 2017) and state-of-the-art out-of-core partitioner (2PS-L (Mayer et al., 2022)), see Section 8.5. 
+
+## 7 GRI NN DER API AND IMPLEMENTATION 
+
+We implement GriNNder as an extension to PyTorch’s 
+
+torch.nn.Module (Paszke et al., 2017), providing a minimal-modification API for existing PyG (Fey & Lenssen, 2019) applications. Users inherit the GriNNderGNN base class and implement a single layer forward method to enable layer-wise execution required for partition-based full-graph training. This design decouples GNN model logic from the underlying offloading infrastructure, requir-ing typically several lines of code changes from standard PyG implementations (see Appendix K for API details). Figure 8 illustrates the framework architecture. The user-level provides the base GNN module and a custom dat-aloader that manages partition-aware data serving, main-tains cross-partition dependency metadata, and coordinates I/O scheduling. The middleware integrates partition-wise caching (Section 4), gradient regathering (Section 5), and lightweight partitioning (Section 6). It implements the of-floading engine, which orchestrates data movement through two specialized I/O engines: the Linux AIO interface wrapped by TensorNVMe (tensornvme) for host-storage transfers, and Kvikio (kvikio) for GPU-storage transfers via GPUDirect Storage (GDS) (NVIDIA, 2021). The engine tracks each activation’s location and coordinates I/O operations across three hardware tiers. Since offloaded training is typically I/O-bound, we implement aggressive I/O overlap to hide transfer latency. Leveraging bidirectional PCIe bandwidth, the offloading engine pipelines the write of the previous partition’s activations with the prefetch of the current partition’s required activations. We implement the dataloader and partitioner in C++ for high performance and expose them to Python through pybind11 (pybind11). 
+
+## 8 EVALUATION 
+
+8.1 Experimental Settings and Baselines Hardware : We run main experiments on a single GPU workstation with an AMD Ryzen9 7950X 3D CPU (16C 32T), 128GB DDR5-5600 RAM, one RTX A5000 (24GB) GPU, a PCIe 5.0 NVMe SSD (4TB), and a total 4TB swap space for swap-based experiments. We chose a single GPU setup to demonstrate how GriNNder breaks through the host/GPU memory limitations. For the multi-GPU exten-sion, we utilized a multi-GPU server with four RTX4090 GPUs, 2 ×Intel Xeon Gold 6442Y, 512GB DDR5 DRAM, and 2TB PCIe5.0 NVMe SSD. For distributed baselines, we use a 4-server cluster; each node has four RTX A6000 GPUs interconnected by NVLink (NVIDIA, 2023b) and Infiniband SDR (NVIDIA, 2023a). For IGBM/Papers, we needed all 16 GPUs to fit the data in the GPU memory. For Products, using fewer GPUs could yield better performance, but we used all GPUs to maintain consistency among datasets. 
+
+Models/Datasets : We use 3-/5-layer GCN (Kipf & Welling, 2016) with a hidden dimension of 256. We also test GAT (Veli ˇckovi ´c et al., 2018) and GraphSAGE (Hamilton et al., 2017). Datasets range from medium to large scale: Products (Hu et al., 2020), IGBM (Khatua et al., 2023), and Papers (Hu et al., 2020). We also utilized Kronecker graphs (Leskovec et al., 2010) (average degree=10) with random initial features of dimension 128 and #classes of ten. 
+
+Baselines : (Training) We compare GriNNder (GRD) against various single-server/distributed methods (detailed in Appendix B): 1 Micro-batch training (Betty (Yang et al., 2023)), 2 Micro-batch training with storage extension (Ginex (Park et al., 2022)), 3 Host memory offloaded train-ing (HongTu (Wang et al., 2023a)) with OS swap mem-ory, 4 Distributed full-graph training (CAGNET (Tripathy et al., 2020)), 5 Distributed full-graph training with com-munication skipping (Sancus (Peng et al., 2022)), 6 Na ¨ıve storage extension of full-graph training (ROC (Jia et al., 2020a)). We showed 6 only in Appendix X due to its GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+Table 1. Results of training time (min)/epoch.                                           
+
+> # nodes 2.4M 10M 100M
+> Method PRODUCTS IGBM PAPERS
+> |L| = 3
+> Limited  BETTY 0.61 28.71 GPU OOM
+> GINEX 9.00 GPU OOM 17.72 HONG TU0.17 6.46 Swap OOM
+> GRD 0.12 0.93 9.07
+> Dist.  CAGNET 0.21 1.41 ∗10.01 SANCUS 0.19 ∗0.77 ∗GPU OOM
+> |L| = 5
+> Limited  BETTY 1.05 GPU OOM GPU OOM
+> GINEX 15.10 GPU OOM GPU OOM
+> HONG TU0.32 14.90 Swap OOM
+> GRD 0.23 1.52 12.03
+> Dist.  CAGNET 0.38 2.10 ∗GPU OOM
+> SANCUS 0.36 ∗1.41 ∗GPU OOM
+> SANCUS : Non-exact full-graph (with staleness)
+
+Table 2. Training time (min)/epoch sensitivity for graph sizes with synthetic graphs. For results with ablation, see Appendix M.                     
+
+> # nodes 4.2M 8.4M 16.8M 33.6M
+> |L|=3  HONG TU0.43 0.83 7.25 36.31
+> GRD 0.29 0.59 1.93 3.73
+> |L|=5  HONG TU0.83 1.99 19.15 96.99
+> GRD 0.57 1.14 3.71 7.76
+
+much slower performance. In the appendix, we also tested two storage-based mini-batch training ( 7 DiskGNN (Liu et al., 2025), 8 GNNDrive (Jiang et al., 2024)) with micro-batch extension 2 (Appendix C). For out-of-memory issues in distributed baselines, we add host-memory checkpointing (∗) to enable execution. Since GriNNder does not change the training algorithm itself, GriNNder achieves equal final accuracy with all the baselines (see Appendix W) except 5 , which is non-exact due to its staleness. All baselines use the state-of-the-art partitioner MT-METIS (LaSalle & Karypis, 2013). For fairness, if MT-METIS exceeds our setting’s memory, we assume it was preprocessed elsewhere following standard practice, except for partitioning experi-ments. (Partitioning) We also compared switching-aware partitioning with other alternative lightweight partitioners. We chose Spinner (Martella et al., 2017) and 2PS-L (Mayer et al., 2022), a state-of-the-art out-of-core partitioner. 
+
+8.2 Large Graph Training Results 
+
+Table 1 presents per-epoch training time for GriNNder (GRD) compared to five baselines—Betty, Ginex, HongTu, CAGNET, and Sancus—using 3-/5-layer GCNs (hidden dimension 256) on Products, IGBM, and Papers. 
+
+> 2
+
+Since these systems are not designed for full-graph training workflows, extensions may deviate from their original performance characteristics. 
+
+Table 3. Sensitivity on effective cache size with ablation (train-ing time (min)/epoch). # hiddens |H|=384 |H|=512 |H|=1024                      
+
+> Method 0.75 $ S IZE 0.5 $ S IZE 0.25 $ S IZE
+> |L|=3  HONG TU12.53 18.67 39.32 GRD-G 1.20 1.51 20.68 GRD-GC 1.41 1.91 3.98
+> |L|=5  HONG TU25.07 31.81 93.42 GRD-G 10.26 12.50 42.14 GRD-GC 2.54 3.37 13.65
+
+Micro-Batch (Betty, Ginex) : Despite Betty’s memory-only design (no storage), GRD achieves up to 30.98 × faster training, largely due to Betty’s redundant computation from the message flow graph’s neighbor explosion. Ginex uses storage to extract message flow graphs, yet still suffers from the same issue, which GRD improves by up to 77.92 ×.
+
+Products (Medium) : Since HongTu can fit Products en-tirely in host memory, one might expect it to outperform storage-based GRD. In practice, HongTu’s redundant snap-shots slow it down, allowing GRD to beat it by 1.44/1.40 ×
+
+on 3-/5-layer GCNs. 
+
+IGBM (Large) : Micro-batch methods suffer from GPU OOM on deeper models—Betty/Ginex often cannot han-dle the neighbor explosion. HongTu must manage large volumes of data in host memory, drastically increasing over-head. In contrast, GRD is 6.97/9.78 × faster than HongTu with caching and non-redundancy. Even against multi-GPU CAGNET, GRD achieves 1.52/1.38 × speedup because the distributed baselines are bottlenecked by inter-server com-munication over a slow 10Gbps interconnect. 
+
+Papers (100M) : This highlights GRD’s scalability on larger datasets. Betty and Ginex often fail on deeper models with OOM from neighbor explosion, and HongTu fails from acti-vation snapshots. GRD avoids these with efficient caching and no redundant snapshots. Ginex can run the 3-layer model but is 1.95 × slower than GRD. Notably, GRD is faster than CAGNET (1.10 ×) despite using a single GPU. 
+
+Synthetic Graphs : In Table 2, we tested various-sized Kronecker graphs to validate scalability, where GriNNder provides stable speedup over HongTu (1.41–12.50 ×). 
+
+8.3 Ablation by Decreasing Effective Cache Size and Cache Hit Rate 
+
+Table 3 analyzes GriNNder ’s sensitivity to effective cache size by varying the hidden dimension on IGBM. We ablated GriNNder: HongTu, HongTu + grad-engine activation re-gathering (GRD-G), and GRD-G + partition-wise graph caching (GRD-GC). GriNNder outperforms HongTu by 6.84–12.34 ×. When host memory can cache most data (in 3 GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 0100 200 300 HongTu GRD-G GRD-GC Max. Mem. (GB) (a) Max. Host Memory Usage Dataload Act/Grad Snap. 0100 200 300 Init F0 F1 F2 B2 B1 B0 Mem. Usage (GB) (b) Host Memory Usage Timeline HongTu GRD-G GRD-GC  
+
+> GRD-G : +Grad-Engine Activation Regathering
+> GRD-GC : GRD-G + Cached Storage Offloading
+
+Figure 9. Host memory usage of GriNNder on the IGBM. 0 2 4 6            
+
+> 1.5
+> 2.0
+> 2.5
+> Expansion Ratio ( )
+> 210
+> GRD
+> Spinner
+> 2PS-L
+> 010 20 30 40
+> 4
+> 5
+> 6
+> 7
+> 8
+> Expansion Ratio ( )
+> 203
+> GRD
+> Spinner
+> 2PS-L
+> 010 20 30 40
+> 10
+> 15
+> 20
+> 25
+> Expansion Ratio ( )
+> 87
+> GRD
+> Spinner
+> 2PS-L
+> Time (sec) Time (sec) Time (min)
+> (a) Products (b) IGBM (c) Papers
+
+Figure 10. Time-to-quality comparison with alternatives on Prod-ucts (4 parts), IGBM (32 parts), and Papers (2048 parts). 
+
+layers), GRD-G alone provides sufficient performance ben-efits. However, in 5-layer settings, host memory becomes a bottleneck, making cache replacement crucial. Thus, GRD-GC gains 3.09–4.04 × speedup over GRD-G. Overall, GriN-Nder is robust on cache sizes. Also, we find that larger datasets have higher cache hit rates (53.70–92.77%) with more reuse from the higher #partitions in Appendix N. 
+
+8.4 Analysis on Host Memory Usage 
+
+Figure 9a shows an ablation study on how GriNNder re-duces host memory consumption. We compare GRD-G (i.e., HongTu + grad-engine activation regathering) and GRD-GC (GRD-G + partition-wise graph caching). For ablation pur-poses, GRD-GC imposes an explicit cache cap of one layer’s activations and gradients to demonstrate layer-wise caching on top of GRD-G. HongTu suffers from snapshots, while GRD-G eliminates them. GRD-GC’s layer-wise up/offload further cuts the peak usage from HongTu by 5.75 ×. Fig-ure 9b shows the host memory usage timeline. GRD-GC shows significantly lower memory usage over all timelines. 
+
+8.5 Analysis on Partitioning Algorithms Comparison with Alternatives and METIS : We compared the time-to-quality (i.e., expansion ratio α, lower is better) of switching-aware partitioning (GRD) with the famous streaming algorithm (Spinner) and state-of-the-art out-of-core partitioner (2PS-L (Mayer et al., 2022)) in Figure 10. We ran 50 iterations for GRD/Spinner and used the default setting for 2PS-L. GriNNder quickly and stably results in higher-quality partitions compared to the lightweight alter-natives. Furthermore, we compared the partition quality of switching-aware partitioning with METIS in Figure 11a for the same setup as Figure 10. While METIS achieves 0510 15 20 25 30 Quality ( α)(a) Partiton Quality METIS Random GRD 01000 2000 3000 Epoch Time (sec) (b) Partition Effect METIS Random Spinner GRD 00.5 11.5 22.5 31 2 3 4Norm. Speedup (c) #GPUs Scalability IGBM Papers #GPUs 
+
+Figure 11. Partitioning quality comparison, effect of partitioning on training time, and multi-GPU scalability. 
+
+Table 4. Memory usage (GB) of partitioning.                                 
+
+> Dataset Method Graph Part. Label Add. Total
+> PRODUCTS MT-METIS 1.01 0.01 9.93 10.95
+> GRD 1.01 0.01 0.52 1.54
+> IGBM MT-METIS 1.12 0.04 28.34 29.50
+> GRD 1.12 0.04 0.87 2.03
+> PAPERS MT-METIS 26.71 0.44 867.84 895.00
+> GRD 26.71 0.44 9.56 36.72
+
+modestly better quality, it requires prohibitive memory us-age – often exceeding available host memory for large graphs. Therefore, we use switching-aware partitioning when host memory is limited, as mentioned in Section 6. 
+
+Convergence and Practical Overhead : We also reported the trend of partitioning quality improvement (convergence) and practical overhead of switching-aware partitioning in Appendix O. We observed that at most 50 iterations are enough for convergence. Also, the practical overhead was only 0.07/0.02/0.39% of the total training time on Prod-ucts/IGBM/Papers, respectively. 
+
+Partitioning and Training Time : Among datasets, only Papers exceeded the host memory capacity. Partitioning it into 16 parts with MT-METIS triggers host swap due to its large memory demand and took 77.26 min, making switching-aware partitioning 10.51 × faster (7.35 min). We used #partitions=16 only in this experiment because MT-METIS showed out-of-time (over three hours) for the default #partitions=2048. Figure 11b evaluates how partitions affect the training of 3-layer GCNs on Products/IGBM. While MT-METIS with near-optimal partitions yields the shortest training time, it uses significantly more memory. GRD needs far less memory while improving training speed by 1.59 ×/2.80 × on Products/IGBM over random partitioning. Compared to Spinner, GRD provides better partitioning quality, thereby achieving up to a 1.20 × training speedup. 
+
+Memory Usage : Table 4 shows that GriNNder ’s partition-ing greatly reduces memory usage by 7.10–24.37 × com-pared to MT-METIS. MT-METIS requires additional mem-ory for partitioning-stage-wise intermediates. In contrast, switching-aware partitioning only needs O(|E|) extra space. We excluded Spinner from this comparison because we ported it from its cloud-based implementation to a single-GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 0.4 0.8 1.1 1.4 0.7 0.9 0.8 1.1 010 20 30 40 2 3 2 3GCN GAT Time/Epoch (min) (a) GCN/GAT, 2/3 Layers Betty Ginex Sancus CAGNET HongTu GRD OOM N/A OOM OOM OOM N/A 0510 15 3 5SAGE Time/Epoch (min) (b) SAGE 
+
+Figure 12. Sensitivity to model types and #layers. Sancus does not provide GAT staleness implementation (denoted by N/A). 
+
+server setup, applying GriNNder’s memory-optimized par-allelization in our evaluations to ensure a fair comparison. 
+
+8.6 Multi-GPU Scalability 
+
+While evaluations were mainly conducted on a single GPU environment to demonstrate how GriNNder breaks through the host/GPU memory limitations, GriNNder is extendable to multi-GPU environments. As discussed in Appendix P, GriNNder supports multi-GPU execution via partition par-allelism, where partitions are divided into disjoint sets, and each GPU processes its assigned set independently. Gra-dient synchronization is performed via CPU-side atomic vertex gradient accumulation and an all-reduce of weight gradients among GPUs before weight updates. We tested the multi-GPU scalability of GriNNder in Figure 11c. We excluded Products because it is too lightweight to be run on multiple GPUs. The speedup is scalable to the number of GPUs, but some overhead is incurred due to the system’s shared resources—host memory and storage bandwidth. 
+
+8.7 Sensitivity to Model, Number of Layers, and Partition Configuration 
+
+Figure 12 shows the comparison on other models (GAT (Veli ˇckovi ´c et al., 2018) and GraphSAGE (Hamil-ton et al., 2017)) and other numbers of layers, using IGBM. GriNNder maintains consistent and significant speedups over baselines, demonstrating its efficiency beyond GCN and across varying numbers of layers. GriNNder can also be extended for heterogeneous GNNs, showing stable perfor-mance (Appendix R). We examine the impact of #partitions configuration in Appendix Q. Compared to HongTu, from the efficient caching and redundancy elimination, GriNNder is much more robust to the #partitions. 
+
+8.8 Overhead of Regathering and Recomputation 
+
+We quantify recomputation/regathering overheads in Fig-ure 13a, showing the time breakdown of a single backward pass for one partition at an intermediate layer in a 3-layer GCN on IGBM. Since host-GPU transfer dominates, re-gather accounts for 4.88%, and recompute 5.69% of the backward pass. Importantly, while measurable at the per-partition level, their impact on end-to-end training time is largely hidden by I/O overlap, as shown in Figure 17. 34.2 29.3 58.9 478.1 0 250 500 750 Recomp. Regather BW Comp. Trasfer Time (ms) 0510 15 20 Gen4 Gen5 RAID Time (min)  HongTu GRD (a) BW Time Breakdown (b) Bandwidth Sensitivity 
+
+Figure 13. Profile of regather/recompute in the backward pass and SSD bandwidth sensitivity on training time/epoch. 
+
+8.9 Storage Bandwidth and Endurance Analysis Sensitivity to Storage Bandwidth. We evaluate SSD band-width sensitivity in Figure 13b with PCIe Gen. 4 SSD ( ∼7GB/s read/write), PCIe Gen. 5 SSD (original, ∼12 GB/s read/write), and RAID5 (8× Intel D7-P5520 SSDs, ∼56.8 GB/s read, ∼25.9 GB/s write). With lower-bandwidth SSDs, GriNNder remains robust, achieving significant speedup over HongTu. With near-DRAM bandwidth, speedup is not proportional to the bandwidth increase because GriNNder’s caching shifts the bottleneck to host-GPU communication. 
+
+SSD Write Volume and Endurance. We quantify SSD writes for GriNNder and HongTu using a 3-layer GCN trained on IGBM/Papers with the actual write profiles mea-sured by smartmontools (smartmontools developers, 2025). HongTu writes 192.4GB/2.35TB and GriNNder writes 2.1GB/647.2GB per epoch on IGBM/Papers, respec-tively. GriNNder incurs significantly fewer writes than HongTu on IGBM through hierarchical caching that priori-tizes host memory and redundancy elimination. On Papers, GriNNder shows higher writes due to limited host memory relative to graph size, but given that we can achieve full ac-curacy with 100 epochs (Appendix W), a total of 64.72TB of writes is required – only 0.23% of the endurance of a single Intel D7-P5520 SSD ( ∼28PBW) and 0.033% for our 8-SSD RAID5 setup ( ∼196PBW). Write volume can be further reduced via staleness techniques (Peng et al., 2022) (e.g., 2 × reduction with single-step staleness), gradient com-pression techniques (Vogels et al., 2019; Song et al., 2023), or sparsity-based compression (Yoo et al., 2023). 
+
+## 9 DISCUSSION 
+
+9.1 Distributed Baselines on Modern Hardware 
+
+In main evaluations, the distributed baselines are primarily network-bottlenecked due to their broadcast pattern, and 10Gbps interconnect. As a further discussion, we analyti-cally project distributed baselines for modern hardware as follows. We estimate CAGNET’s performance with Infini-Band HDR (200Gbps) on IGBM 3-layer, where CAGNET and GriNNder achieve 1.41 and 0.93 minutes/epoch (Ta-ble 1). Profiling on CAGNET shows that 80% of the execu-tion time is from communication and 20% is from compu-tation and static overheads. With 20 × bandwidth improve-ment (10Gbps −→ 200Gbps), the execution time of CAGNET GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+can be projected as 0.338 minutes. Therefore, the projected speedup of CAGNET over GriNNder is 2.75 ×. This as-sumes perfect bandwidth scaling and zero latency overhead – an optimistic upper bound favoring the distributed baseline. In the actual execution of GNN training, the broadcast op-eration is also affected by intra-server communication and would not scale perfectly. In terms of costs, a four-server 16-GPU A6000 cluster with InfiniBand HDR costs ∼$132K, while our single A5000 workstation costs ∼$3.3K (40 × less expensive). While modern hardware can yield faster training as mentioned, GriNNder provides a cost-effective solution for resource-constrained settings where high-performance clusters are unavailable or prohibitively expensive. 
+
+9.2 Host Memory Caching of Hot Vertices 
+
+Host memory caching of hot vertices could reduce I/O by keeping frequently accessed activations in host memory. However, GriNNder’s caching operates at the partition level because hot-vertex caching requires vertex-level manage-ment, which incurs fine-grained storage access and read am-plification due to storage-page granularity (see Appendix F). For power-law graphs, these overheads are expected to out-weigh the benefits: although hot vertices are few, they are scattered across partitions, requiring fine-grained accesses. Nevertheless, carefully combining partition-level caching with hot-vertex awareness is a promising future direction. 
+
+9.3 Motivation for Single-GPU Training 
+
+Unlike transformer training, which benefits from arithmetic-intensive operators that parallelize efficiently across GPUs, full-graph GNN training is dominated by highly irregular, fine-grained graph memory accesses. Under such condi-tions, adding GPUs introduces high synchronization and communication costs, resulting in low scaling efficiency. Although multi-GPU settings could be faster on high-speed interconnects, such inefficiency makes single-GPU solu-tions appealing for GNN training. Furthermore, single-GPU approaches for LLMs remain actively studied (Sheng et al., 2023; Rajbhandari et al., 2021; Dettmers et al., 2023; Jang et al., 2026) as a low-cost solution. 
+
+## 10 RELATED WORK 
+
+Full-Graph GNN Training. Full-graph training processes entire graphs without sampling, preserving complete in-put information (Wan et al., 2022b; Jia et al., 2020a; Wan et al., 2022a; Ma et al., 2019). Distributed systems (Peng et al., 2022; Tripathy et al., 2020; Liu et al., 2021b; Wang et al., 2022a) incur substantial communication overhead and require expensive multi-GPU clusters. Single-server methods (Yang et al., 2023; Wang et al., 2023a) remain con-strained by GPU/host memory capacity. Hardware accelera-tion (Zhou et al., 2022; Kwon et al., 2022; An et al., 2023) requires specialized devices. GriNNder breaks the memory capacity wall using commodity systems with NVMe SSDs. 
+
+Storage-Based GNN Training. Prior systems (Park et al., 2022; Liu et al., 2025; Jiang et al., 2024; Waleffe et al., 2023; Sun et al., 2023b) target subgraph-based training, managing initial features on storage for sampled subgraphs that fit in GPU memory. Full-graph training presents fundamen-tally different requirements, and GriNNder addresses them through caching and regathering-based gradient engine. 
+
+Activation Management. Checkpointing (i.e., snapshot-ting) (Chen et al., 2016; Mohan et al., 2021; Gupta et al., 2024) trades computation with memory. LLM works (Rajb-handari et al., 2021; Sheng et al., 2023) extend this through activation offloading. However, LLM activations exhibit se-quential layer dependencies enabling straightforward layer-by-layer management, while GNNs exhibit graph-structured dependencies requiring gathering from multiple partitions based on topology. Prior GNN checkpointing (Zhang et al., 2022; Wang et al., 2023a; Jia et al., 2020b) targets in-memory scenarios, introduces massive storage redundancy, or addresses only computational redundancy. GriNNder introduces a regathering mechanism to reduce storage I/O. 
+
+Graph Partitioning. METIS (Karypis & Kumar, 1998), adopted in various works (Wan et al., 2022b; Peng et al., 2022; Liu et al., 2021b), requires memory up to 13.8 × the input graph size (Kaur & Gupta, 2021), precluding its use in memory-limited settings. Alternatives (Ma et al., 2019; Ech-barthi & Kheddouci, 2016; Tsourakakis et al., 2014) assume sufficient memory (e.g., cloud environments) or produce lower-quality partitions. GriNNder’s lightweight partition-ing operates with only a small working set of memory. 
+
+## 11 CONCLUSION 
+
+To our knowledge, GriNNder is the first to break the GPU and host memory capacity wall of full-graph GNN training with storage offloading. GriNNder introduces structured storage offloading, a general framework for managing the GPU-host-storage memory hierarchy through coordinated cache, regather, and bypass mechanisms. Its co-designed optimizations based on structured storage offloading enable up to 9.78 × speedup over state-of-the-art baselines and throughput comparable to distributed systems. 
+
+## ACKNOWLEDGEMENTS 
+
+This work was primarily supported by Samsung Electron-ics. Jinho Lee is also funded by the National Research Foundation of Korea (NRF) grant funded by the Korea gov-ernment (MSIT) (RS-2026-25495605), and Institute of In-formation & communications Technology Planning & Eval-uation (IITP) (RS-2024-00395134, RS-2024-00347394). GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+## REFERENCES 
+
+aio. AIO, 2018. https://pagure.io/libaio , vis-ited on 2024-05-22. Akhremtsev, Y., Heuer, T., Sanders, P., and Schlag, S. Engi-neering a direct k-way hypergraph partitioning algorithm. In Workshop on Algorithm Engineering and Experiments (ALENEX) , 2017. An, J., Aliaj, E., and Jun, S.-W. Barad-dur: Near-storage accelerator for training large graph neural networks. In 
+
+International Conference on Parallel Architectures and Compilation Techniques (PACT) , 2023. Bajaj, S., Son, H., Liu, J., Guan, H., and Serafini, M. Graph Neural Network Training Systems: A Performance Com-parison of Full-Graph and Mini-Batch. Proceedings of the VLDB Endowment (VLDB) , 2025. Bulo, S. R., Porzi, L., and Kontschieder, P. In-place acti-vated batchnorm for memory-optimized training of dnns. In IEEE conference on computer vision and pattern recog-nition (CVPR) , 2018. Chakaravarthy, V. T., Pandian, S. S., Raje, S., Sabharwal, Y., Suzumura, T., and Ubaru, S. Efficient scaling of dynamic graph neural networks. In International Conference for High Performance Computing, Networking, Storage and Analysis (SC) , 2021. Chakrabarti, A. and Moseley, B. Backprop with approx-imate activations for memory-efficient network train-ing. Advances in Neural Information Processing Systems (NeurIPS) , 2019. Chen, C., Wu, Y., Dai, Q., Zhou, H.-Y., Xu, M., Yang, S., Han, X., and Yu, Y. A survey on graph neural net-works and graph transformers in computer vision: A task-oriented perspective. IEEE Transactions on Pattern Analysis and Machine Intelligence , 2024. Chen, H., Liu, M., Zhao, Y., Yan, X., Yan, D., and Cheng, J. G-Miner: an efficient task-oriented graph mining system. In European Conference on Computer Systems (EuroSys) ,2018. Chen, T., Xu, B., Zhang, C., and Guestrin, C. Training deep nets with sublinear memory cost. arXiv preprint arXiv:1604.06174 , 2016. Choi, K., Hong, D., Park, N., Kim, Y., and Lee, J. Qimera: Data-free quantization with synthetic boundary support-ing samples. Advances in Neural Information Processing Systems (NeurIPS) , 2021. Choi, K., Lee, H. Y., Hong, D., Yu, J., Park, N., Kim, Y., and Lee, J. It’s all in the teacher: Zero-shot quantization brought closer to the teacher. In IEEE/CVF conference on computer vision and pattern recognition (CVPR) , 2022. Courbariaux, M., Bengio, Y., and David, J.-P. Binarycon-nect: Training deep neural networks with binary weights during propagations. Advances in neural information processing systems (NeurIPS) , 2015. Davis, T. A., Hager, W. W., Kolodziej, S. P., and Yeralan, S. N. Algorithm 1003: Mongoose, a Graph Coarsening and Partitioning Library. ACM Transactions on Mathe-matical Software , 2020. Demirci, G. V., Haldar, A., and Ferhatosmanoglu, H. Scalable Graph Convolutional Network Training on Distributed-Memory Systems. Proceedings of the VLDB Endowment (VLDB) , 2022. Dettmers, T., Pagnoni, A., Holtzman, A., and Zettlemoyer, L. Qlora: efficient finetuning of quantized llms. In Advances in Neural Information Processing Systems (NeurIPS) ,2023. Dong, J., Zheng, D., Yang, L. F., and Karypis, G. Global neighbor sampling for mixed cpu-gpu training on giant graphs. In ACM SIGKDD Conference on Knowledge Discovery and Data Mining (KDD) , 2021. Echbarthi, G. and Kheddouci, H. Streaming METIS partitioning. In IEEE/ACM International Conference on Advances in Social Networks Analysis and Mining (ASONAM) , 2016. Eisenman, A., Matam, K. K., Ingram, S., Mudigere, D., Krishnamoorthi, R., Nair, K., Smelyanskiy, M., and An-navaram, M. Check-N-Run: A checkpointing system for training deep learning recommendation models. In 
+
+USENIX Symposium on Networked Systems Design and Implementation (NSDI) , 2022. Eyerman, S., Eeckhout, L., Karkhanis, T., and Smith, J. E. A performance counter architecture for computing ac-curate cpi components. In International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS) , 2006. Fang, G., Ma, X., Song, M., Mi, M. B., and Wang, X. Depgraph: Towards any structural pruning. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2023. Fey, M. and Lenssen, J. E. Fast graph representation learn-ing with pytorch geometric. ICLR Workshop on Repre-sentation Learning on Graphs and Manifolds (ICLRW) ,2019. Fey, M., Lenssen, J. E., Weichert, F., and Leskovec, J. GN-NAutoScale: Scalable and expressive graph neural net-works via historical embeddings. In International Con-ference on Machine Learning (ICML) , 2021. GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+Frasca, F., Rossi, E., Eynard, D., Chamberlain, B., Bron-stein, M., and Monti, F. Sign: Scalable inception graph neural networks. arXiv preprint arXiv:2004.11198 , 2020. Gandhi, S. and Iyer, A. P. P3: Distributed deep graph learning at scale. In USENIX Symposium on Operating Systems Design and Implementation (OSDI) , 2021. Gomez, A. N., Ren, M., Urtasun, R., and Grosse, R. B. The reversible residual network: Backpropagation with-out storing activations. Advances in neural information processing systems (NeurIPS) , 2017. Gruslys, A., Munos, R., Danihelka, I., Lanctot, M., and Graves, A. Memory-efficient backpropagation through time. Advances in neural information processing systems (NeurIPS) , 2016. Gupta, T., Krishnan, S., Kumar, R., Vijeev, A., Gulavani, B., Kwatra, N., Ramjee, R., and Sivathanu, M. Just-In-Time Checkpointing: Low Cost Error Recovery from Deep Learning Training Failures. In European Conference on Computer Systems (EuroSys) , 2024. Hamilton, W., Ying, Z., and Leskovec, J. Inductive repre-sentation learning on large graphs. In Advances in Neural Information Processing Systems (NeurIPS) , 2017. Han, S., Mao, H., and Dally, W. J. Deep compression: Compressing deep neural networks with pruning, trained quantization and huffman coding. In International Con-ference on Learning Representations (ICLR) , 2016. He, Y., Zhang, X., and Sun, J. Channel pruning for acceler-ating very deep neural networks. In IEEE international conference on computer vision (ICCV) , 2017. He, Y., Liu, P., Wang, Z., Hu, Z., and Yang, Y. Filter prun-ing via geometric median for deep convolutional neural networks acceleration. In IEEE/CVF conference on com-puter vision and pattern recognition (CVPR) , 2019. Heuer, T. and Schlag, S. Improving coarsening schemes for hypergraph partitioning by exploiting community struc-ture. In International symposium on experimental algo-rithms (SEA) , 2017. Hu, W., Fey, M., Zitnik, M., Dong, Y., Ren, H., Liu, B., Catasta, M., and Leskovec, J. Open graph benchmark: Datasets for machine learning on graphs. In Advances in Neural Information Processing Systems (NeurIPS) , 2020. Huang, W., Zhang, T., Rong, Y., and Huang, J. Adap-tive sampling towards fast graph representation learn-ing. Advances in neural information processing systems (NeurIPS) , 2018. Jang, H., Song, J., Shin, C., Noh, S. U., Jung, J., Park, J., and Lee, J. A cost-effective near-storage processing solu-tion for offline inference of long-context llms. In ACM International Conference on Architectural Support for Programming Languages and Operating Systems (ASP-LOS) , 2026. Jia, Z., Kwon, Y., Shipman, G., McCormick, P., Erez, M., and Aiken, A. A distributed multi-GPU system for fast graph processing. Proceedings of the VLDB Endowment (VLDB) , 2017. Jia, Z., Lin, S., Gao, M., Zaharia, M., and Aiken, A. Improv-ing the Accuracy, Scalability, and Performance of Graph Neural Networks with Roc. In Conference on Machine Learning and Systems (MLSys) , 2020a. Jia, Z., Lin, S., Ying, R., You, J., Leskovec, J., and Aiken, A. Redundancy-free computation for graph neural net-works. In ACM SIGKDD International Conference on Knowledge Discovery and Data Mining (KDD) , 2020b. Jiang, J., Xiao, P., Yu, L., Li, X., Cheng, J., Miao, X., Zhang, Z., and Cui, B. PSGraph: How Tencent trains extremely large-scale graphs with Spark? In International Conference on Data Engineering (ICDE) , 2020. Jiang, Q., Jia, L., and Wang, C. Gnndrive: Reducing mem-ory contention and i/o congestion for disk-based gnn train-ing. In International Conference on Parallel Processing (ICPP) , 2024. Kaler, T., Stathas, N., Ouyang, A., Iliopoulos, A.-S., Schardl, T., Leiserson, C. E., and Chen, J. Accelerating training and inference of graph neural networks with fast sampling and pipelining. In Conference on Machine Learning and Systems (MLSys) , 2022. Kaler, T., Iliopoulos, A.-S., Murzynowski, P., Schardl, T. B., Leiserson, C. E., and Chen, J. Communication-efficient graph neural networks with probabilistic neighborhood expansion analysis and caching. In Conference on Ma-chine Learning and Systems (MLSys) , 2023. Karypis, G. and Kumar, V. A fast and high quality multilevel scheme for partitioning irregular graphs. SIAM Journal on scientific Computing , 1998. Karypis, G. and Kumar, V. Multilevel k-way hypergraph partitioning. In ACM/IEEE design automation conference (VLSI Design) , 1999. Karypis, G., Schloegel, K., and Kumar, V. Parmetis: Paral-lel graph partitioning and sparse matrix ordering library. Technical report, University of Minnesota, 1997. GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+Kaur, G. and Gupta, R. GO: Out-Of-Core Partitioning of Large Irregular Graphs. In IEEE International Confer-ence on Networking, Architecture and Storage (NAS) ,2021. Khatua, A., Mailthody, V. S., Taleka, B., Ma, T., Song, X., and Hwu, W.-m. Igb: Addressing the gaps in labeling, features, heterogeneity, and size of public graph datasets for deep learning research. In ACM SIGKDD Conference on Knowledge Discovery and Data Mining (KDD) , 2023. Kipf, T. N. and Welling, M. Semi-supervised classifica-tion with graph convolutional networks. arXiv preprint arXiv:1609.02907 , 2016. kvikio. Kvikio, 2024. https://github.com/ rapidsai/kvikio , visited on 2024-05-22. Kwon, M., Gouk, D., Lee, S., and Jung, M. Hard-ware/Software Co-Programmable framework for com-putational SSDs to accelerate deep learning service on Large-Scale graphs. In USENIX Conference on File and Storage Technologies (FAST) , 2022. LaSalle, D. and Karypis, G. Multi-threaded graph partition-ing. In IEEE International Symposium on Parallel and Distributed Processing (IPDPS) , 2013. Lee, Y., Kwon, Y., and Rhu, M. Understanding the implica-tion of non-volatile memory for large-scale graph neural network training. IEEE Computer Architecture Letters (CAL) , 20(2):118–121, 2021. Leskovec, J., Kleinberg, J., and Faloutsos, C. Graphs over time: Densification laws, shrinking diameters and pos-sible explanations. In ACM SIGKDD Conference on Knowledge Discovery and Data Mining (KDD) , 2005. Leskovec, J., Chakrabarti, D., Kleinberg, J., Faloutsos, C., and Ghahramani, Z. Kronecker graphs: An approach to modeling networks. JMLR , 2010. Lin, D., Talathi, S., and Annapureddy, S. Fixed point quan-tization of deep convolutional networks. In International conference on machine learning (ICML) , 2016. Lin, Z., Li, C., Miao, Y., Liu, Y., and Xu, Y. Pagraph: Scaling gnn training on large graphs via computation-aware caching. In ACM Symposium on Cloud Computing (SoCC) , 2020. Liu, L., Zhang, S., Kuang, Z., Zhou, A., Xue, J.-H., Wang, X., Chen, Y., Yang, W., Liao, Q., and Zhang, W. Group fisher pruning for practical network compression. In 
+
+International Conference on Machine Learning (ICML) ,2021a. Liu, R., Wang, Y., Yan, X., Jiang, H., Cai, Z., Wang, M., Tang, B., and Li, J. Diskgnn: Bridging i/o efficiency and model accuracy for out-of-core gnn training. In Interna-tional Conference on Management of Data (SIGMOD) ,2025. Liu, T., Chen, Y., Li, D., Wu, C., Zhu, Y., He, J., Peng, Y., Chen, H., Chen, H., and Guo, C. Bgl: Gpu-efficient gnn training by optimizing graph data i/o and preprocessing. 
+
+arXiv preprint arXiv:2112.08541 , 2021b. Liu, Z., Zhou, K., Yang, F., Li, L., Chen, R., and Hu, X. EX-ACT: Scalable graph neural networks training via extreme activation compression. In International Conference on Learning Representations (ICLR) , 2022. Ma, L., Yang, Z., Miao, Y., Xue, J., Wu, M., Zhou, L., and Dai, Y. Neugraph: Parallel deep neural network com-putation on large graphs. In USENIX Annual Technical Conference (ATC) , 2019. Malewicz, G., Austern, M. H., Bik, A. J., Dehnert, J. C., Horn, I., Leiser, N., and Czajkowski, G. Pregel: a sys-tem for large-scale graph processing. In International Conference on Management of Data (SIGMOD) , 2010. Martella, C., Logothetis, D., Loukas, A., and Siganos, G. Spinner: Scalable Graph Partitioning in the Cloud. In 
+
+IEEE International Conference on Data Engineering (ICDE) , 2017. Mayer, R., Orujzade, K., and Jacobsen, H.-A. Out-of-core edge partitioning at linear run-time. In International Conference on Data Engineering (ICDE) , 2022. Mohan, J., Phanishayee, A., and Chidambaram, V. Check-Freq: Frequent,Fine-Grained DNN Checkpointing. In 
+
+USENIX Conference on File and Storage Technologies (FAST) , 2021. Nicolae, B., Li, J., Wozniak, J. M., Bosilca, G., Dorier, M., and Cappello, F. Deepfreeze: Towards scalable asyn-chronous checkpointing of deep learning models. In 
+
+IEEE/ACM International Symposium on Cluster, Cloud and Internet Computing (CCGRID) , 2020. NVIDIA. GPUDirect Storage, 2021. 
+
+https://developer.nvidia.com/ gpudirect-storage ,visited on 2024-05-22. NVIDIA. InfiniBand Network, 2023a. https: //docs.nvidia.com/networking/ display/MLNXOFEDv493150/InfiniBand+ Network ,visited on 2023-01-30. NVIDIA. NVLink Bridge, 2023b. 
+
+https://www.nvidia.com/ en-us/design-visualization/ nvlink-bridges/ ,visited on 2023-06-01. GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+Park, Y., Min, S., and Lee, J. W. Ginex: SSD-enabled billion-scale graph neural network training on a single machine via provably optimal in-memory caching. Proceedings of the VLDB Endowment (VLDB) , 2022. Paszke, A., Gross, S., Chintala, S., and Chanan, G. PyTorch: Tensors and dynamic neural networks in python with strong gpu acceleration. PyTorch , 2017. Peng, J., Chen, Z., Shao, Y., Shen, Y., Chen, L., and Cao, J. Sancus: Staleness-Aware Communication-Avoiding Full-Graph Decentralized Training in Large-Scale Graph Neural Networks. Proceedings of the VLDB Endowment (VLDB) , 2022. pybind11. pybind11, 2024. https://github.com/ pybind/pybind11 , visited on 2024-05-22. Raghavan, U. N., Albert, R., and Kumara, S. Near linear time algorithm to detect community structures in large-scale networks. Physical review E , 2007. Rajbhandari, S., Ruwase, O., Rasley, J., Smith, S., and He, Y. Zero-infinity: Breaking the gpu memory wall for extreme scale deep learning. In International Conference for High Performance Computing, Networking, Storage and Analysis (SC) , 2021. R ´eau, M., Renaud, N., Xue, L. C., and Bonvin, A. M. Deeprank-gnn: a graph neural network framework to learn patterns in protein–protein interfaces. Bioinformat-ics , 2023. Sanh, V., Wolf, T., and Rush, A. Movement pruning: Adap-tive sparsity by fine-tuning. Advances in neural informa-tion processing systems (NeurIPS) , 2020. Sharma, K., Lee, Y.-C., Nambi, S., Salian, A., Shah, S., Kim, S.-W., and Kumar, S. A survey of graph neural net-works for social recommender systems. ACM Computing Surveys , 2024. Shaydulin, R. and Safro, I. Aggregative coarsening for multilevel hypergraph partitioning. arXiv preprint arXiv:1802.09610 , 2018. Shen, S., Dong, Z., Ye, J., Ma, L., Yao, Z., Gholami, A., Mahoney, M. W., and Keutzer, K. Q-bert: Hessian based ultra low precision quantization of bert. In AAAI Confer-ence on Artificial Intelligence (AAAI) , 2020. Sheng, Y., Zheng, L., Yuan, B., Li, Z., Ryabinin, M., Chen, B., Liang, P., R ´e, C., Stoica, I., and Zhang, C. Flexgen: High-throughput generative inference of large language models with a single gpu. In International Conference on Machine Learning (ICML) , 2023. Shi, Z., Liang, X., and Wang, J. LMC: Fast training of GNNs via subgraph sampling with provable convergence. In International Conference on Learning Representations (ICLR) , 2023. smartmontools developers. smartmontools. https:// www.smartmontools.org , 2025. Song, J., Yim, J., Jung, J., Jang, H., Kim, H.-J., Kim, Y., and Lee, J. Optimus-cc: Efficient large nlp model training with 3d parallelism aware communication compression. In ACM International Conference on Architectural Sup-port for Programming Languages and Operating Systems (ASPLOS) , 2023. Song, J., Jang, H., Lim, H., Jung, J., Kim, Y., and Lee, J. Granndis: Fast distributed graph neural network training framework for multi-server clusters. In International Conference on Parallel Architectures and Compilation Techniques (PACT) , 2024. Song, X., Lian, J., Huang, H., Wu, M., Jin, H., and Xie, X. Friend Recommendations with Self-Rescaling Graph Neural Networks. In ACM SIGKDD Conference on Knowledge Discovery and Data Mining (KDD) , 2022. Stanton, I. and Kliot, G. Streaming graph partitioning for large distributed graphs. In ACM SIGKDD international conference on Knowledge discovery and data mining (KDD) , 2012. Sun, J., Su, L., Shi, Z., Shen, W., Wang, Z., Wang, L., Zhang, J., Li, Y., Yu, W., Zhou, J., et al. Legion: Auto-matically Pushing the Envelope of Multi-GPU System for Billion-Scale GNN Training. In USENIX Annual Technical Conference (ATC) , 2023a. Sun, J., Sun, M., Zhang, Z., Xie, J., Shi, Z., Yang, Z., Zhang, J., Wu, F., and Wang, Z. Helios: An Efficient Out-of-core GNN Training System on Terabyte-scale Graphs with In-memory Performance. arXiv preprint arXiv:2310.00837 ,2023b. tensornvme. tensorNVMe, 2023. https://github. com/hpcaitech/TensorNVMe , visited on 2024-05-22. Thorpe, J., Qiao, Y., Eyolfson, J., Teng, S., Hu, G., Jia, Z., Wei, J., Vora, K., Netravali, R., Kim, M., and Xu, G. H. Dorylus: Affordable, Scalable, and Accurate GNN Training with Distributed CPU Servers and Serverless Threads. In USENIX Symposium on Operating Systems Design and Implementation (OSDI) , 2021. Tripathy, A., Yelick, K., and Bulu c¸ , A. Reducing Com-munication in Graph Neural Network Training. In Inter-national Conference for High Performance Computing, Networking, Storage and Analysis (SC) , 2020. GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+Tsourakakis, C., Gkantsidis, C., Radunovic, B., and Vo-jnovic, M. FENNEL: streaming graph partitioning for massive scale graphs. In ACM International Conference on Web Search and Data Mining (WSDM) , 2014. Veli ˇckovi ´c, P., Cucurull, G., Casanova, A., Romero, A., Li `o, P., and Bengio, Y. Graph attention networks. In 
+
+International Conference on Learning Representations (ICLR) , 2018. Vogels, T., Karimireddy, S. P., and Jaggi, M. Powersgd: practical low-rank gradient compression for distributed optimization. In Advances in Neural Information Pro-cessing Systems (NeurIPS) , 2019. Waleffe, R., Mohoney, J., Rekatsinas, T., and Venkataraman, S. MariusGNN: Resource-Efficient Out-of-Core Training of Graph Neural Networks. In European Conference on Computer Systems (EuroSys) , 2023. Wan, C., Li, Y., Li, A., Kim, N. S., and Lin, Y. BNS-GCN: Efficient Full-Graph Training of Graph Convolutional Networks with Partition-Parallelism and Random Bound-ary Node Sampling. In Conference on Machine Learning and Systems (MLSys) , 2022a. Wan, C., Li, Y., Wolfe, C. R., Kyrillidis, A., Kim, N. S., and Lin, Y. PipeGCN: Efficient Full-Graph Training of Graph Convolutional Networks with Pipelined Feature Com-munication. In International Conference on Learning Representations (ICLR) , 2022b. Wan, X., Xu, K., Liao, X., Jin, Y., Chen, K., and Jin, X. Scalable and efficient full-graph gnn training for large graphs. In International Conference on Management of Data (SIGMOD) , 2023. Wang, Q., Zhang, Y., Wang, H., Chen, C., Zhang, X., and Yu, G. NeutronStar: Distributed GNN Training with Hybrid Dependency Management. In International Conference on Management of Data (SIGMOD) , 2022a. Wang, Q., Chen, Y., Wong, W.-F., and He, B. HongTu: Scalable Full-Graph GNN Training on Multiple GPUs. 
+
+Proceedings of the ACM on Management of Data (PACM-MOD) , 2023a. Wang, Z., Kuang, W., Xie, Y., Yao, L., Li, Y., Ding, B., and Zhou, J. Federatedscope-gnn: Towards a unified, comprehensive and efficient package for federated graph learning. In ACM SIGKDD Conference on Knowledge Discovery and Data Mining (KDD) , 2022b. Wang, Z., Jia, Z., Zheng, S., Zhang, Z., Fu, X., Ng, T. E., and Wang, Y. Gemini: Fast failure recovery in distributed training with in-memory checkpoints. In Proceedings of the 29th Symposium on Operating Systems Principles (SOSP) , 2023b. Watts, D. and Strogatz, S. Collective dynamics of ‘small-world’ networks. Nature , 1998. Yang, J., Tang, D., Song, X., Wang, L., Yin, Q., Chen, R., Yu, W., and Zhou, J. Gnnlab: A factored system for sample-based gnn training over gpus. In European Conference on Computer Systems (EuroSys) , 2022. Yang, S., Zhang, M., Dong, W., and Li, D. Betty: Enabling Large-Scale GNN Training with Batch-Level Graph Par-titioning. In ACM International Conference on Architec-tural Support for Programming Languages and Operating Systems (ASPLOS) , 2023. Ying, R., He, R., Chen, K., Eksombatchai, P., Hamilton, W. L., and Leskovec, J. Graph Convolutional Neural Net-works for Web-Scale Recommender Systems. In ACM SIGKDD International Conference on Knowledge Dis-covery Data Mining (KDD) , 2018. Yoo, M., Song, J., Lee, J., Kim, N., Kim, Y., and Lee, J. SGCN: Exploiting Compressed-Sparse Features in Deep Graph Convolutional Network Accelerators . In IEEE In-ternational Symposium on High-Performance Computer Architecture (HPCA) , 2023. Zeng, H., Zhou, H., Srivastava, A., Kannan, R., and Prasanna, V. K. Graphsaint: Graph sampling based in-ductive learning method. In International Conference on Learning Representations (ICLR) , 2020. Zhang, D., Huang, X., Liu, Z., Zhou, J., Hu, Z., Song, X., Ge, Z., Wang, L., Zhang, Z., and Qi, Y. AGL: A Scalable System for Industrial-Purpose Graph Machine Learning. 
+
+Proceedings of the VLDB Endowment (VLDB) , 2020. Zhang, H., Yu, Z., Dai, G., Huang, G., Ding, Y., Xie, Y., and Wang, Y. Understanding gnn computational graph: A coordinated computation, io, and memory perspective. 
+
+Proceedings of Machine Learning and Systems (MLSys) ,2022. Zhang, R., Javaheripi, M., Ghodsi, Z., Bleiweiss, A., and Koushanfar, F. AdaGL: Adaptive Learning for Agile Distributed Training of Gigantic GNNs. In ACM/IEEE Design Automation Conference (DAC) , 2023. Zheng, D., Ma, C., Wang, M., Zhou, J., Su, Q., Song, X., Gan, Q., Zhang, Z., and Karypis, G. DistDGL: Dis-tributed Graph Neural Network Training for Billion-Scale Graphs. arXiv preprint arXiv:2010.05337 , 2020. Zheng, D., Song, X., Yang, C., LaSalle, D., and Karypis, G. Distributed hybrid cpu and gpu training for graph neural networks on billion-scale heterogeneous graphs. In ACM SIGKDD Conference on Knowledge Discovery and Data Mining (KDD) , 2022. GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+Zhou, S., Wu, Y., Ni, Z., Zhou, X., Wen, H., and Zou, Y. Dorefa-net: Training low bitwidth convolutional neural networks with low bitwidth gradients. arXiv preprint arXiv:1606.06160 , 2016. Zhou, Z., Li, C., Wei, X., Wang, X., and Sun, G. Gn-near: Accelerating full-batch training of graph neural networks with near-memory processing. In International Conference on Parallel Architectures and Compilation Techniques (PACT) , 2022. Zhu, R., Zhao, K., Yang, H., Lin, W., Zhou, C., Ai, B., Li, Y., and Zhou, J. Aligraph: A comprehensive graph neural network platform. Proceedings of the VLDB Endowment (VLDB) , 2019. Zhu, X. and Ghahramani, Z. Learning from Labeled and Unlabeled Data with Label Propagation. Technical report, Carnegie Mellon University, 2002. Zhuang, B., Shen, C., Tan, M., Liu, L., and Reid, I. Towards effective low-bitwidth convolutional neural networks. In 
+
+IEEE conference on computer vision and pattern recogni-tion (CVPR) , 2018. GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+## A SURVEY OF CONFERENCES ’SUBMISSION ON GNN D OMAINS 
+
+In our survey of NeurIPS/ICML/ICLR 2024 papers, a to-tal of 76 papers are related to GNN domains. In 76 pa-pers, 44.7% (34 papers) used full-graph training, and among them, 38.2% (13 papers) directly reported out-of-memory. In terms of experimental environments, a total of 62 pa-pers reported their GPU environments, and 45 papers uti-lized a single GPU (72.6%). Also, some papers with full-graph training directly stated that larger-sized datasets can incur out-of-memory when running their experiments. This shows the importance of enabling full-graph training of large graphs under limited resources (e.g., a single GPU). 
+
+## B LIMITATIONS OF EXISTING 
+
+## FULL -G RAPH TRAINING METHODS 
+
+Full-graph GNN training processes all vertices’ activations and gradients in a single pass, requiring substantial memory. 
+
+Distributed Training: Distributed full-graph training (Tri-pathy et al., 2020; Peng et al., 2022; Jia et al., 2020a; Wan et al., 2022b;a) scales the number of GPUs to meet the memory requirement. However, it requires a costly multi-server cluster. Moreover, it significantly suffers from com-munication bottlenecks, especially inter-server communica-tion. We break down the training time of 3-/5-layer GCN with the widely used distributed full-graph training methods (CAGNET (Tripathy et al., 2020) and Sancus (Peng et al., 2022)) in the four-server setup utilized in the evaluation (Section 8.1). They both suffer from severe communication bottlenecks from 80% to 98% of the execution time. A few single-server approaches exist to address such is-sues. Micro-batch (Yang et al., 2023) and host memory offloaded (Wang et al., 2023a) training have tried to conduct full-graph training in GPU memory-limited environments. Figure 14 illustrates an example graph and discusses the drawbacks of the above methods based on the full-graph dependency. 
+
+Micro-Batch Training : Betty (Yang et al., 2023) (Fig-ure 14c) accumulates gradients from message flow graphs (MFGs) with all neighbor information across all layers, fol-lowed by a single weight update. However, even a small number of GNN layers cause MFGs to expand rapidly (Fig-ure 14b), often exceeding the GPU memory. Partition-ing (Karypis & Kumar, 1998; Karypis et al., 1997; LaSalle & Karypis, 2013) can reduce MFG size but requires signifi-cant memory, presenting a practical bottleneck. 
+
+Host Memory Offloaded Training : HongTu (Wang et al., 2023a) (Figure 14d) reduces GPU memory usage by moving activations and gradients to host memory. A 1-hop partition-ing approach extracts 1-hop graphs that fit in GPU memory. (a) Example graph.            
+
+> abefdcigh
+> (b) Full-graph dependency.
+> Full-Graph Dep. Neigh. Explode MFG Target 1 Hop Graph Target Intra-Device Op. Iterate Op. Host - GPU AActivations Host - GPU (Snapshot)
+> (c) Micro-batch training.
+> Host MFGs MFG 0 abcd23ef234ghi(A0) Vertex Act. Forward A0 A1 A2 aaabbbeegfhdghiMFG A0 Weight GPU
+> (d) Host memory offloaded training.
+> abeghcdefabcd23ef234ghi(A0~A3) Vertex Act. Pt.0 1-Hop. Snap shots GPU Host Store Snap. Forward GA0 A1 aabeghbA1 1-Hop GA0 Weight Data Ampl. Iterate (#Partitions)x(#Layers) times Iterate (#MFGs) times
+
+Figure 14. Full-graph training of single epoch for limited re-sources. 
+
+During an epoch, activations for these graphs are transferred to the GPU, processed, and offloaded back to host memory. While this saves GPU resources, it causes a data amplifica-tion problem: by saving ‘snapshots’ of 1-hop graphs for the backward pass, vertices appearing in multiple 1-hop graphs are stored repeatedly, increasing memory and I/O overhead. 
+
+Memory-Hungry Partitioning : All aforementioned meth-ods rely on partitioning tools like METIS (Karypis & Ku-mar, 1998; Karypis et al., 1997; LaSalle & Karypis, 2013), which sequentially coarsen and refine graphs. This process consumes up to 4.8 × the graph’s size in memory (Kaur & Gupta, 2021), often exceeding the capacity of a typical sin-gle server. Hence, existing single-server full-graph methods face out-of-memory risks or resort to an external server. 
+
+## C LIMITATION OF EXTENDING 
+
+## STORAGE -B ASED MINI -B ATCH 
+
+## TRAINING TO FULL -G RAPH TRAINING WITH MICRO -B ATCH TRAINING 
+
+While extending storage-based mini-batch training (e.g., Ginex (Park et al., 2022), MariusGNN (Waleffe et al., 2023), DiskGNN (Liu et al., 2025), GNNDrive (Jiang et al., 2024)) to full-graph training by setting the batch size to the entire node set and maximizing the neighbor size (i.e., micro-batch training from Betty (Yang et al., 2023)) may seem to enable the large-scale full-graph training on a limited environment, it faces several limitations 3.First, as it still depends on the message flow graph structure (MFG), it faces the GPU memory limit like the original micro-batch training (Betty). Since micro-batch training needs to keep all neighbor information intact without sam-pling, it easily runs into out-of-memory due to neighbor explosion. For more details, please refer to Appendix B. 
+
+> 3
+
+Please note that since these systems are not designed for full-graph training workflows, adaptations may deviate from their orig-inal performance characteristics. GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+Table 5. Performance of extending storage-based mini-batch training to full-graph training. †: GNNDrive’s GPU caching is statically preprocessed, so the fanout is restricted to 25 and not equivalent to full-graph training. ∗: Preprocessing failed because of excessive disk space usage. 
+
+Method Products IGBM Papers 
+
+Ginex 9.00 OOM 17.72 DiskGNN 2.18 Preproc. Fail ∗ Preproc. Fail ∗
+
+GNNDrive 6.33 † OOM 12.06 †
+
+GriNNder (Ours) 0.12 0.93 9.07 
+
+Second, they are mainly focused on handling initial features efficiently for mini-batch training, and are inefficient in sup-porting full-graph training without sampling. For instance, DiskGNN aggressively utilizes the preprocessing and pre-stores the mini-batch message flow graphs and related initial features to efficiently support large-scale mini-batch train-ing with storage. However, since full-graph training (with micro-batch training) needs to handle all the features with-out dropping, the preprocessed data size easily exceeds the SSD capacity due to the redundantly saved data. To show the above limitations directly, we evaluated DiskGNN (Liu et al., 2025) and GNNDrive (Jiang et al., 2024), which surpass the previous state-of-the-art storage-based mini-batch training (Ginex (Park et al., 2022), Mar-iusGNN (Waleffe et al., 2023)) in Table 5. Ginex and GN-NDrive encountered GPU out-of-memory on IGBM due to neighbor explosion without information dropping. On Papers, even with fanout 25, they were significantly slower than ours. DiskGNN uses offline preprocessing to pre-store all cacheable mini-batches with features. The preprocessing of IGBM/Papers fails by overflowing 4TB SSD, even with reduced fanout (25) from neighbor explosion. Our method is significantly faster for runnable cases (Products/Papers). To sum up, while mini-batch storage-based systems can emulate full-graph training by micro-batch training, results show that this becomes infeasible on a large scale. This is due to either GPU memory exhaustion or prohibitive prepro-cessing disk usage. GriNNder avoids them by not relying on message flow graphs (MFGs) or redundant preprocessing. 
+
+## D OVERALL PROCEDURE OF GRI NN DER 
+
+As GriNNder is the first work on storage offloaded full-graph GNN training, we carefully designed the framework to address the three challenges outlined in Section 1, whose overall procedure is listed in Algorithm 1. GriNNder first partitions the graph into smaller pieces, which should be done to incur minimal data transfer (line 2). Our contri-bution is on devising a lightweight partitioning algorithm that operates with significantly lower memory requirements while preserving the partitioning quality (Section 6). Then, 
+
+Algorithm 1 Overall procedure of GriNNder                      
+
+> Input: {Wi|1≤i≤L}: initial parameters, L: #layers
+> G: graph, F: initial features, P: #partitions to meet GPU mem. req.
+> Output: {Wi|1≤i≤L}: updated parameters
+> Notations:
+> Tp: 1-hop topologies (src −→dst)
+> Alp: destination features/activations of layer l, partition Tp
+> GA lp: gathered source features/activations of layer l, partition Tp
+
+1: if M ET IS limit ≥ Host limit then 
+
+2: T(·) ← SA Partition (G, P) // Switching-aware partitioning (Sec. 6) 
+
+3: else T(·) ← METIS (G, P) end if 
+
+4: // Do until finding proper P which makes all Tps fit GPU memory limit. 
+
+5: 6: for e = 1 ... #epochs do 
+
+7: // Forward pass 
+
+8: for l = 1 ... L do 
+
+9: Storage to Host (Al−1(·) ) // Partition-wise graph caching (Section 4) 
+
+10: for p = 0 ... P − 1 do 
+
+11: GA l−1   
+
+> p←Gather (Al−1(·))
+
+12: Host to GP U (GA l−1 
+
+> p)
+
+13: Alp ← F W (W l, GA l−1  
+
+> p, T p)// w/ Regathering (redundancy elimination) (Section 5)
+
+14: GP U to Host (Alp)
+
+15: end for 
+
+16: end for 
+
+17: // Backward pass 
+
+18: for l = L ... 2 do 
+
+19: // Partition-wise graph caching (Section 4) 
+
+20: Host U pload or Intitialization (Al−1(·) , ∇Al−1(·) ) // Host as write-back buffer 
+
+21: for p = 0 ... P − 1 do 
+
+22: Storage to Host (Alp, ∇Alp)
+
+23: GA l−1   
+
+> p←Gather (Al−1(·))
+
+24: Host to GP U (GA l−1  
+
+> p)// Grad-engine activation regath-ering (Section 5)
+
+25: (∇GA l−1         
+
+> p,∇Wl)·,+
+> ←−−BW (Wl, A lp,∇Alp, GA l−1
+> p)
+
+26: GP U to Host (GA l−1 
+
+> p)
+
+27: ∇Al−1(·)+  
+
+> ←−Scatter (GA l−1
+> p)
+
+28: end for 
+
+29: end for 
+
+for each partition (lines 10 and 21), forward and backward passes are performed on the GPUs (lines 11–14 and 22– 27). To maximize the reuse of the data, GriNNder designs an efficient policy to cache intermediate data on the host memory (Section 4). During the forward/backward passes, much of the data transfer occurs between GPU-CPU due to checkpointing (lines 12, 14, 24, 26). This was originally designed toward reducing latency in previous work (Wang et al., 2023a), but it severely increases the amount of traffic and host memory usage for storage offloading scenarios. GriNNder redesigns the gradient engine with redundancy elimination, achieving significantly higher speedup and less memory requirement (Section 5). 
+
+## E PROFILE OF DEPENDENCY AMONG 
+
+## PARTITIONS 
+
+We additionally presented the profile of dependency among partitions on other datasets in Figure 15. When the size of a graph becomes larger, we need to partition the graph into a much larger number of partitions. This makes the GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading Ds 2 4Sorted P 6 8artition I 10 12 14 0.0 5.0 2.5 7.5 10.0 12.5 15.0 Partitions 10K 20K 30K 40K 50K #Required Ve  ces from Others rti         
+
+> s10 Sorted P 20 30 artition ID 40 50 60 010 20 30 40 50 60 Partitions 10K 20K 30K 40K 50K #Required Ve  ces from Others rti
+> 500 1000 1500 Sorted Partition IDs 2000 010 20 30 40 50 60 Partitions 02K 4K 6K 8K 10K #Required Ve  ces from Others rti
+
+Figure 15. Partition dependency profile. (left) Products with 16 partitions, (mid) IGBM with 64 partitions, and (right) Papers with 2048 partitions. In the case of Papers, we only presented earlier 64 partitions for visibility. Host Storage                                                
+
+> eecdabab
+> Host Storage
+> eecdab
+> Swap In
+> icdhgghfighff
+> Buffer abeghBuffer cdef
+> Unnecessary I/O Random Access Random Access Unnecessary I/O
+> Swap Out / Discard
+> Host Storage
+> Discard
+> Storage
+> Partition-Wise Upload
+> abcdabi
+> Reuse
+> Host
+> ihgefefhgabiefhgihgefcdcd
+> Buffer abeghBuffer cdef
+
+(a) Vertex-wise cache management (b) Partition-wise cache management   
+
+> Storage Page #Vertices in a Page: 2 : Out-of-Scope Vertices
+
+Figure 16. Advantage of partition-wise cache management com-pared to vertex-wise one. 
+
+trend of power-law distribution clearer. For instance, in Figure 15(right), the Papers dataset with 2048 partitions shows a very vivid power-law distribution compared to the other two cases. This further enhances the scalability of GriNNder on large-scale graphs. 
+
+## F VERTEX -W ISE CACHE MANAGEMENT VS . P ARTITION -W ISE CACHE 
+
+## MANAGEMENT 
+
+Figure 16 emphasizes the advantage of partition-wise cache management compared to the vertex-wise cache manage-ment. Since storage devices access data at a page granu-larity (e.g., 16KiB), vertex-wise cache management incurs a substantial amount of unnecessary I/O , denoted as ‘Out-of-Scope’ vertices. For instance, when processing the next partition, in Figure 16a, vertex-wise management needs to swap out (or discard) and swap in unnecessary data com-bined with the required data due to the page granularity of a storage device. In contrast, loading and evicting at a partition granularity alleviates such overhead. 
+
+## G I/O O PTIMIZATIONS OF GRI NN DER 
+
+G.1 Overlapping of Processing and Cache Management (a) Overview of switching between partitions 
+
+① 
+
+> Forward/Backward of Partition 1
+> cdcdefPt.1 Pt.2
+> Forward/Backward of Partition 0
+> aabeghbPt.2 Pt.3 Pt.0
+> Post-Compute IO
+> Pre-Compute IO Set Next Target Partition
+
+②
+
+> cd
+
+③②’ 
+
+> Post-Compute IO Pre-Compute IO
+
+②’② ③                         
+
+> Host Storage
+> Discard
+> Storage
+> Partition-Wise Upload
+> abcdabi
+> Reuse
+> Host
+> ihgefefhgabiefhgihgefcdcd
+> Buffer abeghBuffer cdef
+
+(b) Overlapping cache management with computation 
+
+Figure 17. Overview of overlapping cache management with com-putation. 
+
+GriNNder schedules host memory cache evictions and prefetching to overlap with GPU computations, minimizing storage I/O latency as illustrated in Figure 17. 1 We pick the next target partition to exploit already-cached neighbors, determined statically since 1-hop graphs are fixed. 2 We discard partitions no longer needed. 3 We fetch only re-quired partitions from storage while keeping reusable ones in the host memory. Because we keep a small extra buffer (dotted blue), uploading the dependency for partition 1 (pre-compute) does not have to wait for partition 0 computation and the succeeding evictions (post-compute), which enables overlapping these I/O operations ( 2 ’) with ongoing compu-tations. Also, we overlap the GPU compute and host-GPU I/O to further reduce latency. We actually profile the training procedure of GriNNder, as illustrated in Figure 18. We profiled the 3-layer GCN on the IGBM dataset with #partitions=32. In both forward and backward passes, GriNNder overlaps the host memory and storage I/O with the GPU computation. Thus, in over-all training, GriNNder enables aggressive latency overlap-ping of I/O and computation and provides superior training throughput. 
+
+G.2 In-Partition Vertex Ordering for Sequential Accesses 
+
+Another source of slowdown is in the gathering, which places vertex activations to be sent ( GA ) to the GPU in a dedicated host buffer. This involves multiple random mem-ory accesses, as illustrated in Figure 16a, causing slowdown. GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading (c) Detailed forward pass profiling results of GriNNder. (d) Detailed backward pass profiling results of GriNNder.    
+
+> (a) Overview of forward pass profiling results of GriNNder. (b) Overview of backward pass profiling results of GriNNder.
+> Host-to-GPU Memory Copy GPU-to-Host Memory Copy GPU Compute Operations Storage Read/Write
+
+Figure 18. Profiling results of GriNNder’s forward and backward pass. 
+
+To avoid this, after the graph is partitioned, we reorder the individual adjacency lists such that the neighbors are first sorted by their partition IDs and then by their vertex IDs. This replaces the random lookups with a single random lookup per partition, as in Figure 16b. 
+
+## H IN-DEPTH I/O V OLUME AND MEMORY 
+
+## FOOTPRINT ANALYSES 
+
+Table 6. I/O analysis in forward pass                    
+
+> Methods GPU-Host Host-Storage GPU-Storage HongTu w/ OS swap memory (i.e., mmap )(2 α+ 1) D(2 α+ 1) D−M em Host
+> Ours αD αD −CacheHit D
+> *|V|| H|=D. Topology data I/O is omitted for brevity.
+
+Table 7. Maximum memory usage analysis                
+
+> Methods Host Storage HongTu (α+ 1) D|L|+ 2 D
+> Ours D+DD|L|+D
+> *|V|| H|=D. Considers activation and gradients.
+
+Grad-engine activation regathering greatly reduces the I/O volume from snapshot store/load per layer and the memory footprint displayed in Table 6 and Table 7, where D =
+
+|V || H|.
+
+I/O Volume : We assume host memory offloaded training (HongTu (Wang et al., 2023a)) to utilize OS swap mem-ory (i.e., mmap ), since it targets the host memory, not storage employment. In Table 6, compared to HongTu, the input activation-related GPU-host I/O volume ( 2αD )is halved ( αD ) by skipping snapshots. GriNNder incurs 
+
+αD − CacheHit amount of host-storage traffic for intra-layer partition-wise caching, but this is significantly less than utilizing mmap swap memory. Also, when host mem-ory can handle the single-layer activations ( D), this term be-comes D from a full hit. When the host memory offloaded training faces the memory limit ( M em Host ), it needs to swap around (2 α + 1) D − M em Host data from/to storage. Given that α is around 3-10, the improvement is significant. 
+
+Memory Footprint : In Table 7, we report the peak mem-ory usage of host offloaded training (Wang et al., 2023a) (HongTu) and GriNNder. For HongTu, the overhead mostly comes from storing snapshots for all layers. These redun-dant snapshots consume additional αD |L| on top of D|L|
+
+activations. It needs to save 2D of gradients in backward pass to handle input and output gradients. In contrast, with grad-engine activation regathering and partition-wise graph caching, GriNNder consumes up to D + D host memory for saving layer-wise activations and gradients. Regarding stor-age usage, GriNNder consumes D|L| for saving activations and D for single-layer gradients. 
+
+## I INSIGHTS AND DETAILS OF 
+
+## SWITCHING -A WARE PARTITIONING 
+
+We draw inspiration from streaming partitioning (Spin-ner (Martella et al., 2017)), which applied traditional la-bel propagation (Zhu & Ghahramani, 2002) to partitioning in distributed cloud graph systems (e.g., Pregel (Malewicz et al., 2010)). While lightweight label propagation suits our host memory constraints, Spinner’s message-passing-based design is unsuitable for such limited environments. Hence, we propose switching-aware partitioning, which adapts label propagation for limited resources with mem-ory usage similar to CSR. We also introduce a group-wise propagation strategy suited for storage-offloaded full-graph training. Switching-aware partitioning aims to find vertices with sim-ilar properties in different partitions and relocate them to GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading (a) Intermediate Partition and Data Structure. (c) Thread-wise Partition Update.                                                                                                 
+
+> 0125347Pt.1 Pt.0 Pt.2 SrcPtr 010 18 DstIdx 125743Dst’s Partition 2220118 10 9 21263VertexId 36Partition 0 130
+> Partition 0 Partition 2 Partition 1 Partition 3 60306Destination-Level Parallelism SrcPtr 010 18 DstIdx 125743Dst’s Partition 22211060VertexId 0 36Partition 212013222011322211022203102120120012Thread 1208 10 9 212
+> (b) Thread-wise Candidate Investigation and Selection.
+> Source-Level Parallelism Thread 0 SrcPtr 010 18 DstIdx 125743Dst’s Partition 222011630 1 2 0 01 2 Thread VertexId 0 361st Pref. 2nd Pref. Candidate Vertices of Pt.2 (Grouped by 2nd Preference) 06Candidate Vertex List Partition 0 13360
+> Pt.0 Pt.1 Pt.2 Pt.3 8 10 9 212
+
+Figure 19. Switching-aware partitioning. 
+
+the same partition. Additionally, we need to balance the size of each partition to reduce the workload imbalance between partitions. To do so, we iteratively refine the partitions by selectively relocating vertices within a certain limit. Figure 19 shows the detailed procedure of the proposed switching-aware partitioning. At first, we set the initial partitioning state ( S0 = P0, ..., P p−1) by randomly assign-ing each vertex to different partitions. We want to achieve high-quality partitioning while maintaining the number of vertices of all partitions close to |V |/p . | · | means the #ver-tices in a partition (or a graph), and p is the #partitions. We additionally define the maximum capacity term as β
+
+and set the maximum capacity limit of a single partition as 
+
+β × | V |/p . Here the capacity of a partition refers to the number of vertices allocated to said partition. In a state 
+
+Si, each partition j has the available relocation capacity (RC (i,j )) as follows: 
+
+RC (i,j ) = β × | V |/p − | Pj |, (0 ≤ j < p ) (1) This is used to limit the number of vertices moved to the cur-rent partition. Figure 19a illustrates the intermediate state (Si) where each partition has the available relocation capac-ity of six ( RC (i,j ) = 6 ). Following the CSR format, our data structure comprises source pointers ( SrcPtr ) and destina-tion indices ( DstIdx ). We manage another array ( Dst’s Partition ) and fill this array with the partition of each destination index in DstIdx . For example in Figure 19b, the vertex 0 has neighbors of vertex {1, 2, 5, 7, 4, 3}. For each neighbor, we fill the Dst’s Partition with its partition {2, 2, 2, 0, 1, 1}.From a state ( Si) (Figure 19a), we calculate kth preference 
+
+of a vertex: among the neighbors of the vertex, the parti-tion ID of the kth largest frequency is the kth preference of the vertex. Then, using each vertex’s first preference, each partition manages its own relocation candidate vertices from other partitions. In Figure 19b, vertex 0’s neighboring vertices’ partitions are {2, 2, 2, 0, 1, 1}. Among them, the partition that occurs most frequently is 2. Therefore, we put vertex 0 to the partition 2’s relocation candidate ( 0 is now included in Pt.2 List in Figure 19b). When selecting the final vertices to be relocated among candidates, we select them in a group-wise manner. In Fig-ure 19b, we first use the 2nd preference partition of each ver-tex as a feature to help cluster vertices into different groups, unlike the baseline streaming partitioning algorithm. We then choose the largest group with the same 2nd preference to avoid vertices belonging to small, disparate clusters being relocated. In this example, vertex 0’s 2nd preference parti-tion is partition 1, and vertex 6’s 2nd preference partition is also partition 1. Therefore, we put those two vertices into the same group. We choose to relocate the group including 
+
+{0, 6} because it is the largest group among the candidates. This provides a clustering effect and helps the convergence speed of partitioning. This can be generalized into com-paring until kth preference, but we use k = 2 as default because it already empirically provides good performance. To parallelize the procedure, we apply source-level paral-lelism, which distributes the source vertices to each thread. Each thread manages its own candidate lists for partitions as depicted in Figure 19b with the example of thread 0. We dedicate each thread to the equal available relocation capac-ity ( RC (i,j )/#threads ) to run threads in a fully parallel manner. After selection, we update the relocation result to the 
+
+Dst’s Partition array. In Figure 19c, vertex 0 and 6
+
+are selected to be relocated to partition 2. Therefore, we up-date the values of vertex 0 and 6 in Dst’s Partition 
+
+array to 2 (meaning partition 2). This procedure is con-ducted with destination-level parallelism, as illustrated in Figure 19c. After the update, using the updated data struc-ture, iteration i + 1 proceeds. For each iteration i, we con-duct the following procedure until reaching the termination condition, which will be discussed in the next subsection. We discussed switching-aware partitioning as a procedural view. In the detailed algorithm, we need a penalty term for suppressing the propagation to reduce the imbalance among GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+the number of vertices in partitions. Therefore, in a state 
+
+Si, for a vertex v, the scoring term ( Score (v,I,j )) for each partition j and the final objective are as follows: 
+
+P enalty (i,j ) = |Pj |/(αbalance × | V |/p ), (0 ≤ j < p )
+
+Score (v,i,j ) = 1 + # N (v, j )/#N (v, ·) − P enalty (i,j )
+
+maximize P 
+
+> v∈G
+
+Score (v,i,j =partition v )
+
+(2) where #N (v, j ) denotes the frequency of partition j among the neighbors of the vertex v and P enalty (i,j ) denotes the penalty term of state Si of partition j. The penalty term reduces the preference when a partition already reaches the additional capacity αbalance . The objective function calculates the total sum of the internal preferential scores of partitions. The partitioning halts when the objective does not improve over ϵ = 0 .001 for w = 5 times. 
+
+## J EFFECT OF PARTITIONING ON 
+
+## HOST ↔GPU T RAFFIC 
+
+Table 8. Training time breakdown of storage-offloaded training. 
+
+Storage and Host ↔GPU denote the storage I/O and host ↔GPU I/O. 
+
+Storage Host ↔GPU Compute Sync. Etc. 
+
+w GriNNder 19.2% 48.4% 8.6% 12.0% 11.8% 
+
+w/o GriNNder 85.4% — 2.1% 12.5% 
+
+Partitioning is significantly helpful in reducing host ↔ GPU traffic. Once partition-wise scheduling reduces random storage I/O and host-memory caching minimizes storage traffic, host ↔ GPU traffic becomes the main bottleneck as illustrated in Table 8. We profiled a single epoch of storage-offloaded training of the IGBM dataset without/with GriN-Nder’s optimizations. Since GriNNder is highly optimized to overlap compute and I/O, we employed a CPI-stacking-like method (Eyerman et al., 2006) to roughly break down execution time. When applying GriNNder optimizations, reduced random storage accesses from partition-wise I/O and minimized storage I/O from host memory caching make the host-to-GPU traffic the main bottleneck. Without effective partitioning, the input activations required per partition—scaled by the expansion ratio ( α)—would dramatically increase host ↔ GPU traffic, severely harming performance. In detail, for every vertex that belongs to a partition, we need to fetch all dependent extra vertices through the host ↔ GPU path redundantly. The factor that affects the extra fetching is our expansion ratio ( α), 
+
+α = # required vertices # target vertices . (3) Put differently, α tells us how much larger the input tensor (to be sent between host ↔ GPU) becomes after we con-sider dependencies. The total input-activation traffic for one partition is then Traffic = α × | H| × | Ntarget |, (4) where |H| is the hidden dimension and |Ntarget | is the num-ber of vertices the partition owns. Partitioning is designed to drive down α by co-locating vertices that are frequently accessed together as much as possible. In practice, this helps GriNNder to provide stable training speed, even when long-tail effects may cause some parti-tion dependencies to span multiple partitions. For instance, on the Papers dataset (2048 partitions), a target partition depends on 1602.07± 234.11 (Std.) other partitions. With the effect above, GriNNder provides significant speedup over other baselines by reducing storage I/O and the traffic between host and GPU. 
+
+## K API I NTERFACE DETAILS from torch_geometric.nn import GCNConv from torch_sparse import SparseTensor from models import GriNNderGNN from utils.loader import GriNNderLoader class GCN(GriNNderGNN): def __init__(..., loader: GriNNderLoader, ... , use_cache: bool, storage_offload: bool, ...): super().__init__(... , loader, ..., use_cache, storage_offload, ...) for i in range(num_layers): conv = GCNConv(in_dim, out_dim) self.convs.append(conv) def forward(self, x: Tensor, adj: SparseTensor, ...): for (conv, ...) in zip(self.convs[:-1], ...): h = conv(x, adj) def forward_layer(self, layer, x: Tensor, adj: SparseTensor, ...): h = self.convs[layer](x, adj) 
+
+> Inheriting GriNNderGNN GriNNderLoader for storage Additional definition of forward_layer
+
+Figure 20. User interface of GriNNder. Users inherit 
+
+GriNNderGNN and implement layer forward to en-able layer-wise execution for partition-based full-graph training. 
+
+Figure 20 illustrates the user-facing API design. Exist-ing PyG models require minimal changes: users inherit 
+
+GriNNderGNN and implement the layer forward 
+
+method, which receives a partition ID and returns the layer’s output for that partition. This enables the framework to or-chestrate partition-wise execution transparently while main-taining compatibility with standard PyTorch training loops. 
+
+## L DETAILED EXPERIMENTAL SETTINGS AND BASELINES 
+
+Models and datasets. We tested graph convolutional net-work (GCN) as the baseline GNN architecture and also used GAT (Veli ˇckovi ´c et al., 2018) and GraphSAGE (Hamilton et al., 2017). We set the hidden size as the widely-used 256, if not stated otherwise. We used three medium- (Prod-ucts (Hu et al., 2020)) to large-scale (IGBM (Khatua et al., 2023) and Papers (Hu et al., 2020)) datasets (details in Ta-ble 9). Products is a co-purchasing network where vertices GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading                       
+
+> Table 9. Real-world graph datasets and hyper-parameters
+> Name Dataset Info. Hyper-parameter #Nodes #Edges Feat. size lr Dropout #Epochs Products (Hu et al., 2020) 2,449K 61.9M 100 0.003 0.3 500 IGBM (Khatua et al., 2023) 10,000K 120.1M 1024 0.01 0.5 500 Papers (Hu et al., 2020) 111,000K 1,600M 128 0.01 0.5 500
+
+represent Amazon products and edges indicate products pur-chased together. IGBM and Papers are citation networks with vertices and edges representing research papers and citations, respectively. We also utilized Kronecker random graphs (Leskovec et al., 2010) (average degree=10) with random initial features of dimension 128 and #classes of 10 for scalability and versatility tests with ablation. 
+
+Hardware. We run main experiments on a single GPU workstation with an AMD Ryzen9 7950X 3D CPU (16C 32T), 128GB DDR5-5600 RAM, one RTX A5000 (24GB) GPU, a PCIe 5.0 NVMe SSD (4TB), and a total 4TB swap space for swap-based experiments. We utilized the NVMe SSD for the swap memory and GPUDirect Stor-age (GDS) (NVIDIA, 2021) and AIO (aio). We chose a single GPU setup to demonstrate how GriNNder breaks through the host/GPU memory limitations. For the multi-GPU extension, we utilized a multi-GPU server with four RTX4090 GPUs, 2 ×Intel Xeon Gold 6442Y, 512GB DDR5 DRAM, and 2TB PCIe5.0 NVMe SSD. We used a four-server cluster to test distributed full-graph training base-lines, each server having four RTX A6000 GPUs, which aggregates to 16 GPUs. Intra-server GPUs are connected via NVLink Bridge (NVIDIA, 2023b), and servers are con-nected via Infiniband SDR (NVIDIA, 2023a). Each server has 512GB DDR4 RAM and an EPYC 7302 (16C 32T). For IGBM/Papers, we needed all 16 GPUs to fit the data in the GPU memory. For Products, using fewer GPUs could yield better performance, but we used all GPUs to maintain consistency among datasets. 
+
+Baselines. We compared four single-server baselines with GriNNder (denoted as ‘GRD’). For MFG-based full-graph training, we used Betty (Yang et al., 2023) (called micro-batch training), the state-of-the-art full-graph training in limited environments, as our baseline. As Betty sometimes shows significant slowdowns due to slow MFG generation, we excluded the MFG generation time for comparison. To test extension of storage-based mini-batch training to full-graph training while utilizing SSD, we extend Ginex (Park et al., 2022) to micro-batch training (Yang et al., 2023). For host offloaded full-graph training, we faithfully im-plemented HongTu (Wang et al., 2023a) and used it as a baseline. When the training data overflows the host memory, we use storage swap memory to compare it with GriNNder regarding storage usage. We also tested the na ¨ıve extension of ROC (Jia et al., 2020a) to na ¨ıvely just use storage for offloading, but reported the results of it only in Appendix X because this extension was much slower than the others. In the appendix, we additionally tested two storage-based mini-batch training (DiskGNN (Liu et al., 2025) and GN-NDrive (Jiang et al., 2024)) with micro-batch extension (Appendix C). We also compared GriNNder with two distributed full-graph training baselines, CAGNET (Tripathy et al., 2020) and Sancus (Peng et al., 2022). CAGNET is one of the famous distributed full-graph training methods, and Sancus acceler-ated it by storing stale activations and gradients to reduce the communication bottleneck. Note that while Sancus is not the exact full-graph training from using stale activations and gradients, we still included it as it is one of the state-of-the-art distributed full-graph training frameworks. These two baselines ran on the cluster mentioned above. When GPU out-of-memory issues arise in distributed training base-lines, we implement host memory activation checkpointing (indicated by ‘*’) to attempt to make them executable. For partitioning, we utilized the multi-threaded METIS (MT-METIS) (LaSalle & Karypis, 2013) as the baseline, which is one of the state-of-the-art METIS parallelizations (denoted as ‘METIS’). Even when it does not run on the testbed due to insufficient memory, we assume it was preprocessed in another environment since all baseline methods rely on METIS. For comparisons with lightweight partitioners, we benchmarked Spinner (Martella et al., 2017) and an out-of-core partitioner (2PS-L (Mayer et al., 2022)). 
+
+## M COMPREHENSIVE ANALYSIS WITH 
+
+## SYNTHETIC GRAPH ON SCALABILITY ,ABLATION , AND CONFIGURATION 
+
+We conducted a comprehensive analysis using synthetic graphs, as summarized in Table 10. The tests utilized Kro-necker synthetic graphs (Leskovec et al., 2010) with sizes ranging from 222 to 225 nodes (4.2–33.6M) and an average degree of 10. Across all combinations of layers and datasets, all ablations of GriNNder consistently achieved significant speedups over HongTu. For smaller datasets, where host memory can store all intermediate activations and gradients, the configuration using only grad-engine activation regathering (‘GRD-G’) generally outperforms the storage-enabled version (‘GRD-GC’), primarily due to cache management overhead. How-ever, for larger datasets, employing storage alleviates host memory cache pressure, allowing the storage-based config-uration (‘GRD-GC’) to deliver substantial speedups over both HongTu and GRD-G. These results demonstrate that GriNNder is highly scalable for large datasets, with storage utilization being an effective strategy for handling large graphs on a single GPU. We also GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+Table 10. Training time/epoch (min) for various-sized Kro-necker synthetic graphs. ‘-’ denotes when the number of parti-tions is not enough for running. Bold is the fastest training time in each (#layers, dataset) pair.                                                                                                       
+
+> #Layers #Partitions Method 4.2M 8.4M 16.8M 33.6M 316 HongTu 0.43 0.83 --GRD-G 0.29 0.59 --GRD-GC 0.31 0.63 --32 HongTu 0.57 1.11 7.25 -GRD-G 0.31 0.66 --GRD-GC 0.33 0.71 --64 HongTu 0.76 1.76 10.70 -GRD-G 0.41 0.77 --GRD-GC 0.43 0.81 --128 HongTu 1.05 5.32 18.96 36.31 GRD-G 0.55 1.02 1.93 3.73
+> GRD-GC 0.58 1.05 1.99 3.86 516 HongTu 0.83 1.99 --GRD-G 0.57 1.14 --GRD-GC 0.60 1.20 --32 HongTu 1.07 8.04 19.15 -GRD-G 0.60 1.30 --GRD-GC 0.63 1.37 --64 HongTu 1.48 11.43 24.08 -GRD-G 0.79 1.49 --GRD-GC 0.84 1.55 --128 HongTu 4.61 17.08 37.09 96.99 GRD-G 1.08 1.96 3.71 10.87 GRD-GC 1.13 2.02 3.82 7.76
+
+observed that GriNNder occasionally requires a larger num-ber of partitions (i.e., different configurations) than HongTu. This is due to the GPU memory overhead introduced by overlapping GDS operations and computation. Despite this, GriNNder continues to deliver significant performance im-provements over HongTu. It is also important to note that the number of partitions is merely a configuration hyperpa-rameter, and users are not burdened by the need to manually handle this difference. 
+
+## N CACHE HIT RATES 
+
+Table 11. Cache hit rate.        
+
+> Products IGBM Papers kron-4.2M kron-8.4M kron-16.8M kron-33.6M
+> Hit (%) 28.57 53.70 83.63 80.81 80.47 92.77 92.70
+
+We report cache hit rates in Table 11. As larger datasets ( >
+
+IGBM, 10M) incur more reuse from the higher number of partitions, the hit rate is more significant in them. A low hit rate is natural in small datasets (e.g., Products) because we employ only a few partitions, and most data are not reused. Thus, GriNNder’s caching is promising in large-graph training. 
+
+## O CONVERGENCE TREND AND PRACTICAL 
+
+## OVERHEAD OF SWITCHING -A WARE 
+
+## PARTITIONING 
+
+Table 12. Partitioning convergence trend.                                   
+
+> Dataset Improvement (%) for Iterations
+> Products (4 parts) Iter. 1510 15 20 25 28 (last) Improve (%) 6.81 9.753.790.360.120.08 0.05 IGBM (32 parts) Iter. 1510 15 20 25 30 35 40 45 50 (last) Improve (%)11.137.783.661.960.660.77 0.39 0.210.160.10 0.08 Papers (2K parts) Iter. 1510 15 20 25 30 35 40 45 50 (last) Improve (%)18.042.863.961.611.780.89 0.46 0.720.430.22 0.14
+
+Switching-aware partitioning converges fast with low prac-tical overhead. In Table 12, we report the trend of the par-titioning quality (score of the objective function) improve-ment (convergence) from the adjacent previous iteration (e.g., iter 4 −→ 5). We observe that at most 50 iterations are enough for convergence, thus limiting partitioning to 50 iterations in our experiments. Given that a single iteration takes 0.08sec/0.14sec/21.12sec on average and our lightweight partitioning only re-quires 2.49sec/6.96sec/17.60min, partitioning consumes 0.07/0.02/0.39% of the total training time (500 epochs) on Products/IGBM/Papers, respectively. 
+
+## P MULTI -GPU E XTENSION 
+
+Our multi-GPU implementation employs two lightweight mechanisms: (i) Partition parallelism: We divide the partitions into dis-joint #(GPU) sets; each GPU performs forward/backward on its set independently. (ii) Weight/Gradient synchronization: During the backward pass, partial gradients of dependent vertices from different GPUs are atomically accumulated on the host, which accumulates the gradients of the ver-tices. Before the weight update, a weight gradient all-reduce operation is conducted between GPUs to synchronize the weights among them. These straightforward enhancements enable effective multi-GPU execution with minimal overhead. 
+
+## Q CONFIGURATION SENSITIVITY RESULTS 
+
+We additionally conducted configuration sensitivity experi-ments in Table 13. From the efficient caching management and elimination of redundancy, GriNNder is much less sen-sitive to the number of partitions (configurations). This enhances the practicality of GriNNder for end-users as they are not required to carefully configure the number of parti-tions. GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+Table 13. Configuration sensitivity on training time (sec). The default number of partitions for P RODUCTS and IGBM are 2 and 32, respectively.                                         
+
+> Method ×1×2×4×8
+> 3-layer  PRODUCTS HongTu 9.98 11.11 12.22 13.65
+> GRD 6.93 7.72 8.55 8.99
+> IGBM HongTu 387.68 694.02 675.98 876.60
+> GRD 55.62 59.41 61.06 66.39
+> 5-layer  PRODUCTS HongTu 19.14 21.46 23.42 26.22
+> GRD 13.65 15.22 16.38 17.60
+> IGBM HongTu 894.09 958.20 1183.88 1425.36
+> GRD 91.46 92.60 98.99 114.76
+
+## R HETEROGENEOUS GNN E XTENSION 
+
+We extended GriNNder to support heterogeneous graph training. Our implementation involved creating a heteroge-neous graph dataloader (HeteroDataloader). We validated this extension using the IGBM-hetero dataset with a two-layer heterogeneous convolutional model, consisting of a GCN layer (paper-cite-paper relation) and GraphSAGE lay-ers (other relations). With hidden dimensions set to 128 (except for the output layer with 19 classes), GriNNder achieved 71.58% accuracy after 100 epochs, while sig-nificantly reducing runtime compared to HongTu (26.92 sec/epoch vs. 55.41 sec/epoch). 
+
+## S BENCHMARKING W /O GDS 
+
+GriNNder can be generally used when GDS is unavail-able. In this case, Kvikio (used in GriNNder) automatically switches to POSIX. Thus, users can still utilize GriNNder without any modification. Also, please note that GDS is supported on GPUs with NVIDIA compute capability ¿6. x
+
+(e.g., V100 and after). 
+
+Table 14. Sensitivity to GDS.                   
+
+> Layers GDS Products IGBM Papers
+> 3 layer GDS 0.12 0.93 9.07 w/o GDS 0.12 0.93 10.25 5 layer GDS 0.23 1.52 12.03 w/o GDS 0.23 1.52 13.73
+
+We also benchmarked the performance (min) of GriNNder without GDS support in Table 14 as ‘w/o GDS’. As Products and IGBM can be handled with host memory, the ‘w/o GDS’ performs similarly to the GDS cases. Even with Papers, where storage is highly utilized, there is only a 13-14% slowdown, demonstrating GriNNder’s versatility. 
+
+## T EFFECT OF GRAPH DISTRIBUTIONS 
+
+While power-law degree distributions are widely observed in real-world large-scale graphs (Leskovec et al., 2005), we also evaluate the robustness of GriNNder on non-power-law graphs. GriNNder’s partitioning and caching strategies operate independently of specific graph structural proper-ties, enabling performance gains across diverse graph pat-terns. To evaluate behavior on non-power-law graphs, we benchmark HongTu and GriNNder on a 10M Watts-Strogatz graph (Watts & Strogatz, 1998) (average degree=16) with randomized features using GCN in Table 15. GriNNder achieves 3.21 ×/7.01 × speedups for 3-/5-layer models, demonstrating robustness beyond power-law graphs. 
+
+Table 15. Performance on non-power-law graph.          
+
+> Time/Epoch (min) HongTu GriNNder Speedup 3-Layer 3.50 1.09 3.21 ×
+> 5-Layer 14.72 2.10 7.01 ×
+
+## U APPLICATION TO DYNAMIC GRAPHS 
+
+GriNNder can be extended to dynamic graphs by modifying the data-loading and partitioning components for graph up-dates. Switching-aware partitioning is especially well-suited for this: its streaming nature enables effective adaptation to incremental changes by starting from existing partitions and converging to high-quality solutions in a few lightweight iterations. Thus, we expect GriNNder to handle dynamic graphs without significant overhead. 
+
+## V APPROACHES TO RESEMBLE 
+
+## FULL -GRAPH TRAINING WITH 
+
+## ALGORITHM CHANGE 
+
+Many works have been proposed to resemble the accuracy (effect) of full-graph training by addressing the informa-tion loss of mini-batch training. GNNAutoScale (Fey et al., 2021) utilizes stale activation to compensate for the infor-mation loss of mini-batch training. LMC (Shi et al., 2023) further addresses the information loss by compensating for it with gradients. In distributed full-graph training, many researchers have tried to address the communication bot-tleneck while resembling the full-graph training accuracy with staleness (Wan et al., 2022b; Peng et al., 2022) and error compensation (Wan et al., 2022a) through proportional dropping of communication. While the above compensation methods could be orthogonally applied to further enhance the performance of GriNNder, we did not apply them to implement the exact full-graph training without algorithm change. GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+## W FUNCTIONALITY (A CCURACY ) C HECK OF GRI NN DER  
+
+> Figure 21. Functionality check of GriNNder.
+
+While GriNNder does not change the algorithm of full-graph training, we tested the accuracy of GriNNder com-pared to full-graph training and HongTu for the functionality check, as illustrated in Figure 21. Full-graph training was conducted with a CAGNET distributed baseline because Sancus is not exact full-graph training. As depicted in Fig-ure 21, while HongTu is much slower than the distributed setup, GriNNder provides significant speedup over the dis-tributed CAGNET. Both baselines and GriNNder show the same accuracy, which demonstrates the correct functional-ity of GriNNder. We also additionally checked Sancus’s result, which is not exact full-graph training as it utilizes stale activations and gradients. It shows similar accuracy to others but not exactly the same as them. On the Papers dataset, GriNNder achieves identical accuracy (63.04%) as CAGNET. We excluded the Papers in the figure because HongTu consistently encountered out-of-memory issues. 
+
+## X COMPARISON WITH NA¨IVE BASELINE 
+
+## (N A¨IVE STORAGE EXTENSION OF 
+
+## ROC (J IA ET AL ., 2020 A)) 
+
+We also tested the na ¨ıve storage extension of ROC (Jia et al., 2020a) instead of HongTu, which is the state-of-the-art framework. While we tested with HongTu with OS-based swap (i.e., mmap ), we made it directly utilize storage instead of OS-based management for the ROC extension. On this na ¨ıve extension, GriNNder provides 1.28/29.00 × speedup on 3-layer GCN on Products and IGBM, respectively. The speedup is significant on IGBM because Products only use #partitions=2 while IGBM uses #partitions=32. Thus, GriN-Nder provides further speedup on IGBM, which has much redundancy issue with ROC. 
+
+## Y LIMITATION 
+
+We evaluate an extensive set of datasets and demonstrate the effectiveness of our partition-wise cache management. We also found that partition-wise cache management remains effective even when long-tail effects may cause some parti-tion dependencies to span multiple partitions (Appendix J). However, there can be a worst-case scenario: when depen-dencies are uniformly distributed across many partitions. In this case, partition-wise management may lead to over-head rather than performance improvement. We leave the handling of such a case to future work. 
+
+## Z ADDITIONAL RELATED WORK 
+
+This section provides comprehensive discussion of related work beyond the core contributions in Section 10. 
+
+Full-Graph GNN Training Systems. Numerous meth-ods have been proposed for learning representations from graphs (Hu et al., 2020; Ying et al., 2018; Song et al., 2022; Frasca et al., 2020). Full-graph training preserves complete input information, preferred for algorithmic validation (Wan et al., 2022b; Jia et al., 2020a; Wan et al., 2022a; Ma et al., 2019). Distributed approaches (Peng et al., 2022; Tripathy et al., 2020; Demirci et al., 2022; Wan et al., 2023; Liu et al., 2021b; Wang et al., 2022a) partition graphs across machines but incur substantial inter-device communication overhead. Single-server methods enable full-graph training without distribution costs. Betty (Yang et al., 2023) employs batch-level graph partitioning but suffers from neighbor explosion across layers. HongTu (Wang et al., 2023a) stores activa-tions/gradients to host memory but remains limited by host capacity. Hardware acceleration through near-memory pro-cessing (Zhou et al., 2022), computational storage (Kwon et al., 2022; An et al., 2023), or smart storage devices (Lee et al., 2021) achieves high performance but requires special-ized hardware unavailable to most research groups. GriN-Nder targets commodity systems with NVMe SSDs through software optimization. 
+
+Storage-Based Training Systems. Training large mod-els with storage has become prevalent. Large language model training systems (Rajbhandari et al., 2021) partition optimizer states, gradients, and parameters across memory hierarchy including NVMe storage. FlexGen (Sheng et al., 2023) enables large model inference through offloading and scheduling. However, these LLM techniques fundamentally differ from GNN requirements. LLM activations exhibit se-quential layer dependencies enabling straightforward layer-by-layer management, while GNN layers exhibit graph-structured dependencies requiring gathering from multiple partitions based on topology. Mini-batch GNN systems often employ storage for ini-tial feature management. Ginex (Park et al., 2022) intro-duces unified storage-memory-GPU hierarchy with feature caching. DiskGNN (Liu et al., 2025) employs pre-sampling and IO-aware scheduling. GNNDrive (Jiang et al., 2024) GriNNder: Breaking the Memory Capacity Wall in Full-Graph GNN Training with Storage Offloading 
+
+optimizes feature storage layouts. MariusGNN (Waleffe et al., 2023) loads valid features with two-level partition-ing. Helios (Sun et al., 2023b) enables direct GPU access to storage. These systems manage only initial features, as sampled subgraphs fit in GPU memory. The computational pattern involves: (1) sampling subgraphs, (2) fetching initial features, (3) performing forward-backward in GPU memory with all intermediate activations resident. Each mini-batch operates independently with no inter-batch dependencies for intermediate activations. On the other hand, full-graph training requires simultaneous management of all interme-diate activations/gradients for all vertices across all layers with inter-partition dependencies spanning the entire graph, creating fundamentally different storage access patterns. Additional subgraph training frameworks (Hamilton et al., 2017; Zeng et al., 2020; Zheng et al., 2020; 2022; Kaler et al., 2022; 2023; Yang et al., 2022; Thorpe et al., 2021; Gandhi & Iyer, 2021; Lin et al., 2020; Sun et al., 2023a) address memory constraints through sampling (Zhu et al., 2019; Huang et al., 2018; Dong et al., 2021) but introduce input information loss. 
+
+Activation Management. Checkpointing trades computa-tion for memory via recomputation (Chen et al., 2016; Bulo et al., 2018; Mohan et al., 2021; Gupta et al., 2024; Wang et al., 2023b; Nicolae et al., 2020; Eisenman et al., 2022), storing subset of activations and reconstructing others dur-ing backpropagation. Prior GNN checkpointing (Zhang et al., 2022; Wang et al., 2023a; Chakaravarthy et al., 2021; Wang et al., 2022b; Jiang et al., 2020) applies checkpoint-ing to GNN training. HongTu (Wang et al., 2023a) stores snapshots of offloaded partitions but suffers from massive redundancy. Redundancy-free computation graphs (Jia et al., 2020b) address computational redundancy in message pass-ing operations, whereas GriNNder targets storage redun-dancy elimination. GriNNder introduces regathering for gradient computation, regenerating gathered activations on-demand from compact partition outputs, reducing storage I/O. Alternative memory optimization strategies include prun-ing (Han et al., 2016; Fang et al., 2023; He et al., 2019; 2017; Sanh et al., 2020; Liu et al., 2021a), quantization (Choi et al., 2022; 2021; Courbariaux et al., 2015; Lin et al., 2016; Zhou et al., 2016; Zhuang et al., 2018; Shen et al., 2020; Liu et al., 2022), and memory-efficient backpropaga-tion (Gruslys et al., 2016; Gomez et al., 2017; Chakrabarti & Moseley, 2019). These techniques complement GriN-Nder by reducing model requirements but do not address memory scalability challenges from intermediate activations proportional to graph size and hidden dimensions. 
+
+Graph Partitioning. Partitioning is widely adopted for distributed graph processing (Ma et al., 2019; Wang et al., 2023a; Yang et al., 2023; Karypis & Kumar, 1998; Zhang et al., 2023; Jia et al., 2017; Chen et al., 2018; Zhang et al., 2020; Tripathy et al., 2020; Liu et al., 2021b; Wang et al., 2022a; Wan et al., 2023). METIS (Karypis & Kumar, 1998) employs multi-level framework with coarsening, partition-ing, and refinement phases (Davis et al., 2020; Heuer & Schlag, 2017; Shaydulin & Safro, 2018; Akhremtsev et al., 2017), producing high-quality partitions minimizing edge cuts. Many distributed GNN frameworks (Wan et al., 2022b; Peng et al., 2022; Zheng et al., 2020; 2022; Liu et al., 2021b; Wan et al., 2023; Wang et al., 2022a) employ METIS for minimizing communication cost. G3 (Wan et al., 2023) pro-poses iterative METIS-based partitioning enhancing three-dimensional parallelism. However, METIS requires sub-stantial memory—measurements indicate 4.8 ×–13.8 × in-put graph size (Kaur & Gupta, 2021; LaSalle & Karypis, 2013). Alternative frameworks (Zhang et al., 2023; Jia et al., 2017; Chen et al., 2018) attempt load balancing but demand large memory. Streaming algorithms (Echbarthi & Khed-douci, 2016; Stanton & Kliot, 2012) and online partition-ing (Tsourakakis et al., 2014) reduce memory requirements through single-pass processing. Label propagation meth-ods (Karypis & Kumar, 1999; Raghavan et al., 2007) and scalable frameworks (Martella et al., 2017) offer alternative approaches. These methods target distributed systems or assume sufficient memory for loading entire graph structure. GriNNder introduces lightweight partitioning requiring only small working set memory, enabling partitioning in memory-limited environments where METIS cannot execute.

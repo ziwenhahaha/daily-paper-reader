@@ -1,0 +1,235 @@
+Title: Mixture-of-Parallelisms: Towards Memory-Efficient Training Stack for Mixture-of-Experts Models
+
+URL Source: https://arxiv.org/pdf/2607.01844v1
+
+Published Time: Fri, 03 Jul 2026 00:53:14 GMT
+
+Number of Pages: 9
+
+Markdown Content:
+# Mixture-of-Parallelisms: Towards Memory-Efficient Training Stack for Mixture-of-Experts Models 
+
+Xuan-Phi Nguyen †∗ Shrey Pandit † Yiran Zhao †
+
+Semih Yavuz Silvio Savarese Shafiq Joty ∗
+
+Salesforce AI Research 
+
+# Abstract 
+
+This paper proposes a memory-efficient training stack for Mixture-of-Experts (MoE) models. It is a training paradigm that combines and specializes various existing and novel parallelism techniques at different layers and stages of the Mixture-of-Experts (MoE) model training pipeline. It leverages these techniques to achieve maximal efficiency given the physical constraints of CPU, CPU memory, GPU HBM memory, and the CPU-GPU, GPU-GPU, and node-node communication bandwidth of the GPU cluster. It also contains a novel strategy for the optimizer step to achieve high throughput and memory efficiency, enabling practitioners to conduct lossless pre-training/fine-tuning of trillion-parameter scale models, at a million context length, with just under 12 8x H200 GPU nodes, with state-of-the-art throughput and memory efficiency. In our experiments, MoP delivers 4.7–8.2× higher per-GPU throughput than a strongly-tuned FSDP2 baseline (with the gap widening at larger scale) and sustains training at context lengths up to 1M tokens, where the baseline runs out of memory beyond 64–128K. 
+
+# 1 Introduction 
+
+Sparse Mixture-of-Experts (MoE) architectures have become the dominant recipe for scaling language models, because they decouple parameter count from per-token compute: routing each token to only 
+
+k of E experts lets the parameter budget—and with it model quality—grow far faster than the FLOPs per token [ 6 , 3 ]. The frontier this enables, trillion-parameter models trained at near-million-token context, is no longer compute-bound on modern accelerators; it is bound by GPU memory and by the 
+
+communication bandwidth of the cluster. A single trillion-parameter model needs ∼ 16Θ bytes of persistent optimizer-related state alone [ 8] (§2.1), tens of terabytes that no single device can hold, while long-context activations add a transient footprint that grows with sequence length and depth. Training such models therefore hinges on how effectively a system spreads state and traffic across the memory hierarchy and interconnects of the machine. 
+
+The limitation of one-size-fits-all parallelism. The prevailing systems attack this problem with a 
+
+single global plan applied uniformly to every layer . Megatron-LM [ 13 , 5 ] composes tensor, pipeline, and sequence parallelism into a 3D grid W = d t p ; ZeRO and its PyTorch realization FSDP [ 10 , 14 ]shard the persistent state across all data-parallel ranks; expert parallelism [ 11 ] partitions experts across devices. Each is excellent at the bottleneck it targets and suboptimal elsewhere. Yet the pressures of trillion-scale long-context MoE training are sharply component-dependent : attention is activation-bound, the MoE feed-forward is weight- and routing-bound, the vocabulary projection produces the single largest logit tensor, and the optimizer state dwarfs the weights themselves. No one parallelism is Pareto-optimal across all of these—ZeRO-3 shards the expert weights but leaves 
+
+> ∗
+
+Project lead & corresponding authors: {xnguyen,sjoty}@salesforce.com System Card. Preliminary Work In Progress. 
+
+> arXiv:2607.01844v1 [cs.DC] 2 Jul 2026
+
+the full-rank MoE activations on every device, expert parallelism shards experts but not the O(N kH )
+
+routed activations, and 3D parallelism multiplies its axes against a fixed device budget while still applying the same trade-off to every layer. The result is wasted headroom: at any moment most of the machine’s resources—idle CPU cores, host DRAM, and spare interconnect bandwidth—sit unused while one bottleneck dictates the global plan. 
+
+Mixture-of-Parallelisms. We propose Mixture-of-Parallelisms (MoP), a training stack that abandons the single global plan and instead specializes a different parallelism to each component of the MoE block, choosing for each one the sharding axis that matches its dominant bottleneck (§3.2). The dense path is sharded with an efficient sharding method, attention activations with sequence parallelism [ 4], expert weights with a hybrid expert-parallel × sharding scheme, the vocabulary with a sharded data-tensor-parallel projection, and the optimizer is updated by an efficient pipeline that exploits all of the machine’s physical resources and leverages computation–communication overlap. Crucially, every parallelism we compose is data-parallel-like at the rank level —each device holds a distinct shard of tokens (under sequence parallelism, a different chunk of the same long sequence) and a sharded copy of the weights it touches—so the components share overlapping sub-groups of the same W ranks rather than forming a Cartesian product. This sidesteps the rank multiplication of 3D parallelism while letting each component pick the sub-group whose sharding axis dilutes its bottleneck. MoP is explicitly designed to exploit all of the machine’s physical resources—GPU HBM, host DRAM, and the CPU–GPU, GPU–GPU, and node–node bandwidths—rather than the GPUs alone. To make this plan viable at trillion-parameter, million-token scale we build on three lossless principles that attack the largest remaining peaks: • Building on Least-Loaded Expert Parallelism [ 9], we adopt a memory-efficient expert-parallel scheme that overlaps routing communication with expert computation to keep the transient MoE activation footprint small while preserving LLEP’s speedup (§3.3). • We shard the vocabulary projection with a data-tensor-parallel scheme that computes the exact loss and gradient without ever materializing the O(N V ) logit tensor, while respecting the DP-like invariant that every rank carries a different batch (§3.4). • We update the optimizer state through an efficient pipeline that leverages a novel computation-communication overlap scheme. This collapses the optimizer time on the critical path (§3.5). All three are lossless : they relocate computation, not its result, preserving exact training semantics. 
+
+Results. Together these components let MoP train models that previously required far larger clusters on a fraction of the hardware. Across MoE models trained from scratch at 120B, 600B, and 1T parameters—on 2, 8, and 12 8×H200 nodes respectively—MoP sustains 4.7–8.2× higher per-GPU throughput than the best-tuned FSDP2 baseline at the longest context that baseline can fit, with the advantage widening as model scale grows (§4). More importantly, MoP keeps training at context lengths up to 1M tokens—where FSDP exhausts device memory beyond 64 –128 K—while holding throughput nearly flat as context grows, and its per-step wall time is bound essentially by forward and backward compute even at trillion-parameter scale. The combined memory savings enable 
+
+lossless pre-training and fine-tuning of trillion-parameter MoE models at near-million-token context on just under twelve 8×H200 nodes—a regime out of reach for prior single-plan systems at the same hardware budget—by exploiting every tier of the machine’s compute, memory, and bandwidth. 
+
+Contributions. In summary: ( i) we recast trillion-scale long-context MoE training as a component-specialized sharding problem and give a memory–bandwidth bottleneck analysis that motivates a per-component parallelism assignment over overlapping rank sub-groups (§3.1–3.2); ( ii ) we contribute three lossless principles—a memory-efficient expert-parallel scheme, a sharded data-tensor-parallel vocabulary projection, and an efficient optimizer pipeline—that eliminate the dominant activation and optimizer peaks (§3.3–3.5); and ( iii ) we show empirically that MoP delivers 4.7–8.2× higher per-GPU throughput than the best-tuned FSDP2 baseline and keeps training at up to 1M-token context where that baseline runs out of memory, enabling trillion-parameter, million-context training on a minimal GPU footprint (§4). 22 Background 
+
+We review the memory model of large-model training that the rest of the paper optimizes against (§2.1), and the two parallelism families whose trade-offs motivate our design: Megatron-style tensor/pipeline model parallelism (§2.2) and ZeRO/FSDP sharded data parallelism (§2.3). Throughout, Θ denotes the number of trainable parameters, W the number of devices, L the number of transformer blocks, 
+
+H the model width, S the sequence length, B the per-rank micro-batch, and N = BS the per-rank tokens per forward pass. 
+
+2.1 The Memory Model of Large-Model Training Mixture-of-Experts. A Mixture-of-Experts (MoE) layer replaces the dense feed-forward block with E parallel expert networks and a lightweight router that sends each token to its top-k experts [ 6, 3]. This decouples parameter count from per-token compute: total parameters grow with E
+
+while the FLOPs per token grow only with k ≪ E. Consequently, for the trillion-parameter models we target, the overwhelming majority of Θ resides in the routed expert weights, while each token activates only a small, data-dependent subset of them—a property that makes the memory and communication profile of MoE training sharply non-uniform across layers and components. 
+
+Persistent vs. transient memory. Per-device memory during training splits into two regimes that must be reduced by different means. Persistent (model) state is resident for the whole step: under mixed-precision training with AdamW [ 8], each parameter requires a 2-byte (bf16) working copy, a 2-byte gradient, and 12 bytes of fp32 optimizer state (a master weight plus the first and second moments m, v ), for 
+
+Mpersist = 2Θ |{z} 
+
+> weights
+
++ 2Θ |{z} 
+
+> grads
+
++ 12Θ |{z} 
+
+> optimizer state
+
+= 16Θ bytes . (1) 
+
+Transient (activation) state is created in the forward pass and consumed in the backward pass; it scales with the batch and sequence dimensions rather than with Θ, with a per-block peak of order O(N H )
+
+for the dense path and growing with depth L when activations are retained for backpropagation. Activation checkpointing [ 1 ] trades compute for memory by discarding intermediate activations in forward and recomputing them in backward. The central difficulty of trillion-scale long-context MoE training is that no single technique shrinks both regimes at once: sharding Θ attacks equation 1 but leaves activations untouched, while sequence/activation methods do the reverse. 
+
+2.2 Tensor and Pipeline Parallelism (Megatron) 
+
+Megatron-LM [ 13 ] scales beyond a single device by partitioning the model across ranks. Tensor parallelism (TP) over a group of t devices splits each weight matrix along rows or columns so that every rank stores 1/t of the dense weights and computes 1/t of each matmul; the partial results are combined with two all-reduces per transformer block (one in attention, one in the feed-forward). Because this communication sits on the critical path of every layer, TP is restricted to within a high-bandwidth domain (e.g. NVLink inside a node). Sequence parallelism [ 5] complements TP by further sharding the LayerNorm and dropout activations along the sequence axis, removing the activation replication that pure TP leaves in those regions. Pipeline parallelism (PP) partitions the L
+
+blocks into p contiguous stages placed on different devices and streams micro-batches through them; an idle “bubble” at pipeline fill/drain costs throughput unless the micro-batch count is large. 
+
+Memory model. Within a TP group, persistent state is reduced from equation 1 to ≈ 16Θ /t per rank and the corresponding activations by up to t; within a PP group each stage holds only its 1/p of the layers, i.e. ≈ 16Θ /p per stage. The three axes form a Cartesian 3D parallelism with W = d t p ,where d is the data-parallel degree. This factorization is the main drawback: the axes multiply to consume the device budget, t and p are bounded by intra-node bandwidth and the bubble respectively, and a single global plan (d, t, p ) is applied uniformly to every layer regardless of whether a given component is bottlenecked by weights, activations, or routing. 3Figure 1: Overview of the Mixture-of-Parallelisms approach across 8 GPUs. Each layer component— attention (distributed attention), MoE experts (least-loaded expert parallelism), FFN, and projection (data-tensor parallelism)—uses a distinct parallelism strategy, all sharing the same W data-parallel ranks without a Cartesian rank explosion. 
+
+2.3 Sharded Data Parallelism (ZeRO / FSDP) 
+
+Plain data parallelism replicates the full 16Θ bytes of equation 1 on every rank and synchronizes gradients with an all-reduce, which is memory-prohibitive at scale. ZeRO [ 10 ] and its PyTorch realization FSDP [ 14 ] instead shard the persistent state across the W data-parallel ranks in three cumulative stages: ZeRO-1 shards the optimizer state ( 2Θ + 2Θ + 12Θ /W per rank), ZeRO-2 additionally shards gradients ( 2Θ + 14Θ /W ), and ZeRO-3 / FSDP-FULL_SHARD additionally shards the parameters themselves, giving 
+
+M ZeRO -3persist = 16Θ /W bytes per rank . (2) Under ZeRO-3 each rank persistently owns a 1/W shard; just before a layer executes, an all-gather reconstructs its full weights, the layer runs, and the gathered copy is released, while gradients are reduce-scattered on the backward pass. The total communication volume per step is comparable to a standard data-parallel all-reduce (roughly 1.5×) but is spread across layers and overlappable with compute. ZeRO keeps a key data-parallel property—each rank processes a different micro-batch— which makes it composable, but it shares data parallelism’s blind spot: it reduces only the persistent state of equation 1 and leaves the full-rank activations on every device. ZeRO-Offload [ 12 ] pushes the optimizer state and master weights (and optionally gradients) to host memory, trading PCIe/NVLink host–device bandwidth for further device savings on the 12Θ -byte optimizer state. 
+
+# 3 Mixture-of-Parallelisms 
+
+We propose Mixture-of-Parallelisms (MoP), a training stack for trillion-parameter sparse Mixture-of-Experts (MoE) models at long context. Existing systems—tensor and pipeline model parallelism [ 13 ], fully-sharded data parallelism [ 10 , 14 ], expert parallelism [ 6, 3, 11 ], and sequence parallelism [ 5, 4]— compose these techniques along a single global plan applied uniformly to every layer. We argue that the memory and bandwidth pressures of trillion-scale MoE training are sharply component-dependent 
+
+and that a single parallelism is not Pareto-optimal across attention, the dense path, the MoE feed-forward, the vocabulary projection, and the optimizer. MoP composes a different parallelism for each component, attacking that component’s dominant bottleneck (§3.2); we describe a memory-efficient expert-parallel scheme (§3.3), a sharded vocabulary projection (§3.4), and an efficient pipeline for the optimizer state (§3.5). 4Table 1: Per-rank memory under MoP for one transformer-MoE block. W is the total device count; 
+
+D, Ep, P are sub-group sizes for sequence, expert, and projection parallelism (with D, E p, P ≤ W ). Each row reports the regime it dominates.                                      
+
+> Component Parallelism Per-rank memory Ref.
+> Dense weights Θdns Efficient sharding over WΘdns /W §3.2 Attention activations Sequence parallelism over DO(N H )§3.2 Expert weights Θexp Hybrid EP ×sharding (deg. W)Θexp /W §3.2 MoE activations Memory-efficient LLEP [9] ≪ O (N kH )§3.3 Vocabulary weights Θvoc Data-tensor parallelism over PΘvoc /P §3.4 Vocabulary logits Sharded online loss O(N V /P )§3.4 Optimizer state {m, v, master }Host-resident; pipelined updates small on-device working set §3.5
+
+3.1 Notation and Bottleneck Analysis 
+
+Let W be the number of devices, L the number of transformer blocks, H the model width, V the vocabulary size, E the number of experts, I the per-expert intermediate width, k the top-k routing degree, S the full sequence length, and N the number of tokens resident on each device per forward pass. We assume a single sequence per step (batch size B = 1 ); the sequence parallelism of §3.2 splits a length-S sequence across a D-rank sub-group, so each device holds N = S/D tokens (equivalently 
+
+S = N D ), while distinct sub-groups hold distinct sequences. Trainable parameters partition as 
+
+Θ = Θdns 
+
+| {z } 
+
+> Θ( LH 2)
+
++ Θexp 
+
+| {z } 
+
+> Θ( LEHI )
+
++ Θvoc 
+
+|{z}  
+
+> Θ( HV )
+
+, (3) covering dense weights (attention Q, K, V, O projections, layer norms, MoE routers, the embedding), expert weights (routed feed-forward), and the vocabulary projection. For trillion-parameter MoEs 
+
+∼ 98 –99% of Θ is in Θexp .Per-rank GPU memory splits into two regimes that no single technique reduces simultaneously: 
+
+persistent parameter memory (master weights, gradients, optimizer states [ 8]), reduced by sharding or offloading [ 12 ]; and transient activation memory, scaling with N and H, reduced by sequence sharding, activation checkpointing [ 1 , 5], or operator-level chunking. The dominant per-block activation peaks are 
+
+M attn  
+
+> A
+
+= O(N H ), M moe  
+
+> A
+
+= O N kH + NrI, M voc  
+
+> A
+
+= O(N V ), (4) where Nr is the number of token–expert assignments received by the rank under expert parallelism. Sharding parameters does not, by itself, attack activations: ZeRO-3 reduces Θexp to Θexp /W but leaves M moe  
+
+> A
+
+full-rank on every device; expert parallelism shards Θexp along E but does not reduce 
+
+O(N kH ). MoP exploits these asymmetries by treating each component separately. 
+
+3.2 Component-Specialized Parallelism Plan 
+
+Table 1 summarizes the assignment. A unifying property is that, in contrast to pipeline or tensor parallelism, every parallelism we compose is data-parallel-like at the rank level : each device holds a distinct shard of tokens—under sequence parallelism, a different chunk of the same long sequence—and stores a (sharded) copy of the weights involved. The W ranks form overlapping sub-groups of sizes D, Ep, and P along which different components shard; these sub-groups are not independent dimensions of a Cartesian product but subsets of the same W ranks. This avoids the rank multiplication W = DpTpPp of classical 3D parallelism while still letting each component pick the sub-group whose sharding axis matches its bottleneck. 
+
+Dense weights via efficient sharding. The dense path ( Θdns ≪ Θexp ) holds the attention 
+
+Q, K, V, O linears, layer norms, MoE routers, and the input embedding. Dense weights are touched by every token, so they cannot be sharded along the token axis without communication on every layer. We shard them along the parameter axis with an efficient sharding method: each rank persistently stores Θdns /W parameters; just before a layer fires, an all-gather over the W -rank sub-group reconstructs the full weight matrix on every rank, the layer is computed, and the gathered copy is released. Gradients follow the inverse schedule via reduce-scatter. The all-gather volume per layer is 5O(Θ (layer) dns W ), which is small in absolute terms because Θdns itself is small (1–2% of Θ); for the trillion-parameter MoEs we target, this is sub-percent of step time at W = 10 2.
+
+Attention activations via sequence parallelism. At long context the attention block dominates forward memory. A length-S sequence induces an O(S2) attention-score matrix; the IO-aware FlashAttention kernel [ 2] never materializes it, but the activations it streams over (the Q, K, V 
+
+projections and the attention output) still cost O(SH ) for the full sequence. We distribute this across a D-rank sub-group by sharding the sequence, following Ulysses-style sequence parallelism [ 4, 5], so that each rank holds only N = S/D tokens and the full-sequence cost O(SH ) becomes a per-rank 
+
+O(N H ). Outside the attention block, all tensors live in a sequence-sharded layout, with each rank holding its N = S/D -token chunk of the sequence across the full hidden width H. Inside the attention block, an all-to-all swaps to a head-sharded layout, with each rank holding the full S = N D tokens across an H/D slice of the hidden width (a 1/D -th of the heads), so that the row-wise softmax has access to the entire sequence; a second all-to-all reverses the swap on exit. Either layout exposes the same per-rank activation peak O(N H ) (= O(SH/D )). On top of this scheme we adopt more advanced upgrades to Ulysses-style sequence parallelism that further lower its memory footprint, enabling longer context training. Critically, D is chosen independently of the expert-parallel degree (§3.2), so we can grow D to dilute attention activations without disturbing the expert sharding plan. 
+
+Expert weights via hybrid EP × sharding. The MoE feed-forward holds Θexp , essentially the entire parameter mass of the model. Pure exclusive expert parallelism [ 6 , 3] assigns E/W experts to each rank and dispatches tokens to their destination expert by an all-to-all, but it couples the expert-parallel degree to the total device count and inflates the routing volume of every layer. We instead compose two sharding axes—an expert-parallel sub-group over which experts are partitioned and a complementary sharding sub-group over which each expert shard is further sharded—so that persistent per-rank expert memory is Θexp /W , while the split between the two axes trades inter-rank routing volume against weight-gather volume. The MoE activation peak is then attacked separately by the memory-efficient LLEP scheme of §3.3. The remaining three components—MoE activations, the vocabulary projection, and the optimizer state—introduce new mechanisms described next. 
+
+3.3 Memory-Efficient Expert Parallelism Recap of LLEP. Nguyen et al. [9] observed that even well-trained MoE models exhibit highly imbalanced expert routing during fine-tuning and inference, which violates standard expert parallelism’s assumption of uniform load and concentrates work on the devices hosting popular experts—incurring stragglers and out-of-memory failures. Least-Loaded Expert Parallelism (LLEP) addresses this at the system layer: at every MoE call it measures per-rank token load, migrates excess tokens from overloaded ranks to underloaded ones, and ships the corresponding expert parameters along with the migrated tokens so that the receiving rank can compute the expert feed-forward locally. LLEP preserves model semantics (it permutes the placement of compute, not the assignment of tokens to experts), supports backward gradient propagation, and delivers up to 5× MoE-layer speedup and 
+
+4× peak-memory reduction over standard expert parallelism. We adopt LLEP unchanged as our routing layer. 
+
+A memory-efficient variant. LLEP balances which device runs each token–expert assignment, but the per-rank transient forward peak of a MoE layer still scales with the rank’s incoming token count, and the routed inputs, the dispatch buffers, and the expert intermediate are otherwise live at the same time. On top of LLEP we adopt a memory-efficient variant that overlaps the routing communication with the expert computation, so that only a small fraction of these buffers is resident at any instant. The scheme substantially lowers the dominant transient MoE activation peak while recovering LLEP’s throughput, enabling longer context or larger micro-batches at the same hardware budget. It is lossless: it reorders and overlaps computation and communication without changing the layer’s result. 63.4 Data-Tensor-Parallel Vocabulary Projection 
+
+The vocabulary projection forms the largest single weight matrix in modern LLMs ( V ≳ 10 5) and the largest activation tensor when S is large. With local input batch X ∈ RN ×H and projection weight 
+
+Wvoc ∈ RH×V , the forward pass computes 
+
+Y = X W voc ∈ RN ×V , ℓn = Yn,t n − log 
+
+> V
+
+X
+
+> v=1
+
+exp  Yn,v 
+
+, (5) where tn is the target vocabulary index. Storing Y alone is O(N V ), exceeding device memory for long sequences ( ∼ 10 2 GB at N = 10 6, V = 2 ×10 5). Standard column-wise tensor parallelism shards 
+
+Wvoc across P ranks but requires every rank to hold the same X, incompatible with our DP-like plan in which every rank holds a different batch. 
+
+A sharded data-tensor-parallel projection. We shard Wvoc across a P -rank sub-group while preserving the DP-like invariant that each rank keeps its own distinct batch. The scheme computes the exact per-token loss and its gradients by combining per-block partial contributions, so that the full 
+
+O(N V ) logit tensor Y is never materialized in either the forward or backward pass—only a fraction of it is resident at any instant. Per-rank peak activation memory for the projection is thereby held at 
+
+O(N V /P ) rather than O(N V ), an 8–16 × reduction in practice at the sub-group sizes we use, at a communication cost that—for large vocabularies—is essentially independent of context length. The result is lossless: the loss and gradients match the dense projection to numerical precision. 
+
+3.5 Efficient Optimizer Pipeline 
+
+For trillion-parameter MoEs, the optimizer state—for AdamW, the master weights and two moments 
+
+(m, v )—contributes ∼ 12Θ bytes in fp32, an order of magnitude larger than the bf16 weights themselves [ 8], so keeping it resident in device memory alongside long-context activations is infeasible. Rather than reserve scarce GPU memory for it, MoP exploits all of the machine’s physical resources—not the GPUs alone—and drives the optimizer step through an efficient pipeline that leverages computation–communication overlap: the update is issued in parallel with work already on the critical path (including the backward pass) and uses only a small transient device working set, so its cost is effectively removed from the per-step wall time. Combined with the components above, this leaves the end-to-end step time bound essentially by forward and backward compute, even at trillion-parameter scale. The update is lossless: it reorders data movement and computation without altering the optimizer’s result. 
+
+# 4 Experiments 
+
+Baselines. We compare against a strong, fully featured FSDP2 baseline [ 14 , 7] as implemented in TorchTitan [ 7], which is not limited to plain data-parallel sharding: it also supports Megatron-style tensor (TP), context (CP), and expert (EP) parallelism [ 13 , 5], as well as CPU offloading of the optimizer state [ 12 ]. For each model we sweep these axes and report the highest-throughput configuration that fits in device memory ( FSDP-best ); the resulting per-model configurations are listed in Table 3. Our baseline therefore already incorporates the best of existing parallelism strategies, so the gains in Table 2 are over this tuned combination rather than vanilla FSDP. 
+
+Throughput and long-context scaling. Table 2 compares MoP against the best-tuned FSDP2 baseline (FSDP-best) on MoE models trained from scratch, each on 8×H200 nodes. At the longest context the FSDP baseline can fit, MoP delivers 4.7–8.2× higher per-GPU throughput, and the gap widens with model scale. More importantly, MoP keeps training at context lengths up to 1Mtokens—where FSDP exhausts device memory beyond 64 –128 K—reaching configurations that are simply infeasible for the baseline while holding throughput nearly flat as context grows. 
+
+Limitations. MoP trades memory for communication: its heavy reliance on parameter sharding (§3.2) and all-to-all routing (§3.3) makes it communication-bound , so the speedups in Table 2 assume the fast interconnect of our reference cluster. They erode when bandwidth is throttled or the device count grows large enough that these collectives stop overlapping with compute. In those regimes 7Table 2: Training throughput (tokens/s/GPU) of MoP vs. the best-performing FSDP2 baseline (FSDP-best) for MoE models trained from scratch on 8×H200 nodes. FSDP-best is the highest-throughput configuration of a tuned FSDP2/TorchTitan stack [ 14 , 7 ] that also supports Megatron-style TP/CP/EP and CPU offloading (per-model configurations in the text). “OOM” marks configurations where the baseline runs out of device memory; the speedup is reported at the longest context FSDP can fit.                                                  
+
+> Model Nodes Context MoP FSDP-best Speedup
+> 120B 2128K 1043 223 4.7×
+> 256K 681 OOM —512K 424 OOM —1M 393 OOM —600B 864K 236 39 6.1×
+> 128K 220 OOM —256K 225 OOM —512K 213 OOM —1M 213 OOM —1T 12 128K 166 25 6.6×
+> 256K 140 17 8.2×
+> 512K 108 OOM —1M 100 OOM —
+
+Table 3: Best-performing FSDP2 baseline (FSDP-best) parallelism configuration per model, obtained by sweeping data (FSDP), expert (EP), context (CP), and tensor (TP) parallelism together with optimizer CPU offloading. These are the configurations used for the FSDP-best entries in Table 2.                     
+
+> Model FSDP EP CP TP CPU offload
+> 120B 116 16 —No 600B 16 822Yes 1T 396 48Yes
+
+pipeline parallelism (which keeps traffic mostly intra-node) and an extra fully separated data-parallel dimension (which replicates rather than shards state) help recover throughput at some memory cost. MoP is thus the memory-efficiency extreme of the design space, preferred when device memory—not bandwidth—is the binding constraint, as in post-training of large MoE models on a small hardware budget. 
+
+# 5 Conclusion 
+
+We presented Mixture-of-Parallelisms (MoP), a training stack that replaces the single global parallelism plan with a component-specialized assignment: each part of the MoE block—the dense path, attention, the expert feed-forward, the vocabulary projection, and the optimizer state—is sharded along the axis that matches its dominant bottleneck, over overlapping sub-groups of the same W
+
+ranks rather than a Cartesian product. To make this plan viable at trillion-parameter, million-token scale, we build on three lossless principles—a memory-efficient expert-parallel scheme, a sharded data-tensor-parallel vocabulary projection, and an efficient pipeline for host-offloaded optimizer state—that eliminate the largest transient activation and optimizer peaks while preserving exact training semantics. Empirically, MoP sustains 4.7–8.2× higher per-GPU throughput than the best-tuned FSDP2 baseline and keeps training at context lengths up to 1M tokens where that baseline runs out of memory, enabling lossless trillion-parameter training at near-million-token context on just under twelve 8×H200 nodes. More broadly, our results suggest that matching parallelism to component—rather than applying one plan uniformly to every layer—is a practical route to training ever-larger sparse models on commodity-scale clusters. Promising directions include automating the per-component sub-group sizing ( D, Ep, P ) from the model shape and cluster topology, and extending the component-specialized view to long-context inference. 8References 
+
+[1] Tianqi Chen, Bing Xu, Chiyuan Zhang, and Carlos Guestrin. Training deep nets with sublinear memory cost. arXiv preprint arXiv:1604.06174 , 2016. [2] Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. FlashAttention: Fast and memory-efficient exact attention with IO-awareness. Advances in Neural Information Processing Systems (NeurIPS) , 2022. [3] William Fedus, Barret Zoph, and Noam Shazeer. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. Journal of Machine Learning Research , 23 (120):1–39, 2022. [4] Sam Ade Jacobs, Masahiro Tanaka, Chengming Zhang, Minjia Zhang, Shuaiwen Leon Song, Samyam Rajbhandari, and Yuxiong He. DeepSpeed Ulysses: System optimizations for enabling training of extreme long sequence transformer models. arXiv preprint arXiv:2309.14509 , 2023. [5] Vijay Anand Korthikanti, Jared Casper, Sangkug Lym, Lawrence McAfee, Michael Andersch, Mohammad Shoeybi, and Bryan Catanzaro. Reducing activation recomputation in large transformer models. In Proceedings of Machine Learning and Systems (MLSys) , 2023. [6] Dmitry Lepikhin, HyoukJoong Lee, Yuanzhong Xu, Dehao Chen, Orhan Firat, Yanping Huang, Maxim Krikun, Noam Shazeer, and Zhifeng Chen. Gshard: Scaling giant models with conditional computation and automatic sharding. arXiv preprint arXiv:2006.16668 , 2020. [7] Wanchao Liang, Tianyu Liu, Less Wright, Will Constable, Andrew Gu, Chien-Chin Huang, Iris Zhang, Wei Feng, Howard Huang, Junjie Wang, Sanket Purandare, Gokul Nadathur, and Stratos Idreos. TorchTitan: One-stop PyTorch native solution for production ready LLM pre-training. In International Conference on Learning Representations (ICLR) , 2025. arXiv:2410.06511. [8] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In International Conference on Learning Representations (ICLR) , 2019. [9] Xuan-Phi Nguyen, Shrey Pandit, Austin Xu, Caiming Xiong, and Shafiq Joty. Least-loaded expert parallelism: Load balancing an imbalanced mixture-of-experts. arXiv preprint arXiv:2601.17111 , 2026. [10] Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase, and Yuxiong He. ZeRO: Memory optimizations toward training trillion parameter models. In Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis (SC) , 2020. [11] Samyam Rajbhandari, Conglong Li, Zhewei Yao, Minjia Zhang, Reza Yazdani Aminabadi, Ammar Ahmad Awan, Jeff Rasley, and Yuxiong He. DeepSpeed-MoE: Advancing mixture-of-experts inference and training to power next-generation AI scale. In International Conference on Machine Learning (ICML) , 2022. [12] Jie Ren, Samyam Rajbhandari, Reza Yazdani Aminabadi, Olatunji Ruwase, Shuangyan Yang, Minjia Zhang, Dong Li, and Yuxiong He. ZeRO-Offload: Democratizing billion-scale model training. In USENIX Annual Technical Conference (ATC) , 2021. [13] Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper, and Bryan Catanzaro. Megatron-LM: Training multi-billion parameter language models using model parallelism. arXiv preprint arXiv:1909.08053 , 2019. [14] Yanli Zhao, Andrew Gu, Rohan Varma, Liang Luo, Chien-Chin Huang, Min Xu, Less Wright, Hamid Shojanazeri, Myle Ott, Sam Shleifer, Alban Desmaison, Can Balioglu, Pritam Damania, Bernard Nguyen, Geeta Chauhan, Yuchen Hao, Ajit Mathews, and Shen Li. PyTorch FSDP: Experiences on scaling fully sharded data parallel. Proceedings of the VLDB Endowment , 16 (12):3848–3860, 2023. 9

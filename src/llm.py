@@ -534,6 +534,17 @@ class LLMClient:
         except Exception:
             pass
 
+        # GLM Coding Plan / 智谱 BigModel：主流程（论文总结/过滤/改写）不需要思考，
+        # 显式关闭思考模式以避免 reasoning token 吞掉输出预算并拖慢流水线。
+        try:
+            model_lower = (model_name or '').lower()
+            base_url_lower = (self.base_url or '').lower()
+            is_glm = model_lower.startswith('glm-') or 'open.bigmodel.cn' in base_url_lower
+            if is_glm:
+                payload['thinking'] = {'type': 'disabled'}
+        except Exception:
+            pass
+
         start_time = time.time()
         request_bases = self._iter_retry_bases(total_attempts=6)
         last_error: Exception | None = None

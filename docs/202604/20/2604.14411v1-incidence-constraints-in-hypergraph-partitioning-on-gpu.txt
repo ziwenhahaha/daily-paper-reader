@@ -1,0 +1,166 @@
+Title: Incidence Constraints in Hypergraph Partitioning on GPU
+
+URL Source: https://arxiv.org/pdf/2604.14411v1
+
+Published Time: Fri, 17 Apr 2026 00:18:44 GMT
+
+Number of Pages: 4
+
+Markdown Content:
+# Incidence Constraints in Hypergraph Partitioning on GPU 
+
+Marco Ronzani , Cristina Silvano , DEIB, Politecnico di Milano, Italy 
+
+Abstract —Hypergraph partitioning is a pervasive NP-hard prob-lem, and accelerating its computation on GPU can both slice time-to-solution and raise quality of results. In this work, we implement a multi-level hypergraph partitioning algorithm on GPU targeting a specific set of problem constraints: bounded per-partition size and distinct inbound hyperedges. Manipulating hypergraphs requires long orders of nested iterations, and enforcing these constraints introduces further set operations amidst them. Hence, we design algorithms around our problem’s specifics, materializing the hyper-graph’s incidence structure in memory and exploiting set sparsity. Our results show competitive speedups as high as 940 × and 2-26 %
+
+better results in connectivity over a sequential multi-level partitioner. 
+
+Index Terms —Hypergraph partitioning, GPU implementation, in-cidence constraint, size constraint. 
+
+I. Introduction 
+
+Hypergraph partitioning is a widely occurring problem in computer science. Being notoriously NP-hard, it is typically addressed via heuristics [1]. Hence, as problem size grows, more and more quality of results must be traded to retain a feasible time-to-solution. For this reason, the efficient, massively parallel implementation of hypergraph partitioning algorithms holds the potential for time sav-ings and performance improvements across many fields. However, with the naturally sparse and unbalanced structure of hypergraphs, such algorithms are far from trivially parallelizable [1, 2]. This work explores the GPU implementation of an algorithm for directed hypergraph partitioning under partition size and in-cidence constraints. Each partition is limited in the number of nodes it contains and in the number of its distinct inbound hyperedges. The goal of partitioning is to minimize the connectivity, the total weight of cuts induced by hyperedges between partitions. This constrained formulation emerges across many fields and at scales nearing millions of nodes. Notable instances are the mapping of Spiking Neural Networks (SNNs) to neuromorphic hardware [3, 4], VLSI/FPGA design under limited I/O budgets [1, 5], chiplet-based architectures [6], and sparse matrix kernels [2]. A few GPU-based hypergraph partitioners [2, 7] already exist, but focus on balanced 𝑘 -way partitioning, a different set of constraints. Still, they demonstrate speedups upwards of 100 × over their CPU counterparts [8, 9]. In doing so, they already highlight challenges in designing algorithms for concurrent decision-making while keep-ing them GPU-friendly. Crucial subjects being data access locality, integrating warp primitives, and workload balance. The introduction of incidence constraints further exacerbates these hurdles. Tracking distinct inbound connections requires con-tinuous set unions and deduplication. Then, knowing the validity state of a partition before and after moving a node involves many membership tests on those sets. Furthermore, these operations are often nested inside neighborhood traversals, already the most costly visit of a hypergraph. As such, everything, from data structures to kernels, must be bent around these constraints. Hereafter, we present a new multi-level hypergraph partitioning scheme adapted to our constraints. To the best of our knowledge, this is the first work to address such a variation of the problem. We discuss the fundamental bottlenecks of its implementation on GPU, followed by algorithm designs circumventing them. Key points include the materialization of neighborhoods in memory and sparse, event-based constraint tracking. 
+
+Fig. 1: Overview of the multi-level hypergraph partitioning scheme. 
+
+II. Preliminaries 
+
+A. Hypergraph Partitioning Model 
+
+Hypergraphs (h-graphs) are a generalization of graphs where edges – now hyperedges (h-edges) – can connect more than two nodes. A weighted directed hypergraph 𝐺 (𝑁 , 𝐸, 𝜔 ) consists of a set 𝑁 of nodes and a set 𝐸 of h-edges. Each h-edge 𝑒 ∈ 𝐸 contains a subset of nodes (pins) 𝑒 ⊆ 𝑁 , with 𝑠𝑟𝑐 (𝑒 ) being the h-edge’s sources and 𝑑𝑠𝑡 (𝑒 )
+
+its destinations. The function 𝜔 : 𝐸 → R assigns a weight to each h-edge. In addition, we define a node 𝑛 ’s incidence sets 𝑖𝑛 (𝑛 ) = {𝑒 ∈
+
+𝐸 | 𝑛 ∈ 𝑑𝑠𝑡 (𝑒 )} , 𝑜𝑢𝑡 (𝑛 ) = {𝑒 ∈ 𝐸 | 𝑛 ∈ 𝑠𝑟𝑐 (𝑒 )} , I ( 𝑛 ) = 𝑖𝑛 (𝑛 ) ∪ 𝑜𝑢𝑡 (𝑛 ).Finally, a node 𝑛 ’s neighbors are N ( 𝑛 ) = {𝑚 ∈ 𝑒 | 𝑒 ∈ I ( 𝑛 )} .A partitioning of 𝐺 is a set 𝑃 ⊂ P ( 𝑁 ) of pairwise disjoint non-empty subsets – partitions – of its nodes such that Ð𝑝 ∈𝑃 𝑝 = 𝑁 .With P (·) denoting the power set. Equivalently, it can be defined by a 𝜌 : 𝑁 → 𝑃 such that 𝜌 (𝑛 ) = 𝑝 iff 𝑛 ∈ 𝑝 .Our constraints pose hard limits on the number of nodes and of distinct inbound h-edges per partition. Let Ω be the maximum size of a partition, ∀𝑝 ∈ 𝑃, |𝑝 | ≤ Ω. Let Δ be the maximum number of allowed distinct inbound h-edges to a partition, |Ð𝑛 ∈𝑝 𝑖𝑛 (𝑛 )| ≤ Δ.Our optimization metric is the connectivity , the weighted num-ber of cuts on each h-edge: 
+
+𝐶𝑜𝑛𝑛 𝐺 (𝜌 ) = Í𝑒 ∈𝐸 𝜔 (𝑒 ) · (|{ 𝜌 (𝑛 ) | 𝑛 ∈ 𝑒 }| − 1). (1) The partitioning goal is to minimize connectivity within constraints. While our present focus is on limited distinct inbound h-edges, the presented methodology remains trivially generalizable to constraints on distinct outbound or distinct incident h-edges. 
+
+B. The Multi-Level Partitioning Scheme 
+
+The staple approach to h-graph partitioning is the multi-level scheme [8, 9] with Fiduccia–Mattheyses refinement [10], shown in Fig. 1. It first involves a coarsening phase, progressively clustering together nodes that participate in similar sets of h-edges until further aggregation would violate constraints. The resulting clusters define an initial partitioning, which is then refined by uncoarsening the hypergraph and evaluating node moves between partitions. We implement a slight revision of the classic balanced 𝑘 -way version of the method, which relied on a slow, exact algorithm for the initial partitioning of coarse nodes. With no need for balance, the coarsening routine’s goal of maximum h-edge overlap becomes the dual of minimum connectivity. Moreover, with no 𝑘 partitions requirement, the least cuts cost is found when a near-minimal number of partitions is formed. Hence, we let the coarsest level’s nodes define partitions, with coarsening halting upon reaching 
+
+⌈|𝑁 |/Ω⌉ nodes or being unable to further unify clusters. This removes the need for the slow initial partitioning step. While effective, the multi-level scheme often incurs high compu-tational costs. Namely, during coarsening, clusters must be selected 
+
+> arXiv:2604.14411v1 [cs.DC] 15 Apr 2026
+
+over large and irregular neighborhoods [11]. Whereas for refine-ment, a subset of improving moves must be extracted from many that mutually interfere [7]. Now, both such existing bottlenecks are also where inbound constraints checks need to be performed. 
+
+C. GPU Model and Data Structures 
+
+Present terminology hinges on CUDA, our chosen API for general-purpose processing on GPU. Architecturally, a GPU comprises several streaming multiprocessors, each handling several threads grouped in blocks. Internally, a multiprocessor breaks a block into warps, sets of 32 threads that undergo SIMD execution and can share data through shuffles. Threads have access to a limited number of registers, while blocks can allocate a small amount of shared memory, a scratchpad seen by all their threads. Any other data resides in global memory, backed by VRAM. The result is a hierarchical parallelism model, spanning blocks, warps, and threads. Two concerns central to GPU programming are warp divergence and memory access coalescing. To address both, we maintain a compressed sparse memory representation of h-graphs, their inner structure always traversed by entire warps. An h-graph is primarily described by sets of sets, namely 𝐸 , 𝑖𝑛 (𝑛 ),
+
+𝑜𝑢𝑡 (𝑛 ). The memory representation of such two-level structures in compressed sparse form involves two arrays. A segmented data array stores contiguously each linearized inner set. Then, an array of offsets maps inner set ids to their data’s starting position in the previous array. If now one or few warps handle each segment, they will see fully coalesced accesses and little divergence. Nodes and h-edges alike are identified by unsigned integers, their ids constituting all atoms inside sets. With ids being a zero-based range, they double as indices in the offsets array. In addition, ids enforce a total order over nodes ≺𝑖𝑑 𝑁 and h-edges ≺𝑖𝑑 𝐸 .
+
+III. Coarsening 
+
+A. Algorithms Overview 
+
+Coarsening starts with the construction of mutually exclusive pairs of nodes, which is carried out in two steps. First, each node selects among its neighbors the most suitable pairing candidate. Then, coarse nodes are determined by a maximum-weight matching computed over candidate pairs. A node 𝑛 ’s candidate is the neighbor it is connected to with the highest total weight. In addition, a candidate must be valid, i.e. it and its node must lead to a valid cluster within constraints. Candidate selection involves visiting 𝑛 ’s incident h-edges and their pins, accumulating for each neighbor the total weight of h-edges it appears in. This is a histogram over 𝑛 ’s neighbors: 
+
+∀𝑚 ∈ N ( 𝑛 ), ℎ𝑖𝑠𝑡 (𝑛, 𝑚 ) = Í𝑒 ∈ I ( 𝑛 ) s.t. 𝑚 ∈𝑒 𝜔 (𝑒 ) . (2) Finding the best valid candidate takes repeated extractions of 
+
+argmax 𝑚 ∈𝑁 ℎ𝑖𝑠𝑡 (𝑛, 𝑚 ), followed by constraint checks until a valid 𝑚 
+
+is found. Checking cluster size ≤ Ω is trivial, while distinct inbound h-edges require computing the union |𝑖𝑛 (𝑛 ) ∪ 𝑖𝑛 (𝑚 )| ≤ Δ. Finally, each node and its candidate form a candidate pair, 𝑝𝑎𝑖𝑟 : 𝑁 ⇀ 𝑁 ,
+
+𝑝𝑎𝑖𝑟 (𝑛 ) = max 𝑖𝑑 argmax 𝑣𝑎𝑙𝑖𝑑 𝑚 ∈𝑁 ℎ𝑖𝑠𝑡 (𝑛, 𝑚 ), inheriting their total connection’s weight as 𝑠𝑐𝑜𝑟𝑒 : 𝑁 ⇀ R, 𝑠𝑐𝑜𝑟𝑒 (𝑛 ) = ℎ𝑖𝑠𝑡 (𝑛, 𝑝𝑎𝑖𝑟 (𝑛 )) .Candidate pairs and scores form a directed weighted "pairing" graph overlaying the h-graph. Choosing mutually exclusive node pairs reduces to a maximum weighted matching problem over said graph [11]. However, we observe that by virtue of every node proposing one candidate pair, the pairing graph is a pseudo-forest. Additionally, since both neighbor histograms and validity are sym-metric, every edge entering a node has score less than or equal to 
+
+> Fig. 2: Matching over the two-cycle pseudo-forest.
+
+the edge leaving it, ∀𝑛, 𝑚 ∈ 𝑁 , 𝑝𝑎𝑖𝑟 (𝑚 ) = 𝑛 ⇒ 𝑠𝑐𝑜𝑟𝑒 (𝑛 ) ≥ 𝑠𝑐𝑜𝑟𝑒 (𝑚 ).This implies that along each component’s cycle the score is constant. In particular, by the definition of 𝑝𝑎𝑖𝑟 with max 𝑖𝑑 , all cycles have length two. So, matching admits a near-optimal solution in two traversals of all connected components [12]. Starting from every leaf in the forest, walking upward until a cycle is found, every node places its score over its candidate. Every two-cycle forms a match. Then, a downward walk goes back from the cycles towards each leaf, matching every node with its candidate iff the candidate is still free and the node’s score is still the highest one on it. The nodes handling order does not matter, so long as the path leading to a node has been fully traced before it is visited. For brevity, we omit the formalization of nodes with no candidate. Once final mutually exclusive pairs are determined, they become the next level’s coarse nodes. From there, constructing the coarse h-graph in full involves merging inbound sets between paired nodes and mapping h-edge pins from nodes to clusters. 
+
+B. Parallelization Details III-B1. Neighbors Materialization: Histogram construction during candidate selection allocates one bin per unique neighbor. How-ever, without knowing unique neighbors a priori, bins must be overallocated. With per-node neighbors easily exceeding shared memory capacity, construction of the histogram will spill to global memory. Hence, turning it into a very costly operation, requiring several random, atomic accesses to global memory. To streamline the histogram pattern, we fully materialize unique neighbors N (·) in memory once for the initial h-graph and progres-sively update them while coarsening. This doesn’t alter the histogram’s asymptotic complexity: an iter-ation over neighbors is still required. Nevertheless, it brings several advantages. It offsets the repeated cost of deduplicating neighbors to a single, upfront construction. When moving down one level, coarse neighbors are computed from existing ones, progressively diluting duplicates. Deduplication of neighbors alone, rather than bins with weights, occupies exactly half the memory. Ultimately, the one-time overhead of initial neighbors construction is amortized over all coarsening levels, and histograms are duplicates-free. Materialized neighbors too follow the compressed sparse format from Sec. II-C. Additionally, they are solely used for coarsening, and their memory can be reclaimed afterwards. 
+
+III-B2. Candidate Pairs Proposal: With unique neighbors now known, histogram construction is batched over neighbors and happens fully in shared memory. We assign a warp per node 𝑛 ∈ 𝑁 , and let it load a fixed-size batch of N ( 𝑛 ) at once, sorting the resulting bins by key. The warp iterates ∀𝑒 ∈ I ( 𝑛 ), and as pins are read, a binary search is used to find and increment each bin by 𝜔 (𝑒 ). Subsequently, the warp sorts the histogram by value, using neighbor ids as a deterministic tie-breaker. The current maximum value is extracted and the process repeats until all neighbors have been considered. Crucially, working only in shared memory allows us to efficiently defer constraint checks until the moment of such extraction, sparing the high cost of validating every neighbor. Upon extracting the best candidate, cluster size is easily checked by tracking the size of each node while coarsening. Instead, com-puting a pair’s final inbound set size needs a fast membership test between two nodes’ inbound sets. For this, we require the data array segments of 𝑖𝑛 (·) ’s compressed sparse form to be sorted. A warp assigned to node 𝑛 synchronizes over a single neighbor 𝑚 at a time. Threads proceed to read 𝑖𝑛 (𝑚 ), for each h-edge running a binary search on 𝑖𝑛 (𝑛 ), reducing with shuffles the count of h-edges not already present in it. The final total is then added to |𝑖𝑛 (𝑛 )| and checked against constraints. 
+
+III-B3. Parallel Nodes Matching: Following from Sec. III-A, nodes matching involves two traversals over the pseudo-forest of 𝑝𝑎𝑖𝑟 and 
+
+𝑠𝑐𝑜𝑟𝑒 . These can occur in parallel with a thread departing from every leaf. Each node tracks a 𝑚𝑎𝑡𝑐ℎ : 𝑁 → 𝑁 indicating its current status, initially 𝑚𝑎𝑡𝑐ℎ (𝑛 ) = 𝑛 . When a thread on node 𝑛 moves to 𝑝𝑎𝑖𝑟 (𝑛 ),it uses an atomic max operation to set 𝑚𝑎𝑡𝑐ℎ (𝑝𝑎𝑖𝑟 (𝑛 )) = 𝑛 iff 
+
+𝑠𝑐𝑜𝑟𝑒 (𝑛 ) >𝑖𝑑 𝑠𝑐𝑜𝑟𝑒 (𝑚𝑎𝑡𝑐ℎ (𝑝𝑎𝑖𝑟 (𝑛 ))) or 𝑚𝑎𝑡𝑐ℎ (𝑝𝑎𝑖𝑟 (𝑛 )) = 𝑝𝑎𝑖𝑟 (𝑛 ).Ties are again broken by id. Two-cycles become "roots" and form a match by default; all threads synchronize upon reaching one. Then each thread retraces its path back to its leaf, finalizing the match on every node along the way. If a node 𝑛 still sees 𝑚𝑎𝑡𝑐ℎ (𝑝𝑎𝑖𝑟 (𝑛 )) = 𝑛 ,it locks its match by setting 𝑚𝑎𝑡𝑐ℎ (𝑛 ) = 𝑝𝑎𝑖𝑟 (𝑛 ). Matching nodes will thus point to each other in an alternating pattern, see Fig 2. As every thread covers the full root-leaf path, they will all take the same decisions. A minor optimization sees each thread halting on node 𝑛 , before the root, whenever it loses an atomic max, as that already implies 𝑚𝑎𝑡𝑐ℎ (𝑛 ) ≠ 𝑝𝑎𝑖𝑟 (𝑛 ).
+
+III-B4. Coarse Hypergraph Construction: With 𝑚𝑎𝑡𝑐ℎ defining clus-ters, coarsening finishes by building a new h-graph 𝐺 ′ (𝑁 ′, 𝐸 ′, 𝜔 ′)
+
+among them. With 𝑁 ′ = {{ 𝑛, 𝑚𝑎𝑡𝑐ℎ (𝑛 )} | 𝑛 ∈ 𝑁 }, let 𝛾 : 𝑁 → 𝑁 ′
+
+map nodes to clusters as 𝛾 (𝑛 ) = 𝑛 ′ iff 𝑛 ∈ 𝑛 ′. Then, constructing coarse instances of all two-level structures, 𝐸 , 𝑖𝑛 (·) , 𝑜𝑢𝑡 (·) , N (·) 
+
+requires a sequence of map operations through 𝛾 and set unions. Both operations involve deduplication, and the final set size is unknown a priori. Constructing many sets in parallel proceeds in two phases: first, an oversized data array is built while deduplicating, then its segments are packed in compressed form. Each coarse set is assigned to a block and given both a global memory segment large enough for all its potential elements and the maximum shared memory amount available. Both memories operate as closed-hashing hash-sets. Threads collectively read elements from the original set and apply 𝛾 as needed. Insertion of each element is first attempted in shared memory, going to global memory only upon a successful insertion or exhausted probe length. Once all elements are seen, set sizes are known, and a packing operation scatters each oversized segment into its final segment in a new compressed data array. If the target number of nodes is reached, instead of constructing a new h-graph, 𝑃 ← 𝑁 ′ and 𝜌 ← 𝛾 define initial partitions. Otherwise, every step up to this point repeats for 𝐺 ′.
+
+IV. Refinement 
+
+A. Algorithms Overview 
+
+Local refinement improves a partitioning by selectively moving nodes across partitions. Choosing suitable moves takes two steps. First, each node independently selects the partition it would rather belong to, proposing a move. Then, a subset of moves is found such that, when applied together, they lead to a valid state of lowest possible connectivity. Each node proposes its move in-isolation. By Eq.1, a cut is only avoided when an h-edge has no pins left in a partition. So, a 
+
+> Fig. 3: Events-based moves validity check.
+
+favorable move is one that fully disconnects h-edges from the node’s current partition while introducing cheaper connections, if any, to the new partition. To find such moves, a node must count the number of pins each of its incident h-edges owns in every partition. Let 𝑝𝑖𝑛𝑠 (𝑝, 𝑒 ) = |{ 𝑛 ∈ 𝑒 | 𝑛 ∈ 𝑝 }| be the pins count held by h-edge 𝑒 
+
+in partition 𝑝 . Then, for every node 𝑛 and partition 𝑝 :
+
+𝑠𝑎𝑣𝑖𝑛𝑔 (𝑛 ) = Í𝑒 ∈ I ( 𝑛 ) s.t. 𝑝𝑖𝑛𝑠 (𝜌 (𝑛 ),𝑒 )=1 𝜔 (𝑒 ) ,
+
+𝑙𝑜𝑠𝑠 (𝑛, 𝑝 ) = Í𝑒 ∈ I ( 𝑛 ) s.t. 𝑝𝑖𝑛𝑠 (𝑝,𝑒 )=0 𝜔 (𝑒 ) ,
+
+𝑔𝑎𝑖𝑛 (𝑛, 𝑝 ) = 𝑠𝑎𝑣𝑖𝑛𝑔 (𝑛 ) − 𝑙𝑜𝑠𝑠 (𝑛, 𝑝 ) .(3) Moving node 𝑛 to partition 𝑝 𝑑 is favorable if 𝑔𝑎𝑖𝑛 (𝑛, 𝑝 𝑑 ) > 0. The move with highest gain is proposed by the node. So-obtained moves have been proposed separately, but to maxi-mize gain, several of them shall be applied at once. Deciding which moves to apply equates to finding the subset of moves collectively leading to a valid maximum gain partitioning. However, moves easily interfere, influencing each other’s gain and feasibility, making this a problem only solvable in exponential time. For this reason, we adopt a heuristic from [7]. We sort moves into a sequence by gain. In doing so, the problem of deciding which moves to apply reduces to finding the longest subsequence of improving moves landing on a valid state. To solve it, each move updates its gain in-sequence, i.e. assuming all moves before it already applied. Analogously, validity over constraints is computed as of every move along the sequence. A simple filtered maximum extraction then leads to the desired subsequence. Moves are subsequently applied before uncoarsening, that is, projecting the partitioning to the next level up. 
+
+B. Parallelization Details IV-B1. Counting Pins per Partition: Refinement heavily relies on the count of pins held by every h-edge in each partition, 𝑝𝑖𝑛𝑠 (· , ·) . With the same values of 𝑝𝑖𝑛𝑠 reused multiple times across nodes, they shall be precomputed [7]. Thus, we prepare them in a matrix |𝐸 |×| 𝑃 |,filled with an iteration of h-edges, mapping every pin to its partition. It’s worth noting that 𝑝𝑖𝑛𝑠 can also provide the incidence set’s size for a partition as the count of its non-zero entries over h-edges. So, if we define 𝑝𝑖𝑛𝑠 𝑖𝑛 (𝑝, 𝑒 ) = |{ 𝑛 ∈ 𝑑𝑠𝑡 (𝑒 ) | 𝑛 ∈ 𝑝 }| as the number of times h-edge 𝑒 is inbound to a partition 𝑝 . The distinct inbounds constraint can be written as ∀𝑝 ∈ 𝑃, |{ 𝑒 ∈ 𝐸 | 𝑝𝑖𝑛𝑠 𝑖𝑛 (𝑝, 𝑒 ) > 0}| ≤ Δ.Hence, we first prepare 𝑝𝑖𝑛𝑠 for moves proposal, then subtract outbound connections from it and use 𝑝𝑖𝑛𝑠 𝑖𝑛 to validate moves. 
+
+IV-B2. Moves Proposal: Proposing moves in-isolation starts with each node computing gains over partitions. Let each node prepare its 
+
+𝑠𝑎𝑣𝑖𝑛𝑔 (·) = 0 and 𝑙𝑜𝑠𝑠 (· , ·) = 0 entries in shared memory. Every warp handles a node 𝑛 , currently in partition 𝜌 (𝑛 ) = 𝑝 𝑠 , with threads iterating 𝑛 ’s incident h-edges. For every h-edge, if 𝑝𝑖𝑛𝑠 (𝑝 𝑠 , 𝑒 ) = 1,
+
+𝑠𝑎𝑣𝑖𝑛𝑔 (𝑛 ) increments by 𝜔 (𝑒 ), and for every partition 𝑝 𝑑 ≠ 𝑝 𝑠 ,if 𝑝𝑖𝑛𝑠 (𝑝 𝑑 , 𝑒 ) = 0 , 𝑙𝑜𝑠𝑠 (𝑛, 𝑝 𝑑 ) increments by 𝜔 (𝑒 ). A map-reduce for the maximum gain yields the node’s proposed move. Partitions already of size Ω are excluded a priori. Fig. 4: Partitioning results comparison across ten spiking neural network hypergraphs. 
+
+With moves sorted by their in-isolation gain, their in-sequence gain must be inferred. Let a node 𝑛 ’s move be 𝑝 𝑛 𝑠 𝑛 
+
+−→ 𝑝 𝑛 𝑑 . Now, a warp iterates over 𝑛 ’s incident h-edges and their pins. For every h-edge 
+
+𝑒 ∈ I ( 𝑛 ), consider only pins 𝑚 ∈ 𝑒 whose moves precede 𝑛 ’s in the sequence; let related moves be 𝑝 𝑚 𝑠 𝑚 
+
+−→ 𝑝 𝑚 𝑑 . Then, two conditions may arise. If |{ 𝑚 | 𝑝 𝑛 𝑑 = 𝑝 𝑚 𝑠 }| − |{ 𝑚 | 𝑝 𝑛 𝑑 = 𝑝 𝑚 𝑑 }| = 𝑝𝑖𝑛𝑠 (𝑝 𝑛 𝑑 , 𝑒 ) > 0 or 
+
+∃𝑚 s.t. 𝑝 𝑛 𝑠 = 𝑝 𝑚 𝑑 and 𝑝𝑖𝑛𝑠 (𝑝 𝑛 𝑠 , 𝑒 ) = 1, 𝑛 ’s gain decreases by 𝜔 (𝑒 ).If |{ 𝑚 | 𝑝 𝑛 𝑠 = 𝑝 𝑚 𝑠 }| − |{ 𝑚 | 𝑝 𝑛 𝑠 = 𝑝 𝑚 𝑑 }| = 𝑝𝑖𝑛𝑠 (𝑝 𝑛 𝑠 , 𝑒 ) − 1 > 0 or ∃𝑚 s.t. 
+
+𝑝 𝑛 𝑑 = 𝑝 𝑚 𝑑 and 𝑝𝑖𝑛𝑠 (𝑝 𝑛 𝑑 , 𝑒 ) = 0, 𝑛 ’s gain increases by 𝜔 (𝑒 ).A final sequence of nodes, sorted by in-isolation gain, and carry-ing their in-sequence gain, is thus available. 
+
+IV-B3. Longest Valid Improving Subsequence: Simultaneously vali-dating every move in the sequence requires reconstructing every intermediate state of all partition sizes and, critically, inbound sets. Materializing all such states is prohibitive; consequently, we handle constraint checks sparsely through "events". First, each move gen-erates events for every partition size and 𝑝𝑖𝑛𝑠 𝑖𝑛 variation it causes, carrying the variation’s delta as payload. Next, with a series of par-allel patterns over deltas we infer each move’s validity, see Fig. 3. Size events are triplets ( 𝑝 , 𝑖𝑑𝑥 , +−| 1), meaning partition 𝑝 ’s size changes by +−| 1 with the 𝑖𝑑𝑥 -th move. After being sorted by ( 𝑝 , 𝑖𝑑𝑥 ), their deltas are scanned (prefix summed) per 𝑝 ; thus, each event stores its partition’s cumulative size variation up to move 𝑖𝑑𝑥 .Inbound set events are quadruplets ( 𝑝 , 𝑒 , 𝑖𝑑𝑥 , +−| 1), meaning 
+
+𝑝𝑖𝑛𝑠 𝑖𝑛 (𝑝, 𝑒 ) changed by +−| 1 after move 𝑖𝑑𝑥 . They are first sorted using ( 𝑝 , 𝑒 , 𝑖𝑑𝑥 ) and prefix summed using ( 𝑝 , 𝑒 ) as keys. To track inbound set size changes, each delta is combined with its 𝑝𝑖𝑛𝑠 𝑖𝑛 (𝑝, 𝑒 )
+
+and emits a new event ( 𝑝 , 𝑖𝑑𝑥 , −1) when transitioning from 1 on the event before to 0 now, or ( 𝑝 , 𝑖𝑑𝑥 , +1) when turning from 0 to 1.Results are again sorted by key ( 𝑝 , 𝑖𝑑𝑥 ) and scanned per 𝑝 , giving 
+
+𝑝 ’s distinct inbound h-edges count variation as of the 𝑖𝑑𝑥 -th move. With all events sorted by ( 𝑝 , 𝑖𝑑𝑥 ), adding initial set sizes and a comparison with Ω or Δ shows if 𝑝 is valid on move 𝑖𝑑𝑥 . Then, looking at pairs of events for consecutive moves 𝑖𝑑𝑥 − 1 and 𝑖𝑑𝑥 
+
+tells if move 𝑖𝑑𝑥 was responsible for invalidating or re-validating partition 𝑝 . This spawns a final sequence of events ( 𝑖𝑑𝑥 , +−| 1) every time a partition changes to invalid ( +1) or valid ( −1). When sorted and reduced by 𝑖𝑑𝑥 , their prefix sum is the count of active constraint violations after each move. Only zero-count moves are valid, finding the one of maximum gain gives the subsequence of moves to apply. 
+
+V. Experimental Results 
+
+We tested our solution on 10 h-graphs originating from SNNs and their mapping constraints on neuromorphic hardware [3], see Tab. I. The choice of SNNs was driven by their availability across a wide range of sizes and topologies, covering a superset of most other applications. Our baseline on CPU comprises an implementation of the multi-level scheme in hMETIS adapted to our constraints [3, 8] and a greedy "overlap" heuristic that co-locates nodes based on their incidence sets’ overlap [3]. We also include a "one-pass"                                                           
+
+> |𝑁 |20 k110 k216 k302 k14 k208 k194 k16 k64 k256 kÍ𝑒 ∈𝐸 |𝑒 |766 k23 M90 M256 M875 k145 M133 M2.1 M12.6 M67.4 M
+> avg 𝑒 ∈𝐸 |𝑒 |37.3 210.3 417.2 848.1 63.2 696.2 688.3 128 192 256
+> Ω,Δ210 ,212 210 ,212 212 ,216 212 ,216 210 ,212 212 ,216 212 ,216 210 ,212 210 ,212 210 ,212
+> 16 k-model
+> 64 k-model
+> 256 k-model
+> 1M-model
+> lenet
+> alexnet
+> vgg11
+> 16 k-rand
+> 64 k-rand
+> 256 k-rand
+
+TABLE I: Spiking neural networks used in the experiments. 
+
+algorithm that fills partitions with one pass over nodes [4], solely imposing constraints. Our partitioner ran on an A100-SXM4-40GB, while baselines ran sequentially on an EPYC 7453 @ 2.75GHz. Results are shown in Fig. 4. Our implementation achieves an average speedup of 246 × over sequential hMETIS, 15 × over the overlap method’s single neighborhood traversal, and remaining within 12 × of the trivial one-pass method. These numbers are in line with the SoTA for 𝑘 -way partitioning on GPU [2, 7]. Moreover, our execution time grows linearly in the number of pins, denoting no significant overhead from the parallel constraints handling logic. In terms of quality of results, we repeatedly achieve a mean con-nectivity 0.82 × that of hMETIS, 0.71 × against "overlap", and 0.09 ×
+
+versus "one-pass". The achieved number of partitions also reflects these values. Notably, SNNs named -rand have the most irregular topologies, easily triggering the distinct inbound constraint. Still, our algorithm settles them with a very limited, yet valid, number of partitions, attesting to its all-round control over constraints. 
+
+VI. Conclusion 
+
+Current results show strong promise regarding the scalability of our implementation. More importantly, they suggest that our handling of alternative partitioning constraints was effective in managing the added complexity. Presented algorithms are still being improved, with notable avenues being a dynamic programming formulation for exact matching [12] and the adaptation of parallelism strategies as the h-graph coarsens [2]. An open-source release is available [13]. 
+
+References

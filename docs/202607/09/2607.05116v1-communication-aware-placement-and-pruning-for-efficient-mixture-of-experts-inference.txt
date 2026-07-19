@@ -1,0 +1,645 @@
+Title: Communication-Aware Placement and Pruning for Efficient Mixture-of-Experts Inference
+
+URL Source: https://arxiv.org/pdf/2607.05116v1
+
+Published Time: Tue, 07 Jul 2026 03:19:14 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# Communication-Aware Placement and Pruning for Efficient Mixture-of-Experts Inference 
+
+Xiao Shi, Yingying Sun, Jiangsu Du, Zhiguang Chen, Yutong Lu 
+
+Sun Yat-sen University Guangzhou, China Email: {shix36, sunyy57 }@mail2.sysu.edu.cn, {dujiangsu, chenzhg29, luyutong }@mail.sysu.edu.cn 
+
+Abstract —As MoE models scale to hundreds of experts, place-ment and pruning decisions increasingly dictate communica-tion volume, affecting the performance of distributed inference across GPUs and nodes. We propose CAP (Communication-Aware Assignment and Pruning), a framework that considers computation, communication and accuracy together for efficient MoE inference through expert placement and pruning. It consists of three components: (1) Co-activation driven expert place-ment, which groups frequently co-activated experts to reduce inter-device and inter-node communication; (2) Communication-computation trade-off adjustment, which generates placements with different computational load and communication volume; and (3) Communication-aware expert pruning, which selectively removes routing destinations to reduce communication with limited accuracy degradation. By combining these components, CAP selects an efficient operating strategy for different hard-ware configurations. Across our single-node and multi-node experiments, it achieves 1.23 ×–1.86 × throughput improvement over DeepSeek EPLB and sequential placement in vLLM, and preserves better model accuracy at the same target speedup under lossy acceleration. 
+
+Index Terms —LLM, MoE inference, Expert Parallelism 
+
+I. I NTRODUCTION 
+
+The sparsely activated Mixture-of-Experts (MoE) architec-ture is increasingly used to scale the size of large language model (LLM) and boost performance [1]–[6]. A key challenge in MoE inference with expert parallelism is the imbalance in workload distribution across devices. Many efforts are devoted to adjusting expert placement and pruning for better performance. However, as the number of experts increases, existing approaches generally overlook a critical factor: the fact that expert placement and pruning significantly affect communication volume, leading to sub-optimal performance. MoE inference systems typically adopt a combination of expert and data parallelism. As shown in Figure 1, the data parallelism is applied to the dense attention part, where each device replicates the full weights of the dense layers, while expert parallelism is applied to the expert parts, where experts are partitioned by expert and distributed across all devices. When input sequences arrive, they are processed in different devices separately, and then each token is routed to the devices hosting its target experts through a global all-to-all communication. The token is then returned to the originating device through another global all-to-all communication, so that subsequent attention computation of sequences can be performed. Attention GPU 0              
+
+> MoE Gate
+> GPU 0
+> MoE Layer
+> E0E1E2E3
+> Attention GPU 1
+> MoE Gate
+> GPU 1
+> MoE Layer
+> E4E5E6E7
+> Attention GPU 2
+> MoE Gate
+> GPU 2
+> MoE Layer
+> E8E9E10 E11
+> Attention GPU 3
+> MoE Gate
+> GPU 3
+> MoE Layer
+> E12 E13 E14 E15
+> GPU 0
+> GPU 1
+> GPU 2
+> GPU 3
+> All-to-all
+> Dense Part Expert Part Input Tokens
+> All-to-all
+> Weighted Sum
+> Weighted Sum
+> Weighted Sum
+> Weighted Sum
+
+Fig. 1: Expert parallelism combined with data parallelism Expert placement and expert pruning have become common approaches for optimizing MoE inference systems. Expert placement methods [7]–[12] are lossless. Since the activation frequencies of different experts remain uneven, the distributed MoE inference generally suffers from severe load imbalance. By co-locating frequently and infrequently activated experts on the same device, it can balance the computation load and improve overall inference efficiency. Expert pruning meth-ods [13]–[16] are typically lossy. They dynamically remove negligible experts for each token and trade a small amount of accuracy for higher inference speed. Since prior MoE models featured only a small number of experts, existing approaches overlooked their impacts on com-munication volume and did not incorporate communication into their design. For instance, Mixtral 8x7b [2], released in 2023, has only 8 experts with a total of 46B parameters. When distributed across eight devices, each device hosts exactly one expert, leaving no degree of freedom for expert placement to impact communication volume. In contrast, newer MoE architectures are substantially more complex. The 30B ver-sion of Qwen3 [17], released in 2025, includes 128 small experts, leaving substantial room for communication opti-mization through placement. Similarly, existing expert pruning approaches often fail to deliver the expected performance benefits on modern MoE models, as considering computation alone without communication does not alleviate the dominant bottleneck. In this paper, we propose CAP (Communication-Aware Assignment and Pruning), a framework that considers com-
+
+> arXiv:2607.05116v1 [cs.DC] 6 Jul 2026
+
+putation, communication and accuracy together for efficient parallel MoE inference. The framework includes three com-ponents and integrates them in a unified pipeline for deter-mining the optimal placement and pruning strategy. First, we propose a co-activation driven expert placement ap-proach that identifies frequently co-activated experts and gen-erates a communication-oriented initial placement. Second, we introduce an adjustment approach that starts from the communication-optimal placement and, based on runtime load balance statistics, generates a spectrum of candidate place-ments with different trade-offs between communication and load balance. Third, we design the communication-aware ex-pert pruning approach, which incorporates communication cost into the pruning decisions, enabling the system to achieve the desired speedup while minimizing the impact on accuracy. By integrating these three components, CAP improves through-put across both single-node 8-GPU and multi-node settings compared with load-balance-oriented placement and default sequential placement, and preserves better model accuracy at the same target speedup under lossy acceleration. II. B ACKGROUND 
+
+A. Mixture-of-Experts Architecture 
+
+Large Language Models (LLMs) have achieved remarkable gains as model scale increases, a phenomenon often described by the scaling law [18]. This trend has driven rapid growth in parameter counts, but also led to substantially increased train-ing and inference costs. To mitigate these costs, GShard [19] and other works [20] introduced the Mixture-of-Experts (MoE) architecture, which activates only a small subset of model parameters for each token. This design allows MoE models to maintain high capacity while significantly reducing per-token computation, and has since been adopted by state-of-the-art models such as DeepSeek-V3 [21], GPT-4 [22], and Qwen3 [17]. In MoE LLMs, the dense FFN in each transformer layer is replaced by a set of experts. After the attention module, a gating network selects the top-k experts for each token, where 
+
+k is typically small (e.g., k = 1 , 2, or 8). The output of the MoE layer is then computed as the weighted sum of the selected experts: MoE (x) = 
+
+> k
+
+X
+
+> i=1
+
+Gate i(x) · Expert i(x) (1) , where Gate i(x) denotes the normalized routing weight of the 
+
+i-th selected expert for token x, and Expert i(x) denotes the corresponding expert output. In this way, only a sparse subset of experts participates in the computation of each token. 
+
+B. Expert Parallelism in MoE Inference 
+
+Because modern MoE models often contain a large num-ber of parameters, the model usually cannot fit on a single device. To utilize the memory and computational resources of multiple devices, expert parallelism [19] is widely adopted. In this paradigm, experts are distributed across devices, while Token                         
+
+> ...
+> Output
+> Expert 0
+> Token Expert 1
+> Expert 2Expert 3
+> Output'
+> Output'
+> Output'
+> Stage-2 Sum
+> Stage-1 Sum
+> Device Activated Expert
+> E0E1E4E60
+> Send one Token
+> Send one Token
+> Output'' Output''
+> Receive one Token
+> Receive one Token
+> E2E3E5E6E7E61 E62 E63
+> Device 0
+> Unactivated Expert
+> gate
+
+Fig. 2: Zero-redundancy Token Transfer dense components such as attention and projection layers are replicated. During inference, each device first processes different re-quests through the dense part of the model, and then uses the gating network to determine the experts required by each token. Since the selected experts may reside on different devices, tokens must be routed to the corresponding devices for expert computation. After expert computation is completed on the destination devices, the results are returned and aggregated to produce the final MoE output. As a result, expert routing introduces substantial communication overhead in distributed MoE inference. This parallel execution strategy enables MoE models to scale beyond the memory capacity of a single device while distributing computation across multiple devices. However, it also makes inference performance sensitive to the routing distribution of tokens and the communication pattern induced by expert parallelism. 
+
+C. Communication in Expert Parallelism 
+
+In expert parallel inference, experts are distributed across multiple devices, and data dependencies are resolved through an all-to-all communication operation that routes tokens to their assigned experts. In particular, as shown in Fig. 2, a token is routed to multiple experts and some experts may reside on the same device (e.g., expert 0 and expert 2 are colocated on device 0). A naive implementation would send the token to each assigned expert (e.g., send to device0 twice), which is an expert-centric abstraction that overlooks device-level communication efficiency. In contrast, existing systems typically adopt a device-centric design, where each token is sent once to each device that hosts activated experts, and all experts on the same device share the same copy. After the experts produce their outputs, the outputs on the same device are locally aggregated via a weighted summation, and the aggregated result is sent for final combination. Therefore, for a single token, the communication volume of the all-to-all communication operation primarily depends on the number of devices it needs to visit, rather than the number of experts it activates. 
+
+D. Dynamic Expert Pruning 
+
+Dynamic expert pruning is a widely used technique for improving MoE inference efficiency. During inference, experts are selected based on their routing scores Gate i(x), while those with low scores are ignored, as their contributions to the final output are negligible but incur additional computation overhead. Existing dynamic methods typically retain a mini-mal subset of experts such that the aggregated routing score of the selected experts exceeds a predefined threshold. However, existing methods typically overlook how pruning decisions affect communication overhead in distributed MoE inference. In particular, pruning not only impacts computation and model accuracy, but also alters the set of routing destinations visited by each token. As a result, different pruning decisions can lead to significantly different communication behaviors, even when their impact on accuracy is similar. Pruning strategies should explicitly consider communication efficiency. 
+
+E. Challenges 
+
+Expert parallelism introduces several systems challenges, most notably load imbalance [23], [24]. In MoE models, the numbers of tokens processed by different experts are often highly uneven. This results in stalls in all-to-all communica-tion, where faster devices must wait for slower ones, degrading overall system efficiency. Prior work mainly addresses this issue by adjusting expert placement across devices. Some approaches monitor expert popularity at runtime and co-locate hot and cold experts to improve load balance [25], [26]. However, these methods primarily treat expert placement as a load-balancing problem and do not explicitly consider its impact on communication volume. As a result, they may overlook an important source of overhead in MoE inference systems, where communication can become a major bottleneck. Moreover, the relative importance of communication over-head and computation balance can vary substantially across hardware platforms. As a result, an optimization strategy that works well on one machine may be suboptimal on another. Therefore, MoE inference optimization should adapt to the communication and computation characteristics of the under-lying hardware. III. O VERVIEW 
+
+CAP consists of three components. First, we introduce a co-activation-driven expert placement method to reduce communication by grouping experts that tend to be activated together onto the same device. Second, we present a comm.-comp. trade-off adjustment method, which explores different placements with different trade-offs between communication cost and load balance, and selects the most suitable one according to hardware characteristics. Third, we introduce communication-aware expert pruning, which further reduces communication under a predefined accuracy threshold by 
+
+(a) Qwen3-30B-A3B Layer 47 (b) DeepSeek-V2-Lite Layer 24 
+
+Fig. 3: Expert co-activation matrix. Each point represents the co-activation frequency of a pair of experts. pruning routing destinations with low contribution and high communication cost. These three components are executed in an ordered pipeline, as later described in Section VII. IV. C O-ACTIVATION DRIVEN EXPERT PLACEMENT 
+
+A. Motivation E0   
+
+> E1
+> E2
+> E3
+> E4
+> E5
+> E6
+> E7
+> E8
+> E9
+> E10
+> E11
+> E12
+> E13
+> E14
+> E15
+> Token
+> GPU 0 GPU 1 GPU 2 GPU 3
+> Transferred 4 times
+> E0
+> E1
+> E2
+> E3
+> E4
+> E5
+> E6
+> E7
+> E8
+> E9
+> E15
+> E11
+> E12
+> E13
+> E14
+> E10
+> Token
+> GPU 0 GPU 1 GPU 2 GPU 3
+> Transferred 3 times
+> Relocating Experts Swapped
+> Reduced Communication!
+
+Fig. 4: Expert placement impacts the communication. In earlier MoE models, the number of experts was relatively small, and each device typically hosted only one expert. In this case, the number of routing destinations of a token was almost fully determined by how many experts were activated, and expert placement had little effect on communication volume. As modern MoE models scale up, however, the number of experts has increased substantially, and each device often needs to host dozens of experts. For example, Qwen3-30B-A3B contains 128 experts per layer, so a single GPU hosts 32 experts when the model is deployed on 4 GPUs. Under the communication pattern described in Section II-C, the communication volume depends on the number of distinct devices visited per token, so different expert placements can lead to different communication volumes even under the same routing decisions. As illustrated in Figure 4, when the activated experts of a token are scattered across multiple devices, the token must be copied and transmitted to each of them, resulting in higher communication overhead. In contrast, if these activated experts are placed on fewer devices, the com-munication volume is lowered accordingly. This observation is particularly important in modern large-expert-count MoE models. E0  
+
+> E10
+> E11
+> E6
+> E4
+> E2
+> E5
+> E7E12
+> E8
+> E9
+> E3
+> GPU 3
+> GPU 2
+> GPU 1
+> E13
+> E15
+> E14
+> GPU 0
+> E1
+> Node 1 Node 2
+
+Fig. 5: Grouping frequently co-activated experts onto the same devices and nodes using co-activation graph. Furthermore, we observe that some experts exhibit clear co-activation patterns during inference: if one of them is activated by a token, the others also tend to be activated. If experts that are frequently co-activated can be placed on the same device, the number of routing destinations visited by each token can be reduced. To validate this observation, we collect pairwise expert co-activation frequencies from inference-time routing traces and visualize the resulting co-activation matrices as Figure 3 shows. Representative examples show that some expert pairs exhibit much stronger co-activation than others. This suggests that expert activations are structured rather than random, and motivates our co-activation-driven placement strategy that groups such experts onto the same device to reduce commu-nication during MoE inference. 
+
+Algorithm 1: Co-activation Driven Expert Placement 
+
+Input: Number of experts n. Number of GPUs k.Co-activation probability matrix P ∈ Rn×n.
+
+Output: Expert partition G. 
+
+> 1
+
+Function:  
+
+> 2
+
+Compute deg[ i] ← P  
+
+> j̸=i
+
+pi,j for i = 1 ..n  
+
+> 3
+
+Initialize G[g] ← ∅ for g = 1 ..k ;
+
+U ← { 1, 2, . . . , n } 
+
+> 4
+
+Let π be experts sorted by deg in descending order  
+
+> 5
+
+for g ← 1 to k do  
+
+> 6
+
+s ← π[g] 
+
+> 7
+
+G[g] ← G[g] ∪ { s}; U ← U \ { s} 
+
+> 8
+
+g ← 1 
+
+> 9
+
+while U̸ = ∅ do  
+
+> 10
+
+Define score( e, S ) ← P 
+
+> v∈S
+
+pe,v  
+
+> 11
+
+e⋆ ∈ arg max  
+
+> e∈U
+
+score( e, G [g])  
+
+> 12
+
+if score( e⋆, G [g]) = 0 then  
+
+> 13
+
+choose e⋆ uniformly at random from U 
+
+> 14
+
+G[g] ← G[g] ∪ { e⋆}; U ← U \ { e⋆} 
+
+> 15
+
+g ← (g mod k) + 1  
+
+> 16
+
+Return G[g1, . . . , g k]
+
+B. Co-activation Driven Expert Placement 
+
+To place experts that tend to be co-activated onto the same devices and nodes and thereby reduce communication over-head, we propose co-activation driven expert placement (the 
+
+Placement Approach ). To analyze the co-activation patterns of experts, we first run inference and record the selected experts for each token in each layer. Then for any pair of experts i and j, we define their co-activation probability pij 
+
+as the ratio between the number of times they are selected together and the total number of times either of them is selected. Based on these statistics, we construct an undirected weighted graph for every layer as Figure 5 shows, where each vertex represents an expert and the edge between experts i and 
+
+j is weighted by pij .Let π(i) denote the GPU assigned to expert i. To model communication in cluster deployment, we define the commu-nication objective as 
+
+C(π) = X
+
+> i<j
+
+pij d(π(i), π (j)) (2) where d(π(i), π (j)) denotes the communication cost between the GPUs hosting experts i and j. Specifically, 
+
+d(π(i), π (j)) = 
+
+
+
+0, π(i) = π(j),
+
+1, π(i)̸ = π(j) and node( π(i)) = node( π(j)) ,c, node( π(i)) ̸ = node( π(j)) 
+
+(3) , where c is the relative communication cost between nodes. Accordingly, the placement problem is to find π that minimizes 
+
+C(π), subject to the constraint that each GPU hosts the same number of experts. Under this formulation, communication minimization becomes a capacity-constrained weighted graph partitioning problem, which is combinatorial and expensive to solve exactly at inference-system scale. We therefore adopt a two-stage greedy algorithm to approximately optimize this objective. In the first stage, we construct GPU-level expert groups. As Algorithm 1 shows, we first compute the weighted degree 
+
+deg [i] of each expert and select the k experts with the largest weighted degrees as seeds, assigning one seed to each GPU group G[g]. Starting from these seeds, the algorithm iteratively grows the k groups in a round-robin manner. In each step, for the current GPU, it selects the unassigned expert with the largest cumulative co-activation weight to the experts already assigned to that GPU. This process continues until all experts are assigned. In the second stage, we further assign GPU groups to nodes. After constructing GPU-level expert groups, we treat each GPU group as a coarse-grained unit, compute the co-activation strength between groups, and apply the same grouping princi-ple again to assign GPU groups to nodes. In this way, the first stage reduces communication across GPUs, while the second stage further reduces communication across nodes, which reduces search complexity compared with directly optimizing the weighted graph partitioning problem. These stages will be Placement 0 
+
+> Generated by
+> Placement Approach
+> Placement 1
+> Placement 2
+> Adjust
+> Step 0
+> Adjust
+> Step 1
+> Default
+> Placement
+> Better
+
+Fig. 6: Comm. & Comp. Trade-off Adjustment performed on every MoE layer to generate an expert placement for the entire model. This hierarchical placement reduces the average number of devices each token needs to interact with, thereby reducing the communication overhead of expert parallelism and alleviating expensive cross-device and cross-node transfers. Meanwhile, the algorithm ensures that each device hosts the same number of experts, keeping expert weight memory and KV-cache capacity balanced across devices. This balance prevents any single device from becoming a memory bottleneck, which is especially important for long-sequence, large-model inference. V. C OMM .-COMP . T RADE -OFF ADJUSTMENT 
+
+A. Trade-off between Communication and Load Balance 
+
+The Placement Approach in Section IV is communication-oriented: it reduces communication by grouping frequently co-activated experts onto the same device. However, minimizing communication alone is not sufficient for optimizing end-to-end performance. Since hot experts may also be co-activated experts, placing them on the same device can concentrate hot experts on few GPUs and lead to substantial load imbalance, which is not necessarily the best placement in terms of overall system performance. This reveals an inherent trade-off between communication and load balance. A placement with lower communication tends to colocate more strongly co-activated experts, but such colocation may also make device loads more uneven. Con-versely, a more balanced placement often requires separating some co-activated experts, which increases communication. Therefore, optimizing only communication or only load bal-ance is insufficient. Moreover, the preferred trade-off depends on the charac-teristics of the underlying hardware, since the relative com-munication and computation capabilities vary across different machines. This observation motivates us to formulate expert placement as a communication–load multi-objective optimiza-tion problem. 
+
+B. Modeling and Optimization 
+
+Based on the above observation, we define the load imbal-ance objective as 
+
+B(π) = max g Lg
+
+> 1
+> k
+
+P 
+
+> g
+
+Lg
+
+(4) , where Lg denotes the number of tokens processed by GPU 
+
+g, k denotes the number of GPUs. A smaller B(π) indicates a more balanced placement. Combined with the communica-tion objective C(π) defined in Section IV, we consider the following communication-load objective: 
+
+min  
+
+> π
+
+λC(π) + (1 − λ)B(π) (5) , where λ ∈ [0 , 1] controls the trade-off between communica-tion cost and load balance. A larger λ places more emphasis on minimizing communication, while a smaller λ places more emphasis on improving load balance. Directly solving this objective remains difficult, so we pro-pose a Comm.-comp. Trade-off Adjustment Approach (the 
+
+Adjustment Approach ). We start from the communication-oriented placement produced by the Placement Approach and iteratively refine it through expert swaps. In each adjustment step, we swap a pair of experts between high-load and low-load devices to reduce load imbalance while preserving as much co-activation locality as possible. Starting from the communication-oriented placement, this process generates a placement spectrum with gradually increasing communication cost and improving load balance. To illustrate the trade-off among different expert place-ments, we construct the visualization shown in Figure 6. Each expert placement corresponds to a single point in this space. The x-axis indicates the average number of devices each token is routed to under a given placement, reflecting its communication volume. The y-axis measures load imbal-ance across devices according to B(π). Starting from the placement produced by the Placement Approach—the green point in the upper-left corner with minimal communication but high load imbalance—the Adjustment Approach iteratively generates new placements that move toward lower imbalance at the cost of higher communication. The resulting place-ment spectrum can be interpreted as approximate solutions to the communication-load objective under different trade-off weights λ.The optimal choice depends on the characteristics of the underlying hardware. Comm.-rich machines have abundant in-terconnect bandwidth and therefore prefer more load-balanced placements, even if they incur higher communication. Comm.-constrained machines suffer from limited bandwidth, where aggressively pursuing load balance leads to excessive com-munication overhead that outweighs computational gains. Bal-anced machines exhibit comparable compute and communica-tion capabilities, and therefore prefer placements in the middle of the spectrum. Using lightweight performance profiling, CAP automatically selects the most suitable placement for each hardware type. Furthermore, as shown in Figure 6, our experimental results show that the placement spectrum produced by the Adjustment Approach forms a Pareto frontier over the widely-used default sequential placement, which assigns experts to devices strictly by numerical expert ID order. That means, multiple placements in our spectrum achieve both lower communication cost and better load balance than the default placement. Node 1                        
+
+> Node 0
+> E0E1E7
+> E8E9E15
+> ... E16 E17 E23
+> Token
+> ... ...
+> ... E24 E25 E31
+> 0.1 0.2 0.2 0.1 0.2 0.2
+> GPU 0 (local, c=0) GPU 1 (intra-node, c=1) GPU 2 (inter-node, c=2) GPU 3 (inter-node, c=2)
+> GPU 0
+> GPU 1 E0E1E7
+> E8E9E15
+> ... E16 E17 E23
+> Token
+> ... ...
+> ... E24 E25 E31
+> 0.1 0.2 0.2 0.1 0.2 0.2
+> GPU 2
+> GPU 3
+> Sorted by
+> Pruned!
+> Retained Retained Retained
+> Node 0 Node 1
+> Original Expert Routing Device-level Expert Pruning Retained routing
+
+Fig. 7: Communication-aware pruning with a 0.3 threshold VI. C OMMUNICATION -A WARE EXPERT PRUNING 
+
+Dynamic expert pruning is a common technique for re-ducing the computational cost of MoE inference. During inference, it further reduces the number of experts actually involved in computation for each token according to token-dependent routing scores. Traditional dynamic pruning meth-ods do not explicitly consider how different pruning decisions affect communication overhead. In particular, they do not distinguish whether pruning removes inexpensive intra-node communication or more expensive inter-node communication. To address this, we propose Communication-Aware Expert Pruning (the Pruning Approach ), which explicitly incorpo-rates communication cost into the pruning decision. Rather than pruning experts independently, we perform pruning at the device level. This design is motivated by the fact that pruning an entire device can eliminate one routing destination at once, yielding a much larger communication reduction than fragmented expert-level pruning. To model this process, we associate each device d with two quantities. The first is its accuracy contribution ad, which is the sum of routing scores of all candidate experts on that device. We use this quantity as a proxy for accuracy contribution, because the final MoE output is computed as a weighted aggregation of expert outputs as Eq. 1 shows, and the routing scores directly determine how much each retained expert contributes to the token output. This is also consistent with prior expert pruning methods that use routing scores to estimate expert importance. The second is its communication cost cd, which is determined by the topology between the current device of the token and the target device, including whether the communication stays on the same device, crosses GPUs within a node, or crosses nodes. Specifically, devices corresponding to intra-node communication are assigned a cost of 1, while devices corresponding to inter-node communication are assigned a larger predefined constant c. Let xd ∈ { 0, 1}
+
+indicate whether device d is retained. We then formulate prun-ing as selecting a set of devices with minimum communication cost while preserving sufficient accuracy contribution: 
+
+min 
+
+> xd∈{ 0,1}
+
+X
+
+> d
+
+cdxd s.t. X
+
+> d
+
+adxd ≥ 1 − p (6) , where p is a user-specified pruning threshold that controls the accuracy–performance trade-off, while CAP optimizes inference under the given threshold. In practice, c can be chosen according to the ratio between inter-node and intra-node link bandwidths. Although Eq. 6 can be viewed as a cost-constrained discrete selection problem, we adopt a lightweight greedy solver be-cause it is efficient for online pruning and sufficient for choos-ing experts to prune. As Figure 7 shows, we first compute the device-level accuracy contribution ad. We then compute the ratio ad 
+
+> cd
+
+for each device and retain devices in descending order of this ratio until the target accuracy 1 − p is satisfied. We implement GPU-friendly vectorized kernels, making the overhead of pruning during inference negligible. This device-level pruning strategy removes routing destinations, which yields larger communication reduction than fragmented expert pruning. As a result, our pruning approach can achieve higher end-to-end speedup under the same pruning threshold, or equivalently, preserve better model accuracy under the same target speedup. VII. O VERALL PIPELINE 
+
+The three components of CAP serve different purposes. The Placement Approach reduces communication by grouping experts that tend to be co-activated onto the same device. The Adjustment Approach further explores different trade-offs between communication cost and load balance. The Pruning Approach reduces computation and communication simultane-ously by removing routing destinations with low contribution. These three components should be applied in a specific order. First, pruning changes the expert co-activation pattern by removing part of the routing destinations. Therefore, the Placement Approach should be performed on the pruned routing data rather than on the original one. Step 1. Collect routing data with               
+
+> Pruning Approach
+> Routing Traces
+> Token0: E0, E4, E7
+> Token1: E5, E6, E7
+> Token2: E1, E3, E4
+> Inference with Expert Pruning Co-activation-
+> driven Expert
+> Placement
+> Comm.-oriented Placement
+> Group0: E0, E2, E7
+> Group1: E1, E3, E5
+> Group2: E4, E6, E8
+> Co-activation Graph
+> Comm.-Comp. Adjustment
+> Placement 0
+> Group0: E0, E2, E7
+> Group1: E1, E3, E5
+> Group2: E4, E6, E8
+> Placement 1
+> Group0: E0, E2, E7
+> Group1: E1, E3, E5
+> Group2: E4, E6, E8
+> Placement 2
+> Group0: E0, E2, E7
+> Group1: E1, E3, E5
+> Group2: E4, E6, E8
+> Pro fi ling
+> Optimal Placement
+> Group0: E0, E2, E5
+> Group1: E1, E3, E7
+> Group2: E4, E6, E8
+> Step 2. Generate Comm.-oriented
+> Placement with Placement Approach
+> Step 3. Generate Placement Spectrum
+> with Adjustment Approach
+> Step 4. Find Optimal Placement in
+> Spectrum by Lightweight Pro fi ling
+> Placement 3
+> Group0: E0, E2, E5
+> Group1: E1, E3, E7
+> Group2: E4, E6, E8
+> Comm. -oriented
+> Placement 0
+> Placement 1
+> Placement 2
+> Placement 0
+> Latency
+> Placement 3
+> Optimal
+> Communication Overhead
+> Load Imbalance
+
+Pruned, Imbalance Traces Comm. -efficient, Imbalance Fig. 8: The 4-step Pipeline of CAP 0.0 0.2 0.4  
+
+> Pruning threshold p
+> 1.6
+> 1.7
+> 1.8
+> Load Imbalance
+> (Max/Avg)
+
+Fig. 9: Load balance un-der different pruning thresh-olds. 2.5 5.0 7.5 10.0 
+
+> Popularity Decile (cold -> hot)
+> 0.120
+> 0.125
+> Avg. Routing Score
+
+Fig. 10: Hot experts tend to get higher routing scores. Second, our preliminary results show that pruning also tends to increase load imbalance as Figure 9 shows. We statistically analyze the routing score distributions of experts with different popularity, and observe that cold experts usually have lower routing scores when activated and are therefore more likely to be pruned as Figure 10 shows. This makes the remaining routing destinations more concentrated on hot experts and leads to a more imbalanced load distribution. As a result, after applying the Placement Approach on the pruned routing data, CAP obtains an initial grouping with lower communication but higher load imbalance. This is exactly the regime targeted by the Adjustment Approach, which starts from such a communication-efficient but imbal-anced grouping and generates a sequence of placements with different communication-load balance trade-offs. Accordingly, CAP is executed in four steps as Figure 8 shows. We first run the system with communication-aware expert pruning enabled, and collect token-level routing traces. Then, in Step 2, based on the pruned routing data, we perform co-activation-driven expert placement to obtain acommunication-oriented initial grouping. In Step 3, we apply the comm.-comp. trade-off adjustment method to refine this initial grouping and generate a placement spectrum with different communication-load balance trade-offs. In the final step, lightweight profiling is then used to select the most suitable placement for the target hardware platform. VIII. E VALUATION 
+
+A. Experiment Setup a) Testbed: We evaluate CAP on three machines, each representing one of the compute–communication characteris-tics discussed earlier in Section V. We conduct experiments on all three nodes to demonstrate CAP’s strong hardware adaptivity.  
+
+> •
+
+Node A is equipped with eight RTX 3090 GPUs. It lacks NVLink and GPU-Direct P2P support. All communica-tion must be routed through the CPU, making it a comm.-constrained platform.  
+
+> •
+
+Node B contains eight A100 GPUs. Although it lacks NVLink, it can adopt GPU-Direct P2P over PCIe. We refer to it as a comm.-comp. balanced node.  
+
+> •
+
+Node C features eight H100 GPUs connected via NVLink, corresponding to a comm.-rich platform. To further evaluate the scalability of CAP on multi-node clusters and its ability to reduce inter-node communication, we conduct experiments on two cluster configurations.  
+
+> •
+
+Cluster A consists of 2 nodes with 8 H100 GPUs per node with NVLinks, where the two nodes are connected by 8 ×400 Gbps InfiniBand. We report the end-to-end performance on Cluster A.  
+
+> •
+
+Cluster B also consists of 2 nodes with 8 H100 GPUs per node with NVLinks, but the inter-node connection band-width is reduced to only 200 Gbps. We use this cluster to analyze the impact of inter-node communication cost under different bandwidth conditions in Section VIII-E. 
+
+b) Model Setup: We select two MoE models from differ-ent model families: Qwen3-30B-A3B and DeepSeek-V2-Lite. They contain 128 and 64 experts respectively, representing the latest generation of MoE models with large expert counts. 
+
+c) Baselines: We compare CAP against two baselines that cover the main deployment and optimization choices in existing MoE inference systems. 
+
+Default assigns experts by sequential expert ID order, which corresponds to the standard deployment used in mainstream inference frameworks such as vLLM [27] and SGLang [28]. DeepSeek EPLB is a stronger algorithmic baseline that explicitly optimizes expert placement for load balance. It is representative of load-balance-oriented placement, which is the main optimization target of prior work. Together, these two baselines span the two most relevant comparison points for this work: real-world default deploy-ment and state-of-the-art load-balance-oriented placement. 
+
+d) Dataset and Metrics: For performance evaluation, we use the LMSYS-Chat and Arxiv Abstracts datasets in our evaluations. For each node, we manually select the optimal batch size and generate requests at different input rates by sampling from the dataset. We adopt 6 s TTFT and 500 ms TBT as the service-level objectives (SLOs). During end-to-end testing, we classify a configuration as violating the SLO if fewer than 90% of the requests meet these thresholds. For accuracy evaluation, we use HumanEval, MMLU and GSM8K to evaluate CAP accuracy under different expert pruning thresholds. 
+
+B. End-to-end Performance 
+
+We compare CAP with the two baselines across different testbeds with different models by measuring their end-to-end throughput. We replay requests under increasing input rates and report the maximum throughput that still satisfies the SLOs. CAP treats pruning threshold p as a user-controlled accuracy–performance knob rather than a tuned internal hyper-parameter. In this evaluation, we report results under several representative values of p to illustrate the trade-off between accuracy and speedup. We set p to 0.3 for Qwen3 and 0.1 for DeepSeek-V2-Lite, under which the perplexity increase of both models remains about 10%, a level that prior work [29] suggests still preserves strong accuracy. Detailed accuracy evaluation is in Section VIII-D. Across all testbeds, CAP consistently outperforms the base-lines as Figure 11 shows, with the largest gains observed on the comm.-constrained node, where it achieves up to 1.86 ×
+
+throughput improvement. This advantage arises because CAP is the only method that explicitly accounts for communication volume, which dominates total latency on comm.-constrained systems. On the other testbeds, CAP also identifies the best-performing configuration by combining expert pruning with its comm.–comp. trade-off analysis, achieving the best throughput on all tested nodes. EPLB improves over the Default placement on the bal-anced and comm.-rich machines but performs similarly to, or even worse than Default on the comm.-constrained machine. Although EPLB achieves better load balance, it incurs sig-nificantly higher communication volume, thereby causing its communication overhead to exceed the computational gains on low-bandwidth hardware. This highlights that, in MoE inference, load balance alone is insufficient; communication volume is likewise a critical determinant of end-to-end perfor-mance. 
+
+C. Analysis on the Placement Spectrum 
+
+We conduct experiments to analyze the performance char-acteristics of the placement spectrum generated by the Adjust-TABLE I: Accuracy under different pruning thresholds. Lower is better for PPL, while higher is better for others.                       
+
+> Metric p= 0 p= 0 .2p= 0 .3
+> PPL ↓17.36 18.17 (+0.81) 19.12 (+1.76) GSM8K ↑0.8863 0.8590 (-2.73 pp) 0.8514 (-3.49 pp) HumanEval ↑0.8902 0.8841 (-0.61 pp) 0.8598 (-3.04 pp) MMLU ↑0.7154 0.7161 (+0.07 pp) 0.6874 (-2.80 pp)
+
+ment Approach on different hardware platforms. As shown in Figure 12, we evaluate the latency of every placement in the spectrum generated for Qwen3-30B-A3B on each node with the same pruning threshold of p = 0 .3. Placements with lower indices exhibit lower communication volume but higher load imbalance (corresponding to the upper-left region in Figures 6 and 13). On the comm.-constrained node, communication dominates the overall latency, making the communication-minimal placement the optimal choice. On the balanced node, a mid-spectrum placement (e.g., Placement 3), which provides a more favorable communication–load trade-off, achieves the best performance. On the comm.-rich node, where communi-cation is extremely fast, the most load-balanced placements deliver the best performance. These results show that optimal MoE inference performance requires hardware-aware selection from the communication–load trade-off spectrum rather than optimizing either dimension alone. We further examine the performance differences among placements on Node B (the balanced machine). On this device, placement 3 achieves the best performance. It delivers a20.4% improvement over the unadjusted placement produced by the Placement Approach, a 23.4% improvement over the load balanced but high-communication placement produced by EPLB, and a 16% improvement over the Default placement, demonstrating that the Adjustment Approach is effective on its own. 
+
+D. Effectiveness of the Pruning Approach 
+
+To evaluate the effectiveness of communication-aware ex-pert pruning, we compare CAP with naive dynamic pruning under the same pruning threshold on Node A. The threshold has the same semantics in both methods: for each token, they prune experts whose cumulative routing scores are less than a predefined threshold p. Therefore, under the same p, the two methods apply a similar pruning strength. The key difference is that CAP additionally considers communication cost during pruning, while naive pruning only reduces computation. As a result, as Figure 14 shows, under the same pruning threshold, CAP achieves higher latency speedup than naive pruning because it reduces both computation and communica-tion. In our experiments, CAP with p = 0 .2 achieves the same 33% latency reduction as naive pruning with p = 0 .3. Since a smaller threshold retains more routing destinations and prunes fewer experts, CAP can preserve higher model accuracy under the same target speedup. To quantify this effect, we further evaluate the accuracy of models under different pruning thresholds. Table I reports the results at p = 0 , 0.2, and 0.3 for MMLU, GSM8K, HumanEval 5.0 7.5 10.0 12.5 15.0 RPS                              
+
+> 0
+> 50
+> 100
+> SLO attainment (%)  Node A/Qwen3
+> 20 30 40 50
+> RPS
+> Node B/Qwen3
+> 60 80 100 120 140 160 180
+> RPS
+> Node C/Qwen3
+> 100 150 200 250
+> RPS
+> Cluster A/Qwen3
+> 15 20 25 30
+> RPS
+> 0
+> 50
+> 100
+> SLO attainment (%)  Node A/DeepSeekV2
+> 60 70 80 90 100 110
+> RPS
+> Node B/DeepSeekV2
+> 180 200 220 240 260 280
+> RPS
+> Node C/DeepSeekV2
+> 200 300 400
+> RPS
+> Cluster A/DeepSeekV2
+> Default EPLB CAP
+
+Fig. 11: End-to-end Performance 0 2 4 6      
+
+> Placement Index
+> 4500
+> 4750
+> 5000
+> Latency (ms)
+> Node A (Comm.-constrained)
+> 0246
+> Placement Index
+> 4500
+> 5000
+> Node B (Balanced)
+> 0246
+> Placement Index
+> 400
+> 500
+> Node C (Comm.-rich)
+
+Fig. 12: Placement Spectrum Performance on 3 Nodes Better 
+
+> P0
+> 0.83x
+> P3
+> 1.00x
+> Default
+> 0.86x
+> EPLB
+> 0.81x
+
+Fig. 13: Performance and Communication-Computation Characteristics of Placement Spectrum 33% Speedup 
+
+Fig. 14: Performance of CAP and Naive Pruning under Dif-ferent Thresholds and perplexity. Across all benchmarks, increasing the pruning threshold from p = 0 .2 to p = 0 .3 consistently leads to larger accuracy degradation. These results indicate that the additional pruning required by a larger threshold causes accuracy loss across knowledge, reasoning, and code generation tasks. Overall, the main advantage of communication-aware prun-ing is that it not only accelerates inference more effectively but also preserves better accuracy under the same performance requirements. 
+
+E. Analysis on Inter-node Expert Pruning in Clusters 
+
+In multi-node pruning, the relative cost assigned to inter-node communication affects which routing destinations are preferred for removal. To study this effect, we compare two settings in the pruning objective: c = 1 , where intra-node and inter-node communication are treated equally, and c = 5 ,where inter-node communication is assigned a much higher cost. TABLE II: Impact of inter-node communication cost in multi-node pruning 
+
+Cluster Config Latency (ms) Node per Token A (8 ×400 Gbps) c = 1 1434.68 1.8875 
+
+c = 5 1447.89 (+0.92%) 1.8337 (-2.85%) B (200 Gbps) c = 1 2285.37 1.8875 
+
+c = 5 1980.26 (-13.35%) 1.8337 (-2.85%) 
+
+As shown in Table II, increasing the inter-node commu-nication cost indeed reduces cross-node communication. On both clusters, the c = 5 setting causes each token to visit fewer nodes than c = 1 , indicating that pruning becomes more inclined to remove routing destinations that span more nodes. However, the performance impact of this reduction depends on the actual inter-node bandwidth of the cluster. On Cluster A, where the two nodes are connected by 8 × 400 Gbps 
+
+InfiniBand links, reducing the number of nodes visited by each token does not lead to a noticeable latency improvement. In contrast, on Cluster B, where the inter-node bandwidth is only 
+
+200 Gbps , the same change leads to a clear latency reduction. This result shows that topology-aware pruning can effectively reduce inter-node communication, and its benefit becomes more significant when inter-node bandwidth is limited. In practice, c can be set to reflect the relative communication cost between intra-node and inter-node links. 
+
+F. Stability and Transferability of Expert Grouping 
+
+To study the stability of expert grouping, we conduct both in-workload and cross-workload experiments. We first evaluate in-workload stability on the LMSYS Chat dataset. We take the first 8000 requests and divide them into 16 windows of 500 requests each according to their origi-nal order. We then use three different windows of requests, namely requests 0–499 (w0), 2000–2499 (w2000), and 6000– 6499 (w6000), to run inference and generate communication-oriented groupings using the Placement Approach. Then we evaluate each of these groupings on all 16 windows. The results are shown in Figure 15. Both communication cost and load imbalance remain stable across all windows for all three groupings. Specifically, the maximum variation is below 2.9% for communication cost 4.5    
+
+> 5.0
+> Communication
+> Overhead
+> w0 w2000 w6000 default
+> 0-499
+> 500-999
+> 1000-1499
+> 1500-1999
+> 2000-2499
+> 2500-2999
+> 3000-3499
+> 3500-3999
+> 4000-4499
+> 4500-4999
+> 5000-5499
+> 5500-5999
+> 6000-6499
+> 6500-6999
+> 7000-7499
+> 7500-7999
+> Sample Range
+> 1.4
+> 1.5
+> Load Imbalance
+
+Fig. 15: In-workload stability of expert grouping on LMSYS Chat. Groupings generated from three different windows (w0, w2000, and w6000) are evaluated on all 16 windows of all 8000 requests. and below 5.8% for load imbalance. Communication cost also remains consistently lower than that of the default placement. These results show that the grouping produced by the Place-ment Approach is stable within the same workload. We next evaluate cross-workload transferability using three datasets: HumanEval, LMSYS Chat, and Arxiv Abstracts. For each dataset, we generate a communication-oriented grouping and evaluate all groupings on all three datasets. Table III and Table IV show that both communication cost and load imbalance remain relatively stable across source-target com-binations, indicating strong cross-domain transferability. Overall, these results show that expert grouping exhibits strong stability within the same workload and strong trans-ferability across different workloads. Therefore, the need to frequently regroup experts is limited in practice. 
+
+G. Optimization Overhead 
+
+CAP requires an offline optimization phase before deploy-ment to generate and adjust expert groupings. This process consists of two stages. The first stage generates the candidate groupings, including collecting routing statistics, construct-ing the initial placement, and performing adjustment. This stage is hardware-independent and only needs to be executed once for a given model. To keep this process efficient, we implement both expert grouping and adjustment with GPU-efficient vectorized code. In our experiments, we find that the routing statistics and the resulting groupings become stable after collecting about 8,000 tokens. On an 8-A100 machine with Qwen3, collecting these tokens takes 36.72 seconds, generating the initial placement takes about 80 seconds, and producing 7 adjusted placements takes 9.1 seconds. The second stage profiles all candidate placements on a target machine and selects the best one. Using the same 8,000-token workload, evaluating 7 placements takes about 240 seconds. Overall, the full optimization overhead is no more than 6 minutes , which we consider acceptable in practice. Moreover, grouping generation is only required once per model, and placement profiling is only required once per machine, so the amortized cost is even lower. As discussed in TABLE III: Cross-workload communication cost measured by Device per Token. Rows denote target workloads and columns denote the workload used for profiling the grouping.                   
+
+> Target \Source HumanEval LMSYS Chat Arxiv Default HumanEval 4.1753 4.2481 4.4817 5.3497 LMSYS Chat 4.4444 4.1405 4.4223 5.3315 Arxiv 4.4930 4.2832 4.3443 5.3408
+
+TABLE IV: Cross-workload load imbalance measured by Max Load/Avg. Load.                   
+
+> Target \Source HumanEval LMSYS Chat Arxiv Default HumanEval 1.6772 1.8069 1.6629 1.4372 LMSYS Chat 1.5620 1.4675 1.5008 1.3303 Arxiv 1.8140 1.9201 1.6741 1.5972
+
+Section VIII-F, the need for frequent regrouping is also limited in practice. IX. R ELATED WORK 
+
+Existing efforts to improve MoE inference mainly fall into two categories: load-balancing methods that optimize expert placement or routing, and expert pruning methods that reduce computation by removing low-contribution experts. 
+
+a) MoE Inference Load Balancing: Load imbalance is a major issue in MoE inference [7]–[12], [30]. At the al-gorithmic level, GShard [19] introduces an auxiliary loss to encourage more even token routing, and Switch Transformer [31] constrains expert capacity to limit overload, though both approaches may reduce routing flexibility and weaken model expressiveness. System-level solutions have also been explored: FasterMoE [25] uses shadow experts to clone hot experts, and EfficientMoE [32] predicts device load in real time to deploy hot and cold experts across heterogeneous hardware. These methods primarily treat expert placement and routing as a load-balancing problem, whereas CAP further models the communication cost induced by expert placement. 
+
+b) Expert Pruning: Expert pruning offers another direc-tion for accelerating MoE inference [33]–[37]. Not All Experts Are Equal [15] estimates expert-level importance via output deviation on a small calibration set and removes low-impact experts without additional training. Task-Specific Expert Prun-ing [16] instead accumulates gating statistics during fine-tuning to identify task-relevant experts and progressively prune unimportant ones. Lynx [14] further performs dynamic, batch-aware expert reduction at inference time by leveraging router confidence and expert importance hierarchy to drop secondary experts with minimal accuracy loss. In contrast, CAP treats pruning not only as a computation-reduction mechanism but also as a communication optimization problem by explicitly modeling device- and node-level communication cost in prun-ing decisions. REFERENCES [1] D. Dai, C. Deng, C. Zhao, R. Xu, H. Gao, D. Chen, J. Li, W. Zeng, X. Yu, Y. Wu et al. , “Deepseekmoe: Towards ultimate expert spe-cialization in mixture-of-experts language models,” arXiv preprint arXiv:2401.06066 , 2024. [2] A. Q. Jiang, A. Sablayrolles, A. Roux, A. Mensch, B. Savary, C. Bam-ford, D. S. Chaplot, D. d. l. Casas, E. B. Hanna, F. Bressand et al. ,“Mixtral of experts,” arXiv preprint arXiv:2401.04088 , 2024. [3] T. Zhu, X. Qu, D. Dong, J. Ruan, J. Tong, C. He, and Y. Cheng, “Llama-moe: Building mixture-of-experts from llama with continual pre-training,” arXiv preprint arXiv:2406.16554 , 2024. [4] T. B. Brown, B. Mann, N. Ryder, M. Subbiah, J. Kaplan, P. Dhariwal, A. Neelakantan, P. Shyam, G. Sastry, A. Askell, S. Agarwal, A. Herbert-Voss, G. Krueger, T. Henighan, R. Child, A. Ramesh, D. M. Ziegler, J. Wu, C. Winter, C. Hesse, M. Chen, E. Sigler, M. Litwin, S. Gray, B. Chess, J. Clark, C. Berner, S. McCandlish, A. Radford, I. Sutskever, and D. Amodei, “Language models are few-shot learners,” 2020. [Online]. Available: https://arxiv.org/abs/2005.14165 [5] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, L. Kaiser, and I. Polosukhin, “Attention is all you need,” 2023. [Online]. Available: https://arxiv.org/abs/1706.03762 [6] H. Touvron, L. Martin, K. Stone, P. Albert, A. Almahairi, Y. Babaei, N. Bashlykov, S. Batra, P. Bhargava, S. Bhosale et al. , “Llama 2: Open foundation and fine-tuned chat models,” arXiv preprint arXiv:2307.09288 , 2023. [7] Y. Han, L. Pan, J. Peng, Z. Tao, W. Zhang, and Y. Zhang, “Grace-moe: Grouping and replication with locality-aware routing for efficient distributed moe inference,” 2025. [Online]. Available: https://arxiv.org/abs/2509.25041 [8] H. Huang, N. Ardalani, A. Sun, L. Ke, S. Bhosale, H.-H. S. Lee, C.-J. Wu, and B. Lee, “Toward efficient inference for mixture of experts,” in The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. [Online]. Available: https://openreview.net/forum?id=stXtBqyTWX [9] D. Yu, L. Shen, H. Hao, W. Gong, H. Wu, J. Bian, L. Dai, and H. Xiong, “Moesys: A distributed and efficient mixture-of-experts training and inference system for internet services,” 2024. [Online]. Available: https://arxiv.org/abs/2205.10034 [10] J. Li, Y. Jiang, Y. Zhu, C. Wang, and H. Xu, “Accelerating distributed moe training and inference with lina,” 2024. [Online]. Available: https://arxiv.org/abs/2210.17223 [11] S. Rajbhandari, C. Li, Z. Yao, M. Zhang, R. Y. Aminabadi, A. A. Awan, J. Rasley, and Y. He, “Deepspeed-moe: Advancing mixture-of-experts inference and training to power next-generation ai scale,” 2022. [Online]. Available: https://arxiv.org/abs/2201.05596 [12] X. Nie, X. Miao, Z. Wang, Z. Yang, J. Xue, L. Ma, G. Cao, and B. Cui, “Flexmoe: Scaling large-scale sparse pre-trained model training via dynamic device placement,” Proceedings of the ACM on Management of Data , vol. 1, no. 1, p. 1–19, May 2023. [Online]. Available: http://dx.doi.org/10.1145/3588964 [13] Y. Koishekenov, A. Berard, and V. Nikoulina, “Memory-efficient nllb-200: Language-specific expert pruning of a massively multilingual machine translation model,” 2023. [Online]. Available: https://arxiv.org/abs/2212.09811 [14] V. Gupta, K. Sinha, A. Gavrilovska, and A. P. Iyer, “Lynx: Enabling efficient moe inference through dynamic batch-aware expert selection,” 2024. [Online]. Available: https://arxiv.org/abs/2411.08982 [15] X. Lu, Q. Liu, Y. Xu, A. Zhou, S. Huang, B. Zhang, J. Yan, and H. Li, “Not all experts are equal: Efficient expert pruning and skipping for mixture-of-experts large language models,” 2024. [Online]. Available: https://arxiv.org/abs/2402.14800 [16] T. Chen, S. Huang, Y. Xie, B. Jiao, D. Jiang, H. Zhou, J. Li, and F. Wei, “Task-specific expert pruning for sparse mixture-of-experts,” 2022. [Online]. Available: https://arxiv.org/abs/2206.00277 [17] A. Yang, A. Li, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Gao, C. Huang, C. Lv et al. , “Qwen3 technical report,” arXiv preprint arXiv:2505.09388 , 2025. [18] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova, “Bert: Pre-training of deep bidirectional transformers for language understanding,” in Pro-ceedings of the 2019 conference of the North American chapter of the association for computational linguistics: human language technologies, volume 1 (long and short papers) , 2019, pp. 4171–4186. [19] D. Lepikhin, H. Lee, Y. Xu, D. Chen, O. Firat, Y. Huang, M. Krikun, N. Shazeer, and Z. Chen, “Gshard: Scaling giant models with conditional computation and automatic sharding,” arXiv preprint arXiv:2006.16668 ,2020. [20] N. Shazeer, A. Mirhoseini, K. Maziarz, A. Davis, Q. Le, G. Hinton, and J. Dean, “Outrageously large neural networks: The sparsely-gated mixture-of-experts layer,” 2017. [Online]. Available: https://arxiv.org/abs/1701.06538 [21] A. Liu, B. Feng, B. Xue, B. Wang, B. Wu, C. Lu, C. Zhao, C. Deng, C. Zhang, C. Ruan et al. , “Deepseek-v3 technical report,” arXiv preprint arXiv:2412.19437 , 2024. [22] J. Achiam, S. Adler, S. Agarwal, L. Ahmad, I. Akkaya, F. L. Aleman, D. Almeida, J. Altenschmidt, S. Altman, S. Anadkat et al. , “Gpt-4 technical report,” arXiv preprint arXiv:2303.08774 , 2023. [23] C. Hwang, W. Cui, Y. Xiong, Z. Yang, Z. Liu, H. Hu, Z. Wang, R. Salas, J. Jose, P. Ram, J. Chau, P. Cheng, F. Yang, M. Yang, and Y. Xiong, “Tutel: Adaptive mixture-of-experts at scale,” 2023. [Online]. Available: https://arxiv.org/abs/2206.03382 [24] T. Gale, D. Narayanan, C. Young, and M. Zaharia, “Megablocks: Efficient sparse training with mixture-of-experts,” 2022. [Online]. Available: https://arxiv.org/abs/2211.15841 [25] J. He, J. Zhai, T. Antunes, H. Wang, F. Luo, S. Shi, and Q. Li, “Faster-moe: modeling and optimizing training of large-scale dynamic pre-trained models,” in Proceedings of the 27th ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming , 2022, pp. 120–134. [26] M. Zhai, J. He, Z. Ma, Z. Zong, R. Zhang, and J. Zhai, “SmartMoE: Efficiently training Sparsely-Activated models through combining offline and online parallelization,” in 2023 USENIX Annual Technical Conference (USENIX ATC 23) . Boston, MA: USENIX Association, Jul. 2023, pp. 961–975. [Online]. Available: https://www.usenix.org/conference/atc23/presentation/zhai [27] W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. E. Gonzalez, H. Zhang, and I. Stoica, “Efficient memory management for large language model serving with pagedattention,” in Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles ,2023. [28] L. Zheng, L. Yin, Z. Xie, C. Sun, J. Huang, C. H. Yu, S. Cao, C. Kozyrakis, I. Stoica, J. E. Gonzalez, C. Barrett, and Y. Sheng, “Sglang: Efficient execution of structured language model programs,” 2024. [Online]. Available: https://arxiv.org/abs/2312.07104 [29] W. Huang, Y. Zhang, X. Zheng, F. Chao, R. Ji, and L. Cao, “Discovering important experts for mixture-of-experts models pruning through atheoretical perspective,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [Online]. Available: https://openreview.net/forum?id=7kQjbCQwtT [30] S. Go and D. Mahajan, “Moetuner: Optimized mixture of expert serving with balanced expert placement and token routing,” 2025. [Online]. Available: https://arxiv.org/abs/2502.06643 [31] W. Fedus, B. Zoph, and N. Shazeer, “Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity,” 2022. [Online]. Available: https://arxiv.org/abs/2101.03961 [32] Y. Zeng, C. Huang, Y. Mei, L. Zhang, T. Su, W. Ye, W. Shi, and S. Wang, “Efficientmoe: Optimizing mixture-of-experts model training with adaptive load balance,” IEEE Transactions on Parallel and Dis-tributed Systems , 2025. [33] Y. J. Kim, A. A. Awan, A. Muzio, A. F. C. Salinas, L. Lu, A. Hendy, S. Rajbhandari, Y. He, and H. H. Awadalla, “Scalable and efficient moe training for multitask multilingual models,” 2021. [Online]. Available: https://arxiv.org/abs/2109.10465 [34] C. Yang, Y. Sui, J. Xiao, L. Huang, Y. Gong, Y. Duan, W. Jia, M. Yin, Y. Cheng, and B. Yuan, “Moe-i 2: Compressing mixture of experts models through inter-expert pruning and intra-expert low-rank decomposition,” 2024. [Online]. Available: https://arxiv.org/abs/2411.01016 [35] J. Lee, seung-won hwang, A. Qiao, D. F. Campos, Z. Yao, and Y. He, “Stun: Structured-then-unstructured pruning for scalable moe pruning,” 2025. [Online]. Available: https://arxiv.org/abs/2409.06211 [36] Z. Zhang, X. Liu, H. Cheng, C. Xu, and J. Gao, “Diversifying the expert knowledge for task-agnostic pruning in sparse mixture-of-experts,” 2025. [Online]. Available: https://arxiv.org/abs/2407.09590 [37] M. N. R. Chowdhury, M. Wang, K. E. Maghraoui, N. Wang, P.-Y. Chen, and C. Carothers, “A provably effective method for pruning experts in fine-tuned sparse mixture-of-experts,” 2024. [Online]. Available: https://arxiv.org/abs/2405.16646

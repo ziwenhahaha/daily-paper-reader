@@ -13,8 +13,9 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 from urllib.parse import quote_plus
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Set, Tuple
+from zoneinfo import ZoneInfo
 
 import fitz  # PyMuPDF
 import requests
@@ -33,6 +34,13 @@ except Exception:  # pragma: no cover
 CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 TODAY_STR = str(os.getenv("DPR_RUN_DATE") or "").strip() or datetime.now(timezone.utc).strftime("%Y%m%d")
 RANGE_DATE_RE = re.compile(r"^(\d{8})-(\d{8})$")
+
+# 北京时区：首页/日报展示标签（运行时间、最新运行日期、下次更新）用北京时区显示。
+# 归档 token（DPR_RUN_DATE）与 docs/、archive/ 路径仍用 UTC 日期不变。
+BJT = ZoneInfo("Asia/Shanghai")
+# 名义每日运行时刻（UTC），对应 .github/workflows/daily-paper-reader.yml 的 cron "30 18 * * *"。
+# 若修改该 cron，必须同步更新此处，否则"下次更新"提示会失准。
+NOMINAL_RUN_UTC_HM = (18, 30)
 
 # LLM 配置（使用 llm.py 内的 DeepSeek 客户端）
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or os.getenv("SUMMARY_API_KEY")
@@ -832,6 +840,21 @@ def format_date_str(date_str: str) -> str:
     return date_str
 
 
+def next_run_beijing_label(now_utc: datetime | None = None) -> str:
+    """计算下一次名义运行的北京时刻（仅日期+时分），用于首页"下次更新"提示。
+
+    名义时刻为每日 NOMINAL_RUN_UTC_HM (UTC) = 北京次日 02:30。实际还会叠加
+    workflow 内 `shuf 0-3599`（0~60 分钟随机延迟）与 GitHub Actions 排队抖动，
+    因此调用方需附"可能延后"说明，不要把该值当成精确时刻。
+    """
+    now = now_utc if now_utc is not None else datetime.now(timezone.utc)
+    hh, mm = NOMINAL_RUN_UTC_HM
+    nominal = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if nominal <= now:
+        nominal += timedelta(days=1)
+    return nominal.astimezone(BJT).strftime("%Y-%m-%d %H:%M")
+
+
 def prepare_paper_paths(docs_dir: str, date_str: str, title: str, arxiv_id: str) -> Tuple[str, str, str]:
     slug = slugify(title)
     basename = f"{arxiv_id}-{slug}" if arxiv_id else slug
@@ -1041,6 +1064,11 @@ def build_latest_report_section(
     lines.append(f"- 本次总论文数：{total}")
     lines.append(f"- 精读区：{len(deep_entries)}")
     lines.append(f"- 速读区：{len(quick_entries)}")
+    lines.append(
+        "- 下次更新：约 "
+        f"{next_run_beijing_label()} 北京时间"
+        "（每日 02:30 自动刷新，受排队影响可能延后 0~60 分钟）"
+    )
     if summary:
         lines.append("")
         lines.append("### 今日简报（AI）")
@@ -1051,7 +1079,7 @@ def build_latest_report_section(
         ym = date_str[:6]
         day = date_str[6:]
         report_href = build_docsify_id_href(f"{ym}/{day}/README")
-    lines.append(f"- 详情：[{report_href}]({report_href})")
+    lines.append(f"- 详情：[{effective_label} 日报]({report_href})")
     lines.append("")
     lines.append("### 精读区论文标签")
     if deep_entries:
@@ -2714,7 +2742,7 @@ def main() -> None:
         log_substep("6.3", "生成速读区文章", "END")
 
     log_substep("6.4", "生成当日日报并同步首页 README", "START")
-    run_generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    run_generated_at = datetime.now(BJT).strftime("%Y-%m-%d %H:%M:%S 北京时间")
     day_readme = write_day_report_readme(
         docs_dir=docs_dir,
         date_str=date_str,

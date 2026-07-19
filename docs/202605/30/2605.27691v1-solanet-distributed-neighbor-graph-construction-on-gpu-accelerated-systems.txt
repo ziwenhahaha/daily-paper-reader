@@ -1,0 +1,681 @@
+Title: SOLANET: Distributed Neighbor Graph Construction on GPU-Accelerated Systems
+
+URL Source: https://arxiv.org/pdf/2605.27691v1
+
+Published Time: Thu, 28 May 2026 00:17:41 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# SOLANET: Distributed Neighbor Graph Construction on GPU-Accelerated Systems 
+
+Keita Iwabuchi ∗, Trevor Steil ∗, Benjamin W. Priest ∗, Grace Li ∗, Geoffrey Sanders ∗, Roger Pearce ∗∗ Center for Applied Scientific Computing, Lawrence Livermore National Laboratory Livermore, United States of America 
+
+{kiwabuchi, steil1, priest2, li85, sanders29, rpearce }@llnl.gov 
+
+Abstract —Neighbor graphs capture relationships among data points and are widely used in data analytics and AI workloads. Many studies have explored approximate construction methods for single-node systems, including GPUs. However, extending this to distributed systems for larger data and further acceleration remains challenging due to irregular computation patterns. We present SOLANET, a GPU-accelerated distributed neigh-bor graph construction toolkit. SOLANET first constructs local graphs on each GPU after data partitioning and then refines them via approximate nearest neighbor (ANN) searches over remote graphs pulled from other GPUs using MPI one-sided operations. SOLANET also provides a lock-free single-GPU neighbor graph construction algorithm for AMD GPUs. Our single-GPU implementation outperforms a state-of-the-art GPU-based approximate neighbor graph construction imple-mentation across multiple datasets on a single MI300A APU. Furthermore, SOLANET demonstrates 11× speedup from 32 to 512 APUs for 1 billion data points and 6.9x speedup from 64 to 512 APUs for 2 billion points. 
+
+Index Terms —Approximate Nearest Neighbor, GPU Comput-ing, Distributed Computing 
+
+I. I NTRODUCTION 
+
+Given feature vectors and a similarity measure, a neighbor graph captures similarity relationships among points as a graph. However, constructing exact neighbor graphs, where each point connects to its true nearest neighbors, is expensive in practice. Thus, approximate neighbor graphs (hereafter simply neighbor graphs ) are widely used in data analysis. By traversing the graph, we can find points similar to a query point efficiently. This task is called approximate nearest neighbor (ANN) search and is used in various applications, such as recommendation engines [1], anomaly detection [2], and large language models (LLM) [3]. It also serves as a core component of vector databases [4]. Neighbor graphs are also useful for tasks such as clustering [5]–[7], dimensionality reduction [8], and bioinformatics [9]–[12]. Constructing high-quality neighbor graphs, however, is computationally expensive and often memory intensive. More-over, real-world datasets are rapidly increasing in both the 
+
+This material is based upon work supported by the U.S. Department of Energy, Office of Science, Office of Advanced Scientific Computing Research under the project RAMSHORN: Randomized Algorithms for Mas-sive, Scientific, Higher-Order Relational Networks, Award Numbers DE-SCL0000093, SCW1937. This work was performed under the auspices of the U.S. Department of Energy by Lawrence Livermore National Laboratory under Contract DE-AC52-07NA27344 (LLNL-CONF-2017995). 
+
+number of points and feature dimensionality. Some datasets already contain billions of points [13] or have hundreds to tens of thousands of dimensions [14]. Such datasets are often too large for a single processor or machine, or they require more compute than one processor or node can provide in practical time. Recent large-scale systems increasingly rely on graphics processing units (GPUs) for performance. Many studies have explored graph-based ANN methods on a single GPU or one multi-GPU machine, such as [15]–[20] (see Section II-C). However, relatively few studies have addressed distributed systems. This may be because graph processing approaches typically exhibit irregular computation and communication patterns, making high performance on distributed GPU sys-tems difficult. To address these challenges, we propose a distributed multi-GPU method for neighbor graph construction. The design considers both runtime and GPU-system communication char-acteristics. After data partitioning, our method first constructs local neighbor graphs on each GPU. It then pulls remote graphs using Message Passing Interface (MPI) one-sided oper-ations and performs local ANN search to find better neighbors residing in other partitions. To improve its scalability, it uses a binary-tree-structured graph merge scheme. The distributed model is decoupled from the local graph construction and ANN search algorithms, allowing reuse of existing methods. We provide a runtime analysis to characterize the model’s performance and scalability. We implement the proposed method for the AMD MI300A APU and evaluate it on the Tuolumne supercomputer at Lawrence Livermore National Laboratory (LLNL), a sibling system of El Capitan with the same architecture. We call our toolkit SOLANET (Scalability Optimized Large-scale Approximate Neighbor Exploration Toolkit). SOLANET also provides a lock-free single-GPU neighbor graph construction algorithm for AMD GPUs. We first show that our lock-free single-GPU neighbor graph construction implementation outperforms a state-of-the-art GPU-based library on a single MI300A APU while maintaining high graph quality. We then demonstrate the performance of SOLANET on datasets with up to 2 billion points. SOLANET achieves 11.0x and 11.7x speedups on two 1-billion-point datasets when scaling from 32 to 512 GPUs, 
+
+> arXiv:2605.27691v1 [cs.DC] 26 May 2026
+
+and a 6.9x speedup on a 2-billion-point dataset when scaling from 64 to 512 GPUs. The main contributions of this paper are as follows:  
+
+> •
+
+We propose a distributed neighbor graph construction model, together with a runtime analysis, that is carefully designed to exploit the computation and communication characteristics of distributed GPU systems.  
+
+> •
+
+We develop SOLANET, a distributed GPU-based neigh-bor graph construction toolkit that combines local graph construction with ANN search-based cross-partition re-finement to support large-scale datasets efficiently.  
+
+> •
+
+SOLANET also provides a lock-free single-GPU neigh-bor graph construction implementation for AMD GPUs that outperforms a state-of-the-art GPU-based library.  
+
+> •
+
+We demonstrate strong scalability on the Tuolumne su-percomputer with AMD MI300A APUs for billion-scale datasets, achieving substantial runtime reductions while preserving high graph quality. II. P RELIMINARIES 
+
+A. Notation and Problem Setting 
+
+Let D be a dataset containing N = |D| points (feature vectors). We assume that every feature vector has the same dimensionality. 1
+
+The goal of this work is to construct a high-quality neighbor graph for a given dataset D at massive scales. We focus on constructing an approximate k-nearest neighbor graph 
+
+(kNNG), in which each source point has exactly k approximate nearest neighbors ( 1 ≤ k, and we assume k ≪ N ). This simple structure is easy to use in downstream applications. We use G
+
+to denote a kNNG, and define the quality of G by its recall, namely, the percentage of neighbors in G that also appear in the exact kNNG computed by brute force. Fig. 1 illustrates an overview of the neighbor graph construction task. In this work, the kNNG is represented as a 2D matrix of size 
+
+N × k, allocated as a contiguous row-major memory block. Each row contains the k neighbors of the corresponding source point. A neighbor entry stores a neighbor point ID and its distance from the source point. We store neighbor IDs and distances in two separate 2D matrices: Gid for neighbor IDs and Gdis for distances. Let ks denote the number of neighbors to find in a single approximate nearest neighbor (ANN) search for a query point (1 ≤ ks < N , usually ks ≪ N , and can be ks ≤ k). Gs
+
+denotes a kNNG optimized for ANN search. Our algorithm can use any similarity measure that can compare any pair of data points. Here, however, we consider only pairwise measures that correspond to proper distance metrics. We use σ(p1, p 2) to denote the distance between 
+
+p1 and p2, where p1, p 2 ∈ D. We assume that the distance function σ returns a nonnegative value d, where smaller values indicate more similar points. If the original function returns  
+
+> 1Although our current implementation does not support variable-length feature vectors, doing so would not conflict with the fundamental design of the algorithm. However, it may require some engineering effort to support variable-length vectors efficiently for GPU, and we leave this for future work. p0
+> p3
+> p4
+> p1
+> p2
+> p5
+> p3p4p0
+> p2p5p1
+> p2p1p5
+> .
+> .
+> .
+> .
+> .
+> .
+> Source Points
+> Neighbors
+> 3.5 5.8 3.5 2.8 p0
+> 4.5 8.5 4.6 1.2 p1
+> 5.2 7.7 2.5 1.7 p5
+> .
+> .
+> .
+> .
+> .
+> .
+> Points
+> Feature elements
+> (dims = 4)
+> k-Nearest Neighbors Graph (kNNG , k=2) Dataset (feature vectors)
+> Neighbor graph
+> construction
+
+Fig. 1: Overview of nearest neighbor graph construction. 
+
+similarity values, we can transform it into a distance-like 
+
+dissimilarity score, as is common in ANN search. We use Message Passing Interface (MPI) for inter-process communication. We assume a distributed system with P MPI ranks and a one-to-one correspondence between MPI ranks and GPUs. 
+
+B. MI300A Accelerated Processing Units (APUs) 
+
+Although our distributed neighbor graph construction algo-rithm is designed to be independent of any specific hardware architecture, in this paper we focus on the AMD MI300A Accelerated Processing Unit (APU) architecture. It is used in the El Capitan supercomputer at Lawrence Livermore National Laboratory (LLNL), which is ranked first on the TOP500 list as of November 2025 [21]. Its programming environment is based on the AMD ROCm software stack, and HIP is the C++ programming API for GPU programming. Its most notable feature is that it shares physical memory between CPU and GPU. Once the unified memory mode is enabled, even memory allocated by standard CPU mem-ory allocation functions (e.g., malloc ) can be accessed by the GPU without explicit data transfer operations. However, memory access performance can vary significantly with the allocation API and which processor (CPU or GPU) touched the memory first. Wahlgren et al. studied these memory architecture characteristics of MI300A APUs [22], including the impact of different allocation APIs, and found that the best performance is achieved with hipMalloc . We use 
+
+hipMalloc for memory allocation of core data structures in our implementation. 
+
+C. Related Work 
+
+We focus on prior work most directly related to SOLANET: graph-based ANN on GPUs and other large-scale ANN index-ing approaches. 
+
+1) Graph-Based ANN on Single Node: Many ANN studies have focused on GPUs within a single machine. For exam-ple, SONG [15], GNND [16], GGNN [17], CAGRA [18], BANG [19], and Faiss [23] are representative GPU-based libraries for neighbor graph construction. To leverage these efforts, SOLANET decouples the dis-tributed computation model from the local graph construction and ANN search algorithms. 2) Distributed Graph-Based ANN: Several studies used MapReduce [24] frameworks for distributed neighbor graph construction [25], [26]. These methods are based on NN-Descent [25], a widely-used, heuristic, iterative algorithm for neighbor graph construction. However, their performance is limited by the design and implementation of MapReduce-style frameworks. Kim et al. [27] further improved over [26]; however, their method relies on centroid information, which may not be suitable for some similarity measures, and their paper and implementation support only the L2 distance metric. DNND [28] and its follow-up work, NEO-DNND [29], are CPU-based distributed NN-Descent libraries that use the Message Passing Interface (MPI) for communication. They send feature vectors to other ranks on demand to strictly follow the original NN-Descent algorithm and perform only one distance calculation per communicated feature vector, which yields low arithmetic intensity and is not suitable for GPU-based systems. We compare SOLANET with NEO-DNND in our evaluation and discuss the performance differences. PyRKNN [30] is a distributed neighbor graph construction library that demonstrated its performance on up to 128M points using 64 NVIDIA V100 (16 GB) GPUs. It partitions the dataset using random projection trees, performs local exact 
+
+kNN searches within each subset, and merges the results until the global approximate graph converges. Due to its use of random projection trees for partitioning, it is limited to L2 and cosine distance metrics. In contrast, SOLANET finds cross-partition neighbors by performing ANN searches explicitly on each remote subgraph. This design makes SOLANET less sensitive to partition quality and agnostic to the choice of similarity measure. We also demonstrate SOLANET on datasets with up to 2 billion points using 512 MI300A (128 GB) APUs. Several other works partition the dataset into subsets and construct neighbor graphs independently within each partition, for example in CPU-based distributed settings [31]. In contrast, SOLANET constructs a globally connected graph by explicitly recovering cross-partition neighbors, which is a more difficult problem. 
+
+3) Other Related Work: To handle large datasets that do not fit in a single machine’s memory, some ANN frameworks utilize node-local storage. For example, DiskANN [32] is a disk-based ANN framework that can handle billion-scale datasets on a single machine by efficiently utilizing local storage devices. Because SOLANET does not rely on any specific local graph construction or ANN search algorithm, it could also incorporate this type of approach. III. L OCAL kNNG C ONSTRUCTION AND ANN S EARCH 
+
+Our distributed neighbor graph construction algorithm relies on two single-GPU building blocks: local kNNG construction and local approximate nearest neighbor (ANN) search. It does not require a specialized local kNNG construction algorithm: any single-GPU method could be used if it pro-duces high-quality graphs in practice and supports the desired similarity measures. However, compared to NVIDIA CUDA GPUs, there are few GPU-based kNNG construction libraries for AMD GPUs, so we implemented one for a single AMD GPU. For local ANN search, we use CAGRA [18], a state-of-the-art GPU-based ANN search algorithm. CAGRA is imple-mented in the cuVS library [33] and the hipVS library [34]. hipVS is a HIP version of cuVS and works on AMD GPUs. In the following sections, we describe our local kNNG construction algorithm and the ANN search background most relevant to the distributed method. 
+
+A. NN-Descent 
+
+Our local kNNG construction is based on the NN-Descent algorithm [25]. It is highly effective at producing high-quality graphs in practice [35] and is one of the most widely used heuristic algorithms for constructing kNNGs. Its empirical cost is approximately O(N 1.14 ) [25], which is significantly better than the O(N 2) cost of brute-force methods. It also supports arbitrary distance functions and the final output is a kNNG that contains exactly k approximate neighbors per point. The core idea of NN-Descent is: if two points have a common neighbor, they are likely to be neighbors of each other . It first initializes a kNNG ( G) with randomly selected neighbor points. It then checks for closer relationships within each point’s neighbors in G, exploiting the idea that points sharing a common neighbor are likely close to each other. It repeats this process iteratively until the number of accepted neighbor updates falls below δkN , where δ is the convergence threshold (e.g., 0.0001) and N is the number of data points. To reduce redundant distance calculations, it only considers a subset of neighbors for each point at each iteration, which is controlled by a sampling rate parameter ρ.
+
+1) Lock-Free GPU-based NN-Descent: We developed a lock-free GPU-based NN-Descent algorithm by adopting sev-eral techniques from GNND [16], a state-of-the-art GPU-based NN-Descent algorithm used in cuVS [33] and hipVS [34]. The key difference is that our implementation is lock-free, whereas GNND uses locks to update the kNNG ( G). During the NN-Descent algorithm, multiple threads may try to update the neighbor list of the same point in the G simultaneously. GNND uses spin locks allocated in the GPU’s global memory to prevent race conditions. However, acquiring and releasing locks in global memory significantly degrades performance. Therefore, they mitigate the performance degradation by at-tempting neighbor list updates only for highly prioritized cases. We aim to further accelerate the neighbor update step by using atomic operations. Specifically, rather than updating G
+
+directly under locks, we maintain a neighbor candidate list 
+
+for each point and atomically append newly found candidates to this list if they are closer than the current farthest neighbor of that point. Then, we assign a single thread to process the candidate list of each point and update the kNNG without worrying about race conditions. After updating the kNNG, we clear the candidate list and move on to the next iteration. To use GPU memory efficiently, we do not dynamically increase the size of the candidate list; as a result, our method may drop some true neighbors if the list becomes full. However, the iterative nature of NN-Descent should let the algorithm retry the same neighbor check in later iterations. We can also tune some NN-Descent parameters to conduct more redundant neighbor checks on purpose. Our algorithm accepts extra computation to increase parallelism, a common GPU design tradeoff. We evaluate the performance and accuracy of our lock-free GPU-based NN-Descent implementation in Section V. 
+
+B. Utilizing Near-Constant ANN Search Performance 
+
+Another important building block of our distributed method is local approximate nearest neighbor (ANN) search. To find closer neighbors across partitions efficiently, we run ANN search on graphs pulled from other GPUs (see Section IV for the distributed algorithm). A graph-based ANN search function takes query points, a kNNG, the dataset associated with the kNNG, and a few algorithm parameters such as ks (the number of neighbors to find per query point, usually ks ≪ N ), as inputs. For the local ANN search, we use the CAGRA [18] search implementation in hipVS [34]. CAGRA initiates the search from randomly selected points in the kNNG and greedily explores the graph by visiting neighbors of previously visited points. The search continues until no closer neighbors are found or a stopping criterion is satisfied. While the overall design of the search algorithm is standard, CAGRA is highly optimized for GPU architectures and is among the best-performing GPU-based ANN search implementations. Our preliminary experiments confirmed an important char-acteristic of ANN search that strongly influences our dis-tributed design: the runtime of ANN search tends to be largely insensitive to the number of source points in the kNNG. For example, ANN searches on kNNGs constructed from 1 million points and 10 million points have similar runtime when other conditions are similar (e.g., the same k and search parameters). We attribute this efficiency to graph-based ANN search itself, which is designed to find promising candidates within a small number of hops from the initial query start points. Furthermore, neighbor graphs are often optimized for ANN search beforehand to amplify this effect. Our distributed graph construction algorithm exploits this performance characteristic as described in Section IV-C. 
+
+C. Graph Optimization for ANN Search 
+
+To achieve high ANN search performance, it is common to optimize a kNNG before using it as the search index. We implemented the optimization technique proposed by CAGRA [18] because it is highly efficient and uses a kNNG constructed by NN-Descent. The idea is based on NSG [36], and similar optimization is also used in other ANN search libraries such as pyNNDescent [37]. The core idea is to remove redundant edges that can be bypassed via shorter paths. The goal is to maximize the number of neighbors reachable within a small number of hops from the initial query start points. CAGRA adapts this optimization to GPU architectures and achieves significant performance improvement during ANN search with minimal graph optimization overhead. It also does not require distance data in the kNNG, which is beneficial for memory and communication efficiency. We refer to the optimized kNNG as a search graph , denoted by Gs, to distinguish it from the original kNNG ( G). IV. D ISTRIBUTED GPU-B ASED NEIGHBOR GRAPH 
+
+CONSTRUCTION 
+
+We now present SOLANET’s distributed GPU-based neigh-bor graph construction algorithm. Given a dataset D, our algorithm randomly partitions the points across P MPI ranks. The output kNNG follows the same partitioning: all k neighbors of a source point are stored on the same rank as the point itself. After partitioning the data, our algorithm first constructs a local kNNG on each rank independently. Because the com-putational cost of constructing a kNNG grows superlinearly with the number of data points, this step scales well with the number of partitions. However, these constructed local kNNGs do not include neighbors residing on other ranks, so they must be updated to discover better cross-partition neighbors. We refer to this process as distributed kNNG refinement . Our refinement algorithm leverages approximate nearest neighbor (ANN) search to identify better neighbors across partitions. Each MPI rank performs ANN searches for its local data points on kNNGs pulled from other ranks and then updates its local 
+
+kNNG based on the ANN search results. To fetch remote graphs, we use MPI one-sided communi-cation so that each rank can fetch remote data asynchronously without interrupting the target rank. In the following subsections, we first describe a straightfor-ward ANN search-based refinement approach and its limita-tions. We then present our scalable distributed kNNG refine-ment algorithm and runtime analysis. 
+
+A. Notation 
+
+General notation, such as D, G, Gs, k, and ks, is intro-duced in Section II-A. Here, we introduce notation specific to distributed graph construction. The local dataset and local kNNG on rank i are denoted by Di and Gi→i, respectively, and the corresponding search graph by Gsi→i. More generally, Da:b = Da ∪· · ·∪ Db denotes the concatenation of dataset partitions from rank a through rank b, and Ga:b→c:d denotes a kNNG whose source points are in Da:b and whose neighbors are in Dc:d. Ra→b:c denotes the ANN search results for query points in Da obtained by searching Gsb:c→b:c; for each query point, Ra→b:c contains its approximate nearest neighbors in Db:c. We use M to denote the number of groups remaining after the binary-tree-structured refinement phase. For communication modeling, we use the Hockney model [38]. In this model, the time to send a message of size m between two processes is T (m) = α + mβ , where 
+
+α represents latency and start-up cost and β is the inverse bandwidth. 
+
+B. All-to-All ANN Search-Based Graph Refinement 
+
+To refine local kNNGs, a straightforward baseline is an all-to-all ANN search-based refinement, in which each rank performs ANN searches for its local points on the kNNGs pulled from all other ranks and updates its local kNNG based on the results. Specifically, each rank executes the following steps independently: 1) Construct the local kNNG Gi→i on MPI rank i from the local dataset Di.2) Optimize Gi→i for ANN search to obtain Gsi→i using the method from Section III-C, then synchronize all ranks with an MPI_Barrier() call. 3) On rank i, for a remote rank j̸ = i, pull Gsj→j and the associated dataset Dj .4) Perform ANN searches for the local points on the pulled 
+
+Gsj→j , find k candidate neighbors per point, and update 
+
+Gi→i accordingly ( Gi→i becomes Gi→i:j if i < j ). 5) Repeat steps 3–4 for all remote ranks j.This simple algorithm can construct a kNNG for datasets beyond a single GPU’s memory capacity, but its strong scal-ability is limited because graph-based ANN search can have near-constant runtime with respect to the number of source points, as discussed in Section III-B. In this approach, each rank finds neighbor candidates for its NP local points by searching each of the P − 1 graphs pulled from the other ranks, where N is the total number of points and P is the number of MPI ranks. If we assume constant ANN search cost S per query regardless of the number of source points in the search graph, then the refinement compute time is 
+
+S · NP · (P − 1) ≈ S · NP · P = SN, 
+
+and the communication time is 
+
+
+
+α + NP β
+
+
+
+· (P − 1) ≈ P α + N β. 
+
+Here, NP β denotes, up to constant factors, the bandwidth cost of transferring the full remote payload required for one refinement round, including Gs and D.The latency term of this simple algorithm scales with P ,and even if we ignore that, the compute and bandwidth terms remain fixed as P increases. Thus, increasing P does not reduce refinement time, so we need another approach. 
+
+C. Scalable Algorithm Overview 
+
+Our goal is better strong scalability: in many practical settings, the dataset size is fixed, so increasing the number of compute nodes should reduce time-to-solution. To this end, we propose a two-phase distributed kNNG re-finement algorithm: (i) binary-tree-structured distributed graph refinement (Section IV-D) and (ii) flat distributed kNNG refinement (Section IV-F). Phase (ii) is closely related to the all-to-all ANN search-based refinement described above. As discussed in Sec-tion III-B, ANN search cost is nearly constant in practice with respect to the number of source points in the search graph. Therefore, searching one larger graph is more efficient than searching multiple smaller graphs. Phase (i) exploits this by merging local kNNGs into larger sub-kNNGs before phase (ii), allowing each subsequent ANN search to cover a larger search space per round. When GPU memory is insufficient for phase (i), we skip it and directly run phase (ii) on the local kNNGs. Fig. 2 presents an overview of the refinement procedure for 8 MPI ranks (one GPU per rank). For simplicity, we describe only the activity of rank 0, though all ranks execute the same procedure in parallel. 
+
+D. Binary-Tree-Structured ANN Search-Based Graph Refine-ment 
+
+We use this binary-tree-structured refinement when there are sufficient GPU resources to store additional data to conduct this technique. In this phase, local kNNGs are merged hierarchically until 
+
+M groups remain, where M is the target number of groups after the binary-tree-structured phase. We assume that M is a power of two and that 2 ≤ M ≤ P , where P is the total number of MPI ranks. In Fig. 2, P = 8 and M = 2 .At each level, MPI ranks are partitioned into equally sized adjacent groups according to the binary tree structure. The group size at level l is 2l.The annSearch () function in Fig. 2 takes four arguments: (1) query points, (2) a search graph, (3) feature vectors associated with the search graph, and (4) ks, the number of neighbors to return per query point ( ks = k by default). Because the local dataset already has the required 2D matrix layout, it can be used directly as the query matrix. ANN search results R consist of two 2D arrays: one for neighbor IDs and the other for distances to those neighbors from the query points. At level 0, rank 0 pairs with rank 1, pulls D1 and G1→1,optimizes the pulled graph to obtain Gs
+
+> 1→1
+
+, searches it for neighbor candidates of the points D0, and updates G0→0 to 
+
+G0→0:1 using R0→1. At level 1, ranks 0 and 1 are paired with ranks 2 and 3. Rank 0 gathers D2 and G2→2:3 from rank 2 and 
+
+D3 and G3→2:3 from rank 3, concatenates them, and optimizes the concatenated graph to achieve Gs
+
+> 2:3 →2:3
+
+. It then searches for neighbor candidates of points D0 on Gs 
+
+> 2:3 →2:3
+
+and updates 
+
+G0→0:1 to G0→0:3 using the search results. This procedure repeats at higher levels until only M groups remain. When multiple datasets and kNNGs are pulled, they are stored consecutively and treated as one dataset and graph. Because they are stored as contiguous 2D arrays, no additional reordering is needed, so the concatenate () function in Fig. 2 updates only metadata such as the number of rows. Before each local graph update, we issue a global synchro-nization operation such as MPI_Barrier so that no rank is still pulling graph data while another rank modifies it. After D0 𝐺 !→!:$ D1 𝐺 %→!:$ D2 𝐺 &→!:$ D3 𝐺 $→!:$
+
+𝐺 !:$→!:$ ← 𝑐𝑜𝑛𝑐𝑎𝑡𝑒𝑛𝑎𝑡𝑒 (𝐺 !→!:$, 𝐺 %→!:$, 𝐺 &→!:$, 𝐺 $→!:$)
+
+𝐺 𝑠 !:$→!:$ ← 𝑂𝑝𝑡𝑖𝑚𝑖𝑧𝑒𝐹𝑜𝑟𝑆𝑒𝑎𝑟𝑐ℎ (𝐺 !:$→!:$)
+
+𝐺 𝑠 !:$→!:$
+
+D0 𝐺 !→!:$
+
+𝐺 𝑠 !:$→!:$ 𝐺 𝑠 !:$→!:$ 𝐺 𝑠 !:$→!:$
+
+D1 𝐺 %→!:$ D2 𝐺 &→!:$ D3 𝐺 $→!:$
+
+𝐺 𝑠 ':(→':(
+
+D4 𝐺 '→':(
+
+𝐺 𝑠 ':(→':( 𝐺 𝑠 ':(→':( 𝐺 𝑠 ':(→':(
+
+D5 𝐺 )→':( D6 𝐺 *→':( D7 𝐺 (→':(
+
+𝐺 !→!:( 𝐺 %→!:( 𝐺 &→!:( 𝐺 $→!:(
+
+𝐷 ':( ← 𝑐𝑜𝑛𝑐𝑎𝑡𝑒𝑛𝑎𝑡𝑒 (𝐷 ', 𝐷 ), 𝐷 *, 𝐷 ()
+
+𝑅 !→':( ← 𝑎𝑛𝑛𝑆𝑒𝑎𝑟𝑐ℎ 𝐷 !, 𝐺 𝑠 ':(→':(, 𝐷 ':(, k+
+
+𝐺 !→!:( ← 𝑢𝑝𝑑𝑎𝑡𝑒𝐺𝑟𝑎𝑝ℎ 𝐺 !→!:$, 𝑅 !→':(
+
+Pull data 
+
+D0 𝐺 !→! D1 𝐺 %→% D2 𝐺 &→& D3 𝐺 $→$ D7 𝐺 (→(. . . 
+
+D0 𝐺 !→!:%
+
+Pull data 
+
+D1 𝐺 %→!:% D2 𝐺 &→&:$ D3 𝐺 $→&:$ . . . D7 𝐺 (→*:(
+
+𝐺 𝑠 %→% ← 𝑂𝑝𝑡𝑖𝑚𝑖𝑧𝑒𝐹𝑜𝑟𝑆𝑒𝑎𝑟𝑐ℎ (𝐺 %→%)
+
+𝑅 !→% ← 𝑎𝑛𝑛𝑆𝑒𝑎𝑟𝑐ℎ 𝐷 !, 𝐺 𝑠 %→%, 𝐷 %, k+
+
+𝑀𝑃𝐼𝐵𝑎𝑟𝑟𝑖𝑒𝑟 ()
+
+𝐺 !→!:% ← 𝑢𝑝𝑑𝑎𝑡𝑒𝐺𝑟𝑎𝑝ℎ 𝐺 !→!, 𝑅 !→%
+
+𝑀𝑃𝐼𝐵𝑎𝑟𝑟𝑖𝑒𝑟 ()
+
+𝐷 &:$ ← 𝑐𝑜𝑛𝑐𝑎𝑡𝑒𝑛𝑎𝑡𝑒 (𝐷 & , 𝐷 $)
+
+𝐺 &:$→&:$ ← 𝑐𝑜𝑛𝑐𝑎𝑡𝑒𝑛𝑎𝑡𝑒 (𝐺 &→&:$, 𝐺 $→&:$)
+
+𝐺 𝑠 &:$→&:$ ← 𝑂𝑝𝑡𝑖𝑚𝑖𝑧𝑒𝐹𝑜𝑟𝑆𝑒𝑎𝑟𝑐ℎ (𝐺 &:$→&:$)
+
+𝑅 !→&:$ ← 𝑎𝑛𝑛𝑆𝑒𝑎𝑟𝑐ℎ 𝐷 !, 𝐺 𝑠 &:$→&:$, 𝐷 &:$, k+
+
+𝑀𝑃𝐼𝐵𝑎𝑟𝑟𝑖𝑒𝑟 ()
+
+𝐺 !→!:$ ← 𝑢𝑝𝑑𝑎𝑡𝑒𝐺𝑟𝑎𝑝ℎ 𝐺 !→!:%, 𝑅 !→&:$
+
+𝑀𝑃𝐼𝐵𝑎𝑟𝑟𝑖𝑒𝑟 ()
+
+Rank 0 Rank 1 Rank 2 Rank 3 Rank 7 
+
+> Level 0
+
+Partition group 
+
+> Final
+> kNNG
+> Flat  kNNG
+> refinement  Level 1 Grouped merge
+> Binary -tree -structured
+> kNNG  refinement
+
+𝐺 '→!:( 𝐺 )→!:( 𝐺 *→!:( 𝐺 (→!:(
+
+Rank 0 Rank 1 Rank 2 Rank 3 Rank 7 Rank 4 Rank 5 Rank 6 
+
+Pull data 
+
+Pull data 
+
+F1 
+
+F2 
+
+F3 
+
+F4 
+
+F1 F2 F3 
+
+F4 
+
+# . . . D7 𝐺 (→':(
+
+D0 D1 D2 D3 D7
+
+Local kNNG 
+
+Construction 
+
+𝐷 - Dataset partition stored on rank r
+
+𝐷 .:/ = 𝐷 . ∪... ∪ 𝐷 /
+
+𝐺 .⟶.:/ kNNG whose source points are in 𝐷 . and neighbors are in 𝐷 .:/
+
+𝐺 1 Search graph (use the same subscript rule as 𝐺 )
+
+𝑘 1 Number of neighbors to find per query in ANN search Fig. 2: ANN search-based distributed kNNG refinement with 8 MPI ranks. Assume that at least two GPUs are required to store the dataset. Only the activity of rank 0 is shown for simplicity. All ranks execute the same procedure. the update, we issue a second barrier so that all ranks complete the current level before proceeding. 
+
+E. Merging kNNGs within Groups 
+
+After the binary-tree-structured refinement phase, we move to the grouped merge phase, if more than one rank belongs to each group. In Fig. 2, rank 0 belongs to the group of ranks 0–3. In this phase, it gathers the graphs from ranks 1, 2, and 3, concatenates them with its own graph to form G0:3 →0:3 ,and produces a search graph Gs
+
+> 0:3 →0:3
+
+. After this phase, each rank has a search graph that covers the dataset of its group. 
+
+F. Flat ANN Search-Based Graph Refinement 
+
+In the flat kNNG refinement phase, each rank performs ANN searches from its local points against the search graphs of all other groups. Fig. 2 illustrates this phase for the case of 2 groups, again showing only rank 0. At this stage, all ranks within the same group hold the same search graph Gs, while the dataset D remains partitioned across ranks to reduce memory use. A rank in the i-th position within its group pulls Gs from the rank in the same position in each of the other groups to maximize communication parallelism. Continuing the same example, rank 0 pulls the search graph from rank 4 and pulls the datasets from ranks 4–7. It then uses its local points as queries against that pulled graph and updates 
+
+G0→0:3 . If there are more than 2 groups ( M > 2), the same procedure repeats for the search graphs of the other groups. This phase does not require global synchronization because 
+
+Gs is read-only, so each rank can proceed independently. Communication can also be overlapped with computation using double buffering, which partially hides the latency of pulling remote data behind ANN search and graph update. After the flat refinement phase, all local kNNGs G contain approximate nearest neighbors selected from the entire dataset. 
+
+G. Summary of Algorithm Advantages 
+
+The proposed distributed kNNG refinement algorithm has the following advantages:  
+
+> •
+
+It can directly leverage existing literature on graph-based ANN, as the distributed graph refinement model is decoupled from the local ANN kNNG construction and search backend.  
+
+> •
+
+The algorithm has high arithmetic intensity, that is, a high computation-to-communication ratio, which is favorable for distributed GPU systems.  
+
+> •
+
+Its communication pattern is regular and coarse-grained, which helps apply optimizations and utilize network bandwidth efficiently.  
+
+> •
+
+Major data transfers use MPI one-sided get operations, allowing each rank to fetch remote data without active participation from the target rank.  
+
+> •
+
+The transferred data structures ( kNNGs and datasets) are simple and can be placed directly in GPU-accessible memory after communication, avoiding additional trans-formation or copying. This can be achieved even on conventional CPU-GPU systems, where memory is not shared, by using GPUDirect RDMA 2, for example. These advantages contribute to the high performance and scalability demonstrated in Section V. 
+
+H. Runtime Analysis 
+
+We now analyze the runtime of the proposed distributed 
+
+kNNG refinement algorithm and explain why it is expected to scale strongly, focusing on the dominant costs. We make the following assumptions: (i) the computation uses P MPI ranks, and each rank stores NP data points; (ii) all ranks progress in parallel without load imbalance; (iii) the graph optimization cost is also negligible relative to the ANN search cost; and (iv) the cost of one ANN search from one query point is a constant S, independent of the number of source points in the search graph. In the communication terms below, NP β similarly denotes the bandwidth cost of the full remote payload needed for one ANN search round, rather than only one specific array. We ignore other factors, such as the dataset’s dimensionality, k, and ks, because they are unchanged with respect to the number of MPI ranks. We first consider the binary-tree-structured refinement phase. At tree level i, each rank performs ANN searches for its  
+
+> NP
+
+local points on a search graph Gs of size 2i · NP that needs to be pulled from 2i other ranks, so the runtime per level is 
+
+S · NP + 2 i  α + NP β. Reducing the number of groups from 
+
+P to M requires L = log 2
+
+  PM
+
+ levels. So, the total runtime of this phase is 
+
+> L−1
+
+X
+
+> i=0
+
+
+
+S NP + 2 i
+
+
+
+α + NP β
+
+ 
+
+= S NP log 2
+
+ PM
+
+
+
++
+
+ PM − 1
+
+  
+
+α + NP β
+
+
+
+≈ S NP log 2
+
+ PM
+
+
+
++ PM α + NM β. 
+
+Second, consider the grouped merge phase. This phase gathers the kNNGs from all ranks in the same group, including the local rank, concatenates them, and then optimizes the resulting graph for ANN search. The communication cost of this operation using point-to-point operations is 
+
+PM ·
+
+
+
+α + NP β
+
+
+
+= PM α + NM β. 
+
+Third, consider the flat refinement phase after grouped merge. In this phase, each rank performs ANN searches for its NP local points on the M − 1 search graphs associated with the other groups, each of which has its data split across PM
+
+ranks. The total runtime of this phase is therefore 
+
+(M − 1) 
+
+
+
+S NP + PM
+
+
+
+α + NP β
+
+ 
+
+≈ SM NP + P α + N β. 
+
+> 2https://developer.nvidia.com/gpudirect
+
+Finally, combining the complexities for the binary-tree-structured refinement, grouped merge, and flat refinement phases, we have an overall complexity of 
+
+S NP
+
+
+
+log 2
+
+ PM
+
+
+
++ M
+
+
+
++ α
+
+
+
+P + 2PM
+
+
+
++ β
+
+
+
+N + 2NM
+
+
+
+.
+
+From this expression, we see that the computational require-ments decrease as P increases, as desired, and if the search cost scales with dataset size (for example, if S ∝ log( NP )), then the observed scalability may be better than predicted. The communication costs show a latency term that increases with P and a bandwidth term that remains constant for fixed values of M , both coming from a rank’s need to retrieve data from all other ranks. While these communication terms ultimately limit scalability, we expect the algorithm to scale well in practice over a broad range of P because ANN search has high arithmetic intensity. For example, a single query may visit k2 neighbors within two hops of the initial entry point, so transferred data are reused extensively. This reuse helps amor-tize communication cost, and we further mitigate its impact by overlapping communication and computation. Consistent with this analysis, we do not observe these bottlenecks in the results presented in Section V. V. E VALUATION 
+
+A. Hardware and Software Environment 
+
+We use the Tuolumne cluster at Lawrence Livermore Na-tional Laboratory (LLNL) for our evaluation. Tuolumne 3 is a sibling system of El Capitan, shares the same architecture, and was ranked 12th on the TOP500 list as of November 2025 [21]. Each node of Tuolumne is equipped with four AMD MI300A APUs with 512 GB of memory in total and HPE Slingshot 11 interconnect. We use ROCm v6.4.3. We set the environment variable HSA_XNACK to 1 to lever-age the unified memory mode of the MI300A architecture, which allows us to avoid explicit data copies between CPU and GPU during our experiments. 
+
+B. Datasets 
+
+We consider 11 datasets, listed in Table I. The top six datasets are from ANN-Benchmarks [39], and the billion-scale base datasets are from the Big ANN Benchmarks [13]. Following prior studies, we use the first 100 million points of the DEEP-1B and SIFT-1B datasets as separate datasets, which we call DEEP-100M and SIFT-100M , respectively. 
+
+DEEP-2B is a synthetic dataset generated from DEEP-1B to evaluate scalability beyond one billion data points. We form two copies and shift them along different coordinate axes so their ranges do not overlap: in each copy, we add a scalar to one coordinate so the new minimum exceeds the original maximum by ϵ. We chose this simple construction because it keeps local data densities reasonably natural for L2 distance. 
+
+> 3https://hpc.llnl.gov/hardware/compute-platforms/tuolumne
+
+TABLE I: Datasets used in our evaluation. Dims : feature vector dimensions. Type : feature vector element type.                                                 
+
+> Dataset Dims Points Similarity Type Fashion-MNIST [40] 784 60,000 L2float NYTimes [41] 256 290,000 cosine float Last.fm [39] 65 292,385 cosine float GIST [42] 960 1,000,000 L2float SIFT-1M [42] 128 1,000,000 L2float GloVe50 [43] 50 1,183,514 cosine float DEEP-100M 96 100 million L2float SIFT-100M 128 100 million L2uint8 DEEP-1B [44] 96 1 billion L2float SIFT-1B [45] 128 1 billion L2uint8 DEEP-2B 96 2 billion L2float
+
+C. Single APU kNNG Construction Performance 
+
+We first evaluate the performance of our local lock-free 
+
+kNNG construction algorithm on a single APU. 
+
+1) Experimental Setup: For performance comparison, we use the NN-Descent algorithm implemented in the hipVS library [34], which is based on a GPU-based NN-Descent algorithm, GNND [16]. When evaluating neighbor graph construction, graph quality must be considered because it trades off against construction time: in general, higher recall requires more time. We use recall@32 as the metric for graph quality. Thus, we extract only the nearest 32 neighbors for each point from a constructed 
+
+kNNG ( k ≥ 32 ) and count how many of them exist in the ground truth data computed by a brute-force method. We measured only the graph construction time (e.g., excluding data loading time). Specifically, we loaded the dataset into hipMalloc-allocated memory and passed a pointer to the graph construction functions. For both implementations, we fixed the maximum number of NN-Descent iterations to 100 and varied the k (number of neighbors). To increase kNNG quality, it is common to use a k
+
+value larger than the target number of neighbors and truncate the graph after construction (we used k = 32 , 48 , 64 ). We also varied other parameters such as δ (the convergence thresh-old) to explore the trade-off between recall and construction time. We used several values between 0.00001 and 0.008 for 
+
+δ. SOLANET also supports another parameter, ρ (sampling rate), from NN-Descent, and we used 0.6, 0.8, and 1.0 (no sampling). 
+
+2) Results: We show the recall@32 versus performance trade-off in Fig 3, where each point corresponds to a specific parameter combination. We present only the points within rea-sonable recall and construction time ranges for better visibility. Overall, SOLANET’s implementation achieved better recall-time trade-off than the hipVS implementation across all datasets except NYTimes, where hipVS performed slightly better. On the Last.fm dataset, hipVS could not achieve more than a 28% recall within the configuration space we explored, while SOLANET achieved around 91% recall. The ground-truth neighbor distances are small in the Last.fm dataset (e.g., 85 90 95 100 
+
+> Recall@32 (%)
+> 0
+> 5
+> 10
+> Time (s)  hipVS
+> SOLANET
+
+(a) Fashion-MNIST 60 80 100  
+
+> Recall@32 (%)
+> 0
+> 100
+> 200
+> Time (s)  hipVS
+> SOLANET
+
+(b) GIST 95.0 97.5 100.0 
+
+> Recall@32 (%)
+> 0
+> 50
+> 100
+> Time (s)  hipVS
+> SOLANET
+
+(c) SIFT-1M 85 90 95 100  
+
+> Recall@32 (%)
+> 0
+> 50
+> 100
+> Time (s)  hipVS
+> SOLANET
+
+(d) GloVe50 80 90 100 
+
+> Recall@32 (%)
+> 0
+> 20
+> Time (s)  hipVS
+> SOLANET
+
+(e) NYTimes 40 60 80 100  
+
+> Recall@32 (%)
+> 0
+> 20
+> 40
+> Time (s)  hipVS
+> SOLANET
+
+(f) Last.fm 
+
+Fig. 3: Single APU kNNG construction recall-time trade-off across six datasets. Each point corresponds to a specific combination of parameters. less than 1.e-04). We hypothesize that hipVS’s low recall was due to floating-point precision issues or design choices that are not well-suited for handling such small distance values. 
+
+D. Distributed kNNG Construction Performance 
+
+We evaluate SOLANET on datasets with at least 100 million data points, focusing on strong scaling. 
+
+1) Experimental Setup: We constructed a kNNG with k =32 for the DEEP-100M and SIFT-100M datasets and k = 20 
+
+for the DEEP-1B, SIFT-1B, and DEEP-2B datasets. We report graph construction time excluding data loading time. We set 
+
+δ = 0 .0001 and ρ = 0 .5 for all datasets. We set M to 2 for the 100-million-point datasets, 32 for the 1-billion-point datasets, and 64 for the 2-billion-point dataset. We used 4 APUs per node and up to 128 nodes, depending on the dataset size. For performance comparison, we also ran NEO-DNND [29], which is a state-of-the-art distributed NN-Descent implemen-tation for CPU clusters. For NEO-DNND, we used a CPU-only cluster in which each node has two CPUs (64 cores per CPU) and 256 GB of DRAM 4. We set k = 20 , δ = 0 .0001 , and 
+
+ρ = 0 .5 for NEO-DNND. 
+
+2) Scalability Analysis: We show the strong scaling results in Fig. 4. For the DEEP-100M and SIFT-100M datasets, increasing the number of APUs from 1 to 32 reduced the execution time 
+
+> 4https://hpc.llnl.gov/hardware/compute-platforms/dane
+
+from 1207 to 66 seconds (18.3x speedup) and from 1474 to 65 seconds (22.7x speedup), respectively. By continuing to 64 APUs, it yeilded a 26x speedup for DEEP-100M and a 31.6x speedup for SIFT-100M. Beyond 32 APUs, scalability began to degrade visibly. We attribute this to the number of points per partition becoming too small to fully utilize the hardware and to increased communication overhead. The DEEP-1B and SIFT-1B datasets required at least 32 APUs. For the DEEP-1B dataset, increasing the number of APUs from 32 to 512 reduced the execution time from 926 seconds to 84 seconds, yielding an 11x speedup. The SIFT-1B dataset showed a similar trend, with execution time decreasing from 858 seconds on 32 APUs to 79 seconds on 512 APUs, yielding an 11.7x speedup. In comparison, NEO-DNND took 1,214 seconds on 256 CPUs to construct a kNNG with k = 20 for the DEEP-1B dataset. SOLANET completed the same task in 146 seconds on 256 APUs, achieving an 8.3x speedup over NEO-DNND. For the DEEP-2B dataset, SOLANET required a minimum of 64 APUs to accommodate the dataset in memory. Scaling from 64 to 512 APUs reduced the execution time from 1,090 seconds to 159 seconds, yielding a 6.9x speedup. 
+
+3) Performance Breakdown: We show the performance breakdown for the DEEP-1B dataset in Fig. 5. Because other billion-scale datasets show very similar trends, we present only DEEP-1B. We categorize the execution time into four categories: local kNNG construction, binary-tree-structured 
+
+kNNG refinement, grouped kNNGs merge, and flat kNNG re-finement. Each category corresponds to a step in the distributed algorithm from Section IV and includes both computation and communication time. The Etc category includes other steps such as converting internal point IDs to external ones and deallocating workspace memory before completion. First, the local kNNG construction time decreased from 166 seconds to 8 seconds (21x) as the number of APUs increased from 32 to 512. Since the runtime of NN-Descent is superlinear in the number of data points, the local kNNG construction time is expected to decrease superlinearly as the number of APUs increases. We confirmed that our local NN-Descent implementation can achieve this expected behavior. Next is the binary-tree-structured kNNG refinement step, which is a hierarchical merging process of sub-kNNGs. This step merged sub-kNNGs into 32 sub-kNNGs, so it was not executed in the 32-APU case. This step accounted for a small portion of the overall execution time. For example, in the 512-APU case, which had the largest number of merges, merging 512 sub-kNNGs into 32 sub-kNNGs took 10 seconds and accounted for only 12% of the total execution time. The flat refinement phase took 739.89 seconds on 32 APUs and 48.68 seconds on 512 APUs (15x). In both the 32-APU and 512-APU cases, each MPI rank ran ANN search against 31 sub-kNNGs on other ranks. The number of query points per rank is 16 times smaller in the 512-APU case because the dataset is partitioned across 16 times more ranks. We achieved a 15x speedup, which is close to the ideal scalability of 16x. 1 2 4 8 16 32 64 
+
+> Number of APUs (4 APUs per node)
+> 20
+> 22
+> 24
+> 26
+> 28
+> 210
+> Time (s)
+> DEEP-100M
+> Ideal linear scaling
+> SIFT-100M
+> Ideal linear scaling
+
+(a) DEEP-100M and SIFT-100M datasets 32 64 128 256 512  
+
+> Number of APUs (4 APUs per node)
+> Number of CPUs (2 CPUs per node)
+> 20
+> 22
+> 24
+> 26
+> 28
+> 210
+> 212
+> Time (s)
+> DEEP-1B
+> Ideal linear scaling
+> SIFT-1B
+> Ideal linear scaling
+> DEEP-1B by NEO-DNND
+> (CPU cluster, not Tuolumne)
+
+(b) DEEP-1B and SIFT-1B datasets 64 128 256 512  
+
+> Number of APUs (4 APUs per node)
+> 20
+> 22
+> 24
+> 26
+> 28
+> 210
+> Time (s)
+> DEEP-2B
+> Ideal linear scaling
+
+(c) DEEP-2B dataset 
+
+Fig. 4: Strong scaling study results by SOLANET on the Tuolumne cluster (4 AMD MI300A APUs per node). NEO-DNND [29] was run on the Dane (CPU-only) cluster for performance comparison. kNNG k = 20 .32 64 128 256 512 
+
+> Number of APUs (4 APUs per node)
+> 0
+> 250
+> 500
+> 750
+> 1000
+> Time (s)
+> Local Construction
+> Binary-tree Refinement
+> Grouped kNNGs Merge
+> Flat Refinement
+> Etc
+
+(a) Absolute execution time. 32 64 128 256 512 
+
+> Number of APUs (4 APUs per node)
+> 0
+> 25
+> 50
+> 75
+> 100
+> Ratio (%)
+
+(b) Performance breakdown ratio. 
+
+Fig. 5: Performance breakdown of the distributed neighbor graph construction by SOLANET (DEEP-1B dataset). We also observed that CAGRA’s local ANN search was highly robust to the number of source points in the search graph. For example, it achieved 1.48 million QPS (queries per second) when conducting ANN searches on a kNNG with 2 million source points for 2 million query points simultane-ously, and it achieved 1.3–1.4 million QPS on kNNGs with 32 million source points from the same query points. We also observed that communication time during dis-tributed graph refinement was negligible, owing to the commu-nication optimizations, including one-sided communication, avoidance of fine-grained or irregular communication, and overlapping computation and communication when possible. 
+
+4) Graph Quality Validation: To verify that SOLANET improves performance without degrading graph quality, we evaluated the constructed kNNGs in two settings. For the small datasets in Section V-C, we built kNNGs with 1–16 APUs using the same parameters as in the billion-scale experiments except k = 32 and ks = 32 , and measured recall@32 against the ground truth. SOLANET achieved 99% recall@32 on all L2 datasets regardless of APU count, while NYTimes stayed around 80%, varying by only a few percent-age points. On Last.fm and GIST, recall@32 increased from 91% to 95% and from 86% to 90% when scaling from a single APU to 16 APUs, respectively. For the billion-scale datasets, we compare SOLANET graphs with those produced by NEO-DNND [29]. NN-Descent is known to produce high-quality graphs and NEO-DNND is intended to preserve that quality at scale. We compute recall@20 by comparing a test graph with a reference graph using only neighbor distances: for each point, the distance to the 20th neighbor in the reference graph defines a threshold, and we count neighbors in the test graph within that threshold. We ignore neighbor IDs because the reference graph is itself approximate (strictly speaking, this deviates from the exact definition of recall). Using NEO-DNND graphs as the refer-ence, SOLANET achieved 99% recall@20 on both DEEP-1B and SIFT-1B for all APU counts. Reversing the comparison, NEO-DNND achieved 70–71% on DEEP-1B and 74–75% on SIFT-1B. This result indicates that SOLANET was able to construct kNNGs with substantially reduced runtime while maintaining high graph quality. VI. C ONCLUSION 
+
+We presented SOLANET, a distributed neighbor graph construction toolkit for GPU-accelerated systems. The evaluation shows that our algorithmic design is both efficient and scalable. On a single MI300A APU, our lo-cal NN-Descent implementation outperforms a state-of-the-art GPU-based baseline while maintaining high graph quality. On the Tuolumne supercomputer, SOLANET demonstrates strong scaling up to 512 APUs for billion-scale datasets, achieving significant reductions in end-to-end runtime while preserving high graph quality. We believe SOLANET provides a practical and efficient solution for constructing large-scale neighbor graphs on dis-tributed GPU systems, an increasingly important need as datasets continue to grow in size and dimensionality. As future work, we plan to investigate additional ANN algorithms and libraries for local kNNG construction and ANN search, as well as to port SOLANET to NVIDIA GPUs. Additionally, to avoid graph refinement between certain partitions and improve overall efficiency, we plan to explore partitioning strategies that leverage domain knowledge in specific applications. ACKNOWLEDGMENT 
+
+AI-based writing assistance tools were used throughout this manuscript just for text refinement with GPT-5 [46]. All AI-assisted text was carefully reviewed and verified by the authors. AI tools were not used to generate scientific results, data, or conclusions. 
+
+REFERENCES [1] D. Adeniyi, Z. Wei, and Y. Yongquan, “Automated web usage data mining and recommendation system using k-nearest neighbor (knn) classification method,” Applied Computing and Informatics , vol. 12, no. 1, pp. 90–108, 2016. [Online]. Available: https://doi.org/10.1016/j.aci.2014.10.001 [2] Y. Liao and V. Vemuri, “Use of k-nearest neighbor classifier for intrusion detection11an earlier version of this paper is to appear in the proceedings of the 11th usenix security symposium, san francisco, ca, august 2002,” Computers & Security , vol. 21, no. 5, pp. 439–448, 2002. [Online]. Available: https://doi.org/10.1016/S0167-4048(02)00514-X [3] P. Lewis, E. Perez, A. Piktus, F. Petroni, V. Karpukhin, N. Goyal, H. K¨ uttler, M. Lewis, W.-t. Yih, T. Rockt¨ aschel, S. Riedel, and D. Kiela, “Retrieval-augmented generation for knowledge-intensive nlp tasks,” in Proceedings of the 34th International Conference on Neural Information Processing Systems , ser. NIPS’20. Red Hook, NY, USA: Curran Associates Inc., 2020. [Online]. Available: https://dl.acm.org/doi/abs/10.5555/3495724.3496517 [4] J. J. Pan, J. Wang, and G. Li, “Vector database management techniques and systems,” in Companion of the 2024 International Conference on Management of Data , ser. SIGMOD ’24. New York, NY, USA: Association for Computing Machinery, 2024, p. 597–604. [Online]. Available: https://doi.org/10.1145/3626246.3654691 [5] P. Franti, O. Virmajoki, and V. Hautamaki, “Fast agglomerative cluster-ing using a k-nearest neighbor graph,” IEEE Transactions on Pattern Analysis and Machine Intelligence , vol. 28, no. 11, pp. 1875–1881, 2006. [Online]. Available: https://doi.org/10.1109/TPAMI.2006.227 [6] M. Brito, E. Ch´ avez, A. Quiroz, and J. Yukich, “Connectivity of the mutual k-nearest-neighbor graph in clustering and outlier detection,” 
+
+Statistics & Probability Letters , vol. 35, no. 1, pp. 33–42, 1997. [Online]. Available: https://doi.org/10.1016/S0167-7152(96)00213-1 [7] Y. Qin, Z. L. Yu, C.-D. Wang, Z. Gu, and Y. Li, “A novel clustering method based on hybrid k-nearest-neighbor graph,” 
+
+Pattern Recognition , vol. 74, pp. 1–14, 2018. [Online]. Available: https://doi.org/10.1016/j.patcog.2017.09.008 [8] L. McInnes, J. Healy, and J. Melville, “Umap: Uniform manifold approximation and projection for dimension reduction,” 2020. [Online]. Available: https://doi.org/10.48550/arXiv.1802.03426 [9] B. Hie, B. Bryson, and B. Berger, “Efficient integration of heterogeneous single-cell transcriptomes using scanorama,” Nature biotechnology , vol. 37, no. 6, pp. 685–691, 2019. [Online]. Available: https://doi.org/10.1038/s41587-019-0113-3 [10] F. A. Wolf, P. Angerer, and F. J. Theis, “Scanpy: large-scale single-cell gene expression data analysis,” Genome biology , vol. 19, no. 1, p. 15, 2018. [Online]. Available: https://doi.org/10.1186/s13059-017-1382-0 [11] R. Dries, Q. Zhu, R. Dong, C.-H. L. Eng, H. Li, K. Liu, Y. Fu, T. Zhao, A. Sarkar, F. Bao et al. , “Giotto: a toolbox for integrative analysis and visualization of spatial expression data,” 
+
+Genome biology , vol. 22, no. 1, p. 78, 2021. [Online]. Available: https://doi.org/10.1186/s13059-021-02286-2 [12] L. Van Der Maaten, “Accelerating t-sne using tree-based algorithms,” J. Mach. Learn. Res. , vol. 15, no. 1, p. 3221–3245, Jan. 2014. [Online]. Available: https://dl.acm.org/doi/10.5555/2627435.2697068 [13] H. V. Simhadri, G. Williams, M. Aum¨ uller, A. Babenko, D. Baranchuk, Q. Chen, M. Douze, L. Hosseini, R. Krishnaswamy, G. Srinivasa, S. J. Subramanya, and J. Wang, “Billion-Scale Approximate Nearest Neighbor Search Challenge: NeurIPS’21 competition track,” http://big-ann-benchmarks.com/neurips21.html, [Accessed 30-Mar-2026]. [14] F. M. Harper and J. A. Konstan, “The movielens datasets: History and context,” ACM Trans. Interact. Intell. Syst. , vol. 5, no. 4, dec 2015. [Online]. Available: https://doi.org/10.1145/2827872 [15] W. Zhao, S. Tan, and P. Li, “Song: Approximate nearest neighbor search on gpu,” in 2020 IEEE 36th International Conference on Data Engineering (ICDE) , 2020, pp. 1033–1044. [Online]. Available: https://doi.org/10.1109/ICDE48307.2020.00094 [16] H. Wang, W.-L. Zhao, X. Zeng, and J. Yang, Fast K-NN Graph Construction by GPU Based NN-Descent . New York, NY, USA: Association for Computing Machinery, 2021, pp. 1929–1938. [Online]. Available: https://doi.org/10.1145/3459637.3482344 [17] F. Groh, L. Ruppert, P. Wieschollek, and H. P. A. Lensch, “Ggnn: Graph-based gpu nearest neighbor search,” IEEE Transactions on Big Data , vol. 9, no. 1, pp. 267–279, 2023. [Online]. Available: https://doi.org/10.1109/TBDATA.2022.3161156 [18] H. Ootomo, A. Naruse, C. Nolet, R. Wang, T. Feher, and Y. Wang, “ CAGRA: Highly Parallel Graph Construction and Approximate Nearest Neighbor Search for GPUs ,” in 2024 IEEE 40th International Conference on Data Engineering (ICDE) . Los Alamitos, CA, USA: IEEE Computer Society, May 2024, pp. 4236–4247. [Online]. Available: https://doi.ieeecomputersociety.org/10.1109/ICDE60146.2024.00323 [19] K. Venkatasubba, S. Khan, S. Singh, H. V. Simhadri, and J. Vedurada, “Bang: Billion-scale approximate nearest neighbour search using a single gpu,” IEEE Transactions on Big Data ,vol. 11, no. 6, pp. 3142–3157, 2025. [Online]. Available: https://doi.org/10.1109/TBDATA.2025.3581085 [20] Y. Liu, X. Chen, A. Tian, H. Li, Q. Li, X. Zhang, A. Zhou, C. J. Zhang, Q. Li, and L. Chen, “Gpu-accelerated algorithms for graph vector search: Taxonomy, empirical study, and research directions,” 2026. [Online]. Available: https://doi.org/10.48550/arXiv.2602.16719 [21] TOP500.org, “TOP500 list,” https://top500.org/, [Accessed 20-Mar-2026]. [22] J. Wahlgren, G. Schieffer, R. Shi, E. A. Le´ on, R. Pearce, M. Gokhale, and I. Peng, “Dissecting cpu-gpu unified physical memory on amd mi300a apus,” in 2025 IEEE International Symposium on Workload Characterization (IISWC) , 2025, pp. 368–380. [Online]. Available: https://doi.org/10.1109/IISWC66894.2025.00038 [23] M. Douze, A. Guzhva, C. Deng, J. Johnson, G. Szilvasy, P.-E. Mazar´ e, M. Lomeli, L. Hosseini, and H. J´ egou, “The faiss library,” IEEE Transactions on Big Data , vol. 12, no. 2, pp. 346–361, 2026. [Online]. Available: https://doi.org/10.1109/TBDATA.2025.3618474 [24] J. Dean and S. Ghemawat, “Mapreduce: simplified data processing on large clusters,” Communications of the ACM ,vol. 51, no. 1, pp. 107–113, 2008. [Online]. Available: https://dl.acm.org/doi/10.1145/1327452.1327492 [25] W. Dong, C. Moses, and K. Li, “Efficient K-Nearest Neighbor Graph Construction for Generic Similarity Measures,” in Proceedings of the 20th International Conference on World Wide Web , ser. WWW ’11. New York, NY, USA: Association for Computing Machinery, 2011, pp. 577–586. [Online]. Available: https://doi.org/10.1145/1963405.1963487 [26] T. WARASHINA, K. AOYAMA, H. SAWADA, and T. HATTORI, “Efficient k-nearest neighbor graph construction using mapreduce for large-scale data sets,” IEICE Transactions on Information and Systems , vol. E97.D, no. 12, pp. 3142–3154, 2014. [Online]. Available: https://doi.org/10.1587/transinf.2014EDP7108 [27] S.-H. Kim and H.-M. Park, “Efficient distributed approximate k-nearest neighbor graph construction by multiway random division forest,” in 
+
+Proceedings of the 29th ACM SIGKDD Conference on Knowledge Discovery and Data Mining , ser. KDD ’23. New York, NY, USA: Association for Computing Machinery, 2023, p. 1097–1106. [Online]. Available: https://doi.org/10.1145/3580305.3599327 [28] K. Iwabuchi, T. Steil, B. Priest, R. Pearce, and G. Sanders, “Towards a massive-scale distributed neighborhood graph construction,” in Proceedings of the SC ’23 Workshops of The International Conference on High Performance Computing, Network, Storage, and Analysis , ser. SC-W ’23. New York, NY, USA: Association for Computing Machinery, 2023, pp. 730–738. [Online]. Available: https://doi.org/10.1145/3624062.3625132 [29] K. Iwabuchi, T. Steil, B. W. Priest, R. Pearce, and G. Sanders, “Neo-dnnd: Communication-optimized distributed nearest neighbor graph construction,” in SC24-W: Workshops of the International Conference for High Performance Computing, Networking, Storage and Analysis , 2024, pp. 688–696. [Online]. Available: https://doi.org/10.1109/SCW63240.2024.00096 [30] W. Ruys, A. Ghafouri, C. Chen, and G. Biros, “Scalable knn graph construction for heterogeneous architectures,” ACM Trans. Parallel Comput. , vol. 12, no. 3, Jun. 2025. [Online]. Available: https://doi.org/10.1145/3733610 [31] K. G. Renga Bashyam and S. Vadhiyar, “Fast scalable approximate nearest neighbor search for high-dimensional data,” in 2020 IEEE International Conference on Cluster Computing (CLUSTER) , 2020, pp. 294–302. [Online]. Available: https://doi.org/10.1109/CLUSTER49012.2020.00040 [32] R. Krishnaswamy, R. Krishnaswamy, M. Manohar, and H. Simhadri, “The diskann library: Graph-based indices for fast, fresh and filtered vector search,” IEEE Data Eng. Bull. , vol. 48, pp. 20–42, December 2024. [Online]. Available: https://www.microsoft.com/en-us/research/publication/the-diskann-library-graph-based-indices-for-fast-fresh-and-filtered-vector-search/ [33] “cuVS: Vector Search and Clustering on the GPU,” https://github.com/rapidsai/cuvs, [Accessed 25-Mar-2026]. [34] “hipVS: GPU-accelerated vector search for AMD GPUs,” https://github.com/ROCm-DS/hipVS, [Accessed 25-Mar-2026]. [35] M. Wang, X. Xu, Q. Yue, and Y. Wang, “A comprehensive survey and experimental comparison of graph-based approximate nearest neighbor search,” Proc. VLDB Endow. , vol. 14, no. 11, pp. 1964–1978, jul 2021. [Online]. Available: https://doi.org/10.14778/3476249.3476255 [36] C. Fu, C. Xiang, C. Wang, and D. Cai, “Fast approximate nearest neighbor search with the navigating spreading-out graph,” Proc. VLDB Endow. , vol. 12, no. 5, pp. 461–474, jan 2019. [Online]. Available: https://doi.org/10.14778/3303753.3303754 [37] PyNNDescent, “GitHub - lmcinnes/pynndescent: A Python nearest neighbor descent for approximate nearest neighbors — github.com,” https://github.com/lmcinnes/pynndescent, [Accessed 24-Feb-2026]. [38] R. W. Hockney, “The communication challenge for MPP: Intel Paragon and Meiko CS-2,” Parallel Computing , vol. 20, no. 3, pp. 389–398, 1994. [Online]. Available: https://doi.org/10.1016/S0167-8191(06)80021-9 [39] M. Aum¨ uller, E. Bernhardsson, and A. Faithfull, “Ann-benchmarks: A benchmarking tool for approximate nearest neighbor algorithms,” 
+
+Information Systems , vol. 87, p. 101374, 2020. [Online]. Available: https://doi.org/10.1016/j.is.2019.02.006 [40] H. Xiao, K. Rasul, and R. Vollgraf. (2017) Fashion-mnist: a novel image dataset for benchmarking machine learning algorithms. [Online]. Available: https://doi.org/10.48550/arXiv.1708.07747 [41] D. Newman, “Bag of Words,” UCI Machine Learning Repository, 2008, DOI: https://doi.org/10.24432/C5ZG6P. [42] H. J´ egou, M. Douze, and C. Schmid, “Product Quantization for Nearest Neighbor Search,” IEEE Transactions on Pattern Analysis and Machine Intelligence , vol. 33, no. 1, pp. 117–128, Jan. 2011. [Online]. Available: https://doi.org/10.1109/TPAMI.2010.57 [43] J. Pennington, R. Socher, and C. Manning, “GloVe: Global vectors for word representation,” in Proceedings of the 2014 Conference on Empirical Methods in Natural Language Processing (EMNLP) ,A. Moschitti, B. Pang, and W. Daelemans, Eds. Doha, Qatar: Association for Computational Linguistics, Oct. 2014, pp. 1532–1543. [Online]. Available: http://doi.org/10.3115/v1/D14-1162 [44] A. B. Yandex and V. Lempitsky, “Efficient indexing of billion-scale datasets of deep descriptors,” in 2016 IEEE Conference on Computer Vision and Pattern Recognition (CVPR) , 2016, pp. 2055–2063. [Online]. Available: https://doi.org/10.1109/CVPR.2016.226 [45] H. J´ egou, R. Tavenard, M. Douze, and L. Amsaleg, “Searching in one billion vectors: Re-rank with source coding,” in 2011 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP) , 2011, pp. 861–864. [Online]. Available: https://doi.org/10.1109/ICASSP.2011.5946540 [46] OpenAI, “GPT5,” https://openai.com/gpt-5/, [Accessed 5-Apr-2026].
