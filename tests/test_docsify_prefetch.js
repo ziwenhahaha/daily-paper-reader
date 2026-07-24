@@ -1,8 +1,17 @@
 const assert = require('assert');
 const fs = require('fs');
+const vm = require('vm');
 
 const js = fs.readFileSync('app/docsify-plugin.js', 'utf8');
 const css = fs.readFileSync('app/app.css', 'utf8');
+
+function extractConstFunction(name) {
+  const start = js.indexOf(`const ${name} =`);
+  assert.ok(start >= 0, `${name} should be present`);
+  const end = js.indexOf('\n      };', start);
+  assert.ok(end > start, `${name} should have a complete function body`);
+  return js.slice(start, end + '\n      };'.length);
+}
 
 function testPrefetchCachesMissingMarkdown() {
   const start = js.indexOf('const prefetchHref = async (href) => {');
@@ -30,7 +39,6 @@ function testPaperPdfRowUsesPreviewAndDownloadActions() {
   assert.ok(js.includes("const PDFJS_WORKER_URL = 'app/vendor/pdfjs/3.11.174/pdf.worker.min.js'"), 'embedded preview should configure the local PDF.js worker');
   assert.ok(js.includes('return `${PDFJS_VIEWER_URL}?file=${encodeURIComponent(parsed.href)}`;'), 'preview URL should wrap the raw PDF URL');
   assert.ok(js.includes("openLink.setAttribute('href', previewUrl);"), 'new-window preview should open the preview viewer rather than the raw PDF');
-  assert.ok(!js.includes("openLink.setAttribute('href', url);"), 'new-window preview must not point at the raw PDF URL');
   assert.ok(js.includes('class="dpr-pdf-preview-stage"'), 'embedded preview should render into an in-page stage');
   assert.ok(js.includes('renderPdfIntoPanel(panel, url);'), 'preview toggle should render PDF pages in the side panel');
   assert.ok(!js.includes('class="dpr-pdf-preview-frame"'), 'embedded preview should not depend on browser iframe PDF rendering');
@@ -41,6 +49,157 @@ function testPaperPdfRowUsesPreviewAndDownloadActions() {
 }
 
 testPaperPdfRowUsesPreviewAndDownloadActions();
+
+function testOpenReviewPreviewUsesOfficialTopLevelPage() {
+  assert.ok(
+    js.includes('const normalizePdfUrl = (url) => {'),
+    'PDF preview should normalize provider-specific URLs before choosing a preview mode',
+  );
+  assert.ok(
+    /parsed\.hostname\.toLowerCase\(\)\.endsWith\(['"]\.openreview\.net['"]\)/.test(js),
+    'PDF preview should identify OpenReview URLs',
+  );
+  assert.ok(
+    /parsed\.pathname\s*=\s*['"]\/pdf['"]/.test(js),
+    'OpenReview forum URLs should be normalized to the official PDF endpoint',
+  );
+  assert.ok(
+    /if\s*\(isOpenReviewPdfUrl\(normalizedUrl\)\)\s*{\s*return normalizedUrl;\s*}/m.test(js),
+    'OpenReview new-window preview should use the official URL instead of the third-party PDF.js viewer',
+  );
+  assert.ok(
+    /if\s*\(isOpenReviewPdfUrl\(previewUrl\)\)\s*{[\s\S]*closePdfPreview\(\);[\s\S]*window\.open\(previewUrl,\s*['"]_blank['"],\s*['"]noopener,noreferrer['"]\);[\s\S]*return;/m.test(js),
+    'OpenReview preview clicks should open a top-level official page so browser verification can complete',
+  );
+}
+
+testOpenReviewPreviewUsesOfficialTopLevelPage();
+
+function runPdfPreviewClick(pdfUrl) {
+  const button = {
+    dataset: {},
+    attributes: {
+      'data-pdf-url': pdfUrl,
+    },
+    listener: null,
+    textContent: '预览 PDF',
+    addEventListener(type, listener) {
+      assert.strictEqual(type, 'click');
+      this.listener = listener;
+    },
+    getAttribute(name) {
+      return this.attributes[name] || '';
+    },
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+    },
+  };
+  const bodyClasses = new Set();
+  const openLink = {
+    href: '',
+    setAttribute(name, value) {
+      if (name === 'href') this.href = String(value);
+    },
+  };
+  const panel = {
+    dataset: {},
+    querySelector(selector) {
+      return selector === '.dpr-pdf-preview-open-link' ? openLink : null;
+    },
+  };
+  const sandbox = {
+    URL,
+    button,
+    document: {
+      body: {
+        classList: {
+          contains(name) {
+            return bodyClasses.has(name);
+          },
+          add(name) {
+            bodyClasses.add(name);
+          },
+        },
+      },
+      querySelectorAll(selector) {
+        assert.strictEqual(selector, '[data-pdf-preview-toggle]');
+        return [button];
+      },
+    },
+    window: {
+      location: { href: 'https://reader.example/#/conference/icml-2025/paper' },
+      openArgs: null,
+      open(...args) {
+        this.openArgs = args;
+      },
+    },
+    closeCount: 0,
+    ensureCount: 0,
+    renderArgs: null,
+    panel,
+  };
+
+  const source = [
+    "const PDFJS_VIEWER_URL = 'https://mozilla.github.io/pdf.js/web/viewer.html';",
+    'const closePdfPreview = () => { closeCount += 1; };',
+    'const ensurePdfPreviewPanel = () => { ensureCount += 1; return panel; };',
+    'const renderPdfIntoPanel = (...args) => { renderArgs = args; };',
+    extractConstFunction('normalizePdfUrl'),
+    extractConstFunction('isOpenReviewPdfUrl'),
+    extractConstFunction('buildPdfPreviewUrl'),
+    extractConstFunction('bindPdfPreviewToggle'),
+    'bindPdfPreviewToggle();',
+    'button.listener();',
+  ].join('\n');
+
+  vm.runInNewContext(source, sandbox);
+  return {
+    button,
+    bodyClasses,
+    closeCount: sandbox.closeCount,
+    ensureCount: sandbox.ensureCount,
+    openArgs: sandbox.window.openArgs && Array.from(sandbox.window.openArgs),
+    openLinkHref: openLink.href,
+    renderArgs: sandbox.renderArgs && Array.from(sandbox.renderArgs),
+  };
+}
+
+function testOpenReviewPreviewClickBehavior() {
+  const result = runPdfPreviewClick(
+    'https://openreview.net/forum/?id=4sueqIwb4o#discussion',
+  );
+  assert.strictEqual(result.closeCount, 1, 'OpenReview preview should close any existing embedded panel');
+  assert.strictEqual(result.ensureCount, 0, 'OpenReview preview should not create the cross-origin embedded panel');
+  assert.deepStrictEqual(
+    result.openArgs,
+    ['https://openreview.net/pdf?id=4sueqIwb4o', '_blank', 'noopener,noreferrer'],
+    'OpenReview preview should open the normalized official PDF as a top-level page',
+  );
+}
+
+testOpenReviewPreviewClickBehavior();
+
+function testArxivPreviewClickStillUsesEmbeddedPanel() {
+  const pdfUrl = 'https://arxiv.org/pdf/1706.03762v1';
+  const result = runPdfPreviewClick(pdfUrl);
+  assert.strictEqual(result.closeCount, 0, 'arXiv preview should not close itself before opening');
+  assert.strictEqual(result.ensureCount, 1, 'arXiv preview should keep using the embedded panel');
+  assert.strictEqual(result.openArgs, null, 'arXiv preview should not open a new browser window');
+  assert.ok(
+    result.openLinkHref.startsWith('https://mozilla.github.io/pdf.js/web/viewer.html?file='),
+    'arXiv new-window action should keep using the PDF.js viewer',
+  );
+  assert.deepStrictEqual(
+    result.renderArgs.slice(1),
+    [pdfUrl],
+    'arXiv preview should render the original PDF URL in the local panel',
+  );
+  assert.ok(result.bodyClasses.has('dpr-pdf-preview-open'), 'arXiv preview should open the side panel');
+  assert.strictEqual(result.button.attributes['aria-expanded'], 'true');
+  assert.strictEqual(result.button.textContent, '关闭预览');
+}
+
+testArxivPreviewClickStillUsesEmbeddedPanel();
 
 function testPdfPreviewDoesNotHijackPaperChatLayout() {
   assert.ok(

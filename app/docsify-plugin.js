@@ -2805,17 +2805,57 @@ window.$docsify = {
       let pdfJsLoadPromise = null;
       let pdfPreviewRenderSeq = 0;
 
-      const buildPdfPreviewUrl = (url) => {
+      const normalizePdfUrl = (url) => {
         const raw = String(url || '').trim();
         if (!raw) return '';
         try {
           const parsed = new URL(raw, window.location.href);
+          const hostname = parsed.hostname.toLowerCase();
+          const isOpenReviewHost =
+            hostname === 'openreview.net' ||
+            parsed.hostname.toLowerCase().endsWith('.openreview.net');
+          const normalizedPath = parsed.pathname.replace(/\/+$/, '') || '/';
+          if (isOpenReviewHost && normalizedPath === '/forum') {
+            const forumId = parsed.searchParams.get('id');
+            if (forumId) {
+              parsed.pathname = '/pdf';
+              parsed.search = '';
+              parsed.searchParams.set('id', forumId);
+              parsed.hash = '';
+            }
+          }
+          return parsed.href;
+        } catch (_err) {
+          return raw;
+        }
+      };
+
+      const isOpenReviewPdfUrl = (url) => {
+        const normalized = normalizePdfUrl(url);
+        if (!normalized) return false;
+        try {
+          const parsed = new URL(normalized, window.location.href);
+          const hostname = parsed.hostname.toLowerCase();
+          return hostname === 'openreview.net' || hostname.endsWith('.openreview.net');
+        } catch (_err) {
+          return false;
+        }
+      };
+
+      const buildPdfPreviewUrl = (url) => {
+        const normalizedUrl = normalizePdfUrl(url);
+        if (!normalizedUrl) return '';
+        try {
+          const parsed = new URL(normalizedUrl, window.location.href);
           if (/mozilla\.github\.io$/i.test(parsed.hostname) && /\/pdf\.js\/web\/viewer\.html$/i.test(parsed.pathname)) {
             return parsed.href;
           }
+          if (isOpenReviewPdfUrl(normalizedUrl)) {
+            return normalizedUrl;
+          }
           return `${PDFJS_VIEWER_URL}?file=${encodeURIComponent(parsed.href)}`;
         } catch (_err) {
-          return raw;
+          return normalizedUrl;
         }
       };
 
@@ -2941,11 +2981,16 @@ window.$docsify = {
           if (btn.dataset.bound === '1') return;
           btn.dataset.bound = '1';
           btn.addEventListener('click', () => {
-            const url = String(btn.getAttribute('data-pdf-url') || '').trim();
+            const url = normalizePdfUrl(btn.getAttribute('data-pdf-url'));
             if (!url) return;
+            const previewUrl = buildPdfPreviewUrl(url);
+            if (isOpenReviewPdfUrl(previewUrl)) {
+              closePdfPreview();
+              window.open(previewUrl, '_blank', 'noopener,noreferrer');
+              return;
+            }
             const panel = ensurePdfPreviewPanel();
             const openLink = panel.querySelector('.dpr-pdf-preview-open-link');
-            const previewUrl = buildPdfPreviewUrl(url);
             if (openLink) {
               openLink.setAttribute('href', previewUrl);
             }
