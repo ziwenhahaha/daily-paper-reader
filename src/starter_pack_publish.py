@@ -114,14 +114,61 @@ def publish_pack(root, manifest, content_limit=12):
     if manifest["status"] not in ("reviewed", "complete"):
         if manifest["status"] == "failed":
             record["status"] = "failed"
+        status_label = "失败，待续跑" if record["status"] == "failed" else "待续跑"
         text = (
             f"# {html.escape(tag)} · 入门包进度\n\n"
-            f"状态：待续跑，尚未生成完整导读。\n\n"
+            f"本轮状态：{status_label}，尚未生成完整导读。\n\n"
             f'- 已召回记录：{manifest.get("retrieved_records",0)}\n'
             f'- 去重后论文：{manifest.get("unique_papers",0)}\n'
             f'- 尚待评审：{manifest.get("remaining","待确认")}\n\n'
             f'请保持同一专题、会议范围和截止日期 {record["as_of"]}，再次运行以续跑。已完成检查点会复用。\n'
         )
+        previous_path = folder / "pack.json"
+        previous = (
+            json.loads(previous_path.read_text(encoding="utf-8"))
+            if previous_path.exists()
+            else {}
+        )
+        readme = folder / "README.md"
+        if (
+            previous.get("run_id") == run_id
+            and (
+                previous.get("status") == "complete"
+                or previous.get("has_complete_snapshot") is True
+            )
+            and readme.is_file()
+        ):
+            # 缓存淘汰不等于已发布内容失效：重跑状态与旧完整快照分开记录。
+            record.update(
+                paper_count=previous.get("paper_count", 0),
+                has_complete_snapshot=True,
+                complete_snapshot_updated_at=previous.get(
+                    "complete_snapshot_updated_at"
+                )
+                or previous.get("updated_at"),
+            )
+            for field in ("coverage", "unavailable_count"):
+                if field in previous:
+                    record[field] = previous[field]
+            (folder / "progress.md").write_text(
+                text + f"\n[查看上次完整导读](#/starter-pack/{run_id}/README)\n",
+                encoding="utf-8",
+            )
+            old_text = readme.read_text(encoding="utf-8")
+            old_text = re.sub(
+                r"\A<!-- starter-pack-refresh:start -->.*?<!-- starter-pack-refresh:end -->\n\n",
+                "",
+                old_text,
+                count=1,
+                flags=re.S,
+            )
+            text = (
+                "<!-- starter-pack-refresh:start -->\n"
+                f"> 本轮更新{status_label}，尚未完成。下方保留上次完整导读及下载，"
+                "不是本轮完成结果；论文数量为上次完整快照数量。"
+                f"[查看本轮进度](#/starter-pack/{run_id}/progress)。\n"
+                "<!-- starter-pack-refresh:end -->\n\n" + old_text
+            )
     else:
         from starter_pack_reading import prepare_reading
         from starter_pack_guide import (
@@ -220,6 +267,12 @@ def publish_pack(root, manifest, content_limit=12):
             unavailable_reading=unavailable,
         )
         write_json(cached / "manifest.json", manifest)
+        if (folder / "progress.md").exists():
+            (folder / "progress.md").write_text(
+                f"# 入门包进度\n\n本轮已完成。\n\n"
+                f"[查看最新完整导读](#/starter-pack/{run_id}/README)\n",
+                encoding="utf-8",
+            )
     (folder / "README.md").write_text(text, encoding="utf-8")
     write_json(folder / "pack.json", record)
     rebuild_pack_index(root)
