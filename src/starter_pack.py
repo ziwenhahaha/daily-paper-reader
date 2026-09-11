@@ -99,7 +99,17 @@ def review_candidates(
                     flush=True,
                 )
                 if attempt:
-                    raise
+                    if len(batch) == 1:
+                        raise
+                    # 大批输出反复不合法时缩小请求，仍逐篇严格校验和缓存。
+                    # 单篇连续失败则停止，不跳过候选或无限重试。
+                    middle = len(batch) // 2
+                    print(
+                        f"[入门包评审] 将 {len(batch)} 篇拆成两个小批次重试", flush=True
+                    )
+                    return review_with_retry(batch[:middle]) + review_with_retry(
+                        batch[middle:]
+                    )
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         jobs = [

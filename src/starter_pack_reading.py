@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from requests import HTTPError
+from paper_dedupe import _arxiv, _doi
 from starter_pack_publications import verify_publications
 
 from daily_report_state import (
@@ -78,16 +79,15 @@ def _identities(row):
         value = unquote(str(row.get(key) or "")).strip().lower()
         if not value:
             continue
-        arxiv = re.search(
-            r"(?:^|arxiv:|arxiv\.org/(?:abs|pdf)/)(\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?$",
-            value,
-        )
-        doi = re.search(r"10\.\d{4,9}/\S+", value)
+        # 阅读路由复用与版本去重使用同一身份口径，不能从任意URL子串猜ID。
+        identity_field = key in {"id", "paper_id", "canonical_id"}
+        arxiv = _arxiv({"id" if identity_field else key: value})
+        doi = _doi({"doi" if identity_field else key: value})
         if arxiv:
-            found.add("arxiv:" + arxiv[1])
+            found.add("arxiv:" + arxiv)
         elif doi:
-            found.add("doi:" + doi[0])
-        elif key in {"id", "paper_id", "canonical_id"}:
+            found.add("doi:" + doi)
+        elif identity_field:
             found.add("id:" + value)
     return found
 

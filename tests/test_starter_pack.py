@@ -1,9 +1,67 @@
 import sys
 from pathlib import Path
 from unittest.mock import Mock
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from starter_pack import review_candidates
+
+
+def test_invalid_batch_splits_but_keeps_strict_validation_and_cache(tmp_path):
+    import json
+
+    client = Mock()
+    sizes = []
+
+    def response(messages, **kwargs):
+        rows = json.loads(messages[-1]["content"])["papers"]
+        sizes.append(len(rows))
+        if len(rows) > 1:
+            return {"parsed": None, "parse_error": ValueError("invalid JSON")}
+        return {
+            "parsed": {
+                "papers": [
+                    {
+                        "id": "p0",
+                        "score": 8,
+                        "scope_match": True,
+                        "evidence": rows[0]["title"],
+                        "reason": "test",
+                    }
+                ]
+            }
+        }
+
+    client.chat_structured.side_effect = response
+    papers = [
+        {"id": str(i), "title": "ATSP", "abstract": "asymmetric traveling salesman"}
+        for i in range(2)
+    ]
+    kwargs = {"client_factory": lambda: client, "model_key": ["test"]}
+    result = review_candidates(papers, {"tag": "ATSP"}, tmp_path, 2, **kwargs)
+    assert result["remaining"] == 0 and len(result["papers"]) == 2
+    assert sizes == [2, 2, 1, 1]
+    review_candidates(papers, {"tag": "ATSP"}, tmp_path, 2, **kwargs)
+    assert sizes == [2, 2, 1, 1]
+
+
+def test_invalid_single_paper_stops_after_bounded_retries(tmp_path):
+    client = Mock()
+    client.chat_structured.return_value = {
+        "parsed": None,
+        "parse_error": ValueError("invalid"),
+    }
+    with pytest.raises(ValueError):
+        review_candidates(
+            [{"id": "one", "title": "ATSP", "abstract": "ATSP"}],
+            {"tag": "ATSP"},
+            tmp_path,
+            1,
+            client_factory=lambda: client,
+            model_key=["test"],
+        )
+    assert client.chat_structured.call_count == 2
+    assert not list((tmp_path / ".local-runs/long-range-cache").glob("*.json"))
 
 
 def test_review_budget_resumes_without_duplicate_model_calls(tmp_path):

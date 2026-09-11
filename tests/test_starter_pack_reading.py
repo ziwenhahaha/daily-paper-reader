@@ -28,6 +28,25 @@ def paper(pid="2501.12345v1", **changes):
 
 
 class ReadingTests(unittest.TestCase):
+    def test_route_reuse_requires_real_identifier_not_url_substring(self):
+        self.assertEqual(
+            reading._identities(
+                {"link": "https://example.org/reference/10.1234/paper"}
+            ),
+            set(),
+        )
+        self.assertEqual(
+            reading._identities({"pdf_url": "https://not-arxiv.org/pdf/2501.12345v2"}),
+            set(),
+        )
+        for row, expected in [
+            ({"canonical_id": "doi:10.1234/Paper"}, "doi:10.1234/paper"),
+            ({"link": "https://doi.org/10.1234/Paper?download=1"}, "doi:10.1234/paper"),
+            ({"canonical_id": "arxiv:2501.12345v2"}, "arxiv:2501.12345"),
+            ({"paper_id": "2501.12345v2"}, "arxiv:2501.12345"),
+        ]:
+            self.assertEqual(reading._identities(row), {expected})
+
     def setUp(self):
         verifier = patch.object(
             reading,
