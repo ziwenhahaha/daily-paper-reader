@@ -184,20 +184,17 @@ def classify_review(review, paper, topic=None):
     }
 
 
+def review_cache_path(paper, topic, cache, model_key):
+    return Path(cache) / (fingerprint([
+        PROMPT_VERSION, SYSTEM_PROMPT, SCHEMA, model_key, topic,
+        {k: paper[k] for k in ("id", "title", "abstract")},
+    ]) + '.json')
+
+
 def review_batch(papers, topic, cache, client_factory, model_key):
     cached, missing = [], []
     for paper in papers:
-        key = fingerprint(
-            [
-                PROMPT_VERSION,
-                SYSTEM_PROMPT,
-                SCHEMA,
-                model_key,
-                topic,
-                {k: paper[k] for k in ("id", "title", "abstract")},
-            ]
-        )
-        path = Path(cache) / (key + ".json")
+        path = review_cache_path(paper, topic, cache, model_key)
         if path.exists():
             value = json.loads(path.read_text(encoding="utf-8"))
             if value.get("id") != paper["id"]:
@@ -207,6 +204,8 @@ def review_batch(papers, topic, cache, client_factory, model_key):
             missing.append((paper, path))
     if not missing:
         return cached
+    # 使用批内短编号，避免模型将v2“纠正”为v1；落盘仍保留原始版本ID。
+    aliases = {f'p{i}': p['id'] for i, (p, _) in enumerate(missing)}
     client = client_factory()
     response = client.chat_structured(
         [
@@ -217,8 +216,8 @@ def review_batch(papers, topic, cache, client_factory, model_key):
                     {
                         "topic": topic,
                         "papers": [
-                            {k: p[k] for k in ("id", "title", "abstract")}
-                            for p, _ in missing
+                            {'id': f'p{i}', 'title':p['title'], 'abstract':p['abstract']}
+                            for i, (p, _) in enumerate(missing)
                         ],
                     },
                     ensure_ascii=False,
@@ -231,9 +230,14 @@ def review_batch(papers, topic, cache, client_factory, model_key):
     if response.get("parse_error") or not isinstance(response.get("parsed"), dict):
         raise ValueError("DeepSeek评审结果不完整，可重跑复用已完成进度")
     reviews = response["parsed"].get("papers") or []
+    # 兼容已有客户端返回原ID，但不允许混用编号/ID或猜测、修正版本号。
+    if len(reviews) == len(missing) and {r.get('id') for r in reviews} == set(aliases):
+        reviews = [{**r, 'id':aliases[r['id']]} for r in reviews]
     if len(reviews) != len(missing) or {r.get("id") for r in reviews} != {
         p["id"] for p, _ in missing
     }:
+        write_json(Path(cache) / 'failures' / (fingerprint([p['id'] for p, _ in missing]) + '.json'),
+                   {'expected_ids':[p['id'] for p, _ in missing], 'received_ids':[r.get('id') for r in reviews]})
         raise ValueError("DeepSeek返回ID缺失或重复，未把本批次标为完成")
     by_id = {r["id"]: r for r in reviews}
     validated = [

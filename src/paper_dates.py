@@ -33,6 +33,8 @@ def _explicit(record):
     precision = result['publication_date_precision']
     if not result['publication_date_source'] or result['publication_date_kind'] not in KINDS:
         return None
+    if precision in {'day','month'} and result['publication_date_kind']=='unknown':
+        return None
     if precision in {'day', 'month'} and result['publication_date_kind'] == 'unknown':
         return None
     if _bounds(result['publication_date'], precision):
