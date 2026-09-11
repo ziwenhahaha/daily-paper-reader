@@ -4,7 +4,81 @@ from pathlib import Path
 from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from starter_pack_publish import publish_pack
+from starter_pack_publish import publish_pack, render_catalog
+
+
+def test_catalog_date_uses_qualified_arxiv_not_unverified_newer_version():
+    text = render_catalog(
+        [
+            {
+                "id": "work",
+                "title": "Verified preprint",
+                "bucket": "core",
+                "score": 9,
+                "versions": [
+                    {
+                        "id": "arxiv1",
+                        "abstract": "Evidence",
+                        "source": "arxiv",
+                        "publication_window_status": "included",
+                        "publication_date": "2025-10-01",
+                        "publication_date_precision": "day",
+                    },
+                    {
+                        "id": "public1",
+                        "abstract": "Evidence",
+                        "source": "ICLR-2026-Public",
+                        "conference_acceptance_status": "unverified",
+                        "publication_window_status": "uncertain",
+                        "publication_date": "2026",
+                        "publication_date_precision": "year",
+                    },
+                ],
+            }
+        ],
+        [],
+    )
+    confirmed = text.split("## 已确认在时间窗口内")[1].split("## 公布日期边界待核实")[0]
+    assert "Verified preprint" in confirmed and "2025-10-01" in confirmed
+    assert "2026" not in confirmed
+
+
+def test_catalog_does_not_combine_acceptance_and_window_from_different_versions():
+    text = render_catalog(
+        [
+            {
+                "id": "work",
+                "title": "Needs verification",
+                "bucket": "core",
+                "score": 9,
+                "versions": [
+                    {
+                        "id": "public1",
+                        "abstract": "Evidence",
+                        "source": "ICLR-2025-Public",
+                        "conference_acceptance_status": "unverified",
+                        "publication_window_status": "included",
+                        "publication_date": "2025",
+                        "publication_date_precision": "year",
+                    },
+                    {
+                        "id": "accepted1",
+                        "abstract": "Evidence",
+                        "source": "ICLR",
+                        "conference_acceptance_status": "accepted",
+                        "publication_window_status": "uncertain",
+                        "publication_date": "2024",
+                        "publication_date_precision": "year",
+                    },
+                ],
+            }
+        ],
+        [],
+    )
+    confirmed = text.split("## 已确认在时间窗口内")[1].split("## 公布日期边界待核实")[0]
+    uncertain = text.split("## 公布日期边界待核实")[1].split("## 仅元数据")[0]
+    assert "Needs verification" not in confirmed
+    assert "Needs verification" in uncertain
 
 
 def test_refresh_retains_complete_snapshot_until_new_complete_publish(

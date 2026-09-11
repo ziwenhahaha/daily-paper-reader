@@ -14,6 +14,7 @@ from long_range_review import write_json
 
 def render_catalog(papers, prepared):
     from starter_pack_guide import _date, _escape, _link, _url
+    from starter_pack_reading import _qualified_version
 
     routes = {p.get("canonical_id", p["id"]): p.get("route") for p in prepared}
     groups = {
@@ -25,14 +26,21 @@ def render_catalog(papers, prepared):
         if paper.get("bucket") == "excluded":
             continue
         versions = paper.get("versions") or [paper]
+        qualified = [v for v in versions if _qualified_version(v)]
         if paper.get("bucket") == "notice":
             group = "仅元数据：相关性待确认"
-        elif any(v.get("publication_window_status") == "included" for v in versions):
+        elif qualified:
             group = "已确认在时间窗口内"
         else:
             group = "公布日期边界待核实"
-        dates = [v for v in versions if v.get("publication_date")]
-        latest = max(dates, key=lambda p: p["publication_date"]) if dates else paper
+        # 录用、摘要和窗口资格必须来自同一版本；不借较新的未核实版本置顶。
+        date_versions = qualified if group == "已确认在时间窗口内" else versions
+        dates = [v for v in date_versions if v.get("publication_date")]
+        latest = (
+            max(dates, key=lambda p: p["publication_date"])
+            if dates
+            else date_versions[0]
+        )
         groups[group].append((latest, paper))
     lines = [
         "# 入门包结果 · 公布时间降序",
