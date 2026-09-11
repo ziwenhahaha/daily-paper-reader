@@ -333,7 +333,75 @@
   }
   function conferenceSortTimestamp(conf) {
     if (!conf) return 0;
-    return timestampFromYearText([conf.years, conf.label, conf.name].join(' '));
+    return publicationSortTimestamp(conf);
+  }
+  function normalizedPublication(value, fallbackYear) {
+    var p = value || {};
+    var date = String(p.publication_date || '');
+    var precision = String(p.publication_date_precision || 'unknown');
+    var source = String(p.publication_date_source || '');
+    var kind = String(p.publication_date_kind || '');
+    var pattern = precision === 'day' ? /^\d{4}-\d{2}-\d{2}$/ : precision === 'month' ? /^\d{4}-\d{2}$/ : /^\d{4}$/;
+    var stamp = Date.parse(date + (precision === 'day' ? 'T00:00:00Z' : precision === 'month' ? '-01T00:00:00Z' : '-01-01T00:00:00Z'));
+    if (['day', 'month', 'year'].indexOf(precision) >= 0 && pattern.test(date) && isFinite(stamp) &&
+        new Date(stamp).toISOString().slice(0, date.length) === date &&
+        (precision === 'year' || (source.trim() && ['proceedings', 'accepted_notice'].indexOf(kind) >= 0))) {
+      return { publication_date: date, publication_date_precision: precision, publication_date_source: source, publication_date_kind: kind };
+    }
+    var years = String(fallbackYear || '').match(/\b(?:19|20)\d{2}\b/g) || [];
+    return { publication_date: years.length ? String(Math.max.apply(null, years.map(Number))) : '', publication_date_precision: years.length ? 'year' : 'unknown', publication_date_source: '', publication_date_kind: '' };
+  }
+  function publicationSortTimestamp(value) {
+    var p = value || {};
+    var date = p.publication_date || '';
+    // 未知月/日仅以年份起点粗排，绝不伪装成该年的最后一天。
+    return Date.parse(date + (p.publication_date_precision === 'day' ? 'T00:00:00Z' : p.publication_date_precision === 'month' ? '-01T00:00:00Z' : '-01-01T00:00:00Z')) || 0;
+  }
+  function publicationDateLabel(value) {
+    var p = value || {};
+    if (p.publication_date_precision === 'day' || p.publication_date_precision === 'month') {
+      return p.publication_date + (p.publication_date_kind === 'accepted_notice' ? ' · 录用预告' : ' · 论文集公布');
+    }
+    return (p.publication_date ? p.publication_date + ' · ' : '') + '具体日期待确认';
+  }
+  function applyConferencePublicationDates(model, registry) {
+    var entries = registry && Array.isArray(registry.items) ? registry.items : [];
+    (model.conferences || []).forEach(function (conf) {
+      var yearText = [conf.years, conf.label, conf.name].join(' ');
+      var candidates = entries.filter(function (entry) {
+        return String(entry.conference || '').toLowerCase() === String(conf.name || '').toLowerCase() &&
+          (yearText.match(/\b(?:19|20)\d{2}\b/g) || []).indexOf(String(entry.year)) >= 0;
+      }).map(function (entry) { return normalizedPublication(entry, entry.year); });
+      candidates.sort(function (a, b) { return publicationSortTimestamp(b) - publicationSortTimestamp(a); });
+      var groupDate = candidates[0] || normalizedPublication(conf, yearText);
+      Object.assign(conf, groupDate);
+      (conf.topics || []).forEach(function (topic) {
+        (topic.papers || []).forEach(function (paper) {
+          var ownDate = normalizedPublication(paper, '');
+          var routeSegment = String(paper.href || '').match(/\/conference\/([^/]+)\//);
+          var routeYears = routeSegment ? routeSegment[1].match(/\b(?:19|20)\d{2}\b/g) || [] : [];
+          var groupYears = (yearText.match(/\b(?:19|20)\d{2}\b/g) || []).filter(function (year, index, years) { return years.indexOf(year) === index; });
+          // 显式日期优先；合并年份route不提供单篇年份证据，不能猜首年或末年。
+          var paperYear = ownDate.publication_date.slice(0, 4) || (/^(?:19|20)\d{2}$/.test(String(paper.conference_year || '')) ? String(paper.conference_year) : '') ||
+            (routeYears.length === 1 ? routeYears[0] : '') || (groupYears.length === 1 ? groupYears[0] : '');
+          var paperEntry = entries.filter(function (entry) {
+            return String(entry.conference || '').toLowerCase() === String(conf.name || '').toLowerCase() && String(entry.year) === String(paperYear);
+          })[0];
+          var fallbackDate = paperEntry ? normalizedPublication(paperEntry, paperYear) : normalizedPublication(null, paperYear);
+          // 多年份合并组的旧论文只继承所属年份，不能全被抬到最新一届。
+          Object.assign(paper, ownDate.publication_date_precision === 'day' || ownDate.publication_date_precision === 'month' ? ownDate : fallbackDate);
+          if (publicationSortTimestamp(paper) > publicationSortTimestamp(conf)) {
+            Object.assign(conf, normalizedPublication(paper, paperYear));
+          }
+        });
+        topic.papers = (topic.papers || []).slice().sort(function (a, b) {
+          return publicationSortTimestamp(b) - publicationSortTimestamp(a) || (Number(b.score) || 0) - (Number(a.score) || 0) ||
+            String(a.title || '').localeCompare(String(b.title || '')) || String(a.id || '').localeCompare(String(b.id || ''));
+        });
+      });
+    });
+    model.conferences = sortByTimestampDesc(model.conferences, conferenceSortTimestamp);
+    return model;
   }
   function paperSortTimestamp(paper, fallback) {
     var p = paper || {};
@@ -557,6 +625,11 @@
         score: payload && payload.score,
         evidence: (payload && payload.evidence) || '',
         published: payload && (payload.published || payload.published_at || payload.publishedAt || payload.date || payload.updated || payload.updated_at || payload.submitted || payload.created_at) || '',
+        publication_date: payload && payload.publication_date || '',
+        publication_date_precision: payload && payload.publication_date_precision || 'unknown',
+        publication_date_source: payload && payload.publication_date_source || '',
+        publication_date_kind: payload && payload.publication_date_kind || '',
+        conference_year: payload && payload.conference_year || '',
         tags: (payload && Array.isArray(payload.tags) ? payload.tags : []),
         selectionSource: payload && payload.selection_source,
       };
@@ -719,12 +792,7 @@
     model.daily.forEach(function (day) {
       day.papers = sortPapersByTimeDesc(day.papers || [], day.dateKey);
     });
-    model.conferences.forEach(function (conf) {
-      (conf.topics || []).forEach(function (topic) {
-        topic.papers = sortPapersByTimeDesc(topic.papers || [], conferenceSortTimestamp(conf));
-      });
-    });
-    model.conferences = sortByTimestampDesc(model.conferences, conferenceSortTimestamp);
+    applyConferencePublicationDates(model, {});
     // 日报按日期倒序；区间日报按结束日期归位，保证最近的区间报告不会从日历里“消失”。
     model.daily.sort(function (a, b) {
       var at = timestampFromDateLike(a && a.dateKey);
@@ -2064,6 +2132,8 @@
     ].join(' ');
     var stars = starHtmlFromScore(p.score);
     var tagBits = tagsHtml(p.tags);
+    var publication = p.section === 'conference'
+      ? '<span class="dpr-sidebar-paper-publication" title="' + safeAttr(p.publication_date_source || '无可靠的具体公布日期') + '">' + safeText(publicationDateLabel(p)) + '</span>' : '';
     var evidence = p.evidence
       ? '<div class="dpr-sidebar-paper-evidence">' + safeText(p.evidence) + '</div>'
       : '';
@@ -2081,7 +2151,7 @@
       '    <a class="dpr-sidebar-paper-link" href="' + safeAttr(p.href) + '">' +
       '      <span class="dpr-sidebar-paper-title">' + safeText(p.title) + '</span>' +
       evidence +
-      '      <span class="dpr-sidebar-paper-meta">' + stars + (tagBits ? '<span class="dpr-sidebar-paper-tags">' + tagBits + '</span>' : '') + '</span>' +
+      '      <span class="dpr-sidebar-paper-meta">' + stars + publication + (tagBits ? '<span class="dpr-sidebar-paper-tags">' + tagBits + '</span>' : '') + '</span>' +
       '    </a>' +
       '    <div class="dpr-sidebar-paper-actions" aria-label="论文标记">' + actions + '</div>' +
       '  </div>' +
@@ -2571,13 +2641,20 @@
   }
 
   function loadAndRender() {
+    // 静态日期表故障不能拖住既有侧栏；超时后保持明确标注的年份级回退。
+    var releaseDates = new Promise(function (resolve) {
+      var timeout = setTimeout(function () { resolve({}); }, 4000);
+      fetch('app/conference-release-dates.json', { cache: 'no-cache' })
+        .then(function (r) { return r.ok ? r.json() : {}; }).catch(function () { return {}; })
+        .then(function (data) { clearTimeout(timeout); resolve(data); });
+    });
     return fetch(SIDEBAR_URL, { cache: 'no-store' })
       .then(function (r) {
         if (!r.ok) throw new Error('sidebar HTTP ' + r.status);
-        return r.text();
+        return Promise.all([r.text(), releaseDates]);
       })
-      .then(function (text) {
-        state.model = parseSidebar(text);
+      .then(function (values) {
+        state.model = applyConferencePublicationDates(parseSidebar(values[0]), values[1]);
         state.lastFetchAt = Date.now();
         determineInitialExpansion();
         if (!state.rootEl) {
@@ -2651,6 +2728,8 @@
       api: DPRSidebarApi,
       __test: {
         parseSidebar: parseSidebar,
+        applyConferencePublicationDates: applyConferencePublicationDates,
+        publicationDateLabel: publicationDateLabel,
         isBacktrackDateKey: isBacktrackDateKey,
         collectPaperHrefsFromModel: collectPaperHrefsFromModel,
         collectReportHrefsFromModel: collectReportHrefsFromModel,

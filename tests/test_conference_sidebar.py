@@ -1,4 +1,5 @@
 import importlib.util
+import html
 import json
 import pathlib
 import sys
@@ -38,6 +39,24 @@ class ConferenceSidebarTest(unittest.TestCase):
 
     def tearDown(self):
         self.mod.enrich_conference_paper_for_deep_read = self._original_enrich
+
+    def test_publication_contract_preserves_raw_date_without_claiming_day(self):
+        paper = {'id': 'one', 'title': 'A paper', 'published': '2025-01-01T00:00:00Z', 'source': 'TESTCONF-2025-Accepted'}
+        payload = json.loads(html.unescape(self.mod.build_sidebar_payload(paper, {}, 'TESTCONF', '2025')))
+        self.assertEqual(payload['published'], paper['published'])
+        self.assertEqual(payload['publication_date'], '2025')
+        self.assertEqual(payload['publication_date_precision'], 'year')
+        markdown = self.mod.build_conference_markdown(paper, {}, 'TESTCONF', '2025')
+        self.assertIn('date: 2025\n', markdown)
+        self.assertIn('publication_date_precision: year\n', markdown)
+        self.assertNotIn('date: 2025-01-01', markdown)
+
+    def test_publication_contract_passes_verified_date_to_sidebar_and_markdown(self):
+        paper = {'id': 'one', 'title': 'A paper', 'publication_date': '2025-10-06', 'publication_date_precision': 'day', 'publication_date_source': 'https://official.example/volume', 'publication_date_kind': 'proceedings'}
+        payload = json.loads(html.unescape(self.mod.build_sidebar_payload(paper, {}, 'ICML', '2025')))
+        self.assertEqual(payload['publication_date'], '2025-10-06')
+        self.assertEqual(payload['publication_date_kind'], 'proceedings')
+        self.assertIn('date: 2025-10-06\n', self.mod.build_conference_markdown(paper, {}, 'ICML', '2025'))
 
     def write_result(self, path: pathlib.Path, title: str = "A Conference Paper") -> None:
         payload = {

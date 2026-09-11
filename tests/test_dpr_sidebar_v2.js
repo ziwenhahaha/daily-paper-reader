@@ -69,6 +69,68 @@ function loadSidebarForTest(hash) {
   return require('../app/dpr-sidebar.js');
 }
 
+// 公布日期必须有明确精度和出处；旧入库/更新时间不能冒充发表时间。
+{
+  const api = loadSidebarForTest().__test;
+  const model = { daily: [], conferences: [
+    { name: 'ICML', years: '2025', label: 'ICML 2025', topics: [{ label: 'ATSP', papers: [
+      { id: 'b', title: 'Beta', score: 8, published: '2025-01-01', updated: '2099-12-31' },
+      { id: 'a', title: 'Alpha', score: 9 },
+    ] }] },
+    { name: 'ACL', years: '2025', label: 'ACL 2025', topics: [] },
+  ] };
+  api.applyConferencePublicationDates(model, { items: [
+    { conference: 'ICML', year: 2025, publication_date: '2025-07-21', publication_date_precision: 'day', publication_date_source: 'https://official.test/icml', publication_date_kind: 'proceedings' },
+    { conference: 'ACL', year: 2025, publication_date: '2025-08', publication_date_precision: 'month', publication_date_source: 'https://official.test/acl', publication_date_kind: 'proceedings' },
+  ] });
+  assert.deepEqual(model.conferences.map(c => c.name), ['ACL', 'ICML']);
+  assert.deepEqual(model.conferences[1].topics[0].papers.map(p => p.id), ['a', 'b']);
+  assert.equal(api.publicationDateLabel(model.conferences[1].topics[0].papers[0]), '2025-07-21 · 论文集公布');
+  const old = { conferences: [{ name: 'SOSP', years: '2026', topics: [{ papers: [{ id: 'x', published: '2026-01-01', updated: '2099-01-01' }] }] }] };
+  api.applyConferencePublicationDates(old, {});
+  assert.equal(api.publicationDateLabel(old.conferences[0].topics[0].papers[0]), '2026 · 具体日期待确认');
+  const rows = [
+    { id: 'z', title: 'Zeta', score: 10, published: '2099-12-31', updated: '2099-12-31' },
+    { id: 'a', title: 'Alpha', score: 6, publication_date: '2025-11-03', publication_date_precision: 'day', publication_date_source: 'Official proceedings', publication_date_kind: 'proceedings' },
+    { id: 'c', title: 'Charlie', score: 9, publication_date: '2025-11-03', publication_date_precision: 'day', publication_date_source: 'Official proceedings', publication_date_kind: 'proceedings' },
+    { id: 'b', title: 'Beta', score: 9, publication_date: '2025-11-03', publication_date_precision: 'day', publication_date_source: 'Official proceedings', publication_date_kind: 'proceedings' },
+    { id: 'invalid', title: 'Invalid', score: 1, publication_date: '2025-02-30', publication_date_precision: 'day', publication_date_source: 'Official proceedings', publication_date_kind: 'proceedings' },
+  ];
+  const papers = { daily: [], conferences: [{ name: 'TEST', years: '2025', label: 'TEST 2025', topics: [{ label: 'ATSP', papers: rows }] }] };
+  rows.forEach(row => { row.section = 'conference'; row.href = '#/conference/test-2025/' + row.id; });
+  api.applyConferencePublicationDates(papers, {});
+  assert.deepEqual(papers.conferences[0].topics[0].papers.map(p => p.id), ['b', 'c', 'a', 'z', 'invalid']);
+  assert.equal(rows[4].publication_date_precision, 'year');
+  const html = api.renderBodyHtml(papers, { conferenceViewMode: 'conf', readMap: {} });
+  assert.ok(html.includes('2025-11-03 · 论文集公布'));
+  assert.ok(html.includes('2025 · 具体日期待确认'));
+  assert.ok(html.includes('aria-label="论文标记"'));
+  const mixed = { conferences: [{ name: 'ICML', years: '2024-2025', topics: [{ papers: [
+    { id: 'old', href: '#/conference/icml-2024/old' },
+    { id: 'new', href: '#/conference/icml-2025/new' },
+  ] }] }] };
+  api.applyConferencePublicationDates(mixed, { items: [
+    { conference: 'ICML', year: 2025, publication_date: '2025-10-06', publication_date_precision: 'day', publication_date_source: 'https://official.test', publication_date_kind: 'proceedings' },
+  ] });
+  assert.deepEqual(mixed.conferences[0].topics[0].papers.map(p => p.publication_date), ['2025-10-06', '2024']);
+  const mergedRoutes = { conferences: [{ name: 'ICML', years: '2024-2025', topics: [{ papers: [
+    { id: 'explicit', href: '#/conference/icml-2024-2025/explicit', publication_date: '2025', publication_date_precision: 'year' },
+    { id: 'unknown', href: '#/conference/icml-2024-2025/unknown' },
+    { id: 'no-route', href: '#/conference/icml/no-route' },
+  ] }] }] };
+  api.applyConferencePublicationDates(mergedRoutes, {});
+  const mergedPapers = Object.fromEntries(mergedRoutes.conferences[0].topics[0].papers.map(p => [p.id, p]));
+  assert.equal(mergedPapers.explicit.publication_date, '2025');
+  assert.equal(mergedPapers.unknown.publication_date_precision, 'unknown');
+  assert.equal(mergedPapers['no-route'].publication_date_precision, 'unknown');
+  api.applyConferencePublicationDates(mergedRoutes, { items: [
+    { conference: 'ICML', year: 2025, publication_date: '2025-10-06', publication_date_precision: 'day', publication_date_source: 'https://official.test', publication_date_kind: 'proceedings' },
+  ] });
+  assert.equal(mergedPapers.explicit.publication_date, '2025-10-06');
+  assert.equal(mergedPapers.unknown.publication_date_precision, 'unknown');
+  assert.equal(api.publicationDateLabel({ publication_date: '2026-09', publication_date_precision: 'month', publication_date_kind: 'accepted_notice' }), '2026-09 · 录用预告');
+}
+
 function cssRule(css, selector) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const match = new RegExp('(^|\\n)\\s*' + escaped + '\\s*\\{').exec(css);

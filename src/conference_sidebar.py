@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
+from paper_dates import resolve_publication_date
+
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_SIDEBAR_PATH = ROOT_DIR / "docs" / "_sidebar.md"
@@ -494,6 +496,9 @@ def build_sidebar_payload(
         "selection_source": "conference_retrieval",
         "tags": tags,
     }
+    payload.update(resolve_publication_date(paper, conference, years))
+    if paper.get("published"):
+        payload["published"] = norm_text(paper["published"])
     evidence = get_evidence(ranked_item)
     if evidence:
         payload["evidence"] = evidence
@@ -510,7 +515,8 @@ def build_conference_markdown(
     title_zh = norm_text(ranked_item.get("title_zh") or paper.get("title_zh"))
     authors = paper.get("authors") if isinstance(paper.get("authors"), list) else []
     authors_text = ", ".join(norm_text(item) for item in authors if norm_text(item)) or "Unknown"
-    published = norm_text(paper.get("published"))[:10] or "Unknown"
+    publication = resolve_publication_date(paper, conference, years)
+    published = publication["publication_date"] or "Unknown"
     source = norm_text(paper.get("source"))
     link = norm_text(paper.get("link"))
     pdf_url = resolve_conference_pdf_url(paper)
@@ -537,6 +543,8 @@ def build_conference_markdown(
         lines.append(f"title_zh: {yaml_escape_value(title_zh)}")
     lines.append(f"authors: {yaml_escape_value(authors_text)}")
     lines.append(f"date: {yaml_escape_value(published)}")
+    for key, value in publication.items():
+        lines.append(f"{key}: {yaml_escape_value(value)}")
     if pdf_url:
         lines.append(f"pdf: {yaml_escape_value(pdf_url)}")
     if tags:

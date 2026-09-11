@@ -258,6 +258,11 @@ Zotero       ←── 浏览器 Connector 抓取 citation meta
 
 ## 九、开发约定
 
+### 论文公布时间规则
+
+- 会议公布时间以 `publication_date` 及其 `publication_date_precision/source/kind` 为真源；只有官方明确日期才标day/month。`published`可能是OpenReview投稿日期或年份占位，`updated/created_at`可能是抓取时间，不能直接冒充会议公布日。已核实的整届论文集日期登记在 `app/conference-release-dates.json`，未核实者按year/unknown精度标注。
+- 多年份混合结果必须保留单篇所属年份；无依据不能猜首年或最新年。滚动时间窗遇到不确定边界应标记uncertain，而不是悄悄当作精确命中。arXiv按首次提交日期，不随版本更新置顶。
+
 ### arXiv 长周期专题回溯
 
 - 专题回溯不显示日历或日历上下换位按钮；标签筛选覆盖所有回溯区间，各区间保留原有可折叠论文分组，避免移除日历后旧区间无法访问。日报日历不变。
