@@ -4,6 +4,12 @@
 window.DPRWorkflowRunner = (function () {
   const WORKFLOWS = [
     {
+      key: 'starter-pack',
+      id: 'starter-pack.yml',
+      name: '生成/续跑研究方向入门包',
+      desc: '近365天 arXiv + 近24个月会议，按预算生成并复用进度。',
+    },
+    {
       key: 'daily-now',
       id: 'daily-paper-reader.yml',
       name: '立即爬取并处理论文',
@@ -1014,7 +1020,36 @@ window.DPRWorkflowRunner = (function () {
       return false;
     }
     open();
+    if (workflowKey === 'starter-pack' && isLocalDebugPage()) {
+      setStatus('入门包仅通过 GitHub Actions 执行，请在你的 GitHub Pages 站点操作；不会在本地执行。', '#c00');
+      return false;
+    }
     return dispatchAndMonitor(wf, extraInputs);
+  };
+
+  const STARTER_PACK_CONFERENCES = ['neurips', 'icml', 'iclr', 'aaai', 'cvpr', 'eccv', 'ijcai', 'acl', 'emnlp', 'osdi', 'sosp', 'ndss', 'ieee_sp'];
+  const buildStarterPackRequest = (options = {}) => {
+    const tag = String(options.profile_tag || '').trim();
+    if (!tag || tag.includes(',')) throw new Error('入门包需要恰好选择一个词条。');
+    const asOf = String(options.as_of || '').trim();
+    const stamp = Date.parse(asOf + 'T00:00:00Z');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf) || !Number.isFinite(stamp) || new Date(stamp).toISOString().slice(0, 10) !== asOf) {
+      throw new Error('请输入有效的 UTC 截止日期（不含当天）。');
+    }
+    const integer = (value, fallback, min, max, label) => {
+      const num = value === undefined ? fallback : Number(value);
+      if (value === null || typeof value === 'boolean' || (typeof value === 'string' && !value.trim()) || !Number.isInteger(num) || num < min || num > max) throw new Error(`${label}必须是 ${min}–${max} 的整数。`);
+      return String(num);
+    };
+    const raw = Array.isArray(options.conferences) ? options.conferences : String(options.conferences || '').split(',');
+    let conferences = [...new Set(raw.map(value => String(value).trim().toLowerCase()).filter(Boolean))];
+    if (!conferences.length) conferences = STARTER_PACK_CONFERENCES.slice();
+    if (conferences.some(value => !STARTER_PACK_CONFERENCES.includes(value))) throw new Error('会议范围包含不支持的会议。');
+    return { key: 'starter-pack', inputs: {
+      profile_tag: tag, as_of: asOf, conferences: conferences.join(','),
+      max_new_reviews: integer(options.max_new_reviews, 1000, 0, 5000, '新增评审上限'),
+      content_limit: integer(options.content_limit, 12, 1, 20, '内容生成上限'),
+    } };
   };
 
   const buildQuickFetchRequest = (days, extra) => {
@@ -1134,7 +1169,9 @@ window.DPRWorkflowRunner = (function () {
     runConferenceRetrieval(conference, years);
 
   return {
-    __test: { buildQuickFetchRequest },
+    __test: { buildQuickFetchRequest, buildStarterPackRequest },
+    buildStarterPackRequest,
+    isStarterPackSupported: () => !isLocalDebugPage(),
     open,
     runWorkflowByKey,
     runQuickFetchByDays,

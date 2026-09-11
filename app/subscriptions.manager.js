@@ -17,6 +17,8 @@ window.SubscriptionsManager = (function () {
   let quickRun30dStandardBtn = null;
   let quickRunOpenWorkflowPanelBtn = null;
   let quickRunConferenceBtn = null;
+  let starterPackBtn = null;
+  let starterPackAsOf = new Date().toISOString().slice(0, 10);
   let quickRunMsgEl = null;
   let quickRunSelectionCountEl = null;
   let conferenceSelectionCountEl = null;
@@ -847,6 +849,13 @@ window.SubscriptionsManager = (function () {
   const refreshQuickRunButtons = () => {
     const selectedProfiles = getSelectedProfilesForRun();
     const selectedProfileCount = selectedProfiles.length;
+    if (starterPackBtn) {
+      const runner = window.DPRWorkflowRunner;
+      const supported = runner && typeof runner.isStarterPackSupported === 'function' && runner.isStarterPackSupported();
+      starterPackBtn.disabled = hasUnsavedChanges || selectedProfileCount !== 1 || !supported;
+      starterPackBtn.title = !supported ? '请在 GitHub Pages 站点使用此功能；入门包仅由 GitHub Actions 执行。'
+        : hasUnsavedChanges ? '请先保存修改。' : selectedProfileCount !== 1 ? '请恰好勾选一个词条。' : '生成或按相同截止日期续跑入门包。';
+    }
     const dailySelectedProfileCount = selectedProfileCount;
     const MAX_CONFERENCE_PROFILES = 2;
     const profileOverLimit = selectedProfileCount > MAX_CONFERENCE_PROFILES;
@@ -1151,6 +1160,38 @@ window.SubscriptionsManager = (function () {
     }
     showWorkflowSuccessEffects();
     return true;
+  };
+
+  const runStarterPack = async () => {
+    const output = document.getElementById('arxiv-admin-starter-pack-msg');
+    const show = (text, color = '#c00') => { if (output) { output.textContent = text; output.style.color = color; } };
+    try {
+      if (hasUnsavedChanges) throw new Error('请先保存修改，再生成入门包。');
+      const profiles = getSelectedProfilesForRun();
+      if (profiles.length !== 1) throw new Error('入门包需要恰好勾选一个词条。');
+      const runner = window.DPRWorkflowRunner;
+      if (!runner || typeof runner.buildStarterPackRequest !== 'function') throw new Error('工作流触发器未加载，请刷新后重试。');
+      if (!runner.isStarterPackSupported()) throw new Error('请在 GitHub Pages 站点操作；入门包仅通过 GitHub Actions 执行，不在本地运行。');
+      const value = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+      const selected = getSelectedConferencePairSpecs();
+      const request = runner.buildStarterPackRequest({
+        profile_tag: profiles[0].tag,
+        as_of: value('arxiv-admin-starter-pack-as-of'),
+        conferences: selected.map(pair => pair.split(':')[0]),
+        max_new_reviews: value('arxiv-admin-starter-pack-budget'),
+        content_limit: value('arxiv-admin-starter-pack-content-limit'),
+      });
+      starterPackAsOf = request.inputs.as_of;
+      const scope = selected.length ? request.inputs.conferences : '全库支持会议';
+      if (!window.confirm(`生成/续跑词条「${request.inputs.profile_tag}」的入门包：\nUTC 截止日期 ${request.inputs.as_of}（不含当天）\n近365天 arXiv + 近24个月会议；范围：${scope}\n会议年份勾选不限制滚动24个月窗口。\n新增评审上限 ${request.inputs.max_new_reviews} 篇；内容生成上限 ${request.inputs.content_limit} 篇。\n模型调用按实际用量计费，新增评审为0仅复用已有评审，内容生成仍可能调用模型。\n进度未完成时，请保持相同截止日期、词条和会议范围续跑。确认开始？`)) return false;
+      const success = await runner.runWorkflowByKey(request.key, request.inputs);
+      if (success === false) throw new Error('入门包工作流未成功触发，请检查权限或工作流配置。');
+      show(`已发起入门包任务；若仅生成进度提示，请保持 ${starterPackAsOf} 和相同词条、会议范围续跑。`, '#080');
+      return true;
+    } catch (error) {
+      show(error.message || String(error));
+      return false;
+    }
   };
 
   const runResetContent = async (msgEl) => {
@@ -1554,6 +1595,16 @@ window.SubscriptionsManager = (function () {
               <div id="arxiv-admin-conference-run-msg" class="chat-quick-run-msg">
                 触发 Supabase 会议检索。
               </div>
+              <div class="dpr-choice-field">
+                <div class="chat-quick-run-title">研究方向入门包</div>
+                <p class="dpr-task-hint">恰好选择一个已保存词条。近365天 arXiv + 近24个月会议；仅使用所选会议名称，年份勾选不限制窗口。未选会议时查询全库支持会议。</p>
+                <p class="dpr-task-hint">仅通过 GitHub Actions 执行，请在 GitHub Pages 站点操作。进度未完成时，保持相同截止日期、词条及会议范围续跑。</p>
+                <label>UTC 截止日期（不含当天） <input id="arxiv-admin-starter-pack-as-of" type="date" value="${escapeHtml(starterPackAsOf)}"></label>
+                <label>新增评审上限 <input id="arxiv-admin-starter-pack-budget" type="number" min="0" max="5000" step="1" value="1000"></label>
+                <label>内容生成上限 <input id="arxiv-admin-starter-pack-content-limit" type="number" min="1" max="20" step="1" value="12"></label>
+                <button id="arxiv-admin-starter-pack-btn" class="chat-quick-run-run-btn dpr-task-start-btn" type="button">生成/续跑入门包</button>
+                <div id="arxiv-admin-starter-pack-msg" class="chat-quick-run-msg"></div>
+              </div>
             </div>
           </div>
         </div>
@@ -1766,6 +1817,16 @@ window.SubscriptionsManager = (function () {
     quickRunConferenceBtn = document.getElementById(
       'arxiv-admin-quick-run-conference-run-btn',
     );
+    starterPackBtn = document.getElementById('arxiv-admin-starter-pack-btn');
+    if (starterPackBtn && !starterPackBtn._bound) {
+      starterPackBtn._bound = true;
+      starterPackBtn.addEventListener('click', runStarterPack);
+    }
+    const starterDateInput = document.getElementById('arxiv-admin-starter-pack-as-of');
+    if (starterDateInput && !starterDateInput._bound) {
+      starterDateInput._bound = true;
+      starterDateInput.addEventListener('change', () => { starterPackAsOf = starterDateInput.value; });
+    }
     quickRunMsgEl = document.getElementById('arxiv-admin-quick-run-msg');
     quickRunSelectionCountEl = null;
     conferenceSelectionCountEl = null;
@@ -1947,6 +2008,7 @@ window.SubscriptionsManager = (function () {
     validateDraftConfig: () => validateIntentProfiles(draftConfig || {}),
     runProfileQuickFetch: (profileTag, days, runOptions) => runProfileQuickFetch(profileTag, days, runOptions),
     __test: {
+      runStarterPack,
       __setQuickRunMode: (value) => { quickRunMode = value; },
       runSelectedQuickFetchByMode,
       normalizeSubscriptions: (config) => normalizeSubscriptions(config),

@@ -265,7 +265,34 @@
       var href = day && (day.reportHref || dayReportHrefFromKey(day.dateKey));
       if (href) out.push(normalizeRouteHref(href));
     });
+    (m.starterPacks || []).forEach(function (pack) { if (pack.href) out.push(normalizeRouteHref(pack.href)); });
     return out.filter(Boolean);
+  }
+  function parseStarterPackIndex(index) {
+    if (!index || index.version !== 1 || !Array.isArray(index.packs)) return [];
+    var seen = {};
+    return index.packs.filter(function (pack) {
+      if (!pack || !/^\d{8}-[a-f0-9]{12}$/.test(String(pack.run_id || '')) || seen[pack.run_id]) return false;
+      seen[pack.run_id] = true;
+      return true;
+    }).map(function (pack) {
+      return {
+        run_id: pack.run_id,
+        tag: String(pack.tag || '未命名专题'),
+        status: pack.status === 'complete' ? 'complete' : pack.status === 'failed' ? 'failed' : 'needs_resume',
+        paper_count: Number.isSafeInteger(pack.paper_count) && pack.paper_count >= 0 ? pack.paper_count : 0,
+        updated_at: Date.parse(pack.updated_at) || 0,
+        // 仅由受限ID构造站内docsify路由，绝不信任JSON中的任意href。
+        href: '#/starter-pack/' + pack.run_id + '/README',
+      };
+    }).sort(function (a, b) { return b.updated_at - a.updated_at || b.run_id.localeCompare(a.run_id); });
+  }
+  function renderStarterPackGuides(packs) {
+    if (!packs || !packs.length) return '';
+    return '<div class="dpr-sidebar-starter-guides" aria-label="入门导读"><div class="dpr-sidebar-axis-section-label">入门导读</div>' + packs.map(function (pack) {
+      var status = pack.status === 'complete' ? '已完成 · ' + pack.paper_count + '篇' : pack.status === 'failed' ? '生成失败 · 可续跑' : '待续跑';
+      return '<a class="dpr-sidebar-axis-tab dpr-sidebar-starter-guide" href="' + safeAttr(pack.href) + '"><span class="dpr-sidebar-axis-tab-label">' + safeText(pack.tag) + '</span><span class="dpr-sidebar-paper-meta">' + safeText(status) + '</span></a>';
+    }).join('') + '</div>';
   }
   function findCurrentPaperHrefFromModel(model, href) {
     var current = normalizeRouteHref(href || currentRouteHref());
@@ -362,7 +389,8 @@
     if (p.publication_date_precision === 'day' || p.publication_date_precision === 'month') {
       return p.publication_date + (p.publication_date_kind === 'accepted_notice' ? ' · 录用预告' : ' · 论文集公布');
     }
-    return (p.publication_date ? p.publication_date + ' · ' : '') + '具体日期待确认';
+    return (p.publication_date ? p.publication_date + ' · ' : '') +
+      (p.publication_date_kind === 'accepted_notice' ? '录用预告 · ' : '') + '具体日期待确认';
   }
   function applyConferencePublicationDates(model, registry) {
     var entries = registry && Array.isArray(registry.items) ? registry.items : [];
@@ -1790,17 +1818,19 @@
     }
     ['backtrack', 'daily'].forEach(function (panel) {
       var panelModel = modelForDailyPanel(viewModel, panel);
-      if (!panelModel.daily.length) return;
+      var guides = panel === 'backtrack' ? (model.starterPacks || []) : [];
+      if (!panelModel.daily.length && !guides.length) return;
       var placement = vs.dailyCalendarPlacement;
       var dailyView = resultMode
         ? buildDailyResultView(modelForDailyPanel(model, panel), resultOptions)
         : buildDailyPanelView(viewModel, panel, vs, vs.readMap);
       var dailyTotal = countPapersInView(dailyView);
       var dailyUnread = countUnreadInView(dailyView, vs.readMap);
-      if (!resultMode || dailyTotal > 0) {
+      if (!resultMode || dailyTotal > 0 || guides.length) {
         renderedGroups += 1;
         html.push(renderAxisGroup({
           group: panel,
+          starterPacks: guides,
           title: panel === 'backtrack' ? '专题回溯' : '日报',
           icon: panel === 'backtrack' ? '🗂' : '📅',
           mode: resultMode ? vs.dailyViewMode : 'tag',
@@ -2001,6 +2031,7 @@
       html.push('  </button>');
     }
     html.push('  <div class="dpr-sidebar-panel-content">');
+    if (opts.group === 'backtrack') html.push(renderStarterPackGuides(opts.starterPacks));
     if (isDailyNormal) {
       if (calendarPlacement === 'top') {
         html.push(renderDailyCalendar(opts.view && opts.view.calendar, calendarPlacement));
@@ -2642,19 +2673,24 @@
 
   function loadAndRender() {
     // 静态日期表故障不能拖住既有侧栏；超时后保持明确标注的年份级回退。
-    var releaseDates = new Promise(function (resolve) {
-      var timeout = setTimeout(function () { resolve({}); }, 4000);
-      fetch('app/conference-release-dates.json', { cache: 'no-cache' })
-        .then(function (r) { return r.ok ? r.json() : {}; }).catch(function () { return {}; })
-        .then(function (data) { clearTimeout(timeout); resolve(data); });
-    });
+    function optionalIndex(url) {
+      return new Promise(function (resolve) {
+        var timeout = setTimeout(function () { resolve({}); }, 4000);
+        fetch(url, { cache: 'no-cache' })
+          .then(function (r) { return r.ok ? r.json() : {}; }).catch(function () { return {}; })
+          .then(function (data) { clearTimeout(timeout); resolve(data); });
+      });
+    }
+    var releaseDates = optionalIndex('app/conference-release-dates.json');
+    var starterPacks = optionalIndex('docs/starter-pack/index.json');
     return fetch(SIDEBAR_URL, { cache: 'no-store' })
       .then(function (r) {
         if (!r.ok) throw new Error('sidebar HTTP ' + r.status);
-        return Promise.all([r.text(), releaseDates]);
+        return Promise.all([r.text(), releaseDates, starterPacks]);
       })
       .then(function (values) {
         state.model = applyConferencePublicationDates(parseSidebar(values[0]), values[1]);
+        state.model.starterPacks = parseStarterPackIndex(values[2]);
         state.lastFetchAt = Date.now();
         determineInitialExpansion();
         if (!state.rootEl) {
@@ -2728,6 +2764,7 @@
       api: DPRSidebarApi,
       __test: {
         parseSidebar: parseSidebar,
+        parseStarterPackIndex: parseStarterPackIndex,
         applyConferencePublicationDates: applyConferencePublicationDates,
         publicationDateLabel: publicationDateLabel,
         isBacktrackDateKey: isBacktrackDateKey,

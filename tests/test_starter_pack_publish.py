@@ -1,0 +1,54 @@
+import gzip
+import json, sys
+from pathlib import Path
+from unittest.mock import Mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from starter_pack_publish import publish_pack
+
+
+def test_incomplete_review_publishes_only_honest_progress(tmp_path):
+    manifest = {
+        "run_id": "20260911-aaaaaaaaaaaa",
+        "profile": {"tag": "ATSP"},
+        "status": "needs_resume",
+        "windows": {"arxiv": {"start": "2025-09-11", "end_exclusive": "2026-09-11"}},
+        "remaining": 9,
+    }
+    result = publish_pack(tmp_path, manifest)
+    assert result["status"] == "needs_resume" and result["paper_count"] == 0
+    text = (tmp_path / "docs/starter-pack/20260911-aaaaaaaaaaaa/README.md").read_text()
+    assert "尚未生成完整导读" in text and "9" in text
+    index = json.loads((tmp_path / "docs/starter-pack/index.json").read_text())
+    assert len(index["packs"]) == 1
+
+
+def test_complete_empty_selection_never_calls_model(tmp_path, monkeypatch):
+    import starter_pack_reading
+
+    monkeypatch.setattr(starter_pack_reading, "prepare_reading", lambda *a: [])
+    manifest = {
+        "run_id": "20260911-aaaaaaaaaaaa",
+        "profile": {"tag": "ATSP"},
+        "status": "reviewed",
+        "windows": {
+            "arxiv": {"start": "2025-09-11", "end_exclusive": "2026-09-11"},
+            "conference": {"start": "2024-09-11", "end_exclusive": "2026-09-11"},
+        },
+        "retrieved_records": 0,
+        "unique_papers": 0,
+    }
+    folder = tmp_path / ".local-runs/starter-pack-cache/runs" / manifest["run_id"]
+    folder.mkdir(parents=True)
+    (folder / "reviewed.json").write_text(json.dumps({"papers": []}))
+    (folder / "merged.json").write_text(json.dumps({"possible_duplicates": []}))
+    assert publish_pack(tmp_path, manifest)["status"] == "complete"
+    assert (tmp_path / "docs/starter-pack" / manifest["run_id"] / "guide.json").exists()
+    output = tmp_path / "docs/starter-pack" / manifest["run_id"]
+    archive = output / "papers.json.gz"
+    assert json.loads(gzip.decompress(archive.read_bytes())) == []
+    assert not (output / "papers.json").exists()
+    assert "papers.json.gz" in (output / "README.md").read_text()
+    before = archive.read_bytes()
+    publish_pack(tmp_path, manifest)
+    assert archive.read_bytes() == before

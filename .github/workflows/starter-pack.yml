@@ -1,0 +1,118 @@
+name: Research direction starter pack
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile_tag:
+        description: '一个已保存的研究方向标签'
+        required: true
+      as_of:
+        description: '固定排他结束日 YYYY-MM-DD；续跑必须保持不变'
+        required: true
+      conferences:
+        description: '会议key逗号分隔，留空使用全部支持会议；滚动24个月'
+        default: ''
+      max_new_reviews:
+        description: '本轮新增评审上限0–5000；0仅复用缓存'
+        default: '1000'
+      content_limit:
+        description: '精选阅读内容上限1–20'
+        default: '12'
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: starter-pack-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DPR_MODELS_REMOTE_ONLY: '1'
+      DPR_EMBED_ALLOW_LOCAL_FALLBACK: '0'
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+      DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      DPR_EMBED_API_URL: ${{ secrets.DPR_EMBED_API_URL || 'https://zwwen.online/embed' }}
+      DPR_EMBED_API_KEY: ${{ secrets.DPR_EMBED_API_KEY }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install cloud runtime
+        run: python -m pip install -r requirements.txt
+      - name: Restore checkpoints
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .local-runs/starter-pack-cache
+            .local-runs/long-range-cache
+          key: starter-pack-v1-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            starter-pack-v1-${{ github.ref_name }}-
+      - name: Query, merge and resume review
+        timeout-minutes: 100
+        env:
+          PACK_TOPIC: ${{ inputs.profile_tag }}
+          PACK_AS_OF: ${{ inputs.as_of }}
+          PACK_CONFERENCES: ${{ inputs.conferences }}
+          PACK_REVIEW_LIMIT: ${{ inputs.max_new_reviews }}
+          PACK_CONTENT_LIMIT: ${{ inputs.content_limit }}
+        run: |
+          python - <<'PY'
+          import os, subprocess, sys
+          command = [sys.executable, 'src/starter_pack.py',
+              '--profile-tag', os.environ['PACK_TOPIC'], '--as-of', os.environ['PACK_AS_OF'],
+              '--conferences', os.environ['PACK_CONFERENCES'],
+              '--max-new-reviews', os.environ['PACK_REVIEW_LIMIT'],
+              '--content-limit', os.environ['PACK_CONTENT_LIMIT']]
+          if os.environ['GITHUB_REPOSITORY'] != 'ziwenhahaha/daily-paper-reader':
+              command.append('--publish')
+          subprocess.run(command, check=True)
+          PY
+      - name: Save checkpoints even after failure
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            .local-runs/starter-pack-cache
+            .local-runs/long-range-cache
+          key: starter-pack-v1-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Upload results and progress
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: starter-pack-results
+          include-hidden-files: true
+          path: |
+            .local-runs/starter-pack-cache/runs/
+            docs/starter-pack/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Publish fork output only
+        if: success() && github.repository != 'ziwenhahaha/daily-paper-reader'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m '[update] 更新研究方向入门包' -m 'Co-Authored-By: xixi <3495302215@qq.com>'
+          git fetch origin "$GITHUB_REF_NAME"
+          git rebase "origin/$GITHUB_REF_NAME"
+          git push origin HEAD:"$GITHUB_REF_NAME"
+      - name: Build and verify existing Pages site
+        if: success() && github.repository != 'ziwenhahaha/daily-paper-reader'
+        timeout-minutes: 12
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/request_pages_build.py --timeout 600

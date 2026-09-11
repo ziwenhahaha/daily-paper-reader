@@ -43,7 +43,7 @@ function setupBrowserStub(hash) {
           text = decodeEntities(value).replace(/<[^>]*>/g, '');
         },
         get innerHTML() {
-          return text;
+          return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         },
         get textContent() {
           return text;
@@ -129,6 +129,34 @@ function loadSidebarForTest(hash) {
   assert.equal(mergedPapers.explicit.publication_date, '2025-10-06');
   assert.equal(mergedPapers.unknown.publication_date_precision, 'unknown');
   assert.equal(api.publicationDateLabel({ publication_date: '2026-09', publication_date_precision: 'month', publication_date_kind: 'accepted_notice' }), '2026-09 · 录用预告');
+}
+
+{
+  const api = loadSidebarForTest().__test;
+  const guides = api.parseStarterPackIndex({ version: 1, packs: [
+    { run_id: '20260911-abcdef123456', tag: 'ATSP', status: 'complete', paper_count: 12, href: 'https://evil.test' },
+    { run_id: '../unsafe', tag: 'bad', status: 'complete' },
+    { run_id: '20260911-abcdef123456', tag: 'duplicate' },
+    { run_id: '20260910-111111111111', tag: '<SR>', status: 'needs_resume' },
+  ] });
+  assert.equal(guides.length, 2);
+  assert.equal(guides[0].href, '#/starter-pack/20260911-abcdef123456/README');
+  const model = { daily: [], conferences: [], starterPacks: guides };
+  for (const state of [{}, { filter: 'unread' }, { search: 'unmatched' }]) {
+    const html = api.renderBodyHtml(model, state);
+    assert.ok(html.includes('专题回溯'));
+    assert.ok(html.includes('入门导读'));
+    assert.ok(html.includes('待续跑'));
+    assert.ok(html.includes('&lt;SR&gt;'));
+    assert.ok(html.includes(guides[0].href));
+    assert.ok(!html.includes('evil.test'));
+    assert.ok(!html.includes('target="_blank"'));
+    assert.ok(!html.includes('data-paper-id='));
+  }
+  assert.equal(api.collectPaperHrefsFromModel(model).length, 0);
+  assert.ok(api.collectReportHrefsFromModel(model).includes(guides[0].href));
+  assert.deepEqual(api.parseStarterPackIndex({}), []);
+  assert.ok(!api.renderBodyHtml({ daily: [], conferences: [] }, {}).includes('入门导读'));
 }
 
 function cssRule(css, selector) {
