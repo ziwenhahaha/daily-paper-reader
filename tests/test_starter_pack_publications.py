@@ -159,3 +159,48 @@ def test_arxiv_unchanged_and_nonofficial_pdf_rejected(tmp_path):
         ),
     ):
         assert publications._pdf(URL) == ""
+
+
+def test_ieee_sp_csdl_requires_exact_source_official_link_and_year(tmp_path):
+    official = (
+        "https://www.computer.org/csdl/proceedings-article/sp/2025/123400a056/abc"
+    )
+    originals = [
+        paper(
+            source="IEEE-SP-2025-CSDL",
+            link=official,
+            publication_date="2025",
+            publication_date_precision="year",
+        ),
+        paper(
+            source="IEEE-SP-2026-CSDL",
+            link=official.replace("/2025/", "/2026/").replace(
+                "www.computer.org", "computer.org"
+            ),
+        ),
+        paper(source="IEEE-SP-2025-CSDL", link=official, decision="Withdrawn"),
+        paper(
+            source="IEEE-SP-2025-CSDL",
+            link=official.replace("www.computer.org", "evil.example"),
+        ),
+        paper(source="IEEE-SP-2026-CSDL", link=official),
+        paper(source="IEEE-SP-2025-CSDL"),
+        paper(source="Anything-CSDL", link=official),
+        paper(source="IEEE-SP-2025-CSDL", link=official.replace("/sp/", "/other/")),
+        paper(
+            source="IEEE-SP-2025-CSDL",
+            link="https://www.computer.org/csdl/proceedings-article/sp/2025/",
+        ),
+        paper(
+            source="IEEE-SP-2025-CSDL",
+            link="https://www.computer.org/csdl/proceedings-article/sp/2025/123400a056/",
+        ),
+    ]
+    out = publications.verify_publications(originals, tmp_path)
+    assert [p["conference_acceptance_status"] for p in out] == [
+        "accepted",
+        "accepted",
+        "rejected",
+    ] + ["unverified"] * 7
+    assert out[0]["conference_acceptance_evidence"] == official
+    assert all(out[0][key] == value for key, value in originals[0].items())

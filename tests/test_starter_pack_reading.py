@@ -28,6 +28,189 @@ def paper(pid="2501.12345v1", **changes):
 
 
 class ReadingTests(unittest.TestCase):
+    def test_ineligible_representative_projects_qualified_arxiv_version(self):
+        arxiv = paper(
+            "2509.20384", published="2025-09-24", publication_date="2025-09-24"
+        )
+        representative = paper(
+            "sp-id",
+            source="IEEE-SP-2026-CSDL",
+            conference="IEEE_SP",
+            conference_year=2026,
+            canonical_id="arxiv:2509.20384",
+            conference_acceptance_status="unverified",
+            publication_window_status="uncertain",
+            pdf_url="https://ieee.example/wrong.pdf",
+            official_pdf_url="https://ieee.example/also-wrong.pdf",
+            doi="10.1234/conference",
+            publication_date="2026",
+            categories=["conference"],
+            primary_category="security",
+            versions=[arxiv],
+            route_aliases=["conference/old/page"],
+        )
+        selected = reading.select_reading_papers([representative])[0]
+        self.assertEqual(selected["id"], "2509.20384")
+        self.assertEqual(selected["source"], "arxiv")
+        self.assertEqual(selected["publication_date"], "2025-09-24")
+        self.assertNotIn("conference", selected)
+        self.assertNotIn("pdf_url", selected)
+        self.assertNotIn("official_pdf_url", selected)
+        self.assertNotIn("doi", selected)
+        self.assertNotIn("categories", selected)
+        self.assertNotIn("primary_category", selected)
+        self.assertEqual(selected["canonical_id"], "arxiv:2509.20384")
+        self.assertEqual(selected["score"], 9)
+        self.assertEqual(selected["route_aliases"], ["conference/old/page"])
+
+    def test_existing_v1_and_v2_reuses_v2_even_when_v1_is_indexed_first(self):
+        generator = self.generator()
+        complete = {
+            key: "已有"
+            for key in (
+                "title_zh",
+                "tldr",
+                "motivation",
+                "method",
+                "result",
+                "conclusion",
+            )
+        }
+        generator._parse_front_matter.side_effect = lambda text: {
+            **complete,
+            "id": "2501.12345v1" if "V1" in text else "2501.12345v2",
+            "reading_section": "deep",
+            "tags": ["query:ATSP"],
+        }
+        generator.extract_section_tail.return_value = "总结（完）"
+        with tempfile.TemporaryDirectory() as root, patch.object(
+            reading, "_generator", return_value=generator
+        ):
+            docs = Path(root) / "docs"
+            old_routes = [
+                "20250101-20251231/2501.12345v1",
+                "20250102-20260101/2501.12345v2",
+            ]
+            for version, route in enumerate(old_routes, 1):
+                document = docs / (route + ".md")
+                document.parent.mkdir(parents=True)
+                document.write_text(f"V{version}\n## 摘要\n用户笔记")
+            (docs / "_sidebar.md").write_text(
+                "\n".join(f'<a href="#/{route}">Old</a>' for route in old_routes)
+            )
+            result = reading.prepare_reading(
+                [paper("2501.12345v2")], root, "ATSP", "run", "2025-09-11", "2026-09-11"
+            )
+            self.assertEqual(result[0]["route"], old_routes[1])
+            self.assertFalse((docs / "20250911-20260910").exists())
+            generator.create_llm_client.assert_not_called()
+            generator.build_markdown_content.assert_not_called()
+
+    def test_conference_same_id_different_meeting_or_year_is_not_reused(self):
+        generator = self.generator()
+        generator._parse_front_matter.return_value = {
+            "id": "shared-id",
+            "doi": "10.1234/shared",
+        }
+        with tempfile.TemporaryDirectory() as root:
+            docs = Path(root) / "docs"
+            row = paper(
+                "shared-id",
+                source="ICML",
+                conference="ICML",
+                conference_year=2025,
+                doi="10.1234/shared",
+            )
+            for namespace, expected in [
+                ("icml-2025", True),
+                ("iclr-2025", False),
+                ("icml-2024", False),
+            ]:
+                route = f"conference/{namespace}/shared-id"
+                path = docs / (route + ".md")
+                path.parent.mkdir(parents=True)
+                path.write_text("Existing")
+                self.assertEqual(
+                    reading._route_is_selected_version(docs, route, row, generator),
+                    expected,
+                )
+
+    def test_qualified_representative_keeps_identity_and_never_borrows_other_pdf(self):
+        generator = self.generator()
+        row = paper(
+            versions=[
+                paper(
+                    "wrong",
+                    source="IEEE_SP",
+                    publication_window_status="uncertain",
+                    conference_acceptance_status="unverified",
+                    pdf_url="https://example.org/wrong.pdf",
+                )
+            ]
+        )
+        self.assertEqual(reading.select_reading_papers([row])[0]["id"], row["id"])
+        with tempfile.TemporaryDirectory() as root, patch.object(
+            reading, "_generator", return_value=generator
+        ):
+            reading.prepare_reading(
+                [row], root, "RL", "run", "2025-09-11", "2026-09-11"
+            )
+            self.assertEqual(
+                generator.ensure_text_content.call_args.args[0],
+                "https://arxiv.org/pdf/2501.12345v1",
+            )
+
+    def test_ineligible_conference_route_is_untouched_and_arxiv_page_is_created(self):
+        generator = self.generator()
+        generator._parse_front_matter.side_effect = lambda text: (
+            {
+                "id": "sp-id",
+                "canonical_id": "arxiv:2509.20384",
+                "pdf": "https://ieee.example/wrong.pdf",
+            }
+            if "旧会议版" in text
+            else {}
+        )
+        with tempfile.TemporaryDirectory() as root, patch.object(
+            reading, "_generator", return_value=generator
+        ):
+            docs = Path(root) / "docs"
+            old = docs / "conference/ieee-sp-2026/old.md"
+            old.parent.mkdir(parents=True)
+            old.write_text("旧会议版正文与用户笔记")
+            old.with_suffix(".txt").write_text("旧会议版全文")
+            (docs / "_sidebar.md").write_text(
+                '<a href="#/conference/ieee-sp-2026/old">旧论文</a>'
+            )
+            version = paper(
+                "2509.20384", published="2025-09-24", publication_date="2025-09-24"
+            )
+            row = paper(
+                "sp-id",
+                source="IEEE-SP-2026-CSDL",
+                conference="IEEE_SP",
+                conference_year=2026,
+                canonical_id="arxiv:2509.20384",
+                conference_acceptance_status="unverified",
+                publication_window_status="uncertain",
+                pdf_url="https://ieee.example/wrong.pdf",
+                versions=[version],
+                route_aliases=["conference/ieee-sp-2026/old"],
+            )
+            result = reading.prepare_reading(
+                [row], root, "RL", "run", "2025-09-11", "2026-09-11"
+            )[0]
+            self.assertEqual(result["route"], "20250911-20260910/2509.20384")
+            self.assertEqual(result["source"], "arxiv")
+            self.assertEqual(
+                generator.ensure_text_content.call_args.args[0],
+                "https://arxiv.org/pdf/2509.20384",
+            )
+            self.assertEqual(old.read_text(), "旧会议版正文与用户笔记")
+            self.assertEqual(old.with_suffix(".txt").read_text(), "旧会议版全文")
+            self.assertIn("旧论文", (docs / "_sidebar.md").read_text())
+            self.assertIn("reading_route_reuse_skipped", result)
+
     def test_route_reuse_requires_real_identifier_not_url_substring(self):
         self.assertEqual(
             reading._identities(
@@ -74,18 +257,18 @@ class ReadingTests(unittest.TestCase):
         )
         self.assertEqual(len(reading.select_reading_papers([mixed])), 1)
         unverified = paper(
+            source="ICML",
+            conference_acceptance_status="unverified",
             versions=[
                 {
                     "source": "ICML",
                     "publication_window_status": "included",
                     "conference_acceptance_status": "unverified",
                 }
-            ]
+            ],
         )
         self.assertEqual(reading.select_reading_papers([unverified]), [])
-        unverified["versions"].append(
-            {"source": "arxiv", "publication_window_status": "included"}
-        )
+        unverified["versions"].append(paper("2501.12345v1"))
         self.assertEqual(len(reading.select_reading_papers([unverified])), 1)
         for invalid in (21, -1, True, 1.5):
             with self.assertRaises(ValueError):
@@ -175,7 +358,7 @@ class ReadingTests(unittest.TestCase):
                 '<a href="#/20250910-20260909/2501.12345v1">Old</a>'
             )
             result = reading.prepare_reading(
-                [paper("2501.12345v2")], root, "ATSP", "run", "2025-09-11", "2026-09-11"
+                [paper("2501.12345v1")], root, "ATSP", "run", "2025-09-11", "2026-09-11"
             )
             self.assertEqual(result[0]["route"], "20250910-20260909/2501.12345v1")
             self.assertEqual(result[0]["tldr"], "已有")
@@ -414,14 +597,19 @@ class ReadingTests(unittest.TestCase):
                 official_pdf_url="https://proceedings.mlr.press/v267/paper.pdf",
                 conference_acceptance_status="accepted",
             )
-            reading.prepare_reading(
+            result = reading.prepare_reading(
                 [row], root, "ATSP", "run", "2025-09-11", "2026-09-11"
             )
             self.assertEqual(
                 generator.ensure_text_content.call_args.args[0],
-                "https://arxiv.org/pdf/2501.12345v1",
+                "https://proceedings.mlr.press/v267/paper.pdf",
             )
-            generator.upsert_front_matter_field.assert_not_called()
+            self.assertTrue(result[0]["route"].startswith("conference/"))
+            self.assertEqual(document.read_text(), "## Abstract\n用户笔记")
+            self.assertEqual(
+                result[0]["reading_route_reuse_skipped"][0]["route"],
+                "20250910-20260909/2501.12345v1",
+            )
 
     def test_unsafe_route_rejected(self):
         with tempfile.TemporaryDirectory() as root:

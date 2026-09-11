@@ -24,6 +24,72 @@ from daily_report_state import (
 )
 
 
+_VERSION_FIELDS = {
+    "id",
+    "paper_id",
+    "title",
+    "abstract",
+    "authors",
+    "source",
+    "retrieval_source",
+    "conference",
+    "year",
+    "published",
+    "updated",
+    "created_at",
+    "date",
+    "doi",
+    "arxiv_id",
+    "pdf_url",
+    "pdf",
+    "link",
+    "url",
+    "venue",
+    "decision",
+    "acceptance_status",
+    "categories",
+    "primary_category",
+}
+
+
+def _qualified_version(version):
+    return (
+        version.get("publication_window_status") == "included"
+        and bool(str(version.get("id") or "").strip())
+        and bool(str(version.get("abstract") or "").strip())
+        and (
+            str(version.get("retrieval_source") or version.get("source") or "").lower()
+            == "arxiv"
+            or version.get("conference_acceptance_status", "accepted") == "accepted"
+        )
+    )
+
+
+def _project_version(work, version):
+    if version is work:
+        return dict(work)
+    projected = {
+        key: value
+        for key, value in work.items()
+        if key not in _VERSION_FIELDS
+        and not key.startswith(("publication_", "official_", "conference_"))
+    }
+    projected.update(version)
+    # 评分属于作品；来源、摘要、PDF和日期属于具体版本，不能混在一起。
+    for key in (
+        "canonical_id",
+        "versions",
+        "route_aliases",
+        "bucket",
+        "score",
+        "reason",
+        "evidence",
+    ):
+        if key in work:
+            projected[key] = work[key]
+    return projected
+
+
 def select_reading_papers(papers, content_limit=12):
     """日期边界不确定及只有录用标题的论文不进入精选阅读。"""
     if (
@@ -34,23 +100,15 @@ def select_reading_papers(papers, content_limit=12):
         raise ValueError("精选内容数量必须为 0–20 的整数")
     selected = []
     for row in papers:
-        versions = row.get("versions") or [row]
-        if (
-            row.get("bucket") not in {"core", "related"}
-            or not str(row.get("abstract") or "").strip()
-        ):
+        if row.get("bucket") not in {"core", "related"}:
             continue
-        if not any(
-            v.get("publication_window_status") == "included"
-            and (
-                str(v.get("retrieval_source") or v.get("source") or "").lower()
-                == "arxiv"
-                or v.get("conference_acceptance_status", "accepted") == "accepted"
-            )
-            for v in versions
-        ):
+        candidates = [row] + list(row.get("versions") or [])
+        version = next(
+            (version for version in candidates if _qualified_version(version)), None
+        )
+        if version is None:
             continue
-        selected.append(dict(row))
+        selected.append(_project_version(row, version))
     return sorted(
         selected,
         key=lambda p: (
@@ -106,13 +164,19 @@ def _safe_route(docs, raw):
 def _existing_routes(docs, generator):
     """只以稳定标识符匹配；标题相同本身不足以合并不同论文。"""
     index = {}
+
+    def add(identity, route):
+        routes = index.setdefault(identity, [])
+        if route not in routes:
+            routes.append(route)
+
     for state_path in sorted(docs.rglob("_daily_state.json")):
         state = json.loads(state_path.read_text(encoding="utf-8"))
         for row in state.get("papers", []):
             route = _safe_route(docs, row.get("route"))
             if route:
                 for identity in _identities(row):
-                    index.setdefault(identity, route)
+                    add(identity, route)
     sidebar = docs / "_sidebar.md"
     routes = set()
     if sidebar.exists():
@@ -132,7 +196,7 @@ def _existing_routes(docs, generator):
         text = (docs / (route + ".md")).read_text(encoding="utf-8")
         meta = generator._parse_front_matter(text)
         for identity in _identities(meta) | _identities({"id": route.split("/")[-1]}):
-            index.setdefault(identity, route)
+            add(identity, route)
     return index
 
 
@@ -144,6 +208,41 @@ def _conference(paper):
         or ""
     ).strip()
     return "" if source.lower() in {"", "arxiv"} else source.upper()
+
+
+def _route_is_selected_version(docs, route, paper, generator):
+    """作品相同不代表版本相同；不以 canonical_id 为旧版本资格背书。"""
+    if route.startswith("conference/") != bool(_conference(paper)):
+        return False
+    meta = generator._parse_front_matter(
+        (docs / (route + ".md")).read_text(encoding="utf-8")
+    )
+    identifier = str(paper.get("id") or "")
+    if not _conference(paper):
+        # arXiv v1/v2也不偷换；不明确版本号时只匹配相同稳定route尾部。
+        old_id = str(meta.get("id") or meta.get("arxiv_id") or route.split("/")[-1])
+        return old_id == identifier
+    from conference_sidebar import build_conference_key
+
+    expected_namespace = build_conference_key(
+        _conference(paper), str(paper.get("conference_year") or paper.get("year") or "")
+    )
+    if route.split("/")[1] != expected_namespace:
+        return False
+    version_fields = (
+        "id",
+        "paper_id",
+        "doi",
+        "link",
+        "pdf_url",
+        "pdf",
+        "official_link",
+        "official_pdf_url",
+    )
+    old = {key: meta[key] for key in version_fields if meta.get(key)}
+    old["pdf_url"] = old.get("pdf_url") or old.get("pdf") or ""
+    current = {key: paper[key] for key in version_fields if paper.get(key)}
+    return bool(_identities(old) & _identities(current))
 
 
 def _merge_existing_route_tag(docs, route, tag, generator):
@@ -327,19 +426,30 @@ def prepare_reading(
         identities = _identities(paper)
         for version in versions:
             identities.update(_identities(version))
-        route = next(
-            (existing[key] for key in sorted(identities) if key in existing), None
+        route_candidates = [
+            candidate
+            for key in sorted(identities)
+            for candidate in existing.get(key, [])
+        ]
+        route_candidates.extend(
+            _safe_route(docs, value) for value in paper.get("route_aliases", [])
         )
-        if not route:
-            # 外部 route_aliases 只能命中真实本地文件，不能越出 docs。
-            route = next(
-                (
-                    _safe_route(docs, value)
-                    for value in paper.get("route_aliases", [])
-                    if _safe_route(docs, value)
-                ),
-                None,
+        route = None
+        skipped = []
+        for candidate in dict.fromkeys(route_candidates):
+            if not candidate:
+                continue
+            if _route_is_selected_version(docs, candidate, paper, generator):
+                route = candidate
+                break
+            skipped.append(
+                {
+                    "route": candidate,
+                    "reason": "原阅读页不是当前合格版本，保留原页且不替换其PDF",
+                }
             )
+        if skipped:
+            paper["reading_route_reuse_skipped"] = skipped
         if not route:
             conference = _conference(paper)
             if conference:
@@ -381,6 +491,8 @@ def prepare_reading(
                 for version in versions:
                     if (
                         version.get("official_pdf_url")
+                        and _qualified_version(version)
+                        and str(version.get("id") or "") == str(paper.get("id") or "")
                         and _conference(version) == _conference(paper)
                         and str(
                             version.get("conference_year") or version.get("year") or ""
@@ -393,11 +505,7 @@ def prepare_reading(
                             version["official_pdf_url"],
                         )
                         break
-        pdf = (
-            official_pdf
-            or paper.get("pdf_url")
-            or next((v.get("pdf_url") for v in versions if v.get("pdf_url")), "")
-        )
+        pdf = official_pdf or paper.get("pdf_url") or paper.get("pdf") or ""
         if (
             not pdf
             and not _conference(paper)
@@ -550,5 +658,7 @@ def prepare_reading(
             docs, paper, route, metadata, profile_tag, token, label, generator
         )
         for identity in identities:
-            existing.setdefault(identity, route)
+            routes = existing.setdefault(identity, [])
+            if route not in routes:
+                routes.append(route)
     return selected

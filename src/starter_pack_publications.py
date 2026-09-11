@@ -217,6 +217,29 @@ def _pdf(url, root=None):
     return ""
 
 
+def _csdl_acceptance_link(paper):
+    """只认抓取器生成的 IEEE S&P 同年份官方论文集记录。"""
+    source = re.fullmatch(r"IEEE-SP-(20\d{2})-CSDL", str(paper.get("source") or ""))
+    if not source:
+        return ""
+    link = str(paper.get("link") or "")
+    try:
+        parsed = urlsplit(link)
+    except ValueError:
+        return ""
+    if parsed.scheme != "https" or parsed.netloc not in {
+        "computer.org",
+        "www.computer.org",
+    }:
+        return ""
+    if not re.fullmatch(
+        rf"/csdl/proceedings-article/sp/{source.group(1)}/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/?",
+        parsed.path,
+    ):
+        return ""
+    return link
+
+
 def verify_publications(papers, root, *, resolve_pdfs=True):
     """返回复制的记录列表；无法核验保留 unverified，不删除、不改论文日期。"""
     result, indexes = [], {}
@@ -240,7 +263,8 @@ def verify_publications(papers, root, *, resolve_pdfs=True):
             )
             result.append(paper)
             continue
-        confirmed = bool(
+        csdl_link = _csdl_acceptance_link(paper)
+        confirmed = bool(csdl_link) or bool(
             re.search(
                 r"\b(?:accepted|accept|proceedings|CVF|ECVA|USENIX|AAAI|ACL|EMNLP|NDSS|ACM)\b",
                 label,
@@ -251,7 +275,9 @@ def verify_publications(papers, root, *, resolve_pdfs=True):
             "accepted" if confirmed else "unverified"
         )
         paper["conference_acceptance_evidence"] = (
-            label if confirmed else "公开投稿不代表录用；尚未在官方论文集核实"
+            (csdl_link or label)
+            if confirmed
+            else "公开投稿不代表录用；尚未在官方论文集核实"
         )
         year_match = re.search(
             r"20\d{2}", str(paper.get("conference_year") or paper.get("year") or source)
