@@ -2901,6 +2901,8 @@ window.SubscriptionsSmartQuery = (function () {
     clearPendingDeletedProfileIds,
     setRunSelectionMode,
     getSelectedProfilesForRun,
+    getResearchProfiles: () => (currentProfiles || []).map(deepClone),
+    generateResearchCandidates: (tag, description) => requestCandidatesByDesc(tag, description),
     getSelectedProfileTags,
     clearRunSelection,
     setProfileSelection,

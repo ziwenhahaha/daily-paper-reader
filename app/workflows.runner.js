@@ -3,6 +3,7 @@
 
 window.DPRWorkflowRunner = (function () {
   const WORKFLOWS = [
+    { key: 'topic-research', id: 'topic-research.yml', name: '专题研究', desc: '固定评审预算与最终结果名额，可继续生成内容。' },
     {
       key: 'starter-pack',
       id: 'starter-pack.yml',
@@ -1020,7 +1021,7 @@ window.DPRWorkflowRunner = (function () {
       return false;
     }
     open();
-    if (workflowKey === 'starter-pack' && isLocalDebugPage()) {
+    if ((workflowKey === 'starter-pack' || workflowKey === 'topic-research') && isLocalDebugPage()) {
       setStatus('入门包仅通过 GitHub Actions 执行，请在你的 GitHub Pages 站点操作；不会在本地执行。', '#c00');
       return false;
     }
@@ -1028,6 +1029,60 @@ window.DPRWorkflowRunner = (function () {
   };
 
   const STARTER_PACK_CONFERENCES = ['neurips', 'icml', 'iclr', 'aaai', 'cvpr', 'eccv', 'ijcai', 'acl', 'emnlp', 'osdi', 'sosp', 'ndss', 'ieee_sp'];
+  const sanitizeResearchProfile = (value = {}) => {
+    const text = value => {
+      const result = String(value == null ? '' : value).trim();
+      if (result.length > 6000) throw new Error('单个查询字段超过6000字符，请缩短后再试；不会截断查询。');
+      return result;
+    };
+    const entries = (items, fields, limit) => {
+      if (items !== undefined && !Array.isArray(items)) throw new Error('检索条件必须为列表。');
+      if ((items || []).length > limit) throw new Error(`${fields[0] === 'keyword' ? '关键词' : '语义查询'}最多${limit}项，请减少条件；不会静默截断。`);
+      return (items || []).map(item => {
+        const retrievalText = value => {
+          const result = text(value);
+          if (result.length > 1200) throw new Error('检索词或语义查询超过1200字符，请缩短后再试；不会截断查询。');
+          return result;
+        };
+        if (typeof item === 'string') return { [fields[0]]: retrievalText(item), enabled: true };
+        const result = { enabled: item && item.enabled !== false };
+        fields.forEach(field => { if (item && item[field]) result[field] = field === 'keyword' || field === 'query' ? retrievalText(item[field]) : text(item[field]); });
+        return result;
+      });
+    };
+    const groups = value.constraint_groups === undefined ? [] : value.constraint_groups;
+    if (!Array.isArray(groups) || groups.length > 3) throw new Error('限定条件最多3组。');
+    const constraintGroups = groups.map(group => {
+      if (!Array.isArray(group) || !group.length || group.length > 8 || group.some(term => typeof term !== 'string' || term.length > 300 || !/[A-Za-z]/.test(term) || /[\u3400-\u9fff]/.test(term))) throw new Error('每组限定条件需1–8个英文检索词，每个不超过300字符。');
+      return [...new Set(group.map(term => term.trim()))];
+    });
+    if (constraintGroups.reduce((product, group) => product * group.length, 1) > 32) throw new Error('限定条件组合超过32种，请减少查询词；不会静默截断条件。');
+    return {
+      tag: text(value.tag), description: text(value.description), refinement: text(value.refinement),
+      keywords: entries(value.keywords, ['keyword', 'query', 'keyword_cn'], 24),
+      intent_queries: entries(value.intent_queries, ['query', 'query_cn'], 12),
+      ...(constraintGroups.length ? { constraint_groups: constraintGroups } : {}),
+    };
+  };
+  const buildTopicResearchRequest = (options = {}) => {
+    if (options.action === 'continue-content') {
+      if (!/^\d{8}-[a-f0-9]{12}$/.test(String(options.run_id || ''))) throw new Error('无效的专题任务标识。');
+      return { key: 'topic-research', inputs: { action: 'continue-content', run_id: options.run_id, content_batch: '10' } };
+    }
+    if (!['90', '365', 'starter'].includes(String(options.mode))) throw new Error('请选择支持的专题模式。');
+    const profile = sanitizeResearchProfile(options.profile);
+    const validated = buildStarterPackRequest({ profile_tag: profile.tag, as_of: options.as_of, conferences: options.conferences });
+    if (!profile.keywords.some(item => item.enabled && (item.keyword || item.query)) && !profile.intent_queries.some(item => item.enabled && item.query)) throw new Error('所选词条尚无检索词，请先保存有效词条。');
+    return { key: 'topic-research', inputs: {
+      profile_tag: profile.tag, mode: String(options.mode), as_of: validated.inputs.as_of,
+      conferences: validated.inputs.conferences, profile_snapshot: JSON.stringify(profile),
+      action: 'run', run_id: '', content_batch: '10',
+    } };
+  };
+  const continueTopicResearch = async runId => {
+    const request = buildTopicResearchRequest({ action: 'continue-content', run_id: runId });
+    return runWorkflowByKey(request.key, request.inputs);
+  };
   const buildStarterPackRequest = (options = {}) => {
     const tag = String(options.profile_tag || '').trim();
     if (!tag || tag.includes(',')) throw new Error('入门包需要恰好选择一个词条。');
@@ -1169,7 +1224,10 @@ window.DPRWorkflowRunner = (function () {
     runConferenceRetrieval(conference, years);
 
   return {
-    __test: { buildQuickFetchRequest, buildStarterPackRequest },
+    __test: { buildQuickFetchRequest, buildStarterPackRequest, buildTopicResearchRequest, sanitizeResearchProfile },
+    buildTopicResearchRequest,
+    sanitizeResearchProfile,
+    continueTopicResearch,
     buildStarterPackRequest,
     isStarterPackSupported: () => !isLocalDebugPage(),
     open,

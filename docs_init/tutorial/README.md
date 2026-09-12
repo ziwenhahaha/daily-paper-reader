@@ -7,7 +7,7 @@
 - [从零开始配置](/tutorial/quick-start)
 - [订阅与查询配置](/tutorial/configuration)
 - [推荐链路说明](/tutorial/workflow)
-- [研究方向入门包：365天 arXiv + 近24个月会议](/tutorial/starter-pack)
+- [专题研究：90天/365天/研究方向大礼包](/tutorial/starter-pack)
 
 ## 说明
 

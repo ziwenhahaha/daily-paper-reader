@@ -142,10 +142,10 @@ function loadSidebarForTest(hash) {
   assert.equal(guides.length, 2);
   assert.equal(guides[0].href, '#/starter-pack/20260911-abcdef123456/README');
   const model = { daily: [], conferences: [], starterPacks: guides };
-  for (const state of [{}, { filter: 'unread' }, { search: 'unmatched' }]) {
+  for (const state of [{}, { filter: 'unread' }]) {
     const html = api.renderBodyHtml(model, state);
     assert.ok(html.includes('专题回溯'));
-    assert.ok(html.includes('入门导读'));
+    assert.ok(html.includes('大礼包'));
     assert.ok(html.includes('待续跑'));
     assert.ok(html.includes('&lt;SR&gt;'));
     assert.ok(html.includes(guides[0].href));
@@ -157,6 +157,88 @@ function loadSidebarForTest(hash) {
   assert.ok(api.collectReportHrefsFromModel(model).includes(guides[0].href));
   assert.deepEqual(api.parseStarterPackIndex({}), []);
   assert.ok(!api.renderBodyHtml({ daily: [], conferences: [] }, {}).includes('入门导读'));
+  const legacyHtml = api.renderBodyHtml(model, {});
+  assert.ok(!legacyHtml.includes('/papers.md'), '旧包不得编造新版导出文件');
+  assert.ok(!legacyHtml.includes('/catalog'), '旧包不得编造未知列表页');
+  const run = '20260912-111111111111';
+  const modern = api.parseStarterPackIndex({version: 1, packs: [{run_id: run, mode: '90',
+    export_path: `docs/starter-pack/${run}/papers.md`, selected_records: [
+      {route: 'saved/z', title: 'first selected', score: 8},
+      {route: 'saved/a', title: 'second selected', score: 8},
+    ]}]});
+  const modernHtml = api.renderBodyHtml({daily: [], conferences: [], starterPacks: modern}, {});
+  assert.ok(modernHtml.includes(`href="#/starter-pack/${run}/README">结果总览／导出清单</a>`));
+  assert.ok(modernHtml.includes(`href="#/starter-pack/${run}/catalog">论文列表</a>`));
+  assert.ok(modernHtml.indexOf('first selected') < modernHtml.indexOf('second selected'), '同分保持后端最终名单顺序');
+  const badExport = api.parseStarterPackIndex({version: 1, packs: [{run_id: run, export_path: 'https://evil.test/papers.md'}]});
+  assert.ok(!api.renderBodyHtml({daily: [], conferences: [], starterPacks: badExport}, {}).includes(' download '));
+  const scoped = api.parseStarterPackIndex({version: 1, packs: [{run_id: run, mode: '365', tag: 'RL',
+    scope: {description: '强化学习', refinement: '限定策略优化与离线学习<img src=x onerror=alert(1)>', as_of: '2026-09-12'}}]});
+  const scopedHtml = api.renderBodyHtml({daily: [], conferences: [], starterPacks: scoped}, {});
+  assert.ok(scopedHtml.includes('RL · 365天 · 限定策略优化'));
+  assert.ok(scopedHtml.includes('截止日期（不含当天）：2026-09-12'));
+  assert.ok(scopedHtml.includes('本次细化：'));
+  assert.ok(scopedHtml.includes('&lt;img'));
+  assert.ok(!scopedHtml.includes('<img'));
+}
+
+{
+  const api = loadSidebarForTest().__test;
+  const run = '20260912-abcdef123456';
+  const records = [
+    {route: `starter-pack/${run}/papers/older`, title: 'Older original', score: 9, published: '2025-09-01', summary: '原样短说明'},
+    {route: `starter-pack/${run}/papers/newer`, title: 'Newer original', score: 7, published: '2026-09-01'},
+    {route: 'javascript:alert(1)', title: 'unsafe'},
+    {route: '../unsafe', title: 'unsafe'},
+  ];
+  const packs = api.parseStarterPackIndex({version: 1, packs: [{run_id: run, tag: 'ATSP', mode: '365', export_path: `docs/starter-pack/${run}/papers.md`, selected_records: records, content_done: 1, content_pending: 1}]});
+  const model = {daily: [], conferences: [], starterPacks: packs};
+  const paperId = `starter-pack/${run}/papers/older`;
+  assert.equal(packs[0].papers.length, 2);
+  assert.equal(api.collectPaperHrefsFromModel(model).length, 2);
+  assert.ok(api.collectUnreadPaperIdsForSnapshot(model, {}).has(paperId));
+  const html = api.renderBodyHtml(model, {readMap: {[paperId]: 'good'}});
+  assert.ok(html.includes('ATSP · 365天'));
+  assert.ok(html.includes('结果总览'));
+  assert.ok(html.includes('导出'));
+  assert.ok(html.includes('data-paper-status="good"'));
+  assert.ok(html.includes('原样短说明'));
+  assert.ok(!html.includes('data-daily-calendar'));
+  assert.ok(html.indexOf('Older original') < html.indexOf('Newer original'));
+  const dateHtml = api.renderBodyHtml(model, {taskSort: 'date'});
+  assert.ok(dateHtml.indexOf('Newer original') < dateHtml.indexOf('Older original'));
+  assert.equal(api.computeModelReadSummary(model, {}).daily.unread, 0);
+  const unread = api.renderBodyHtml(model, {filter: 'unread', readMap: {[paperId]: 'good'}});
+  assert.ok(!unread.includes('Older original'));
+  assert.ok(unread.includes('Newer original'));
+  const kept = api.renderBodyHtml(model, {filter: 'unread', currentPaperHref: '#/' + paperId, readMap: {[paperId]: 'good'}, unreadResultPaperIds: []});
+  assert.ok(kept.includes('Older original'));
+}
+
+{
+  const api = loadSidebarForTest().__test;
+  const run = '20260912-abcdef123456';
+  const route = '20250910-20260909/marked';
+  const data = {title: 'Marked new result', research_run_id: run};
+  const line = (id, payload) => `      * <a href="#/${id}" data-sidebar-item="${JSON.stringify(payload).replace(/"/g, '&quot;')}">${payload.title}</a>\n`;
+  const model = api.parseSidebar('* Daily Papers\n  * 2025-09-10 ～ 2026-09-09 <!--dpr-date:20250910-20260909-->\n    * 速读区\n' + line(route, data) + line('20250910-20260909/old', {title: 'Unmarked historical'}));
+  assert.equal(model.daily[0].papers.find(p => p.title === data.title).research_run_id, run);
+  assert.ok(api.renderBodyHtml(model, {}).includes('Marked new result'), '索引未加载时旧投影可用');
+  model.starterPacks = api.parseStarterPackIndex({version: 1, packs: [{run_id: run, mode: '365', selected_records: [{route, title: data.title, score: 8, reading_status: 'pending', publication_date: '2025', publication_date_precision: 'year', publication_date_kind: 'proceedings', publication_date_source: 'official'}]}]});
+  const html = api.renderBodyHtml(model, {});
+  assert.equal((html.match(/Marked new result/gi) || []).length, 2, '只保留任务行的data-search和标题，不重复legacy行');
+  assert.ok(html.includes('Unmarked historical'));
+  assert.ok(html.includes('2025 · 具体日期待确认'));
+  assert.ok(!html.includes('2025-01-01'));
+  assert.ok(html.includes('阅读内容待生成'));
+  assert.deepEqual(api.computeModelReadSummary(model, {}).total, {papers: 2, unread: 2});
+  const unread = api.renderBodyHtml(model, {filter: 'unread'});
+  assert.equal((unread.match(/Marked new result/gi) || []).length, 2, '未读过滤也必须保留任务索引以去重');
+  delete model.daily[0].papers.find(p => p.title === data.title).research_run_id;
+  const legacyKept = api.renderBodyHtml(model, {});
+  assert.equal((legacyKept.match(/Marked new result/gi) || []).length, 4, '无标记历史条目不能因新任务同route而隐藏');
+  assert.deepEqual(api.computeModelReadSummary(model, {}).total, {papers: 2, unread: 2}, '总计按route唯一计数');
+  assert.deepEqual(api.computeModelReadSummary(model, {}).backtrack, {papers: 2, unread: 2});
 }
 
 function cssRule(css, selector) {

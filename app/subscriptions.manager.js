@@ -40,6 +40,11 @@ window.SubscriptionsManager = (function () {
   let adminConferenceTabBtn = null;
   let adminDailyPanel = null;
   let adminConferencePanel = null;
+  let adminTopicTabBtn = null;
+  let adminTopicPanel = null;
+  let topicProfilePickerEl = null;
+  let topicSelectedTag = '';
+  let topicSelectionInitialized = false;
   let activeAdminPanelTab = 'daily';
 
   let draftConfig = null;
@@ -773,7 +778,7 @@ window.SubscriptionsManager = (function () {
       return;
     }
     targetEl.innerHTML = filtered.map((profile) => {
-      const selected = !!profile.selected;
+      const selected = mode === 'topic' ? normalizeText(profile.tag) === topicSelectedTag : !!profile.selected;
       const tag = normalizeText(profile.tag);
       const desc = normalizeText(profile.description);
       const shortDesc = truncateDisplayText(desc, 10);
@@ -794,6 +799,28 @@ window.SubscriptionsManager = (function () {
   const renderProfilePickers = () => {
     renderProfilePicker(dailyProfilePickerEl, 'daily');
     renderProfilePicker(conferenceProfilePickerEl, 'conference');
+    renderProfilePicker(topicProfilePickerEl, 'topic');
+  };
+  const initializeTopicSelection = () => {
+    if (topicSelectionInitialized) return;
+    const selected = getSelectedProfilesForRun();
+    topicSelectedTag = selected.length === 1 ? normalizeText(selected[0].tag) : '';
+    topicSelectionInitialized = true;
+    renderProfilePicker(topicProfilePickerEl, 'topic');
+  };
+  const setTopicProfileSelection = profileId => {
+    const profile = getProfilesForRun().find(item => String(item.id) === String(profileId));
+    if (!profile) return;
+    topicSelectedTag = normalizeText(profile.tag);
+    topicSelectionInitialized = true;
+    renderProfilePicker(topicProfilePickerEl, 'topic');
+  };
+  const getTopicResearchProfiles = () => {
+    const bridge = window.SubscriptionsSmartQuery;
+    const profiles = bridge && typeof bridge.getResearchProfiles === 'function'
+      ? bridge.getResearchProfiles()
+      : ((draftConfig && draftConfig.subscriptions && draftConfig.subscriptions.intent_profiles) || []);
+    return profiles.filter(profile => topicSelectedTag && normalizeText(profile.tag) === topicSelectedTag).map(cloneDeep);
   };
   const setProfileSelection = (profileId, selected) => {
     if (!window.SubscriptionsSmartQuery || typeof window.SubscriptionsSmartQuery.setProfileSelection !== 'function') {
@@ -841,7 +868,7 @@ window.SubscriptionsManager = (function () {
     if (!window.SubscriptionsSmartQuery || typeof window.SubscriptionsSmartQuery.setRunSelectionMode !== 'function') {
       return;
     }
-    window.SubscriptionsSmartQuery.setRunSelectionMode(activeAdminPanelTab, () => {
+    window.SubscriptionsSmartQuery.setRunSelectionMode(activeAdminPanelTab === 'topic' ? 'daily' : activeAdminPanelTab, () => {
       refreshQuickRunButtons();
     });
   };
@@ -968,10 +995,11 @@ window.SubscriptionsManager = (function () {
   };
 
   const syncAdminPanelTabs = () => {
-    const active = activeAdminPanelTab === 'conference' ? 'conference' : 'daily';
+    const active = ['conference', 'topic'].includes(activeAdminPanelTab) ? activeAdminPanelTab : 'daily';
     [
       [adminDailyTabBtn, active === 'daily'],
       [adminConferenceTabBtn, active === 'conference'],
+      [adminTopicTabBtn, active === 'topic'],
     ].forEach(([btn, isActive]) => {
       if (!btn) return;
       btn.classList.toggle('is-active', !!isActive);
@@ -984,13 +1012,16 @@ window.SubscriptionsManager = (function () {
     if (adminConferencePanel) {
       adminConferencePanel.hidden = active !== 'conference';
     }
+    if (adminTopicPanel) adminTopicPanel.hidden = active !== 'topic';
     if (panel) {
       panel.classList.toggle('is-conference-tab', active === 'conference');
+      panel.classList.toggle('is-topic-tab', active === 'topic');
     }
   };
 
   const switchAdminPanelTab = (tab) => {
-    const nextTab = tab === 'conference' ? 'conference' : 'daily';
+    const nextTab = ['conference', 'topic'].includes(tab) ? tab : 'daily';
+    if (nextTab === 'topic') initializeTopicSelection();
     if (activeAdminPanelTab === nextTab) {
       syncAdminPanelTabs();
       return;
@@ -1464,6 +1495,7 @@ window.SubscriptionsManager = (function () {
               >
                 会议论文
               </button>
+              <button id="dpr-admin-tab-topic" class="dpr-admin-tab" type="button" role="tab" aria-selected="false" aria-controls="arxiv-topic-control-side">专题研究</button>
             </div>
           </div>
           <div style="display:flex; gap:8px; align-items:center;">
@@ -1527,18 +1559,7 @@ window.SubscriptionsManager = (function () {
                     <span class="dpr-task-action-title">立即抓取三十天精读</span>
                     <span class="dpr-task-action-cost">约 ¥0.50</span>
                   </label>
-                  <label class="chat-quick-run-item dpr-task-radio-card">
-                    <input type="radio" name="dpr-quick-run-mode" value="90">
-                    <span class="dpr-task-action-title">回溯九十天 arXiv</span>
-                    <span class="dpr-task-action-cost">专题评审 · 按实际用量计费</span>
-                  </label>
-                  <label class="chat-quick-run-item dpr-task-radio-card">
-                    <input type="radio" name="dpr-quick-run-mode" value="365">
-                    <span class="dpr-task-action-title">回溯一年 arXiv</span>
-                    <span class="dpr-task-action-cost">365 天 · 可复用评审进度</span>
-                  </label>
                 </div>
-                <p class="dpr-task-hint">90天/365天为 arXiv 专题回溯：关键词候选与语义补漏，不保证找全；核心≥8分，补充6–7分。完成后在 Sidebar「日报」选择区间结束日期与专题标签阅读，或下载工作流结果附件。</p>
                 <button id="arxiv-admin-quick-run-start-btn" class="chat-quick-run-run-btn dpr-task-start-btn" type="button">开始检索</button>
                 <div id="arxiv-admin-quick-run-msg" class="chat-quick-run-msg"></div>
               </div>
@@ -1556,6 +1577,7 @@ window.SubscriptionsManager = (function () {
                 <div id="arxiv-admin-reset-content-msg" class="chat-quick-run-msg"></div>
               </div>
             </div>
+            <div class="dpr-topic-invitation"><span>想更深入了解一个研究方向？</span><button id="dpr-admin-go-topic" class="arxiv-tool-btn" type="button">前往专题研究</button></div>
           </div>
 
           <div
@@ -1595,17 +1617,10 @@ window.SubscriptionsManager = (function () {
               <div id="arxiv-admin-conference-run-msg" class="chat-quick-run-msg">
                 触发 Supabase 会议检索。
               </div>
-              <div class="dpr-choice-field">
-                <div class="chat-quick-run-title">研究方向入门包</div>
-                <p class="dpr-task-hint">恰好选择一个已保存词条。近365天 arXiv + 近24个月会议；仅使用所选会议名称，年份勾选不限制窗口。未选会议时查询全库支持会议。</p>
-                <p class="dpr-task-hint">仅通过 GitHub Actions 执行，请在 GitHub Pages 站点操作。进度未完成时，保持相同截止日期、词条及会议范围续跑。</p>
-                <label>UTC 截止日期（不含当天） <input id="arxiv-admin-starter-pack-as-of" type="date" value="${escapeHtml(starterPackAsOf)}"></label>
-                <label>新增评审上限 <input id="arxiv-admin-starter-pack-budget" type="number" min="0" max="5000" step="1" value="1000"></label>
-                <label>内容生成上限 <input id="arxiv-admin-starter-pack-content-limit" type="number" min="1" max="20" step="1" value="12"></label>
-                <button id="arxiv-admin-starter-pack-btn" class="chat-quick-run-run-btn dpr-task-start-btn" type="button">生成/续跑入门包</button>
-                <div id="arxiv-admin-starter-pack-msg" class="chat-quick-run-msg"></div>
-              </div>
             </div>
+          </div>
+          <div id="arxiv-topic-control-side" class="dpr-admin-task-panel" role="tabpanel" aria-labelledby="dpr-admin-tab-topic" hidden>
+            ${window.DPRTopicResearch ? window.DPRTopicResearch.render() : '<p class="dpr-task-hint">专题模块尚未加载，请刷新重试。</p>'}
           </div>
         </div>
       </div>
@@ -1621,6 +1636,18 @@ window.SubscriptionsManager = (function () {
     adminConferenceTabBtn = document.getElementById('dpr-admin-tab-conference');
     adminDailyPanel = document.getElementById('arxiv-search-quick-run-side');
     adminConferencePanel = document.getElementById('arxiv-conference-control-side');
+    adminTopicTabBtn = document.getElementById('dpr-admin-tab-topic');
+    adminTopicPanel = document.getElementById('arxiv-topic-control-side');
+    topicProfilePickerEl = document.getElementById('arxiv-admin-topic-profile-picker');
+    if (adminTopicTabBtn) adminTopicTabBtn.addEventListener('click', () => switchAdminPanelTab('topic'));
+    const topicInvitation = document.getElementById('dpr-admin-go-topic');
+    if (topicInvitation) topicInvitation.addEventListener('click', () => switchAdminPanelTab('topic'));
+    if (window.DPRTopicResearch) window.DPRTopicResearch.mount(adminTopicPanel, {
+      getProfiles: getTopicResearchProfiles,
+      getConfig: () => cloneDeep(draftConfig || {}),
+      hasUnsaved: () => hasUnsavedChanges,
+      getConferences: () => getSelectedConferencePairSpecs().map(pair => pair.split(':')[0]),
+    });
 
     const reloadAll = () => {
       renderFromDraft();
@@ -1874,7 +1901,8 @@ window.SubscriptionsManager = (function () {
     [
       [dailyProfilePickerEl, 'daily'],
       [conferenceProfilePickerEl, 'conference'],
-    ].forEach(([picker]) => {
+      [topicProfilePickerEl, 'topic'],
+    ].forEach(([picker, mode]) => {
       if (!picker || picker._bound) return;
       picker._bound = true;
       picker.addEventListener('click', (event) => {
@@ -1883,6 +1911,7 @@ window.SubscriptionsManager = (function () {
           : null;
         if (!chip) return;
         const profileId = chip.getAttribute('data-profile-id') || '';
+        if (mode === 'topic') { setTopicProfileSelection(profileId); return; }
         const selected = chip.getAttribute('aria-pressed') !== 'true';
         setProfileSelection(profileId, selected);
       });
@@ -2008,6 +2037,11 @@ window.SubscriptionsManager = (function () {
     validateDraftConfig: () => validateIntentProfiles(draftConfig || {}),
     runProfileQuickFetch: (profileTag, days, runOptions) => runProfileQuickFetch(profileTag, days, runOptions),
     __test: {
+      initializeTopicSelection,
+      setTopicProfileSelection,
+      getTopicResearchProfiles,
+      __resetTopicSelection: () => { topicSelectedTag = ''; topicSelectionInitialized = false; },
+      __setTopicProfilePickerEl: el => { topicProfilePickerEl = el; },
       runStarterPack,
       __setQuickRunMode: (value) => { quickRunMode = value; },
       runSelectedQuickFetchByMode,
