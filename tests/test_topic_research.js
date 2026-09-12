@@ -5,6 +5,8 @@ require('../app/workflows.runner.js');
 require('../app/topic-research.js');
 const runner = window.DPRWorkflowRunner;
 const research = window.DPRTopicResearch;
+const makeElement = () => ({ hidden: true, disabled: false, value: '', style: {}, events: {}, children: [], addEventListener(type, handler) { this.events[type] = handler; }, replaceChildren() { this.children = []; }, appendChild(child) { this.children.push(child); } });
+global.document = { readyState: 'loading', addEventListener() {}, createElement: makeElement, getElementById: () => null };
 assert.deepEqual(research.__test.englishTerms({ keywords: ['routing', { keyword: 'approximation' }, { keyword: '中文' }, { keyword: 'English中文' }, { keyword: 'disabled', enabled: false }] }), ['routing', 'approximation']);
 assert.deepEqual(research.__test.englishTerms({ keywords: [{ keyword: 'RL', query: 'offline reinforcement learning' }] }), ['RL']);
 assert.throws(() => runner.sanitizeResearchProfile({ keywords: [{ keyword: 'x'.repeat(1201) }] }));
@@ -48,8 +50,8 @@ window.confirm = () => true;
 runner.runWorkflowByKey = async (key, inputs) => { dispatches.push({ key, inputs }); return true; };
 global.fetch = () => { throw new Error('No real network allowed'); };
 const nodes = {};
-for (const id of ['dpr-topic-start', 'dpr-topic-status', 'dpr-topic-refine', 'dpr-topic-refine-apply', 'dpr-topic-refine-skip', 'dpr-topic-refine-cancel', 'dpr-topic-as-of', 'dpr-topic-refine-text', 'dpr-topic-refine-category', 'dpr-topic-results-entry', 'dpr-topic-results-link']) {
-  nodes[id] = { hidden: true, disabled: false, value: '', style: {}, events: {}, addEventListener(type, handler) { this.events[type] = handler; } };
+for (const id of ['dpr-topic-start', 'dpr-topic-status', 'dpr-topic-refine', 'dpr-topic-refine-apply', 'dpr-topic-refine-skip', 'dpr-topic-refine-cancel', 'dpr-topic-as-of', 'dpr-topic-refine-text', 'dpr-topic-refine-category', 'dpr-topic-results-entry', 'dpr-topic-results-link', 'dpr-topic-keyword-suggestions', 'dpr-topic-keyword-buttons']) {
+  nodes[id] = makeElement();
 }
 nodes['dpr-topic-as-of'].value = '2026-09-12';
 nodes['dpr-topic-refine-text'].value = 'Approximation guarantees only';
@@ -101,6 +103,26 @@ research.mount(root, { getProfiles: () => profiles, getConfig: () => ({}), hasUn
   await nodes['dpr-topic-start'].events.click();
   assert.equal(dispatches.length, 3, 'actual configurable threshold controls refinement, not hardcoded 1500');
   assert.equal(nodes['dpr-topic-refine'].hidden, true);
+  assert.equal(research.__test.keywordSuggestions(source).length, 0, 'one keyword is not advertised as subdividing');
+  const twoKeywords = { ...source, keywords: [...source.keywords, { keyword: 'tour', query: 'tour planning' }] };
+  const originalTwo = JSON.stringify(twoKeywords);
+  profiles = [twoKeywords];
+  threshold = 1500;
+  const plannedBeforeSuggestion = generateCount;
+  await nodes['dpr-topic-start'].events.click();
+  assert.equal(nodes['dpr-topic-keyword-buttons'].children.length, 2);
+  await nodes['dpr-topic-keyword-buttons'].children[1].events.click();
+  assert.equal(generateCount, plannedBeforeSuggestion, 'saved keyword shortcut must not invoke planning model');
+  assert.equal(dispatches.length, 4, 'shortcut only dispatches once');
+  const focused = JSON.parse(dispatches[3].inputs.profile_snapshot);
+  assert.deepEqual(focused.constraint_groups, [['tour']]);
+  assert.equal(focused.keywords[0].query, 'tour planning');
+  assert.ok(focused.description.includes(source.description));
+  assert.equal(JSON.stringify(twoKeywords), originalTwo);
+  const constrained = research.__test.focusKeyword({ ...twoKeywords, constraint_groups: [['existing']] }, twoKeywords.keywords[0]);
+  assert.deepEqual(constrained.constraint_groups, [['existing'], ['routing']]);
+  assert.throws(() => research.__test.focusKeyword({ ...twoKeywords, constraint_groups: [['one'], ['two'], ['three']] }, twoKeywords.keywords[0]));
+  threshold = 2500;
   runner.runWorkflowByKey = async () => undefined;
   await nodes['dpr-topic-start'].events.click();
   assert.ok(nodes['dpr-topic-status'].textContent.includes('未确认工作流已提交'));

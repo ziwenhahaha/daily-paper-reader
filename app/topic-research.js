@@ -12,6 +12,29 @@ window.DPRTopicResearch = (function () {
   };
   const previewThreshold = result => result && Number.isSafeInteger(result.threshold) && result.threshold > 0 ? result.threshold : 1500;
   const dispatchAcknowledged = result => result === true || !!(result && typeof result === 'object' && result.ok !== false && result.success !== false && result.status !== 'failed' && (result.ok === true || result.success === true));
+  const keywordSuggestions = profile => {
+    const seen = new Set();
+    const items = (profile.keywords || []).filter(item => item && item.enabled !== false).filter(item => {
+      const term = String(typeof item === 'string' ? item : item.keyword || item.query || '').trim();
+      if (!term || !/[A-Za-z]/.test(term) || /[\u3400-\u9fff]/.test(term) || seen.has(term)) return false;
+      seen.add(term);
+      return true;
+    });
+    return items.length > 1 ? items.slice(0, 4) : [];
+  };
+  const focusKeyword = (profile, item) => {
+    const term = String(typeof item === 'string' ? item : item.keyword || item.query || '').trim();
+    const source = (profile.keywords || []).find(candidate => candidate && candidate.enabled !== false && String(typeof candidate === 'string' ? candidate : candidate.keyword || candidate.query || '').trim() === term);
+    if (!source) throw new Error('该建议不属于原词条的启用关键词。');
+    const query = typeof source === 'string' ? source : source.query || source.keyword;
+    return window.DPRWorkflowRunner.sanitizeResearchProfile({
+      ...profile,
+      description: `${profile.description || profile.tag}\n保留原需求全部核心边界；本次聚焦已有关键词：${term}\n该关键词原语义：${query}`,
+      refinement: `${profile.refinement ? profile.refinement + '\n' : ''}本次仅聚焦原有关键词「${term}」，不扩展原范围。`,
+      keywords: [source],
+      constraint_groups: [...(profile.constraint_groups || []), [term]],
+    });
+  };
   const refineProfile = async (profile, refinement, category) => {
     const text = String(refinement || '').trim();
     if (!text) throw new Error('请填写本次希望限定的具体范围，或选择继续整个方向。');
@@ -49,6 +72,7 @@ window.DPRTopicResearch = (function () {
       <div id="dpr-topic-refine" class="dpr-topic-refinement" hidden>
         <div class="chat-quick-run-title">候选范围较大，要缩小本次研究范围吗？</div>
         <p class="dpr-task-hint">本任务只询问这一次。也可以继续整个方向，评审预算仍为300篇。</p>
+        <div id="dpr-topic-keyword-suggestions" class="dpr-topic-keyword-suggestions" hidden><p class="dpr-task-hint">也可直接聚焦某个已保存关键词，不调用规划模型；以下不是自动推断的子方向或论文数量。</p><div id="dpr-topic-keyword-buttons"></div></div>
         <label>限定维度 <select id="dpr-topic-refine-category"><option>具体研究问题</option><option>方法或技术</option><option>任务或应用场景</option><option>数据或评测条件</option></select></label>
         <label>本次限定 <textarea id="dpr-topic-refine-text" rows="3" placeholder="描述你想重点研究的具体范围"></textarea></label>
         <p class="dpr-task-hint">限定词将作为组间AND检索条件；文字中的排除要求用于模型评审，不是数据库NOT硬过滤。</p>
@@ -63,6 +87,8 @@ window.DPRTopicResearch = (function () {
     const el = id => root.querySelector('#' + id);
     const status = (text, error = false) => { el('dpr-topic-status').textContent = text; el('dpr-topic-status').style.color = error ? '#c00' : ''; };
     let draft = null;
+    let suggestionItems = [];
+    let suggestionBaseProfile = null;
     let busy = false;
     const lock = value => {
       busy = value;
@@ -98,7 +124,22 @@ window.DPRTopicResearch = (function () {
         const result = await preview();
         const threshold = previewThreshold(result);
         status(previewLabel(result) + `；本次范围细化提示阈值为 ${threshold} 篇。`);
-        if (typeof result.count === 'number' && Number.isFinite(result.count) && result.count > threshold) { el('dpr-topic-refine').hidden = false; return; }
+        if (typeof result.count === 'number' && Number.isFinite(result.count) && result.count > threshold) {
+          suggestionItems = keywordSuggestions(draft.profile);
+          suggestionBaseProfile = draft.profile;
+          el('dpr-topic-keyword-suggestions').hidden = !suggestionItems.length;
+          el('dpr-topic-keyword-buttons').replaceChildren();
+          suggestionItems.forEach((item, index) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'arxiv-tool-btn';
+            button.textContent = '聚焦：' + (typeof item === 'string' ? item : item.keyword || item.query);
+            button.addEventListener('click', () => finishSuggestion(index));
+            el('dpr-topic-keyword-buttons').appendChild(button);
+          });
+          el('dpr-topic-refine').hidden = false;
+          return;
+        }
         await dispatch();
         draft = null;
       } catch (error) { status(error.message || String(error), true); draft = null; }
@@ -120,6 +161,20 @@ window.DPRTopicResearch = (function () {
       } catch (error) { status(error.message || String(error), true); }
       finally { lock(false); }
     };
+    const finishSuggestion = async index => {
+      if (busy || !draft || !suggestionItems[index]) return;
+      lock(true);
+      try {
+        const focused = focusKeyword(suggestionBaseProfile, suggestionItems[index]);
+        draft.profile = focused;
+        const result = await preview();
+        status(previewLabel(result) + '；已聚焦所选已有关键词，不再重复询问。');
+        await dispatch();
+        el('dpr-topic-refine').hidden = true;
+        draft = null;
+      } catch (error) { status(error.message || String(error), true); }
+      finally { lock(false); }
+    };
     el('dpr-topic-refine-apply').addEventListener('click', () => finishRefinement(true));
     el('dpr-topic-refine-skip').addEventListener('click', () => finishRefinement(false));
     el('dpr-topic-refine-cancel').addEventListener('click', () => { if (busy) return; draft = null; el('dpr-topic-refine').hidden = true; status('已取消本次任务。'); });
@@ -128,5 +183,5 @@ window.DPRTopicResearch = (function () {
       if (close) close.click();
     });
   };
-  return { render, mount, continueContent: runId => window.DPRWorkflowRunner.continueTopicResearch(runId), __test: { previewLabel, previewThreshold, dispatchAcknowledged, refineProfile, englishTerms } };
+  return { render, mount, continueContent: runId => window.DPRWorkflowRunner.continueTopicResearch(runId), __test: { previewLabel, previewThreshold, dispatchAcknowledged, refineProfile, englishTerms, keywordSuggestions, focusKeyword } };
 })();

@@ -55,30 +55,40 @@ class EmptyArchiveWorkflowTest(unittest.TestCase):
             for s in workflow["jobs"]["run"]["steps"]
             if s.get("name") == "Commit results"
         )
-        staging = step["run"].split("git commit -m", 1)[0]
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-            (root / "docs/long-range").mkdir(parents=True)
-            (root / "docs/long-range/result.json").write_text("{}")
-            (root / "config.yaml").write_text("subscriptions: {}")
-            env = dict(
-                os.environ,
-                GITHUB_REPOSITORY_OWNER="test",
-                GITHUB_REPOSITORY="test/example",
-            )
-            result = subprocess.run(
-                ["bash", "-e", "-c", staging],
-                cwd=root,
-                env=env,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            staged = subprocess.check_output(
-                ["git", "diff", "--cached", "--name-only"], cwd=root, text=True
-            )
-            self.assertIn("docs/long-range/result.json", staged)
+        # 保留完整条件分支；在首次提交前退出，避免截断 if 导致伪语法错误。
+        staging = (
+            'git() { if [ "$1" = commit ]; then exit 0; fi; command git "$@"; }\n'
+            + step["run"]
+        )
+        for days in ("1", "90", "365"):
+            with self.subTest(days=days), tempfile.TemporaryDirectory() as directory:
+                self.check_daily_staging(directory, staging, days)
+
+    def check_daily_staging(self, directory, staging, days):
+        root = Path(directory)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        (root / "docs/long-range").mkdir(parents=True)
+        (root / "docs/long-range/result.json").write_text("{}")
+        (root / "config.yaml").write_text("subscriptions: {}")
+        env = dict(
+            os.environ,
+            GITHUB_REPOSITORY_OWNER="test",
+            GITHUB_REPOSITORY="test/example",
+            REQUESTED_DAYS=days,
+        )
+        result = subprocess.run(
+            ["bash", "-e", "-c", staging],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        staged = subprocess.check_output(
+            ["git", "diff", "--cached", "--name-only"], cwd=root, text=True
+        )
+        self.assertIn("docs/long-range/result.json", staged)
+        self.assertEqual("config.yaml" in staged.splitlines(), days == "1")
 
 
 if __name__ == "__main__":
