@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import threading
+from itertools import product
 
 from long_range_review import collect_window, fingerprint, keyword_aliases, write_json
 from paper_dates import resolve_publication_date, publication_window_status
@@ -28,12 +29,23 @@ def _boolean(value, default=False):
     return str(value).strip().lower() not in {"false", "0", "no", "off", ""}
 
 
-def build_tasks(config, profile_tag, as_of, conferences=None, stats_snapshot=None):
+def build_tasks(
+    config,
+    profile_tag,
+    as_of,
+    conferences=None,
+    stats_snapshot=None,
+    *,
+    arxiv_days=365,
+    bounded=False,
+):
     """as_of 为排他结束日；滚动 24 个月按日历计算，不按 730 天。"""
     from conference_retrieval import CONFERENCE_DEFAULTS
 
     end = date.fromisoformat(str(as_of))
-    start = end - timedelta(days=365)
+    if arxiv_days not in (90, 365):
+        raise ValueError("专题窗口仅支持90天或365天")
+    start = end - timedelta(days=arxiv_days)
     conf_start = end.replace(
         year=end.year - 2,
         day=min(end.day, calendar.monthrange(end.year - 2, end.month)[1]),
@@ -64,8 +76,40 @@ def build_tasks(config, profile_tag, as_of, conferences=None, stats_snapshot=Non
     if not keywords and not vectors:
         raise ValueError("所选方向没有启用的合法查询")
     review_keywords = [q["query_text"] for q in keywords]
+    groups = selected[0].get("constraint_groups") or []
+    if groups:
+        if (
+            not isinstance(groups, list)
+            or len(groups) > 3
+            or any(
+                not isinstance(g, list)
+                or not 1 <= len(g) <= 8
+                or any(
+                    not isinstance(t, str) or not t.strip() or len(t) > 300 for t in g
+                )
+                for g in groups
+            )
+        ):
+            raise ValueError("检索约束组无效")
+        combinations = list(product(*groups))
+        if len(combinations) > 32:
+            raise ValueError("检索约束组合超过32种，请减少同义词")
+        keywords = [
+            {
+                "query_text": " ".join(parts),
+                "tag": profile_tag,
+                "paper_tag": "keyword:" + profile_tag,
+            }
+            for parts in combinations
+        ]
+        review_keywords = [q["query_text"] for q in keywords]
+        context = " AND ".join("(" + " OR ".join(g) + ")" for g in groups)
+        for query in vectors:
+            query["query_text"] = context + ": " + query["query_text"]
     existing = {q["query_text"].casefold() for q in keywords}
-    for alias in keyword_aliases(profile_tag) + keyword_aliases(selected[0]):
+    for alias in (
+        [] if groups else keyword_aliases(profile_tag) + keyword_aliases(selected[0])
+    ):
         if alias.casefold() not in existing:
             keywords.append(
                 {
@@ -110,7 +154,12 @@ def build_tasks(config, profile_tag, as_of, conferences=None, stats_snapshot=Non
                         "query": query,
                         "start": cursor.isoformat(),
                         "end_exclusive": stop.isoformat(),
-                        "limit": 500 if lane == "bm25" else 100,
+                        "limit": (
+                            (100 if lane == "bm25" else 50)
+                            if bounded
+                            else (500 if lane == "bm25" else 100)
+                        ),
+                        **({"bounded": True} if bounded else {}),
                     }
                 )
                 cursor = stop
@@ -150,6 +199,10 @@ def build_tasks(config, profile_tag, as_of, conferences=None, stats_snapshot=Non
     }
     profile["queries"] = [q["query_text"] for q in vectors]
     profile["review_keywords"] = review_keywords
+    if groups:
+        profile["constraint_groups"] = copy.deepcopy(groups)
+    if selected[0].get("refinement"):
+        profile["refinement"] = selected[0]["refinement"]
     plan = {
         "version": VERSION,
         "profile": profile,
@@ -161,6 +214,7 @@ def build_tasks(config, profile_tag, as_of, conferences=None, stats_snapshot=Non
         "missing_inventory": missing,
         "unknown_inventory": unknown,
         "disabled_sources": disabled,
+        **({"bounded": True} if bounded else {}),
     }
     plan["windows"] = {
         "arxiv": {"start": start.isoformat(), "end_exclusive": end.isoformat()},
@@ -178,6 +232,7 @@ def build_tasks(config, profile_tag, as_of, conferences=None, stats_snapshot=Non
                 "profile": profile,
                 "windows": plan["windows"],
                 "conferences": sources,
+                **({"bounded": True} if bounded else {}),
             }
         )[:12]
     )
@@ -308,6 +363,19 @@ def run_retrieval(plan, config, root):
         key = fingerprint(identity)
         path = cache / "tasks" / (key + ".json")
         rows = _read_cache(path, key)
+        # 已有全年缓存是本次有界查询的超集，按同一查询分数取子集，不重新联网。
+        if rows is None and task.get("bounded"):
+            old_task = {k: v for k, v in task.items() if k != "bounded"}
+            old_task["limit"] = 500 if task["lane"] == "bm25" else 100
+            old_key = fingerprint({**identity, "task": old_task})
+            previous = _read_cache(cache / "tasks" / (old_key + ".json"), old_key)
+            if previous is not None:
+                score_key = "score" if task["lane"] == "bm25" else "similarity"
+                rows = sorted(
+                    previous,
+                    key=lambda p: (-float(p.get(score_key) or 0), str(p.get("id"))),
+                )[: task["limit"]]
+                write_json(path, {"key": key, "status": "done", "rows": rows})
         restored = rows is not None
         if rows is None:
             vector = None
@@ -378,8 +446,18 @@ def run_retrieval(plan, config, root):
                     tzinfo=timezone.utc
                 )
                 rows = collect_window(
-                    call, a, b, exhaustive=task["lane"] == "bm25", limit=task["limit"]
+                    call,
+                    a,
+                    b,
+                    exhaustive=task["lane"] == "bm25" and not task.get("bounded"),
+                    limit=task["limit"],
                 )
+                if task.get("bounded"):
+                    score_key = "score" if task["lane"] == "bm25" else "similarity"
+                    rows = sorted(
+                        rows,
+                        key=lambda p: (-float(p.get(score_key) or 0), str(p.get("id"))),
+                    )[: task["limit"]]
             write_json(path, {"key": key, "status": "done", "rows": rows})
         _validate_rows(rows, task)
         return rows, {
@@ -425,7 +503,7 @@ def run_retrieval(plan, config, root):
         statuses.append(status_entry)
         conference = task["source"] != "arxiv"
         key = status_entry["key"]
-        for raw in rows:
+        for rank, raw in enumerate(rows, 1):
             row = dict(raw)
             if not row.get("id"):
                 raise RuntimeError("RPC 返回缺少论文 ID 的记录")
@@ -463,6 +541,7 @@ def run_retrieval(plan, config, root):
                 "lane": task["lane"],
                 "query_text": task["query"]["query_text"],
                 "task_key": key,
+                "rank": rank,
             }
             paper_key = (task["source"], str(row["id"]))
             if paper_key not in papers:
@@ -475,8 +554,16 @@ def run_retrieval(plan, config, root):
         "coverage": {
             "all_tasks_completed": True,
             "guarantees_all_relevant_papers": False,
-            "arxiv_keyword": "exhaustive_within_configured_queries_and_database",
-            "arxiv_vector": "top100_per_query_per_30_days",
+            "arxiv_keyword": (
+                "top100_per_query"
+                if plan.get("bounded")
+                else "exhaustive_within_configured_queries_and_database"
+            ),
+            "arxiv_vector": (
+                "top50_per_query_per_30_days"
+                if plan.get("bounded")
+                else "top100_per_query_per_30_days"
+            ),
             "conference_keyword": "top50_per_query_per_conference_year",
             "conference_vector": "top50_per_query_per_conference_year",
             "missing_inventory": plan["missing_inventory"],

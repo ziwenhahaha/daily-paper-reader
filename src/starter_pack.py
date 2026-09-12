@@ -9,16 +9,14 @@ import json
 import os
 from pathlib import Path
 
-from long_range_review import review_batch, review_cache_path, write_json
-from paper_dedupe import deduplicate_papers
-from starter_pack_retrieval import build_tasks, run_retrieval
+from long_range_review import review_batch, review_cache_path
 
 
 def review_candidates(
-    papers, topic, root, max_new_reviews=1000, *, client_factory=None, model_key=None
+    papers, topic, root, max_new_reviews=300, *, client_factory=None, model_key=None
 ):
-    if max_new_reviews < 0:
-        raise ValueError("评审预算不能为负数；0表示本轮不新增付费评审")
+    if not 0 <= max_new_reviews <= 300:
+        raise ValueError("评审预算必须为0–300；0表示本轮不新增付费评审")
     cache = Path(root) / ".local-runs/long-range-cache"
     if model_key is None:
         model_key = [
@@ -142,69 +140,22 @@ def run_pack(
     root,
     *,
     conferences=None,
-    max_new_reviews=1000,
+    max_new_reviews=300,
     retrieve_only=False,
 ):
-    root = Path(root)
-    plan = build_tasks(config, profile_tag, as_of, conferences)
-    folder = root / ".local-runs/starter-pack-cache/runs" / plan["run_id"]
-    write_json(folder / "plan.json", plan)
-    manifest = {
-        "run_id": plan["run_id"],
-        "status": "retrieving",
-        "windows": plan["windows"],
-        "profile": plan["profile"],
-        "conferences": plan["conferences"],
-    }
-    write_json(folder / "manifest.json", manifest)
-    try:
-        retrieval = run_retrieval(plan, config, root)
-        write_json(folder / "retrieval.json", retrieval)
-        from starter_pack_publications import verify_publications
+    from topic_research import run_research
 
-        checked = verify_publications(retrieval["papers"], root, resolve_pdfs=False)
-        write_json(folder / "verified-publications.json", checked)
-        retrieval["papers"] = [
-            p for p in checked if p.get("conference_acceptance_status") != "rejected"
-        ]
-        retrieval["coverage"]["publication_acceptance"] = {
-            status: sum(
-                p.get("conference_acceptance_status") == status for p in checked
-            )
-            for status in ("accepted", "unverified", "rejected")
-        }
-        merged = deduplicate_papers(retrieval["papers"])
-        write_json(folder / "merged.json", merged)
-        manifest.update(
-            status="retrieved",
-            coverage=retrieval["coverage"],
-            tasks=retrieval["tasks"],
-            retrieved_records=len(retrieval["papers"]),
-            unique_papers=len(merged["papers"]),
-            possible_duplicates=len(merged["possible_duplicates"]),
-        )
-        if not retrieve_only:
-            profile = plan["profile"]
-            topic = {
-                "tag": profile["tag"],
-                "description": profile.get("description") or "",
-                "queries": profile.get("queries") or [],
-                "keywords": profile.get("review_keywords") or [],
-            }
-            reviewed = review_candidates(merged["papers"], topic, root, max_new_reviews)
-            write_json(folder / "reviewed.json", reviewed)
-            manifest.update(
-                status="needs_resume" if reviewed["remaining"] else "reviewed",
-                remaining=reviewed["remaining"],
-                new_reviews=reviewed["new_reviews"],
-                cached_reviews=reviewed["cached_reviews"],
-            )
-        write_json(folder / "manifest.json", manifest)
-        return manifest
-    except Exception as error:
-        manifest.update(status="failed", error_type=type(error).__name__)
-        write_json(folder / "manifest.json", manifest)
-        raise
+    return run_research(
+        config,
+        profile_tag,
+        "starter",
+        as_of,
+        root,
+        conferences=conferences,
+        max_new_reviews=max_new_reviews,
+        retrieve_only=retrieve_only,
+        publish=False,
+    )
 
 
 def main():
@@ -224,15 +175,20 @@ def main():
     parser.add_argument(
         "--conferences", default="", help="留空按当前库存选择所有支持会议"
     )
-    parser.add_argument("--max-new-reviews", type=int, default=1000)
+    parser.add_argument("--max-new-reviews", type=int, default=300)
     parser.add_argument("--retrieve-only", action="store_true")
-    parser.add_argument("--content-limit", type=int, default=12)
+    parser.add_argument(
+        "--content-limit",
+        type=int,
+        default=10,
+        help="本轮内容生成预算；最终名单上限固定100",
+    )
     parser.add_argument("--publish", action="store_true")
     args = parser.parse_args()
-    if not 0 <= args.max_new_reviews <= 5000:
-        parser.error("单次新增评审预算范围为0–5000；固定as-of重复运行即可续跑")
-    if not 1 <= args.content_limit <= 20:
-        parser.error("精选内容上限范围为1–20")
+    if not 0 <= args.max_new_reviews <= 300:
+        parser.error("单次新增评审预算范围为0–300")
+    if not 0 <= args.content_limit <= 100:
+        parser.error("每轮内容预算范围为0–100")
     config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8")) or {}
     result = run_pack(
         config,
@@ -246,7 +202,8 @@ def main():
     if args.publish:
         from starter_pack_publish import publish_pack
 
-        publish_pack(args.root, result, args.content_limit)
+        result["content_batch"] = args.content_limit
+        publish_pack(args.root, result, 100)
     print(
         json.dumps(
             {

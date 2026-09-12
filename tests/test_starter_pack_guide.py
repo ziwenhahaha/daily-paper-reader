@@ -147,3 +147,16 @@ def test_cache_key_covers_evidence_and_model(papers):
     assert key != guide_cache_key("ATSP", changed, "model", "endpoint")
     assert key != guide_cache_key("ATSP", papers, "model2", "endpoint")
     assert key != guide_cache_key("ATSP", papers, "model", "endpoint2")
+
+
+def test_guide_receives_all_100_with_short_representative_reading_route(guide):
+    papers = [
+        {"id": f"arxiv:{i}", "title": f"Paper {i}", "abstract": "Evidence"}
+        for i in range(100)
+    ]
+    client = Mock()
+    client.chat_structured.return_value = {"parsed": guide}
+    result = generate_guide("RL", papers, client)
+    payload = json.loads(client.chat_structured.call_args.args[0][1]["content"])
+    assert len(payload["papers"]) == 100
+    assert len(result["reading_order"]) == 1

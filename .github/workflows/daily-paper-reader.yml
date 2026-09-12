@@ -37,6 +37,8 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    outputs:
+      research_days: ${{ steps.window.outputs.days }}
     env:
       DPR_MODELS_REMOTE_ONLY: "1"
       DPR_EMBED_ALLOW_LOCAL_FALLBACK: "0"
@@ -96,6 +98,7 @@ jobs:
               raise SystemExit('fetch_days 必须在 1–365 天之间')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'long_range={str(days > 30).lower()}\n')
+              output.write(f'days={days}\n')
           PY
 
       - name: Cache Python deps
@@ -124,7 +127,10 @@ jobs:
       - name: Restore long-range review progress
         uses: actions/cache/restore@v5
         with:
-          path: .local-runs/long-range-cache
+          path: |
+            .local-runs/long-range-cache
+            .local-runs/starter-pack-cache
+            .local-runs/topic-research-rerank-cache
           key: long-range-v1-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             long-range-v1-${{ github.ref_name }}-
@@ -166,10 +172,13 @@ jobs:
 
 
       - name: Save long-range review progress
-        if: always() && hashFiles('.local-runs/long-range-cache/**') != ''
+        if: always() && (hashFiles('.local-runs/long-range-cache/**') != '' || hashFiles('.local-runs/starter-pack-cache/**') != '')
         uses: actions/cache/save@v5
         with:
-          path: .local-runs/long-range-cache
+          path: |
+            .local-runs/long-range-cache
+            .local-runs/starter-pack-cache
+            .local-runs/topic-research-rerank-cache
           key: long-range-v1-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload long-range report
@@ -177,9 +186,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: arxiv-long-range-results
+          include-hidden-files: true
           path: |
             docs/long-range/
+            docs/starter-pack/
             docs/*-*/
+            .local-runs/starter-pack-cache/runs/
           retention-days: 7
           if-no-files-found: error
 
@@ -192,10 +204,24 @@ jobs:
 
       - name: Commit results
         if: github.repository != 'ziwenhahaha/daily-paper-reader'
+        env:
+          REQUESTED_DAYS: ${{ steps.window.outputs.days }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           branch="${GITHUB_REF_NAME:-main}"
+
+          # 新90/365任务只发布结果，不改日常配置、不自动覆盖远端冲突。
+          if [ "$REQUESTED_DAYS" = "90" ] || [ "$REQUESTED_DAYS" = "365" ]; then
+            if [ "$GITHUB_REPOSITORY" = 'ziwenhahaha/daily-paper-reader' ]; then exit 0; fi
+            git add docs
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m '[update] 更新专题回溯结果' -m 'Co-Authored-By: xixi <3495302215@qq.com>'
+            git fetch origin "$branch"
+            git rebase "origin/$branch"
+            git push origin HEAD:"$branch"
+            exit 0
+          fi
 
           shopt -s nullglob
           paths=(docs config.yaml)
@@ -239,3 +265,24 @@ jobs:
             fi
           fi
           git push origin HEAD:"$branch"
+
+  verify-topic-pages:
+    needs: run
+    if: github.repository != 'ziwenhahaha/daily-paper-reader' && (needs.run.outputs.research_days == '90' || needs.run.outputs.research_days == '365')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - run: python -m pip install requests
+      - name: Verify existing Pages publication
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/request_pages_build.py --timeout 600

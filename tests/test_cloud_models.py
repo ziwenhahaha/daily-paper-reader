@@ -26,7 +26,7 @@ class CloudModelTests(unittest.TestCase):
                 )
             local.assert_not_called()
 
-    def test_long_range_runs_without_torch_or_sentence_transformers(self):
+    def test_legacy_nonstandard_window_runs_without_local_models(self):
         remote = Mock(is_remote=True)
         remote.encode.return_value = np.ones((1, 384), dtype=np.float32)
         plan = {
@@ -61,7 +61,7 @@ class CloudModelTests(unittest.TestCase):
         ) as rpc, patch.object(
             long_range_review, "publish_report", return_value={"groups": [{"total": 0}]}
         ):
-            long_range_review.run_review({}, 365, ROOT, "20250910-20260909")
+            long_range_review.run_review({}, 180, ROOT, "20260314-20260909")
             self.assertEqual(len(rpc.call_args.kwargs["query_embedding"]), 384)
             self.assertIsInstance(remote.encode.call_args.args[0], list)
             self.assertFalse(remote.allow_local_fallback)

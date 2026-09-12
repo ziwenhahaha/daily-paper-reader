@@ -326,6 +326,19 @@ def rebuild_report_index(root, *, with_fulltext=False, with_reading=False):
 
 def run_review(config, days, root, run_token):
     days = validate_days(days)
+    if days in (90, 365):
+        # 所有90/365入口复用同一预算，旧workflow也不能绕开最终100篇上限。
+        from topic_research import run_research
+        current_plan = build_pipeline_inputs(config)
+        if not current_plan.get("bm25_queries") and not current_plan.get("embedding_queries"):
+            raise RuntimeError("所选专题没有启用的关键词或语义查询")
+        profiles = current_plan.get("profiles") or []
+        if len(profiles) != 1:
+            raise ValueError("90天/365天专题研究请明确选择一个已保存词条")
+        end = datetime.strptime(run_token[-8:], "%Y%m%d").date() + timedelta(days=1)
+        code_root = Path(__file__).resolve().parents[1]
+        publish = Path(root).resolve() != code_root or os.getenv("GITHUB_REPOSITORY", "").lower() not in ("", "ziwenhahaha/daily-paper-reader")
+        return run_research(config, profiles[0]["tag"], str(days), end.isoformat(), root, publish=publish)
     backend = get_source_backend(config, "arxiv")
     if (
         not backend.get("enabled")

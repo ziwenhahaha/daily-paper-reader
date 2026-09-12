@@ -90,14 +90,14 @@ def _project_version(work, version):
     return projected
 
 
-def select_reading_papers(papers, content_limit=12):
+def select_reading_papers(papers, content_limit=100):
     """日期边界不确定及只有录用标题的论文不进入精选阅读。"""
     if (
         isinstance(content_limit, bool)
         or not isinstance(content_limit, int)
-        or not 0 <= content_limit <= 20
+        or not 0 <= content_limit <= 100
     ):
-        raise ValueError("精选内容数量必须为 0–20 的整数")
+        raise ValueError("最终论文数量必须为 0–100 的整数")
     selected = []
     for row in papers:
         if row.get("bucket") not in {"core", "related"}:
@@ -112,7 +112,6 @@ def select_reading_papers(papers, content_limit=12):
     return sorted(
         selected,
         key=lambda p: (
-            p.get("bucket") != "core",
             -float(p.get("score") or 0),
             str(p.get("canonical_id") or p.get("id") or ""),
         ),
@@ -245,7 +244,7 @@ def _route_is_selected_version(docs, route, paper, generator):
     return bool(_identities(old) & _identities(current))
 
 
-def _merge_existing_route_tag(docs, route, tag, generator):
+def _merge_existing_route_tag(docs, route, tag, generator, reading_metadata=None):
     """跨专题复用同页只合并标签，不新建日期、重写笔记或增加运行次数。"""
     document = docs / (route + ".md")
     text = document.read_text(encoding="utf-8")
@@ -262,6 +261,7 @@ def _merge_existing_route_tag(docs, route, tag, generator):
     for path in docs.rglob("_daily_state.json"):
         state = json.loads(path.read_text(encoding="utf-8"))
         changed = False
+        section_changed = False
         for row in state.get("papers", []):
             if _safe_route(docs, row.get("route")) != route:
                 continue
@@ -270,14 +270,83 @@ def _merge_existing_route_tag(docs, route, tag, generator):
             if new_tag_record not in tags:
                 tags.append(new_tag_record)
                 changed = True
+            if (reading_metadata or {}).get("reading_section") == "deep" and row.get(
+                "section"
+            ) != "deep":
+                row["section"] = "deep"
+                changed = section_changed = True
+            evidence = (reading_metadata or {}).get("evidence")
+            if evidence and row.get("evidence") != evidence:
+                row["evidence"] = evidence
+                changed = True
         if changed:
             # 不经过merge_daily_state，避免一次换专题被记作一次新日报运行。
             path.write_text(
                 json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
+        if section_changed and state.get("date"):
+            deep, quick, evidence = entries_from_state(state)
+            generator.update_sidebar(
+                str(docs / "_sidebar.md"),
+                state["date"],
+                deep,
+                quick,
+                evidence,
+                date_label=state.get("date_label"),
+                replace_existing=True,
+            )
+
+
+def _sync_sidebar_research_marker(docs, route, generator):
+    """标记只来自真实阅读页，不能借当前任务把历史日报迁移进专题。"""
+    document = docs / (route + ".md")
+    sidebar = docs / "_sidebar.md"
+    if not document.exists() or not sidebar.exists():
+        return
+    metadata = generator._parse_front_matter(document.read_text(encoding="utf-8"))
+    if not metadata.get("research_run_id"):
+        return
+    markers = {
+        key: metadata[key]
+        for key in ("research_run_id", "research_mode")
+        if metadata.get(key)
+    }
+    old = sidebar.read_text(encoding="utf-8")
+
+    def update(match):
+        anchor = match[0]
+        href = re.search(r'href=["\']([^"\']+)', anchor)
+        payload_match = re.search(r'data-sidebar-item=["\']([^"\']*)["\']', anchor)
+        if (
+            not href
+            or not payload_match
+            or _safe_route(docs, html.unescape(href[1])) != route
+        ):
+            return anchor
+        payload = json.loads(html.unescape(payload_match[1]))
+        if all(payload.get(key) == value for key, value in markers.items()):
+            return anchor
+        payload.update(markers)
+        encoded = html.escape(json.dumps(payload, ensure_ascii=False), quote=True)
+        return (
+            anchor[: payload_match.start(1)] + encoded + anchor[payload_match.end(1) :]
+        )
+
+    updated = re.sub(r"<a\b[^>]*>", update, old)
+    if updated != old:
+        sidebar.write_text(updated, encoding="utf-8")
 
 
 def _attach_navigation(docs, paper, route, metadata, tag, token, label, generator):
+    _attach_navigation_record(
+        docs, paper, route, metadata, tag, token, label, generator
+    )
+    _sync_sidebar_research_marker(docs, route, generator)
+
+
+def _attach_navigation_record(
+    docs, paper, route, metadata, tag, token, label, generator
+):
     """原有会议/日报合同，不另造阅读器或覆写其它日期数据。"""
     sidebar = docs / "_sidebar.md"
     old = sidebar.read_text(encoding="utf-8") if sidebar.exists() else ""
@@ -314,7 +383,13 @@ def _attach_navigation(docs, paper, route, metadata, tag, token, label, generato
     if found:
         if refreshed != old:
             sidebar.write_text(refreshed, encoding="utf-8")
-        _merge_existing_route_tag(docs, route, tag, generator)
+        _merge_existing_route_tag(
+            docs,
+            route,
+            tag,
+            generator,
+            metadata if paper.get("reading_status") == "complete" else None,
+        )
         return
     conference = _conference(paper)
     if conference:
@@ -398,7 +473,48 @@ def _attach_navigation(docs, paper, route, metadata, tag, token, label, generato
 
 
 def prepare_reading(
-    papers, root, profile_tag, run_id, arxiv_start, as_of, content_limit=12
+    papers,
+    root,
+    profile_tag,
+    run_id,
+    arxiv_start,
+    as_of,
+    content_limit=100,
+    max_new_content=10,
+):
+    if (
+        isinstance(max_new_content, bool)
+        or not isinstance(max_new_content, int)
+        or not 0 <= max_new_content <= 100
+    ):
+        raise ValueError("本轮内容生成预算必须为0–100的整数")
+    # 先确保固定名单全部可访问，某篇生成失败也不会令后面的基础页消失。
+    result = _prepare_reading_batch(
+        papers, root, profile_tag, run_id, arxiv_start, as_of, content_limit, 0
+    )
+    if max_new_content:
+        result = _prepare_reading_batch(
+            result,
+            root,
+            profile_tag,
+            run_id,
+            arxiv_start,
+            as_of,
+            content_limit,
+            max_new_content,
+        )
+    return result
+
+
+def _prepare_reading_batch(
+    papers,
+    root,
+    profile_tag,
+    run_id,
+    arxiv_start,
+    as_of,
+    content_limit,
+    max_new_content,
 ):
     """生成精选原生阅读内容；可恢复失败抛错，官方缺全文明确 unavailable。"""
     root = Path(root).resolve()
@@ -421,6 +537,7 @@ def prepare_reading(
     end = date.fromisoformat(str(as_of)[:10]) - timedelta(days=1)
     token, label = f"{start:%Y%m%d}-{end:%Y%m%d}", f"{start} ～ {end}"
     client = None
+    generated_count = 0
     for paper in selected:
         versions = paper.get("versions") or []
         identities = _identities(paper)
@@ -536,11 +653,23 @@ def prepare_reading(
                     text, _ = generator.upsert_front_matter_field(
                         text, key, generator.yaml_escape_value(str(value))
                     )
-            for key in ("id", "doi", "canonical_id"):
+            for key in (
+                "id",
+                "doi",
+                "canonical_id",
+                "research_run_id",
+                "research_mode",
+            ):
                 if paper.get(key):
                     text, _ = generator.upsert_front_matter_field(
                         text, key, generator.yaml_escape_value(str(paper[key]))
                     )
+            text += (
+                "\n\n## 专题评审\n\n"
+                + f"专题相关性评分：{paper.get('score', '')}/10。\n\n"
+                + str(paper.get("reason") or "")
+                + "\n"
+            )
             document.write_text(text, encoding="utf-8")
         current_text = document.read_text(encoding="utf-8")
         metadata = generator._parse_front_matter(current_text)
@@ -584,6 +713,69 @@ def prepare_reading(
             pdf = resolve_conference_pdf_url(paper)
         paper["pdf_url"] = pdf
         txt = document.with_suffix(".txt")
+        cached_text = txt.read_text(encoding="utf-8") if txt.exists() else ""
+        fulltext_ready = bool(
+            cached_text and generator.is_usable_paper_text(cached_text)
+        )
+        wanted_deep = (
+            paper.get("bucket") == "core" or metadata.get("reading_section") == "deep"
+        )
+        content_complete = (
+            all(
+                metadata.get(key)
+                for key in (
+                    "title_zh",
+                    "tldr",
+                    "motivation",
+                    "method",
+                    "result",
+                    "conclusion",
+                )
+            )
+            and "## 摘要" in current_text
+        )
+        content_complete = content_complete and (
+            not wanted_deep
+            or bool(
+                generator.extract_section_tail(current_text, "论文详细总结（自动生成）")
+            )
+        )
+        paper["content_generated_this_run"] = False
+        paper["content_attempted_this_run"] = False
+        if content_complete and fulltext_ready or generated_count >= max_new_content:
+            paper["reading_status"] = (
+                "complete" if content_complete and fulltext_ready else "pending"
+            )
+            paper["fulltext_status"] = "ready" if fulltext_ready else "pending"
+            if not fulltext_ready and document.with_suffix(".fulltext.json").exists():
+                fulltext_state = json.loads(
+                    document.with_suffix(".fulltext.json").read_text(encoding="utf-8")
+                )
+                if fulltext_state.get("status") == "unavailable":
+                    paper["fulltext_status"] = "unavailable"
+                    paper["reading_reason"] = fulltext_state.get("reason", "")
+            paper["tldr"] = metadata.get("tldr") or ""
+            paper["canonical_evidence"] = metadata.get("evidence") or ""
+            pending_text, _ = generator.upsert_front_matter_field(
+                current_text,
+                "reading_status",
+                generator.yaml_escape_value(paper["reading_status"]),
+            )
+            marker = "<!-- research-reading-pending -->\n中文总结与全文内容待生成；当前仅提供原始论文元数据与摘要。\n<!-- /research-reading-pending -->"
+            if paper["reading_status"] == "pending" and marker not in pending_text:
+                pending_text = pending_text.rstrip() + "\n\n" + marker + "\n"
+            if pending_text != current_text:
+                document.write_text(pending_text, encoding="utf-8")
+            _attach_navigation(
+                docs, paper, route, metadata, profile_tag, token, label, generator
+            )
+            for identity in identities:
+                routes = existing.setdefault(identity, [])
+                if route not in routes:
+                    routes.append(route)
+            continue
+        generated_count += 1
+        paper["content_attempted_this_run"] = True
         unavailable = ""
         try:
             if not pdf and not txt.exists():
@@ -649,11 +841,27 @@ def prepare_reading(
                 paper, section, str(document), str(txt), client, require_complete=True
             )
         paper["reading_status"] = "unavailable" if unavailable else "complete"
+        paper["content_generated_this_run"] = bool(
+            not complete or (not fulltext_ready and not unavailable)
+        )
         paper["tldr"] = metadata.get("tldr") or ""
         paper["canonical_evidence"] = metadata.get("evidence") or ""
         paper["fulltext_status"] = "unavailable" if unavailable else "ready"
         if unavailable:
             paper["reading_reason"] = unavailable
+        saved_text = document.read_text(encoding="utf-8")
+        saved_text = re.sub(
+            r"\n*<!-- research-reading-pending -->.*?<!-- /research-reading-pending -->\n?",
+            "\n",
+            saved_text,
+            flags=re.S,
+        )
+        saved_text, _ = generator.upsert_front_matter_field(
+            saved_text,
+            "reading_status",
+            generator.yaml_escape_value(paper["reading_status"]),
+        )
+        document.write_text(saved_text, encoding="utf-8")
         _attach_navigation(
             docs, paper, route, metadata, profile_tag, token, label, generator
         )

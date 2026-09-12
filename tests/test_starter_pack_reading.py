@@ -28,6 +28,173 @@ def paper(pid="2501.12345v1", **changes):
 
 
 class ReadingTests(unittest.TestCase):
+    def test_sidebar_task_marker_only_comes_from_document_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as root:
+            docs = Path(root) / "docs"
+            docs.mkdir()
+            generator = self.generator()
+            route = "20250911-20260910/2501.00001"
+            document = docs / (route + ".md")
+            document.parent.mkdir(parents=True)
+            document.write_text("Existing")
+            payload = {"title": "Paper", "tags": [{"kind": "query", "label": "RL"}]}
+            sidebar = docs / "_sidebar.md"
+            original = f'<a href="#/{route}" data-sidebar-item="{html.escape(json.dumps(payload), quote=True)}">Paper</a>'
+            sidebar.write_text(original)
+            reading._sync_sidebar_research_marker(docs, route, generator)
+            self.assertEqual(sidebar.read_text(), original)
+            generator._parse_front_matter.return_value = {
+                "research_run_id": "original-task",
+                "research_mode": "starter",
+            }
+            reading._sync_sidebar_research_marker(docs, route, generator)
+            actual = json.loads(
+                html.unescape(
+                    __import__("re").search(
+                        r'data-sidebar-item="([^"]+)"', sidebar.read_text()
+                    )[1]
+                )
+            )
+            self.assertEqual(actual["research_run_id"], "original-task")
+            self.assertEqual(actual["research_mode"], "starter")
+            self.assertEqual(actual["tags"], payload["tags"])
+            before = sidebar.read_bytes()
+            reading._sync_sidebar_research_marker(docs, route, generator)
+            self.assertEqual(sidebar.read_bytes(), before)
+
+    def test_top100_score_order_and_zero_budget_publishes_pending_without_model(self):
+        rows = [paper(str(i), score=7, bucket="related") for i in range(100)]
+        rows[0].update(score=9)
+        rows[1].update(score=8, bucket="core")
+        self.assertEqual(len(reading.select_reading_papers(rows)), 100)
+        rows[0]["bucket"] = "related"
+        self.assertEqual(reading.select_reading_papers(rows)[0]["id"], "0")
+        generator = self.generator()
+        with tempfile.TemporaryDirectory() as root, patch.object(
+            reading, "_generator", return_value=generator
+        ):
+            result = reading.prepare_reading(
+                rows[:3],
+                root,
+                "RL",
+                "run",
+                "2025-09-11",
+                "2026-09-11",
+                max_new_content=0,
+            )
+            self.assertEqual(len(result), 3)
+            self.assertTrue(all(row["reading_status"] == "pending" for row in result))
+            self.assertTrue(
+                all(
+                    (Path(root) / "docs" / (row["route"] + ".md")).exists()
+                    for row in result
+                )
+            )
+            generator.create_llm_client.assert_not_called()
+            generator.ensure_text_content.assert_not_called()
+
+    def test_generation_budget_one_keeps_all_three_pages_accessible(self):
+        generator = self.generator()
+        rows = [paper(f"2501.0000{i}", score=9 - i) for i in range(3)]
+        with tempfile.TemporaryDirectory() as root, patch.object(
+            reading, "_generator", return_value=generator
+        ):
+            result = reading.prepare_reading(
+                rows, root, "RL", "run", "2025-09-11", "2026-09-11", max_new_content=1
+            )
+            self.assertEqual(
+                [p["reading_status"] for p in result],
+                ["complete", "pending", "pending"],
+            )
+            self.assertEqual(
+                [p["content_generated_this_run"] for p in result], [True, False, False]
+            )
+            self.assertEqual(generator.ensure_reading_content.call_count, 1)
+            self.assertEqual(generator.ensure_text_content.call_count, 1)
+            self.assertTrue(
+                all(
+                    (Path(root) / "docs" / (p["route"] + ".md")).exists()
+                    for p in result
+                )
+            )
+
+    def test_failure_does_not_prevent_later_base_pages(self):
+        generator = self.generator()
+        generator.ensure_reading_content.side_effect = RuntimeError("未完整生成")
+        with tempfile.TemporaryDirectory() as root, patch.object(
+            reading, "_generator", return_value=generator
+        ):
+            with self.assertRaisesRegex(RuntimeError, "未完整生成"):
+                reading.prepare_reading(
+                    [paper("2501.00001"), paper("2501.00002")],
+                    root,
+                    "RL",
+                    "run",
+                    "2025-09-11",
+                    "2026-09-11",
+                    max_new_content=1,
+                )
+            for pid in ("2501.00001", "2501.00002"):
+                self.assertTrue(
+                    (Path(root) / f"docs/20250911-20260910/{pid}.md").exists()
+                )
+
+    def test_complete_cached_paper_is_free_and_budget_applies_only_to_missing_content(
+        self,
+    ):
+        generator = self.generator()
+        complete = {
+            key: "已有"
+            for key in (
+                "title_zh",
+                "tldr",
+                "motivation",
+                "method",
+                "result",
+                "conclusion",
+            )
+        }
+        generator._parse_front_matter.side_effect = lambda text: (
+            {
+                **complete,
+                "id": "2501.00001",
+                "reading_section": "deep",
+                "tags": ["query:RL"],
+            }
+            if "CACHED" in text
+            else {}
+        )
+        generator.extract_section_tail.return_value = "总结（完）"
+        generator.is_usable_paper_text.return_value = True
+        with tempfile.TemporaryDirectory() as root, patch.object(
+            reading, "_generator", return_value=generator
+        ):
+            docs = Path(root) / "docs"
+            document = docs / "20250101-20251231/2501.00001.md"
+            document.parent.mkdir(parents=True)
+            document.write_text("CACHED\n## 摘要\n用户原笔记")
+            document.with_suffix(".txt").write_text("真实已有全文")
+            (docs / "_sidebar.md").write_text(
+                '<a href="#/20250101-20251231/2501.00001">Old</a>'
+            )
+            rows = [
+                paper("2501.00001", score=9),
+                paper("2501.00002", score=8),
+                paper("2501.00003", score=7),
+            ]
+            result = reading.prepare_reading(
+                rows, root, "RL", "run", "2025-09-11", "2026-09-11", max_new_content=1
+            )
+            self.assertEqual(
+                [p["reading_status"] for p in result],
+                ["complete", "complete", "pending"],
+            )
+            self.assertEqual(
+                [p["content_generated_this_run"] for p in result], [False, True, False]
+            )
+            self.assertEqual(generator.ensure_text_content.call_count, 1)
+            self.assertEqual(generator.ensure_reading_content.call_count, 1)
+
     def test_ineligible_representative_projects_qualified_arxiv_version(self):
         arxiv = paper(
             "2509.20384", published="2025-09-24", publication_date="2025-09-24"
@@ -248,7 +415,7 @@ class ReadingTests(unittest.TestCase):
             paper("5", abstract=""),
         ]
         result = reading.select_reading_papers(rows)
-        self.assertEqual([row["id"] for row in result], ["2501.12345v1", "2"])
+        self.assertEqual([row["id"] for row in result], ["2", "2501.12345v1"])
         mixed = paper(
             versions=[
                 {"publication_window_status": "uncertain"},
@@ -270,7 +437,7 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(reading.select_reading_papers([unverified]), [])
         unverified["versions"].append(paper("2501.12345v1"))
         self.assertEqual(len(reading.select_reading_papers([unverified])), 1)
-        for invalid in (21, -1, True, 1.5):
+        for invalid in (101, -1, True, 1.5):
             with self.assertRaises(ValueError):
                 reading.select_reading_papers([], invalid)
 
@@ -324,7 +491,7 @@ class ReadingTests(unittest.TestCase):
                 (Path(root) / "docs/20250911-20260910/_daily_state.json").read_text()
             )
             self.assertEqual(state["papers"][0]["paper_id"], "2501.12345v1")
-            generator.update_sidebar.assert_called_once()
+            self.assertGreaterEqual(generator.update_sidebar.call_count, 1)
             self.assertEqual(len(self.verify_publications.call_args.args[0]), 1)
             self.assertTrue(self.verify_publications.call_args.kwargs["resolve_pdfs"])
 
@@ -416,7 +583,7 @@ class ReadingTests(unittest.TestCase):
                                 "2025-09-11",
                                 "2026-09-11",
                             )
-                        generator.update_sidebar.assert_not_called()
+                        generator.update_sidebar.assert_called()
 
     def test_generation_failure_propagates_for_resume(self):
         generator = self.generator()
@@ -428,7 +595,7 @@ class ReadingTests(unittest.TestCase):
                 reading.prepare_reading(
                     [paper()], root, "ATSP", "run", "2025-09-11", "2026-09-11"
                 )
-            generator.update_sidebar.assert_not_called()
+            generator.update_sidebar.assert_called()
 
     def test_conference_navigation_preserves_existing_group_and_daily(self):
         with tempfile.TemporaryDirectory() as root:

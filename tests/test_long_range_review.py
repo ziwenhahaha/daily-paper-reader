@@ -233,10 +233,10 @@ class LongRangeReviewTests(unittest.TestCase):
         steps = {step.get("name"): step for step in workflow["jobs"]["run"]["steps"]}
         self.assertIn("1 <= days <= 365", steps["Validate requested window"]["run"])
         self.assertIn("always()", steps["Save long-range review progress"]["if"])
-        self.assertEqual(
-            steps["Save long-range review progress"]["with"]["path"],
-            ".local-runs/long-range-cache",
-        )
+        paths = steps["Save long-range review progress"]["with"]["path"].splitlines()
+        self.assertIn(".local-runs/long-range-cache", paths)
+        self.assertIn(".local-runs/starter-pack-cache", paths)
+        self.assertIn(".local-runs/topic-research-rerank-cache", paths)
         commit_step = steps["Commit results"]["run"]
         self.assertLess(
             commit_step.index("git rebase"), commit_step.index("--rebuild-index")

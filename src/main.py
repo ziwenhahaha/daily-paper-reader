@@ -587,8 +587,8 @@ def main() -> None:
         if args.skip_fetch is False:
             parser.error('31–365天专题回溯只读取Supabase，不支持 --no-skip-fetch')
         from long_range_review import run_review
-        print('[INFO] 启用 arXiv 专题回溯：召回不使用日报Top-K截断，内容复用日常速览与精读生成。', flush=True)
-        if args.run_enrich:
+        print('[INFO] 启用 arXiv 专题研究：90/365天使用固定候选和评审预算，最终最多100篇；内容独立续跑。', flush=True)
+        if args.run_enrich and args.fetch_days not in (90, 365):
             run_step('Step 0 - enrich config', [python, os.path.join(SRC_DIR, '0.enrich_config_queries.py')])
         run_review(_load_full_config(), args.fetch_days, ROOT_DIR, run_date_token)
         return
