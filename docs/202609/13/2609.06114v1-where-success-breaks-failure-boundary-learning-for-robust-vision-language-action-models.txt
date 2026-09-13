@@ -1,0 +1,1820 @@
+Where Success Breaks: Failure-Boundary Learning
+for Robust Vision-Language-Action Models
+Yanzhe Chen∗, Zhijun Cao∗, Mike Zheng Shou†
+Showlab, National University of Singapore
+∗Equal contribution.
+† Corresponding author.
+Data Source
+Optimization
+Training Signal
+Aux Net
+Binary Reward
+too Sparse
+Rollout
+Static Expert
+Demonstrations
+Multi-step Denoising
+Standard
+Policy Gradient
+Likelihood
+Success？
+ODE
+Progress-aware Signal Missing
+Generation-aware Mismatch
+Advantage
+Discover–Localize–Shape Pipeline (Ours)
+Critic-based
+Costly, unreliable
+Scalable,
+on-policy
+Progress Signals
+Directly from Simulator
+Real-grounded Prior
+to Simulator Rollout
+Structural Asymmetry
+Where is
+the Failure
+Boundary?
+SFT / Imitation
+In Denoising
+Velocity Field
+Positive Branch
+Negative Branch
+Stored Reward
+Figure 1: Failure-Boundary Learning for Flow-based VLAs. Three bottlenecks cripple current
+post-SFT adaptation: asymmetric supervision, missing progress signal, and generation-aware mis-
+match (top). Our DLS pipeline resolves them in turn (bottom): scalable on-policy rollouts of a
+real-grounded prior, simulator-derived progress labels, and push–pull shaping in the velocity field.
+Abstract: Vision-language-action (VLA) models adapted through supervised
+fine-tuning (SFT) inherit a structural asymmetry: expert demonstrations teach the
+policy where success behavior lies, but provide no signal about where it ceases to
+be reliable. We argue that robust VLA adaptation should therefore be viewed not
+as further demonstration fitting, but as Failure-Boundary Learning—the prob-
+lem of Discovering, Localizing, and Shaping the boundary between recoverable
+deviations and task failure. To instantiate this view, we propose DLS: built on a
+real-grounded behavioral prior from few real demonstrations and simulated co-
+training, DLS discovers failure boundaries at scale through on-policy digital twin
+rollouts. Rather than reducing each rollout to a binary label, semantic progress
+localization uses privileged simulator states to assign progress-aware signals that
+capture where the failure boundary is crossed, not merely whether. These signals
+drive directional boundary shaping in the flow dynamics—reinforcing success-
+producing denoising directions and suppressing failure-producing ones, without
+action likelihoods or auxiliary critics. Across real-robot manipulation tasks, DLS
+improves robustness over SFT and online RL baselines, especially under random-
+ized initial states and unseen visual conditions.
+Keywords: Vision-Language-Action Models, Failure-Boundary Learning, Flow-
+Based Policy Optimization, Robust Robot Manipulation
+1
+Introduction
+Vision-language-action (VLA) models [1, 2, 3, 4, 5, 6, 7, 8] have become a strong foundation for
+robot manipulation, yet adapting them to downstream tasks still largely relies on supervised fine-
+tuning (SFT) over expert demonstrations. While effective, it inherits a structural asymmetry of
+imitation learning [9, 10, 11, 12]: it pulls the policy toward successful actions, while providing little
+signal about actions that lead to breakdown. During closed-loop execution, small errors can move
+arXiv:2609.06114v1  [cs.RO]  5 Sep 2026
+
+
+the robot outside the demonstration distribution, where imitation offers limited guidance on how to
+recover or what to avoid. [13, 14, 15, 16] The core limitation is therefore not insufficient exposure
+to successful behavior, but the absence of any signal about where that behavior ceases to be reliable.
+We study this missing signal in the post-SFT adaptation of flow-based VLAs [4, 6, 17], and frame it
+as Failure-Boundary Learning: learning where the policy’s own closed-loop behavior transitions
+from recoverable deviation to task failure. This view is more specific than simply learning from
+failures. A useful failure signal should reveal not only whether an episode failed, but also where it
+failed, how far the policy progressed before breakdown, and which partial behaviors remain worth
+preserving. Robust adaptation therefore requires three operations: (i) discover self-generated fail-
+ures under closed-loop execution, (ii) localize where the rollout breaks down in task progress, and
+(iii) shape the policy away from failure-producing directions.
+This perspective imposes three requirements on the training signal. It should be on-policy and
+scalable—manually curated failures rarely cover errors the current policy produces, and bound-
+ary discovery requires many trials beyond what physical robot interaction can provide [18, 19];
+progress-localized, since failures at different task stages imply different corrective signals; and
+generation-aware, since flow-based VLAs generate actions via multi-step denoising, where exact
+action likelihoods are not directly available for standard policy-gradient updates [20, 21]. Together,
+these demands call for a procedure that exposes failures at scale, locates where each rollout breaks
+down, and turns this signal into policy improvement without likelihoods or value functions [22, 23].
+We instantiate failure-boundary learning with a compact Discover–Localize–Shape (DLS) pipeline,
+grounded in a real-grounded behavioral prior obtained through Sim-Real co-training with few real
+demonstrations and simulation for behavioral diversity. Building on this prior, we use the digital
+twin as a boundary discovery instrument: rolling out the current policy at scale exposes failures
+induced by its own closed-loop behavior. To trace these failures, semantic progress localization
+uses privileged simulator states to assign progress-aware signals that distinguish clean successes,
+inefficient successes, and partial failures. These signals drive directional boundary shaping in
+the flow dynamics, reinforcing success-producing denoising directions while suppressing failure-
+producing ones. Across real-robot manipulation tasks, our method improves robustness over SFT
+and online RL baselines under randomized initial states and unseen visual conditions.
+Our contributions are summarized as follows:
+• Boundary-centric adaptation. We cast post-SFT adaptation of flow-based VLAs as learning
+where closed-loop behavior breaks, rather than only fitting where expert behavior succeeds.
+• Failures with progress. We convert self-generated rollouts into progress-localized supervision,
+separating clean successes, inefficient successes, and partial failures.
+• Critic-free flow shaping. We shape flow-based VLAs with real-grounded, simulator-scaled push–
+pull updates, without action likelihoods or learned critics.
+2
+Related Work
+2.1
+Post-SFT Optimization for Flow-Based VLAs
+Adapting pretrained VLA policies [1, 2, 3, 4, 5, 6, 8, 24, 25, 26] beyond SFT [9, 27, 28] requires
+moving past the covariate-shift and outcome-blind nature of imitation [29, 30, 31], and existing
+post-SFT methods for flow-based VLAs differ along two axes: how to optimize without tractable
+action log-likelihoods, and what supervisory signal to optimize against. (i) Likelihood-Recovery
+RL discretizes the denoising SDE to enable PPO- or GRPO-style updates, at the cost of solver
+coupling and memory overhead [20, 21, 32, 33, 34]. (ii) Critic-Driven Shaping learns value or
+reward critics that bypass likelihoods but suffer from critic overfitting and reward hacking [35, 36,
+37, 38]. (iii) Preference-Based Ranking avoids both via contrastive comparison, with step-wise
+extensions reaching into the denoising trajectory [22, 23, 39, 40], yet remains driven by coarse
+binary terminal outcomes. (iv) Stage-Aware Reward Design decomposes manipulation into ordered
+2
+
+
+sub-stages via planners [41, 42, 43] or rule-based event predicates [44, 45, 46], but these signals
+are typically materialized as per-step potential-based shaping [47] consumed by PPO with value
+networks. Across these families, dense supervision is locked to value-based optimization, while
+preference ranking retains simplicity at the price of binary blindness; we close this gap by injecting
+trajectory-level progress-aware labels into step-wise contrastive ranking on the velocity field.
+2.2
+Sim-to-Real Transfer for Manipulation Policies
+Bridging the sim-to-real gap is essential for scaling manipulation policies beyond the small-N
+real-data regime, and existing approaches differ in how simulation is leveraged. (i) Distribution-
+Matching Transfer. Domain randomization [48, 49, 50] and high-fidelity digital twins built from
+3D reconstruction or generative modeling [51, 52, 53, 54] reduce the visual and dynamics gap so
+that policies trained purely in simulation generalize to real hardware. (ii) Supervised Co-Training.
+Treats simulation as a scalable demonstration source and jointly trains on real and simulated data,
+consistently outperforming real-only SFT even under modest simulator fidelity [55, 56, 57]; tools
+like MimicGen [58] enable few-seed synthesis of large simulated demonstration sets. (iii) Online
+Sim-Real Co-Training. A nascent line incorporates RL into the co-training loop, which initializes
+via joint SFT and runs online RL in simulation while regularizing against a real-world anchor to
+prevent catastrophic forgetting [59]. Across these families, simulation is treated either as a domain
+to align with or as a passive demonstration source; its capacity to expose privileged supervisory
+state—ground-truth tcp, gripper and goal predicates—remains underexploited as a structured train-
+ing signal. We build on the online co-training paradigm and further exploit the digital twin as a
+training-side label generator, while the deployed policy depends only on RGB and proprioception.
+3
+Approach: Discover–Localize–Shape Pipeline
+To instantiate our view of VLA adaptation as Failure-Boundary Learning, our DLS pipeline pro-
+ceeds in two stages. In Stage 1, we establish a real-grounded behavioral prior through supervised
+co-training to teach the policy nominal behavior (Sec. 3.1). In Stage 2 (Fig. 2), the few-shot prior
+uncovers its own failure modes via online exploration, driven by semantic progress localization
+(SPL) that identifies where failures occur, and directional boundary shaping (DBS) that systemati-
+cally pushes the policy’s flow dynamics away from errors and toward robust success (Sec. 3.2).
+3.1
+Stage 1: Real-Grounded Behavioral Prior
+Problem Formulation. We formulate the manipulation task (in both real-world and simulation)
+as a Partially Observable Markov Decision Process M = ⟨S, A, P, O, r, ℓ, γ⟩, where observations
+oi contain RGB images and proprioceptive states. At each environment step i ∈{0, . . . , K−1},
+the policy πθ receives oi and language instruction ℓ, and predicts an action chunk Ai:i+H−1 ∼
+πθ(· | oi, ℓ). Flow-based VLAs generate Ai via iterative denoising over continuous time t ∈[0, 1],
+discretized into T solver steps (1=t0> · · · >tT =0), progressively refining noisy actions {atj}T
+j=0
+into the final executable chunk. The policy learns a time-dependent velocity field vθ(at, t, o, ℓ)
+that transports Gaussian noise a1 ∼N(0, I) toward a target action a0 along the linear interpolant
+at = ta1 + (1−t)a0. Given an expert dataset D, supervised fine-tuning minimizes:
+LSFT(θ; D) = E(·)∼D Ei,t,a1
+h
+∥vθ(at, t, oi, ℓ) −(a1 −a0)∥2i
+.
+(1)
+Simulated Data Generation. We construct a digital twin in ManiSkill [55], with simulated cam-
+eras configured using real-world hand-eye calibration matrices. To scale up expert demonstrations,
+we apply MimicGen [58] to five real-world seed trajectories. These seeds are decomposed into
+task-relevant segments and geometrically transformed with randomized initial object positions to
+synthesize novel, large-scale simulated demonstrations.
+Co-training objective. To anchor the policy in the deployment domain while enriching behavioral
+coverage for downstream exploration, we optimize a Sim-Real mixture objective [59] over a lim-
+ited set of real demonstrations Dreal and simulated dataset Dsim, with α ∈[0, 1] controlling the
+3
+
+
+Directional Boundary Shaping (DBS)
+ 
+From Rollout Buffer
+One Step
+Denoising
+with Current Policy
+Mean_var
+Mean_var
+Mahalanobis
+Distance Error
+PPO-like
+N-time updates
+“Push-Pull”
+in Velocity Field
+From Old Policy
+oss
+Real Data SFT
+Regularization
+Semantic Progress Localization (SPL)
+Policy 
+ from
+Real-grounded
+Behavioral Prior
+Prompt 
+Proprio 
+Front Img 
+Noisy Action 
+Simulator Predicates in Digital Twin
+ 
+Inefficient Success
+Clean Success
+Stages
+Penalty
+Partial Failures
+Locus
+ SPL Credit or 
+Completed
+Stages
+Failure
+Figure 2: Overview of DLS Pipeline. The rollout policy from real-grounded behavioral prior inter-
+acts with the digital twin; semantic progress localization assigns progress-aware labels to trajecto-
+ries. Two mirrored branches are constructed around the stored rollout velocity, whose Mahalanobis
+errors drive directional boundary shaping, pulling the flow toward success-producing directions and
+pushing it away from failure-producing ones, anchored by real-data SFT regularization
+supervision ratio between the two domains.
+LSim-Real(θ) = α LSFT(θ; DSim) + (1 −α) LSFT(θ; DReal),
+(2)
+3.2
+Stage 2: Failure-Boundary Learning via Online Exploration
+On-policy Boundary Discovery. We deploy the prior policy πold
+θ
+across N parallel simulation
+environments for at most K steps, using the Flow-SDE sampler [21] to inject stochastic exploration.
+Each denoising step induces a Gaussian transition with mean:
+µt = at +
+
+vθ(at, t, o, ℓ) + σ2
+t
+2t
+ at + (1−t)vθ(at, t, o, ℓ)
+
+· δ,
+(3)
+and covariance Σt = σ2
+t δ · I. A denoising step index ti ∼U{0, . . . , T−1} is uniformly sampled
+per environment step i, and the transition tuple is stored in exploration buffer B:
+B ←
+ ati, anext
+ti
+, vold
+ti , ti, si, oi, ℓ, ri
+	K
+i=0 .
+(4)
+where ri is the phase-mapped reward assigned by semantic progress localization (Sec. 3.2.1).
+3.2.1
+Semantic Progress Localization (SPL)
+Standard binary outcome labels collapse trajectory-level causal structure into a single bit, conflating
+qualitatively distinct failure modes—grasp failure, mid-transport drop, placement misalignment—
+that demand different corrective signals. Semantic Progress Localization resolves this by casting
+manipulation as a hybrid state transition system: each trajectory is mapped onto an ordered se-
+quence of Z task phases via an abstraction ψ(si) ∈{1, . . . , Z}, where phase transitions are triggered
+by privileged simulator predicates over end-effector pose ptcp, object poses pobj(s), gripper grasping
+state dgrasp / Fgrasp, and goal alignment Igoal. Within each phase z, a continuous intra-phase metric
+ϕz(si) ∈[0, 1] measures proximity to the next phase boundary. The state potential is:
+Φ(si) = Wz−1 + wz · ϕz(si),
+(5)
+where w = (w1, . . . , wZ) with P
+j wj = 1 allocates credit across phases, and Wz−1 = P
+j<z wj
+is the cumulative baseline for phase z. By projecting trajectories onto this transition system, the
+semantic credit and the failure-boundary-reaching phase are jointly localized as:
+cSPL = max
+i
+Φ(si),
+ˆzmax = max
+i
+ψ(si).
+(6)
+4
+
+
+The cumulative baseline Wz−1 acts as a discrete gate: credit for phase z is unattainable without
+completing phase z−1, eliminating shortcut behaviors that exploit Euclidean proximity without task
+progression. The intra-phase term wzϕz meanwhile preserves continuous gradient signal within
+each phase. The credit cSPL thus simultaneously serves as a diagnostic signal—revealing where the
+competence boundary lies—and as a stage-level training signal preserving partial supervision for
+near-miss rollouts. SPL produces a stage-indexed reward map {rz}Z
+z=1 that integrates both roles:
+rz=ψ(si) =
+
+
+
+
+
+
+
+
+
+1 −η iend −Kmin
+K −Kmin
+,
+cSPL = 1.0
+(success),
+cSPL,
+cSPL < 1.0, z < ˆzmax
+(completed stage),
+0,
+cSPL < 1.0, z = ˆzmax
+(failure locus),
+(7)
+where iend is the termination step, Kmin is the minimum steps for flawless execution, and η ∈
+(0, 1) scales the efficiency penalty. Completed stages share the trajectory credit cSPL, while the
+failure locus ˆzmax receives zero credit—concentrating the corrective signal at the exact stage where
+execution breaks down. Stages z > ˆzmax are not visited and contribute no tuples to B. Each buffer
+tuple thus carries a phase-constant reward ri = rψ(si) and signed label y = 2rψ(si) −1, providing
+the per-tuple training signal for directional boundary shaping (Sec. 3.2.2). SPL thereby operates as
+a training-side label generator requiring no learned components or human annotation.
+3.2.2
+Directional Boundary Shaping (DBS)
+Given the phase-constant signed label y ∈[−1, 1] defined above, we apply directional boundary
+shaping directly in the flow velocity field, rather than in the action space, which would require
+action log-likelihoods or critic networks. For each sampled tuple in B, the current policy produces
+a stochastic prediction vθ,t = πθ(at, t, o, ℓ) and two mirrored branches are constructed around the
+deviation ∆vt = vθ,t −vold
+t
+from the old rollout policy:
+v±
+θ,t = vold
+t
+± β ∆vt,
+(8)
+where β > 0 controls the shaping intensity. Each branch induces a transition mean µ±
+θ,t via Eq. 3,
+and the step-wise Mahalanobis errors against the observed next state are:
+E±
+θ,t =
+anext
+t
+−µ±
+θ,t
+
+2
+Σ−1
+t
+.
+(9)
+LDBS leverages the signed label y as a ranking constraint on the two error branches:
+LDBS(θ) = E(·)∼B
+h
+Softplus
+
+1
+2y · (E+
+θ,t −E−
+θ,t)
+i
+(10)
+When y>0, gradient descent drives E+
+θ,t < E−
+θ,t, steering the velocity field toward the success-
+producing direction; when y<0, the inequality reverses, pushing it away from failure-producing
+directions. Softplus smoothly bounds gradient magnitudes, preventing the runaway updates com-
+mon in naive negative-imitation objectives. To guard against catastrophic forgetting of foundational
+skills [60], DBS is regularized by the real-demonstration SFT anchor:
+Ltotal(θ; Dreal) = LDBS(θ) + λ LSFT(θ; Dreal).
+(11)
+After each iteration, the rollout policy is synchronized via EMA: θold ←ϵθold + (1−ϵ)θ, with ϵ
+annealed upward over training to balance early boundary discovery with late-stage stability. The
+exploration buffer B is cleared after each synchronization to maintain strictly on-policy boundary
+shaping and prevent stale velocities from biasing the velocity field.
+4
+Experiment
+We evaluate the DLS pipeline for failure-boundary learning by addressing three questions: (i) Does
+the discover–localize–shape pipeline yield consistent improvements over SFT baselines and alterna-
+tive RL methods across tasks and backbones? (ii) Is semantic progress localization the critical driver
+of improvement—over both binary-reward RL and alternative progress-aware reward designs? (iii)
+How sensitive is the pipeline to key choices like regularization strength, and real data scale?
+5
+
+
+4.1
+Experimental Setup
+Tasks. We validate the DLS pipeline on three real-robot manipulation tasks spanning distinct behav-
+ioral regimes and precision demands: Pick & Place (grasp from a randomized 30×30 cm workspace
+with centimeter-precision placement on a coaster), Sweep (non-prehensile push into a 12×10 cm
+target region), and Plugin (tight-tolerance peg-in-socket insertion with ∼3 mm clearance).
+Pick & Place: Pick up the block and place it on the coaster.
+Sweep: Sweep the green cube into the dustpan.
+Plugin: Insert the orange connector into the white socket..
+Figure 3: Visualization of Real-robot Tasks Execution.
+Evaluation Protocol.
+Each policy
+is evaluated over 30 real-robot roll-
+outs under two conditions:
+(i) in-
+distribution (ID.) with 980 Lux uni-
+fied lighting and standard initial posi-
+tion, and (ii) unseen (Unseen.) with
+altered tablecloth and background,
+560 Lux single-side illumination, and
+randomized object positions.
+Hardware & Data.
+All experi-
+ments use a Franka Research 3 ma-
+nipulator observed by a single front-
+facing RealSense D435 RGB camera
+(640×480, 30 fps), 10 Hz control, ac-
+tion chunk H=8; 50 real demonstra-
+tions per task collected via teleop-
+eration.
+The ManiSkill [55] digital
+twin is geometrically calibrated from
+hand-eye matrices; MimicGen [58]
+synthesizes 1,000 simulation trajectories from 5 seeds with camera perturbations (±1◦, ±2 cm) [61].
+Baselines. We consider two groups. (i) Full-SFT: Real-only fine-tunes on N=50 or N=100 real
+demonstrations. (ii) Few-shot SFT + RL (all at N=50): Sim-Real SFT is the co-trained prior with-
+out online RL; + GRPO [20] and + PPO [32] apply standard RL objectives—the former requiring
+intra-group rollout comparison, the latter a learned critic head—both absent in DLS.
+Implementation. We instantiate DLS on two open-source flow-matching VLAs: π0 [4] and π0.5 [6].
+Stage 1: co-training uses Sim-Real ratio α=0.5, learning rate 2.5×10−5 (cosine decay, 500-step
+warmup); Stage 2: explores and shapes with N=128 parallel digital twins with 5 gradient update
+epochs per micro batch, learning rate 8×10−6; branch scale β=1.0; clean-success threshold 100
+steps; efficiency penalty η=0.1. A rollout is counted as success upon stable task completion within
+K=400 environment steps; all training uses 4×NVIDIA H200 GPUs.
+4.2
+Main Results
+(i) Critic-free boundary shaping outperforms, with margins widening under distribution shift.
+Tab. 1 reports success rates across all tasks, models, and conditions. We surface three findings. DLS
+achieves 84.4% / 72.2% (ID. / Unseen.) on π0.5 and 78.9% / 71.1% on π0, the highest average
+success rate across both backbones. The margin over PPO widens from in-distribution to unseen
+conditions: +3.3%→+ 4.4% on π0.5 and +1.1%→+ 5.5% on π0—without a critic head or intra-
+group rollout comparisons. Without Stage 1 grounding, direct RL collapses to near-zero success,
+confirming that a competent behavioral prior is a prerequisite for failure-boundary discovery.
+(ii) 50 real demonstrations surpass a double-budget SFT baseline. DLS with 50 demonstrations
+exceeds Real-only (N=100) on unseen conditions across all tasks, with a +17.8% absolute margin
+on π0.5 (72.2% vs. 54.4%). Scaling real demonstrations tightens the policy toward the demonstra-
+tion distribution without expanding its competence boundary; on-policy simulation rollouts surface
+failure modes no fixed dataset can anticipate. Real demonstrations serve as a grounding anchor;
+failure-boundary coverage requires the digital twin.
+6
+
+
+Table 1: Main success rates (%) across three real-robot manipulation tasks under in-distribution
+(ID.) and unseen conditions (Unseen.). Each cell: success rate over 30 real-world rollouts; N = real
+demonstrations. Within each backbone, bold: highest per column; underline: second best.
+Model
+Training Setting
+Pick & Place
+Sweep
+Plugin
+Avg. (↑)
+ID.
+Unseen.
+ID.
+Unseen.
+ID.
+Unseen.
+ID.
+Unseen.
+π0
+# Full SFT
+Real-only (N = 50)
+66.7
+60.0
+53.3
+46.7
+73.3
+43.3
+64.4
+50.0
+Real-only (N = 100)
+83.3
+63.3
+66.7
+50.0
+80.0
+50.0
+76.7
+54.4
+# Few-shot SFT + RL
+Sim-Real SFT (N = 50)
+66.7
+50.0
+43.3
+40.0
+56.7
+30.0
+55.6
+40.0
++ GRPO [20]
+73.3
+70.0
+60.0
+43.3
+80.0
+60.0
+71.1
+57.8
++ PPO [32]
+86.7
+76.7
+66.7
+56.7
+80.0
+63.3
+77.8
+65.6
+DLS (ours)
+83.3
+80.0
+70.0
+63.3
+83.3
+70.0
+78.9
+71.1
+π0.5
+# Full SFT
+Real-only (N = 50)
+73.3
+60.0
+56.7
+46.7
+73.3
+50.0
+67.8
+52.2
+Real-only (N = 100)
+83.3
+63.3
+73.3
+46.7
+80.0
+53.3
+78.9
+54.4
+# Few-shot SFT + RL
+Sim-Real SFT (N = 50)
+63.3
+50.0
+50.0
+40.0
+56.7
+33.3
+56.7
+41.1
++ GRPO [20]
+76.7
+70.0
+63.3
+56.7
+83.3
+66.7
+74.4
+64.4
++ PPO [32]
+86.7
+73.3
+70.0
+60.0
+86.7
+70.0
+81.1
+67.8
+DLS (ours)
+90.0
+80.0
+73.3
+66.7
+90.0
+70.0
+84.4
+72.2
+(iii) Distributional robustness gains consistently exceed in-distribution gains. On Plugin (π0.5),
+DLS achieves 90.0% / 70.0% (ID. / Unseen.)—a +33.3% / +36.7% gain over the Sim-Real SFT
+prior. This asymmetry holds uniformly: unseen gains exceed in-distribution gains across most task–
+backbones combinations (as shown in Tab. 1), suggesting that SPL-guided shaping builds structural
+robustness in out-of-distribution conditions rather than task-specific memorization.
+4.3
+Ablation Studies
+SPL vs. Binary Reward. Fig. 4 compares SPL against binary reward across tasks with random
+initial object position.
+Binary reward fails to converge reliably: treating barely-successful and
+efficiently-successful trajectories identically collapses task progress into a single bit, producing
+conflicting gradients that cancel near the competence boundary. SPL yields monotonically increas-
+ing success rates, achieving faster convergence and higher final performance on all tasks. SPL—
+pinpointing where in task execution failure occurs—is the critical driver of improvement.
+0
+10
+20
+30
+40
+50
+60
+Training Steps
+65
+70
+75
+80
+85
+90
+95
+Success Rate (%)
+Pick & Place
+Binary Reward
+SPL (ours)
+88.3
+79.9
+0
+10
+20
+30
+40
+50
+60
+70
+80
+Training Steps
+45
+50
+55
+60
+65
+70
+75
+80
+Success Rate (%)
+Sweep
+Binary Reward
+SPL (ours)
+73.7
+60.9
+0
+10
+20
+30
+40
+50
+60
+Training Steps
+45
+50
+55
+60
+65
+70
+75
+80
+85
+Success Rate (%)
+Plugin
+Binary Reward
+SPL (ours)
+76.3
+62.2
+Figure 4: SPL vs. Binary Reward: Training Curves on π0.5. Simulation success rate over training
+(128 rollouts per evaluation; 40 gradient updates per step). Shaded regions denote ±1 standard
+deviation. SPL achieves consistently faster convergence and higher final success across all tasks.
+SPL vs. Alternative Progress-aware Reward. Tab. 2 isolates the contribution of semantic phase
+localization against two alternatives on π0.5: step-count penalty discounts successful rollouts by
+episode length without phase decomposition; and distance-based potential substitutes the phase
+abstraction ψ with continuous Euclidean distance to the goal. SPL outperforms both alternatives on
+7
+
+
+Table 2: SPL vs. alternative progress-aware designs on π0.5. Success rate (Unseen SR., %, mean
+± std over 3 seeds) and average episode horizon (Hor.) across all tasks; bold: highest SR. per task.
+Method
+Pick & Place
+Sweep
+Plugin
+Unseen SR. (↑)
+Hor. (↓)
+Unseen SR. (↑)
+Hor. (↓)
+Unseen SR. (↑)
+Hor. (↓)
+Step-count Penalty
+60.0 ± 3.3
+279.5
+53.3 ± 3.3
+296.1
+56.7 ± 3.3
+283.9
+Distance-based Potential
+66.7 ± 10.0
+287.5
+50.0 ± 9.0
+301.4
+63.3 ± 9.0
+292.0
+SPL (ours)
+80.0 ± 3.3
+280.3
+66.7 ± 3.3
+300.1
+70.0 ± 3.3
+287.4
+0.0
+0.2
+0.5
+1.0
+1.5
+2.0
+SFT Regularization Weight λ
+50
+60
+70
+80
+Success Rate (%)
+80.0
+70.0
+66.7
+Pick & Place
+Sweep
+Plugin
+Figure 5: Sensitivity to λ on π0.5. Success rate
+stabilizes within [0.5, 1.0] and drops sharply
+when λ≤0.2. Shaded: ±std over 3 seeds.
+50
+75
+100
+125
+150
+Number of Real Demonstrations
+30
+40
+50
+60
+70
+80
+Success Rate (%)
+50.0
+57.7
+70.0
+DLS (ours) π0.5
+DLS (ours) π0
+Real-only SFT π0.5
+Real-only SFT π0
+Figure 6: Data Efficiency on Plugin. DLS sur-
+passes Real-only SFT with more real data budgets
+on both backbones. Shaded: ±std over 3 seeds.
+SR by over 6.7%, while also reducing average episode length comparable to the step-count penalty,
+confirming that semantic phase localization drives both higher task success and faster completion.
+Sensitivity to SFT Regularization Weight λ. Fig. 5 sweeps λ from 0.0 to 2.0 on π0.5 across all
+tasks. The success rate (Unseen.) follows an inverted-U: removing the anchor (λ=0.0) causes catas-
+trophic forgetting of the real-grounded prior; performance recovers monotonically, peaks within
+λ ∈[0.5, 1.0], and declines mildly under over-regularization. This validates the dual-objective de-
+sign of Ltotal (Eq. 11): the SFT anchor preserves foundational skills without constraining DBS.
+Data Efficiency under the Few-shot Regime. Fig. 6 ablates real demonstration count on Plugin
+across both backbones. DLS surpasses Real-only SFT success rate (Unseen.) at all demonstration
+counts, confirming that on-policy failure discovery in simulation compensates for sparse real-world
+coverage. Real demonstrations define the deployment domain; the digital twin provides the explo-
+ration scale needed to discover failure boundaries no fixed dataset can anticipate.
+5
+Limitation
+DLS assumes a digital twin of sufficient physical fidelity. Residual sim-to-real gaps may attenuate
+SPL label quality, particularly on tasks with tight contact tolerances. The current pipeline requires
+pre-existing simulation assets for each task object; extending to novel objects would demand 3D
+scanning or reconstruction, adding engineering overhead that limits out-of-the-box applicability.
+6
+Conclusion
+We propose DLS, a pipeline that discovers failure boundaries via on-policy digital twin rollouts,
+localizes them through SPL’s progress-aware labels, and shapes the flow velocity field with DBS—
+without likelihoods or critics. Across three real-robot tasks and two VLA backbones, DLS achieves
+84.4% / 72.2% (ID. / Unseen.) on π0.5 and 78.9% / 71.1% on π0, surpassing Real-only SFT trained
+with N=100 demonstrations by +17.8% on unseen conditions with half the real data—confirming
+that the policy’s own failure boundary, made legible by a digital twin’s privileged state, is a more
+informative signal for generalization than additional expert demonstrations.
+8
+
+
+References
+[1] A. Brohan, N. Brown, J. Carbajal, Y. Chebotar, J. Dabis, C. Finn, K. Gopalakrishnan, K. Haus-
+man, A. Herzog, J. Hsu, et al. Rt-1: Robotics transformer for real-world control at scale. arXiv
+preprint arXiv:2212.06817, 2022.
+[2] B. Zitkovich, T. Yu, S. Xu, P. Xu, T. Xiao, F. Xia, J. Wu, P. Wohlhart, S. Welker, A. Wahid,
+et al. Rt-2: Vision-language-action models transfer web knowledge to robotic control. In
+Conference on Robot Learning, pages 2165–2183. PMLR, 2023.
+[3] M. J. Kim, K. Pertsch, S. Karamcheti, T. Xiao, A. Balakrishna, S. Nair, R. Rafailov, E. Foster,
+G. Lam, P. Sanketi, et al. Openvla: An open-source vision-language-action model. arXiv
+preprint arXiv:2406.09246, 2024.
+[4] K. Black, N. Brown, D. Driess, A. Esmail, M. Equi, C. Finn, N. Fusai, L. Groom, K. Hausman,
+B. Ichter, et al. π0: A vision-language-action flow model for general robot control. arXiv
+preprint arXiv:2410.24164, 2024.
+[5] J. Bjorck, F. Castañeda, N. Cherniadev, X. Da, R. Ding, L. Fan, Y. Fang, D. Fox, F. Hu,
+S. Huang, et al. Gr00t n1: An open foundation model for generalist humanoid robots. arXiv
+preprint arXiv:2503.14734, 2025.
+[6] P. Intelligence, K. Black, N. Brown, J. Darpinian, K. Dhabalia, D. Driess, A. Esmail, M. Equi,
+C. Finn, N. Fusai, et al. π0.5: a vision-language-action model with open-world generalization.
+arXiv preprint arXiv:2504.16054, 2025.
+[7] G. R. Team, S. Abeyruwan, J. Ainslie, J.-B. Alayrac, M. G. Arenas, T. Armstrong, A. Balakr-
+ishna, R. Baruch, M. Bauza, M. Blokzijl, et al. Gemini robotics: Bringing ai into the physical
+world. arXiv preprint arXiv:2503.20020, 2025.
+[8] O. Mees, D. Ghosh, K. Pertsch, K. Black, H. R. Walke, S. Dasari, J. Hejna, T. Kreiman, C. Xu,
+J. Luo, et al. Octo: An open-source generalist robot policy. In First Workshop on Vision-
+Language Models for Navigation and Manipulation at ICRA 2024, 2024.
+[9] S. Ross, G. Gordon, and D. Bagnell. A reduction of imitation learning and structured predic-
+tion to no-regret online learning. In Proceedings of the fourteenth international conference
+on artificial intelligence and statistics, pages 627–635. JMLR Workshop and Conference Pro-
+ceedings, 2011.
+[10] N. Kachaev, M. Kolosov, D. Zelezetsky, A. K. Kovalev, and A. I. Panov. Don’t blind your
+vla: Aligning visual representations for ood generalization. arXiv preprint arXiv:2510.25616,
+2025.
+[11] T.-Y. Xiang, A.-Q. Jin, X.-H. Zhou, M.-J. Gui, X.-L. Xie, S.-Q. Liu, S.-Y. Wang, S.-B. Duan,
+F.-C. Xie, W.-K. Wang, et al. Parallels between vla model post-training and human motor
+learning: Progress, challenges, and trends. arXiv preprint arXiv:2506.20966, 2025.
+[12] H. Zhang, S. Zhang, J. Jin, Q. Zeng, R. Li, and D. Wang. Robustvla: Robustness-aware rein-
+forcement post-training for vision-language-action models. arXiv preprint arXiv:2511.01331,
+2025.
+[13] W. Xia, R. Feng, D. Wang, and D. Hu. Phoenix: A motion-based self-reflection framework
+for fine-grained robotic action correction. In Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition, pages 6981–6990, 2025.
+[14] Z. Lin, J. Duan, H. Fang, D. Fox, R. Krishna, C. Tan, and B. Wen. Failsafe: Reasoning and
+recovery from failures in vision-language-action models. arXiv preprint arXiv:2510.01642,
+2025.
+9
+
+
+[15] E. Welte, Y. Shi, R. Wolf, M. Gilles, and R. Rayyes. Flowcorrect: Efficient interactive cor-
+rection of generative flow policies for robotic manipulation. arXiv preprint arXiv:2602.22056,
+2026.
+[16] A. Kalinowska, A. Prabhakar, K. Fitzsimons, and T. Murphey. Ergodic imitation: Learning
+from what to do and what not to do. In 2021 IEEE International Conference on Robotics and
+Automation (ICRA), pages 3648–3654. IEEE, 2021.
+[17] Y. Lipman, R. T. Chen, H. Ben-Hamu, M. Nickel, and M. Le. Flow matching for generative
+modeling. arXiv preprint arXiv:2210.02747, 2022.
+[18] J. Luo, Z. Hu, C. Xu, Y. L. Tan, J. Berg, A. Sharma, S. Schaal, C. Finn, A. Gupta, and S. Levine.
+Serl: A software suite for sample-efficient robotic reinforcement learning. In 2024 IEEE Inter-
+national Conference on Robotics and Automation (ICRA), pages 16961–16969. IEEE, 2024.
+[19] P. Intelligence, A. Amin, R. Aniceto, A. Balakrishna, K. Black, K. Conley, G. Connors,
+J. Darpinian, K. Dhabalia, J. DiCarlo, et al. π∗
+0.6: a vla that learns from experience. arXiv
+preprint arXiv:2511.14759, 2025.
+[20] J. Liu, G. Liu, J. Liang, Y. Li, J. Liu, X. Wang, P. Wan, D. Zhang, and W. Ouyang. Flow-grpo:
+Training flow matching models via online rl. arXiv preprint arXiv:2505.05470, 2025.
+[21] K. Chen, Z. Liu, T. Zhang, Z. Guo, S. Xu, H. Lin, H. Zang, X. Li, Q. Zhang, Z. Yu, et al.
+πRL: Online rl fine-tuning for flow-based vision-language-action models.
+arXiv preprint
+arXiv:2510.25889, 2025.
+[22] K. Zheng, H. Chen, H. Ye, H. Wang, Q. Zhang, K. Jiang, H. Su, S. Ermon, J. Zhu, and M.-
+Y. Liu. Diffusionnft: Online diffusion reinforcement with forward process. arXiv preprint
+arXiv:2509.16117, 2025.
+[23] S. Wang, X. Wang, Z. Zhu, M. Pei, X. Cui, C. Deng, J. Zhao, G. Huang, H. Zhang, and
+J. Wang. π-stepnft: Wider space needs finer steps in online rl for flow-based vlas. arXiv
+preprint arXiv:2603.02083, 2026.
+[24] W. Zhang, H. Liu, Z. Qi, Y. Wang, X. Yu, J. Zhang, R. Dong, J. He, F. Lu, H. Wang, et al.
+Dreamvla: a vision-language-action model dreamed with comprehensive world knowledge.
+arXiv preprint arXiv:2507.04447, 2025.
+[25] Q. Li, Y. Liang, Z. Wang, L. Luo, X. Chen, M. Liao, F. Wei, Y. Deng, S. Xu, Y. Zhang, et al.
+Cogact: A foundational vision-language-action model for synergizing cognition and action in
+robotic manipulation. arXiv preprint arXiv:2411.19650, 2024.
+[26] J. Cen, C. Yu, H. Yuan, Y. Jiang, S. Huang, J. Guo, X. Li, Y. Song, H. Luo, F. Wang, et al.
+Worldvla: Towards autoregressive action world model.
+arXiv preprint arXiv:2506.21539,
+2025.
+[27] Y. Chen, K. Y. Ma, Q. Lv, Y. Lin, Z. Bai, C. Gao, and M. Z. Shou. Escaping the diversity trap
+in robotic manipulation via anchor-centric adaptation. arXiv preprint arXiv:2605.07381, 2026.
+[28] M. J. Kim, C. Finn, and P. Liang. Fine-tuning vision-language-action models: Optimizing
+speed and success. arXiv preprint arXiv:2502.19645, 2025.
+[29] C. Pan, G. Anantharaman, N.-C. Huang, C. Jin, D. Pfrommer, C. Yuan, F. Permenter, G. Qu,
+N. Boffi, G. Shi, et al. Much ado about noising: Dispelling the myths of generative robotic
+control. arXiv preprint arXiv:2512.01809, 2025.
+[30] R. Römer, A. Kobras, L. Worbis, and A. Schoellig. Failure prediction at runtime for generative
+robot policies. Advances in Neural Information Processing Systems, 38:7631–7670, 2026.
+10
+
+
+[31] C. Xu, T. K. Nguyen, E. Dixon, C. Rodriguez, P. Miller, R. Lee, P. Shah, R. Ambrus,
+H. Nishimura, and M. Itkina. Can we detect failures without failure data? uncertainty-aware
+runtime failure detection for imitation learning policies. arXiv preprint arXiv:2503.08558,
+2025.
+[32] T. Zhang, C. Yu, S. Su, and Y. Wang. Reinflow: Fine-tuning flow matching policy with online
+reinforcement learning. arXiv preprint arXiv:2505.22094, 2025.
+[33] H. Li, Y. Zuo, J. Yu, Y. Zhang, Z. Yang, K. Zhang, X. Zhu, Y. Zhang, T. Chen, G. Cui,
+et al.
+Simplevla-rl:
+Scaling vla training via reinforcement learning.
+arXiv preprint
+arXiv:2509.09674, 2025.
+[34] J. Liu, F. Gao, B. Wei, X. Chen, Q. Liao, Y. Wu, C. Yu, and Y. Wang. What can rl bring to vla
+generalization? an empirical study. Advances in Neural Information Processing Systems, 38:
+97121–97151, 2026.
+[35] Y. Li, X. Ma, J. Xu, Y. Cui, Z. Cui, Z. Han, L. Huang, T. Kong, Y. Liu, H. Niu, et al.
+Gr-rl: Going dexterous and precise for long-horizon robotic manipulation.
+arXiv preprint
+arXiv:2512.01801, 2025.
+[36] M. Prabhudesai, A. Goyal, D. Pathak, and K. Fragkiadaki. Aligning text-to-image diffusion
+models with reward backpropagation. arXiv preprint arXiv:2310.03739, 2023.
+[37] J. Shu, Z. Lin, and Y. Wang. Rftf: Reinforcement fine-tuning for embodied agents with tem-
+poral feedback. arXiv preprint arXiv:2505.19767, 2025.
+[38] J. Skalse, N. Howe, D. Krasheninnikov, and D. Krueger. Defining and characterizing reward
+gaming. Advances in Neural Information Processing Systems, 35:9460–9471, 2022.
+[39] R. Rafailov, A. Sharma, E. Mitchell, C. D. Manning, S. Ermon, and C. Finn. Direct preference
+optimization: Your language model is secretly a reward model. Advances in neural information
+processing systems, 36:53728–53741, 2023.
+[40] Z. Zhang, K. Zheng, Z. Chen, J. Jang, Y. Li, S. Han, C. Wang, M. Ding, D. Fox, and H. Yao.
+Grape: Generalizing robot policy via preference alignment. In ICRA 2025 Workshop on Foun-
+dation Models and Neuro-Symbolic AI for Robotics, 2025.
+[41] M. Dalal, T. Chiruvolu, D. Chaplot, and R. Salakhutdinov. Plan-seq-learn: Language model
+guided rl for solving long horizon robotics tasks. arXiv preprint arXiv:2405.01534, 2024.
+[42] Z. Chen, J. Huo, Y. Chen, and Y. Gao. Robohorizon: An llm-assisted multi-view world model
+for long-horizon robotic manipulation. arXiv preprint arXiv:2501.06605, 2025.
+[43] H. Zhang, Z. Zhuang, H. Zhao, P. Ding, H. Lu, and D. Wang. Reinbot: Amplifying robot
+visual-language manipulation with reinforcement learning. arXiv preprint arXiv:2505.07395,
+2025.
+[44] Q. Chen, J. Yu, M. Schwager, P. Abbeel, Y. Shentu, and P. Wu. Sarm: Stage-aware reward
+modeling for long horizon robot manipulation. arXiv preprint arXiv:2509.25358, 2025.
+[45] F. Xu, G. Zhai, X. Kong, T. Fu, D. F. Gordon, X. An, and B. Busam. Stare-vla: Progres-
+sive stage-aware reinforcement for fine-tuning vision-language-action models. arXiv preprint
+arXiv:2512.05107, 2025.
+[46] A. L. Escoriza, N. Hansen, S. Tao, T. Mu, and H. Su.
+Multi-stage manipulation
+with demonstration-augmented reward, policy, and world model learning.
+arXiv preprint
+arXiv:2503.01837, 2025.
+11
+
+
+[47] D. Kim, H. Kwon, J. Kim, G. Lee, and S. Oh. Stage-wise reward shaping for acrobatic robots:
+A constrained multi-objective reinforcement learning approach. In 2025 IEEE International
+Conference on Robotics and Automation (ICRA), pages 10268–10274. IEEE, 2025.
+[48] J. Tobin, R. Fong, A. Ray, J. Schneider, W. Zaremba, and P. Abbeel. Domain randomization
+for transferring deep neural networks from simulation to the real world. In 2017 IEEE/RSJ
+international conference on intelligent robots and systems (IROS), pages 23–30. IEEE, 2017.
+[49] W. Zhao, J. P. Queralta, and T. Westerlund. Sim-to-real transfer in deep reinforcement learning
+for robotics: a survey. In 2020 IEEE symposium series on computational intelligence (SSCI),
+pages 737–744. IEEE, 2020.
+[50] Y. Jiang, C. Wang, R. Zhang, J. Wu, and L. Fei-Fei. Transic: Sim-to-real policy transfer by
+learning from online correction. In Conference on Robot Learning, pages 1691–1729. PMLR,
+2025.
+[51] G. Jiang, H. Chang, R.-Z. Qiu, Y. Liang, M. Ji, J. Zhu, Z. Dong, X. Zou, and X. Wang.
+Gsworld: Closed-loop photo-realistic simulation suite for robotic manipulation. arXiv preprint
+arXiv:2510.20813, 2025.
+[52] Y. Wu, L. Pan, W. Wu, G. Wang, Y. Miao, F. Xu, and H. Wang. Rl-gsbridge: 3d gaussian splat-
+ting based real2sim2real method for robotic manipulation learning. In 2025 IEEE International
+Conference on Robotics and Automation (ICRA), pages 192–198. IEEE, 2025.
+[53] Q. Xu, J. Liu, R. Zhou, S. Shi, N. Han, Z. Liu, C. Gu, S. Gu, Y. Yue, G. Huang, et al. Twinrl-
+vla: Digital twin-driven reinforcement learning for real-world robotic manipulation. arXiv
+preprint arXiv:2602.09023, 2026.
+[54] Y. Guo, T. Lee, L. X. Shi, J. Chen, P. Liang, and C. Finn. Vlaw: Iterative co-improvement of
+vision-language-action policy and world model. arXiv preprint arXiv:2602.12063, 2026.
+[55] S. Tao, F. Xiang, A. Shukla, Y. Qin, X. Hinrichsen, X. Yuan, C. Bao, X. Lin, Y. Liu, T.-k.
+Chan, et al. Maniskill3: Gpu parallelized robotics simulation and rendering for generalizable
+embodied ai. arXiv preprint arXiv:2410.00425, 2024.
+[56] A. Maddukuri, Z. Jiang, L. Y. Chen, S. Nasiriany, Y. Xie, Y. Fang, W. Huang, Z. Wang, Z. Xu,
+N. Chernyadev, et al. Sim-and-real co-training: A simple recipe for vision-based robotic ma-
+nipulation. arXiv preprint arXiv:2503.24361, 2025.
+[57] S. Nasiriany, A. Maddukuri, L. Zhang, A. Parikh, A. Lo, A. Joshi, A. Mandlekar, and Y. Zhu.
+Robocasa: Large-scale simulation of everyday tasks for generalist robots. In RSS 2024 Work-
+shop: Data Generation for Robotics, 2024.
+[58] A. Mandlekar, S. Nasiriany, B. Wen, I. Akinola, Y. Narang, L. Fan, Y. Zhu, and D. Fox.
+Mimicgen: A data generation system for scalable robot learning using human demonstrations.
+arXiv preprint arXiv:2310.17596, 2023.
+[59] L. Shi, S. Chen, F. Gao, Y. Chen, K. Chen, T. Zhang, H. Zang, W. Zhang, C. Yu, and Y. Wang.
+Beyond imitation: Reinforcement learning-based sim-real co-training for vla models. arXiv
+e-prints, pages arXiv–2602, 2026.
+[60] J. Kirkpatrick, R. Pascanu, N. Rabinowitz, J. Veness, G. Desjardins, A. A. Rusu, K. Milan,
+J. Quan, T. Ramalho, A. Grabska-Barwinska, et al. Overcoming catastrophic forgetting in
+neural networks. Proceedings of the national academy of sciences, 114(13):3521–3526, 2017.
+[61] Y. Xie, Y. Wang, S. Zhao, C.-E. Wu, M. Tomizuka, J. Xie, and H.-S. Fang. Multi-camera view
+scaling for data-efficient robot imitation learning. arXiv preprint arXiv:2604.00557, 2026.
+12
+
+
+A
+Implementation Details
+A.1
+Construction of Digital Twin
+Camera Matrices. The front-facing RealSense D435 camera undergoes hand-eye calibration. The
+resulting intrinsic matrix K and camera-to-robot extrinsic matrix Mcam→robot are:
+K =
+"fx
+0
+cx
+0
+fy
+cy
+0
+0
+1
+#
+=
+"607.875
+0
+348.961
+0
+607.719
+270.486
+0
+0
+1
+#
+,
+(12)
+Mcam→robot =
+
+R
+t
+0
+1
+
+=
+
+
+0.028
+0.217
+−0.975
+1.100
+0.999
+−0.001
+0.028
+−0.007
+0.005
+−0.975
+−0.217
+0.258
+0
+0
+0
+1
+
+,
+(13)
+where fx, fy are the focal lengths in pixels, (cx, cy) is the principal point, R ∈SO(3) is the rotation
+matrix, and t ∈R3 is the translation vector (in meters). These parameters are directly applied to
+instantiate a matching camera viewpoint within the ManiSkill simulation.
+Pick & Place: Pick up the block and place it on the coaster.
+Sweep: Sweep the green cube into the dustpan.
+Plugin: Insert the orange connector into the white socket..
+Real
+Simulation
+Figure 7: Visualization of Task Execution in Digital Twin. We visualize the tasks in constructed
+digital twins, showing for each task a real data reference (Real), a representative simulated rollout
+(Simulation), and the corresponding task instruction prompt (Task Prompt).
+Visualization of Digital Twin. Fig. 7 provides a side-by-side comparison of the real and simu-
+lated visual observations across the three evaluated tasks. During the simulated rollouts, we in-
+troduce minor perturbations to both the camera angle (± 1◦) and its spatial coordinates (± 0.02 m)
+to enhance the policy’s robustness against inevitable physical hardware mounting variations. The
+strong visual alignment between the two domains confirms that the ground-truth predicates utilized
+by SPL—despite being extracted from privileged simulator states—remain semantically consistent
+with the raw visual inputs the policy receives during real-world deployment.
+A.2
+SPL Phase Specifications Per Task
+Task Phases. Tab. 3 details the phase decomposition, gate predicates, intra-phase progress metrics
+ϕz, and credit weights wz for each task. Pick & Place and Plugin each decompose into Z=4 phases;
+Sweep uses Z=5, with an additional Contact stage between Transit and Push that verifies broom–
+cube velocity alignment and sweep direction before the final push. Phase z is entered when its
+gate predicate evaluates to true on the privileged simulator state; within phase z, ϕz(si) ∈[0, 1]
+13
+
+
+Table 3: SPL Phase Specifications Per Task. Gate predicate: condition at phase z that triggers
+transition to z+1 (or task success). Each pose p = (xyz, r) decomposes into position pxyz
+obj ∈R3
+and Euler-angle orientation robj ∈R3; superscripts on p select position components (e.g. pxy).
+Notation: dz initial TCP–target distance at phase z entry; Fgrasp grasping contact force; G the
+grasped mark; ˙pobj(s) object velocity; All distances in metres; velocities in m/s; angles in degrees.
+Task
+z
+wz
+Phase
+Gate Predicate (z →z+1 or Success)
+ϕz(s)
+Pick & Place
+obj(1):Block
+obj(2):Coaster
+1
+0.10
+Reach
+∥ptcp −pobj(1)∥≤0.015
+1 −∥ptcp −pobj(1)∥/ d1
+2
+0.25
+Grasp
+dgrasp ≤0.04 ∧Fgrasp > 0
+1 −|dgrasp −0.04| / 0.04
+3
+0.20
+Transit
+G ∧∥pxy
+tcp −pxy
+obj(2)∥≤0.08 ∧rroll/pitch
+obj(1)
+≤45◦
+1 −∥pxy
+tcp −pxy
+obj(2)∥/ d3
+4
+0.45
+Place
+Igoal : ∥pxy
+obj(1) −pxy
+obj(2)∥≤0.025 ∧rroll/pitch
+obj(1)
+≤5◦
+1 −∥pz
+obj(1) −0.025∥/ d4
+Sweep
+obj(1):Broom
+obj(2):Cube
+obj(3):Dustpan
+1
+0.08
+Reach
+∥pyz
+tcp −pyz
+obj(1)∥≤0.01 ∧∥px
+tcp −px
+obj(1)∥≤0.02
+1 −∥pxyz
+tcp −pxyz
+obj(1)∥/ d1
+2
+0.20
+Grasp
+dgrasp ≤0.03 ∧Fgrasp > 0
+1 −|dgrasp −0.03| / 0.03
+3
+0.12
+Transit
+G ∧py
+tcp ≤py
+obj(2) −0.01 ∧pz
+obj(1) ≥0.05
+1 −∥py
+tcp −py
+obj(2) + 0.01∥/ d3
+4
+0.15
+Contact
+G ∧∥˙pxy
+obj(1) −˙pxy
+obj(2)∥≤0.002 ∧˙pxy
+obj(2) · (pxy
+obj(3) −pxy
+obj(2)) > 0
+1 −∥pxy
+obj(1) −pxy
+obj(2)∥/ d4
+5
+0.45
+Push
+Igoal : |px
+obj(2) −px
+obj(3)| ≤0.05 ∧|py
+obj(2) −py
+obj(3)| ≤0.06
+1 −∥pxy
+obj(2) −pxy
+obj(3)∥/ d5
+Plugin
+obj(1):Block
+obj(2):Socket
+1
+0.08
+Reach
+∥pxyz
+tcp −pxyz
+obj(1)∥≤0.015
+1 −∥pxyz
+tcp −pxyz
+obj(1)∥/ d1
+2
+0.22
+Grasp
+dgrasp ≤0.04 ∧Fgrasp > 0
+1 −|dgrasp −0.04| / 0.04
+3
+0.15
+Align
+G ∧∥pxy
+tcp −pxy
+obj(2)∥≤0.01 ∧robj(1) ≤5◦
+1 −∥pxy
+tcp −pxy
+obj(2)∥/ d3
+4
+0.55
+Insert
+Igoal : ∥pxy
+obj(1) −pxy
+obj(2)∥≤0.003 ∧pz
+obj(1) < 0.05
+1 −∥pz
+obj(1) −0.003∥/ d4
+0
+10
+20
+30
+40
+50
+Training Steps
+25
+50
+75
+100
+Label Proportion (%)
+Pick & Place
+Phase 1: Reach
+Phase 2: Grasp
+Phase 3: Transit
+Phase 4: Place
+Success
+0
+20
+40
+60
+Training Steps
+25
+50
+75
+100
+Label Proportion (%)
+Sweep
+Phase 1: Reach
+Phase 2: Grasp
+Phase 3: Transit
+Phase 4: Contact
+Phase 5: Push
+Success
+0
+10
+20
+30
+40
+50
+Training Steps
+25
+50
+75
+100
+Label Proportion (%)
+Plugin
+Phase 1: Reach
+Phase 2: Grasp
+Phase 3: Align
+Phase 4: Insert
+Success
+Figure 8: SPL Label Distribution over Training. Each stacked area shows the fraction of buffer
+tuples labeled at each SPL phase, plotted against training step. The green band (bottom) captures
+successful trajectories; its height directly tracks the simulation success rate (SR). Orange, pink,
+gray, and blue correspond to failure-locus phases 1, 2, 3, and Z; lavender (Sweep only) denotes
+phase 4 (Push) failure. All proportions sum to 100% at every step.
+measures continuous progress toward the next gate boundary. Following the SPL formulation, these
+signals combine into the stage-weighted potential Φ(si) = Wz−1+wz ·ϕz(si) for z = ψ(si), where
+Wz−1 = P
+j<z wj is the cumulative baseline for phase z and P
+z wz = 1.
+Weight design. The Grasp phase is assigned the highest weight among non-final phases, as suc-
+cessful grasping is a crucial prerequisite for all subsequent stages. Near-miss—trajectories that
+enter the final phase Z but fail to complete it—attain partial progress ϕ∗
+Z ∈[0, 1) and thus accu-
+mulate less than the full final-phase credit. With wZ=0.45 (Pick & Place and Sweep) and wZ=0.55
+(Plugin), near-miss trajectories typically score below the worst-case successful rollout in practice:
+WZ−1 +wZϕ∗
+Z < 1−η for η=0.1, which holds whenever ϕ∗
+Z ≲0.78 (Pick & Place and Sweep) and
+ϕ∗
+Z ≲0.82 (Plugin)—covering the empirically observed near-miss range across all evaluated tasks.
+A.3
+Training Dynamics: Label Distribution over Training
+The stacked distributions in Fig. 8 show the progression of failure-boundary migration throughout
+DLS training. At the onset, the buffer is dominated by Grasp-phase failure labels across all three
+tasks, while phase 1 (Reach) contracts to near-zero before the midpoint. As DBS suppresses these
+failure-producing velocity directions, the active locus migrates toward each task’s terminal sub-
+goal—Place, Insert, and Push—while Sweep additionally sustains a persistent Transit component,
+14
+
+
+reflecting the broom–cube alignment prerequisite that must be resolved before the push boundary
+can be addressed. Throughout this migration, the success band expands in lockstep with each re-
+solved failure locus, corroborating that SPL’s stage-indexed credit concentrates gradient signal at
+the active boundary rather than applying a diffuse, undirected push across all denoising steps.
+A.4
+Hyperparameter
+Table 4: Training Hyperparameters. Parameters are grouped into three blocks: shared model
+configuration (Model Config), stage 1 (Sim-Real SFT), and stage 2 (DBS).
+Parameter
+Pick & Place
+Sweep
+Plugin
+Model Config
+Denoising steps T
+5
+5
+5
+Action chunk / horizon
+8 / 8
+8 / 12
+8 / 8
+Control frequency
+10 Hz (stride 2)
+10 Hz (stride 2)
+10 Hz (stride 2)
+Sim-Real SFT
+Base model
+lerobot/pi05_base
+lerobot/pi05_base
+lerobot/pi05_base
+Global / Micro batch
+128 / 32
+128 / 32
+128 / 32
+Learning rate
+2.5 × 10−5
+2.5 × 10−5
+2.5 × 10−5
+Warmup steps
+500
+500
+500
+Lr schedule
+Cosine
+Cosine
+Cosine
+Co-training ratio α
+0.5
+0.5
+0.5
+Total training steps
+15,000
+20,000
+15,000
+DBS
+Checkpoint model
+5k-step SFT
+7.5k-step SFT
+7.5k-step SFT
+Global / Micro batch
+6400 / 320
+6400 / 320
+6400 / 320
+Learning rate
+8 × 10−6
+8 × 10−6
+8 × 10−6
+Noise level
+0.2
+0.2
+0.2
+Parallel environments
+128
+128
+128
+Rollout epochs
+8
+8
+8
+Max interact steps
+400
+400
+400
+Clean success threshold
+100
+100
+100
+Clip ratio (high)
+1.0
+1.0
+1.0
+Update epochs
+5
+5
+5
+EMA decay ϵ
+0.1→0.995
+0.1→0.995
+0.1→0.995
+SFT regularization λ
+0.5
+1.0
+0.5
+Num of real data
+50
+50
+50
+Total training steps
+60
+80
+60
+Tab. 4 lists the hyperparameters for both training stages across all three tasks. One implementation
+detail concerns control frequency alignment between the two stages. Real-world demonstrations
+are recorded at 20 Hz; to improve the signal-to-noise ratio of learned actions, we apply a temporal
+stride of 2 during stage 1 training, so the policy effectively learns action transitions at 10 Hz. The
+stage 2 digital-twin simulation is configured at the same 10 Hz control frequency, ensuring that
+the flow velocity field acquired from real data operates without frequency mismatch during online
+exploration. The DBS stage uses a global / micro batch of 6400 / 320 with 5 update epochs per
+rollout, yielding exactly 40 optimizer steps per training step.
+B
+Additional Experiments
+B.1
+Qualitative Analysis on Real-Robot Rollouts
+Fig. 9 visualizes representative real-robot rollouts under the Unseen. protocol: altered tablecloth and
+background, 560 Lux single-side illumination (compare to 980 Lux in real data), and fully random-
+ized initial object positions. Three behavioral patterns emerge consistently across all three tasks.
+15
+
+
+Pick & Place: Pick up the block and place it on the coaster.
+Sweep: Sweep the green cube into the dustpan.
+Plugin: Insert the orange connector into the white socket..
+One-side Light
+Figure 9: Visualization of Real-robot Rollouts. Each row shows one task with three representative
+trials. The leftmost column of each trial depicts the initial object position; subsequent columns show
+the unfolding rollout, capturing key interaction stages through to task completion.
+(i) Maintained phase ordering under visual distribution shift. Across Pick & Place, Sweep, and
+Plugin, the policy executes each task phase in the correct order—reach, contact or grasp, trans-
+port or push, and final placement—even when the object starts at the extremes of the randomized
+workspace. Intermediate breakdowns such as approaching without establishing contact, or com-
+mitting to placement prematurely, are largely absent. This is consistent with SPL’s design: by
+concentrating gradient signal at the active failure locus, DBS shapes each phase boundary in task
+order rather than applying diffuse reward signal across all denoising steps.
+16
+
+
+(ii) Spatial generalization across the full initialization range. In Pick & Place the end-effector
+reaches objects across the 30×30 cm workspace without the systematic approach bias that char-
+acterizes SFT-only policies; in Sweep, the broom–cube contact trajectory adapts to varied cube
+starting offsets while sustaining push direction toward the goal region; in Plugin, orientation align-
+ment precedes insertion even when the plug begins far from the nominal training pose. Rather than
+concentrating successes within a narrow high-confidence corridor, the policy distributes success-
+ful rollouts across the full initialization space—evidence that DLS has expanded the competence
+boundary beyond the region covered by the 50 real demonstrations.
+(iii) Preserved task-critical precision under tight completion criteria. For all tasks, the final
+interaction—centimeter-level placement on the coaster, pushing the cube into the 12×10 cm target
+region, and seating the plug within ∼3 mm clearance—remains precise under unseen conditions and
+does not degrade to coarse near-miss behavior. This robustness is largely absent in the SFT prior,
+where near-miss failures at the final phase are the dominant failure mode under distribution shift,
+suggesting that SPL-guided boundary shaping specifically suppresses this terminal failure mode.
+B.2
+Failure Mode Analysis
+Fig. 10 shows representative phase-level failures of the SFT prior under the Unseen. protocol; altered
+lighting and background introduce positional offsets that violate different SPL phase boundaries.
+(a)
+(d)
+(b)
+(c)
+(e)
+(f)
+Figure 10: SFT Prior Failure Modes under Unseen Conditions. (a)–(b): Grasp-phase failure
+from lighting-induced approach offset. (c): pre-contact positioning failure before Contact phase.
+(d): terminal push direction misalignment at Push phase. (e)–(f): terminal near-miss at Insert phase.
+(i) Grasp-phase failure [(a)–(b)]. Lighting-induced lateral and depth offsets prevent the end-effector
+from satisfying the Grasp gate predicate; execution stalls at an early phase boundary and never
+reaches Transit. (ii) Pre-terminal positioning failure [(c)]. The end-effector fails to reach the
+required lateral position relative to the cube before the Contact phase, blocking broom–cube en-
+gagement and halting progress at an intermediate boundary. (iii) Terminal near-miss [(d)–(f)]. In
+(d), broom–cube contact is established but the push direction deviates from the dustpan; in (e)–(f),
+the plug aligns over the socket but positional offset violates the sub-3 mm Insert tolerance. Both
+enter phase Z but fail to satisfy its gate—the highest-credit near-miss regime in SPL.
+Improvements after full DLS training. DBS concentrates repulsive gradient at each SPL-localized
+failure locus, suppressing lighting-induced positional drift across all phase boundaries; the dominant
+failure mechanism under the Unseen. protocol is effectively eliminated. Residual failures occur
+at positions where the single RGB camera cannot resolve fore-aft depth, a sensor-level ambiguity
+outside the failure manifold reachable through simulation exploration.
+B.3
+Additional Ablation
+Ablation on Behavioral Prior. Fig. 11 isolates the stage 1 prior by fixing ztage 2 and varying data
+composition on Plugin (π0.5): all three non-full priors underperform Sim-Real SFT (70.0% Unseen.
+SR), each for a distinct reason. Without SFT collapses to near-zero, as undirected rollouts yield no
+contrast for DBS; Real-only SFT (46.7%) confines exploration to the 50-demo region, leaving failure
+boundaries beyond it undiscovered; Sim-only SFT (60.0%) gains broad coverage but loses real-world
+grounding, misaligning simulated failure loci with those at deployment. Simulation coverage and
+real-world grounding are thus orthogonal prerequisites: neither substitutes for the other.
+17
+
+
+0
+20
+40
+60
+80
+Success Rate (%)
+Behavioral Prior
+Sim-Real SFT (Ours)
+Sim-only SFT
+Real-only SFT
+Without SFT
+70.0
+60.0
+46.7
+3.3
+Figure 11: Behavioral Prior Ablation on Plu-
+gin (π0.5). All non-full priors strictly underper-
+form Sim-Real SFT (dashed); failure traces to
+missing coverage, missing grounding, or both.
+0.1
+0.3
+0.5
+0.7
+0.9
+Sim-Real Co-training Ratio α
+40
+50
+60
+70
+80
+Success Rate (%)
+80.0
+70.0
+66.7
+Pick & Place
+Sweep
+Plugin
+Figure 12:
+Sensitivity to Sim-Real Ratio α
+on π0.5.
+Performance peaks near α=0.5; real-
+dominated degrades more sharply than sim-
+dominated. Shaded: ±std over 3 seeds.
+Sensitivity to Sim-Real Co-training Ratio α. Fig. 12 sweeps α ∈{0.1, 0.3, 0.5, 0.7, 0.9} on π0.5
+with 50 real and 1,000 simulated demonstrations fixed; Performance peaks at the median across all
+tasks. The two tails degrade asymmetrically: real-dominated (α →0.1) narrows stage 2 exploration
+coverage, suppressing DBS gradient contrast and lowering the success-rate ceiling; sim-dominated
+(α →0.9) retains broad exploration diversity and degrades only moderately, as stage 2’s SFT regu-
+larization λ LSFT(Dreal) re-anchors the policy to the deployment domain. This asymmetry confirms
+that exploration coverage is the harder constraint to satisfy post-hoc, while insufficient real ground-
+ing is partially recoverable through regularization.
+C
+Theoretical Analysis of Failure-Boundary Learning
+This section establishes the theoretical foundation of the DLS framework: (i) Failure Boundary
+Localization (Theorem 1). The SPL credit falls in a unique interval [Wz⋆−1, Wz⋆) that identi-
+fies the oracle failure phase z⋆without per-step annotations—converting a scalar outcome into an
+unambiguous phase-level diagnostic. (ii) Oracle-Aligned Denoising Perturbation Shaping (The-
+orem 2). The DBS gradient is proportional to y · Σ−1
+t d⋆, where d⋆= anext
+t
+−µold
+t
+is the rollout
+transition residual—the stochastic denoising perturbation realized during rollout relative to the old
+policy mean. Negative SPL labels suppress perturbations that drove the trajectory past a failure
+boundary; positive labels reinforce perturbations associated with successful execution.
+C.1
+Failure Boundary Localization
+Setup. We model a manipulation task as an ordered phase transition system with Z sequential
+phases. Each phase z ∈{1, . . . , Z} is associated with a gate predicate Gz : S →{0, 1} over
+privileged simulator states. The phase abstraction ψ : S →{1, . . . , Z} assigns ψ(s) = z to a state
+where G1, . . . , Gz−1 have been satisfied in order but Gz has not. The SPL potential is:
+Φ(s) = Wψ(s)−1 + wψ(s) ϕψ(s)(s),
+(14)
+where Wz = Pz
+j=1 wj, W0 = 0, PZ
+z=1 wz = 1 with wz > 0 for all z. The trajectory credit is:
+cSPL = max
+i
+Φ(si).
+(15)
+Definition 1 (Oracle Failure Phase). For an unsuccessful trajectory τ = (s0, . . . , sK) (where
+cSPL < 1), the oracle failure phase z⋆is defined as the first phase whose gate is never satisfied:
+z⋆= min
+
+z ∈{1, . . . , Z} : Gz(si) = 0 for all i
+	
+.
+Assumption 1 (Gate–Metric Alignment). For each phase z, the intra-phase metric satisfies ϕz(s) <
+1 if and only if Gz(s) = 0. In particular, Gz being unsatisfied throughout the trajectory implies
+ϕz(si) < 1 for all i with ψ(si) = z.
+18
+
+
+This holds by construction for the geometric and force gate predicates used in the SPL specifications:
+ϕz is a normalized distance to the gate threshold, reaching one exactly at gate satisfaction.
+Lemma 1 (Credit Interval Property). Let ˆzmax = maxi ψ(si) denote the deepest phase reached by
+a failed trajectory (cSPL < 1). Under Assumption 1:
+Wˆzmax−1 ≤cSPL < Wˆzmax.
+(16)
+Proof. Lower bound. Since ˆzmax is reached, there exists si with ψ(si) = ˆzmax. For that state,
+Φ(si) = Wˆzmax−1 + wˆzmaxϕˆzmax(si) ≥Wˆzmax−1, hence cSPL ≥Wˆzmax−1.
+Upper bound. Since the trajectory fails (cSPL < 1), gate Gˆzmax is never satisfied: otherwise there
+would exist a state in phase ˆzmax + 1, contradicting the maximality of ˆzmax. By Assumption 1,
+ϕˆzmax(si) < 1 for every si with ψ(si) = ˆzmax, so Φ(si) < Wˆzmax−1 + wˆzmax = Wˆzmax. For states
+in any phase z′ < ˆzmax, monotonicity of {Wj} gives Φ(si) ≤Wz′ ≤Wˆzmax−1 < Wˆzmax. Since no
+state lies in a phase above ˆzmax, we have cSPL < Wˆzmax.
+Theorem 1 (Failure Boundary Localization). Under Assumption 1, for any failed trajectory, ˆzmax =
+z⋆. Furthermore, cSPL uniquely determines z⋆.
+Proof. Step 1: ˆzmax = z⋆. We show that ˆzmax is exactly the first phase whose gate is never satisfied.
+For all phases z < ˆzmax: by the sequential gate structure, ψ(si) = ˆzmax > z requires gate Gz to
+have been satisfied at some earlier step; hence Gz is satisfied and z /∈{z : Gz unsatisfied}.
+For phase ˆzmax: as argued in the upper bound of Lemma 1, Gˆzmax is never satisfied on this trajectory.
+Therefore z⋆= ˆzmax.
+Step 2: cSPL uniquely identifies ˆzmax. Since all wz > 0, the cumulative sequence 0 = W0 < W1 <
+· · · < WZ is strictly increasing, so the intervals [Wz−1, Wz) for z = 1, . . . , Z are mutually disjoint
+and cover [0, 1). By Lemma 1, cSPL ∈[Wˆzmax−1, Wˆzmax), which identifies ˆzmax uniquely.
+Theorem 1 establishes that SPL recovers an oracle signal—the true phase at which execution breaks
+down—from a scalar trajectory credit alone, without requiring per-step outcome labels.
+C.2
+Oracle-Aligned Denoising Perturbation Shaping
+Having recovered the oracle failure phase, we analyze how DBS translates this into directionally
+aligned policy updates.
+Setup. For each denoising step, DBS stores a tuple (at, anext
+t
+, vold
+t
+, t, s, o, ℓ, r). The current
+policy predicts vθ,t, and mirrored velocity branches are constructed as:
+v±
+θ,t = vold
+t
+± β ∆vt,
+∆vt = vθ,t −vold
+t
+,
+(17)
+inducing transition means via the affine Flow-SDE map:
+µ±
+θ,t = at + c(t) v±
+θ,t,
+c(t) = δ
+
+1 + σ2
+t (1 −t)
+2t
+
+> 0.
+(18)
+The DBS loss is:
+LDBS(θ) = E(·)∼B
+h
+Softplus
+
+1
+2 y · (E+
+θ,t −E−
+θ,t)
+i
+,
+(19)
+where E±
+θ,t = ∥anext
+t
+−µ±
+θ,t∥2
+Σ−1
+t
+and y = 2r −1 ∈[−1, 1] is the signed SPL label.
+Definition 2 (Rollout Transition Residual). The rollout transition residual d⋆is defined as:
+d⋆= anext
+t
+−µold
+t
+,
+µold
+t
+= at + c(t) vold
+t
+,
+(20)
+where µold
+t
+is the transition mean of the old policy and anext
+t
+∼N(µold
+t
+, Σt) is the actual next diffu-
+sion state sampled during rollout. Hence d⋆records the stochastic denoising perturbation realized
+relative to the old policy mean—not a target or expert action.
+19
+
+
+Theorem 2 (DBS Gradient Alignment). The gradient of LDBS with respect to vθ,t is:
+∇vθ,tLDBS = 2β c(t) σ(g) · y · Σ−1
+t
+ µold
+t
+−anext
+t
+
+,
+(21)
+where g = 1
+2y(E+
+θ,t −E−
+θ,t) and σ(·) is the sigmoid function. Since 2βc(t)σ(g) > 0 always, the
+descent direction satisfies:
+−∇vθ,tLDBS ∝y · Σ−1
+t d⋆.
+(22)
+The signed label y fully controls the direction: for failure-phase transitions (y = −1), the update
+points along −Σ−1
+t d⋆, suppressing the perturbation that drove the trajectory past the failure bound-
+ary; for success-phase transitions (y > 0), it points along +Σ−1
+t d⋆, reinforcing the perturbation
+associated with successful execution.
+Proof. Substituting Eq. (17) into Eq. (18) gives µ±
+θ,t = µold
+t
+±βc(t)∆vt. Using the rollout transition
+residual d⋆= anext
+t
+−µold
+t
+from Definition 2, expand the Mahalanobis errors:
+E±
+θ,t = ∥d⋆∓βc(t)∆vt∥2
+Σ−1
+t
+= ∥d⋆∥2
+Σ−1
+t
+∓2βc(t) (d⋆)⊤Σ−1
+t ∆vt + β2c(t)2∥∆vt∥2
+Σ−1
+t .
+(23)
+The quadratic terms cancel in the difference:
+E+
+θ,t −E−
+θ,t = −4β c(t) (d⋆)⊤Σ−1
+t ∆vt.
+(24)
+Hence g = −2βc(t) y (d⋆)⊤Σ−1
+t ∆vt. Since ∆vt is linear in vθ,t with unit Jacobian, the chain rule
+gives:
+∇vθ,tLDBS = σ(g) · ∇vθ,tg = σ(g) · (−2βc(t) y Σ−1
+t d⋆) = 2βc(t)σ(g) · y · Σ−1
+t (µold
+t
+−anext
+t
+).
+Since d⋆= anext
+t
+−µold
+t
+and 2βc(t)σ(g) > 0, this yields Eq. (22). This completes the proof.
+Theorem 3 (Failure-Inducing Transition Suppression). Under the Gaussian Flow-SDE transition
+model, the DBS descent direction for a failure-phase tuple (y = −1) is exactly opposite to the
+gradient of the log-probability of the failure-inducing action anext
+t
+:
+−∇vθ,tLDBS
+
+y=−1 ∝−∇vθ,t log pθ(anext
+t
+),
+(25)
+where pθ(anext
+t
+) = N(anext
+t
+; µθ,t, Σt) and µθ,t = at + c(t) vθ,t. Consequently, gradient descent
+on LDBS locally decreases log pθ(anext
+t
+), reducing the probability that the updated policy generates
+the same failure-inducing denoising perturbation.
+Proof. Since anext
+t
+∼N(µθ,t, Σt) with µθ,t = at + c(t) vθ,t, the log-probability is:
+log pθ(anext
+t
+) = −1
+2∥anext
+t
+−µθ,t∥2
+Σ−1
+t
++ const.
+Taking the gradient with respect to vθ,t at the old policy (vθ,t = vold
+t
+, so µθ,t = µold
+t
+):
+∇vθ,t log pθ(anext
+t
+) = c(t) Σ−1
+t (anext
+t
+−µold
+t
+) = c(t) Σ−1
+t d⋆.
+(26)
+From Theorem 2, the DBS descent direction for y = −1 is:
+−∇vθ,tLDBS
+
+y=−1 = −2βc(t)σ(g) · Σ−1
+t d⋆.
+Comparing with Eq. (26), since 2βσ(g) > 0:
+−∇vθ,tLDBS
+
+y=−1 = −2βσ(g) · ∇vθ,t log pθ(anext
+t
+).
+Hence gradient descent on LDBS moves vθ,t in the direction −∇vθ,t log pθ(anext
+t
+), strictly decreas-
+ing the log-probability of the failure-inducing transition. This completes the proof.
+By Theorem 1, the label y = −1 is assigned exclusively to tuples from rollouts where ˆzmax = z⋆—
+i.e., the failure boundary was reached but not crossed. Theorem 3 therefore establishes that DBS
+directly suppresses the denoising perturbations that empirically led to this failure. For success-
+phase tuples (y > 0), the gradient reverses sign, reinforcing the corresponding perturbations. Both
+quantities live in the same velocity space R|A| and the relationship is an exact equality, requiring no
+geometric approximation.
+Combining Theorems 1, 2, and 3 closes the DLS learning loop:
+trajectory
+SPL
+−−−→cSPL
+Thm. 1
+−−−−→z⋆
+Def. 2
+−−−−→d⋆
+Thm. 3
+−−−−→↓pθ(anext
+t
+)
+Thm. 2
+−−−−→DBS update.
+DLS thereby converts sparse trajectory outcomes into phase-specific gradient updates that provably
+suppress failure-inducing denoising perturbations, without per-step annotations or a learned critic.
+20

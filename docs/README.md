@@ -48,7 +48,7 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-12</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-13</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
     <strong class="dpr-home-dashboard-count">共 26 篇</strong>
@@ -58,7 +58,7 @@
     <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>15</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>11</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-12 19:12:48 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-13 19:10:42 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,26 +69,22 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>&lt;think&gt;The user wants a Chinese daily report summary based on the given data. Let me analyze:</p>
-<p>Date: 2026-09-12</p>
+<p>&lt;think&gt;The user wants me to act as a daily report editor and summarize the day&#x27;s paper recommendations in 3 concise Chinese sentences. Let me analyze the data:</p>
+<p>Date: 2026-09-13</p>
 <p>Status: Success</p>
 <p>Total: 26 papers</p>
-<p>Deep read (精读): 15</p>
-<p>Quick read (速读): 11</p>
-<p>Top papers from deep read:</p>
-<p>&quot;Reasoning Without Inference Cost: Latent Semantic Scaffolding for Robot VLA Policies&quot; (9.0/10)</p>
-<p>&quot;RoboSPA: Can VLA Models Go Beyond Simple Scenes and Short-Horizon Tasks?&quot; (9.0/10)</p>
-<p>Quick read highlights:</p>
-<p>LIBERO-RECOVER: failure recovery in robotic manipulation (8.0)</p>
-<p>TacPAC: tactile prediction and real-time action correction (8.0)</p>
-<p>Towards Neuro-Symbolic Procedural Reasoning for Long-Horizon VLA Manipulation (8.0)</p>
-<p>The theme is clearly about VLA (Vision-Language-Action) models for robotics, with focus on reasoning, long-horizon tasks, and manipulation.</p>
-<p>Let me craft 3 lines:</p>
-<p>Title-sensory summary: Focus on VLA models and robotics being the main theme</p>
-<p>Most worthwhile direction: The top 2 papers about latent semantic scaffolding and moving beyond simple scenes</p>
-<p>Next-step suggestion for general readers</p>
-<p>Let me write concisely and specifically without markdown headers or JSON.&lt;/think&gt;</p>
-<p>今日从 26 篇论文中精选 15 篇精读、11 篇速读，主线聚焦机器人 VLA 模型：从隐式语义支架推理，到突破简单场景与短时任务的局限，整体向长程、接触丰富与失败恢复方向纵深推进。最值得关注的方向有两点：一是&quot;无推理开销的潜在语义支架&quot;让 VLA 策略在不增加推理成本的情况下获得类推理能力，二是 RoboSPA 等工作开始把 VLA 推向更复杂、更长视野的真实任务。普通读者可先从《Reasoning Without Inference Cost》入门语义支架思路，再结合 TacPAC 的触觉纠错与 LIBERO-RECOVER 的失败恢复，了解 VLA 从&quot;能跑&quot;走向&quot;耐用&quot;的完整技术拼图。</p>
+<p>Deep read: 15 papers</p>
+<p>Quick read: 11 papers</p>
+<p>Top papers (精读): Two papers rated 9.0/10 - both about VLA (Vision-Language-Action) models for robotic manipulation</p>
+<p>CR-VLA-Force: Control-aware compliance for contact-rich manipulation</p>
+<p>GloVLA: Geometry and local VLA for object-centric manipulation</p>
+<p>Quick reads include failure-boundary learning for VLA, identity-aware manipulation, and RL-enhanced mobile robot control</p>
+<p>Let me craft 3 sentences:</p>
+<p>Headline-style summary: Today focused on VLA models for robotics, with emphasis on robust manipulation</p>
+<p>Key direction: VLA models focusing on contact-rich tasks and geometric reasoning</p>
+<p>Next step suggestion: For general readers interested in this direction</p>
+<p>Let me write it concisely and specifically based on the data provided.&lt;/think&gt;</p>
+<p>今日聚焦机器人 VLA（视觉-语言-动作）模型方向，共筛选 26 篇论文并精读 15 篇，重点关注接触富操作与非结构化环境下的鲁棒性提升。最值得关注的是 CR-VLA-Force 提出力控感知的柔顺执行机制、GloVLA 融合几何推理与局部交互，二者均针对复杂操作中的接触与遮挡难题取得突破。建议关注&quot;失败边界学习&quot;与&quot;RL 增强推理&quot;两条延伸线（对应速读篇目），它们有望进一步提升 VLA 模型在真实场景中的泛化与安全性。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -100,7 +96,7 @@
     <strong class="dpr-home-dashboard-count">15 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Reasoning Without Inference Cost: Latent Semantic Scaffolding for Robot VLA Policies">Reasoning Without Inference Cost: Latent Semantic Scaffolding for Robot VLA Policies</span></li><li><span class="dpr-home-dashboard-paper-title" title="RoboSPA: Can VLA Models Go Beyond Simple Scenes and Short-Horizon Tasks?">RoboSPA: Can VLA Models Go Beyond Simple Scenes and Short-Horizon Tasks?</span></li><li><span class="dpr-home-dashboard-paper-title" title="What Matters, When? Diagnosing and Improving Conditional Visual Grounding in Visuomotor Imitation Policies">What Matters, When? Diagnosing and Improving Conditional Visual Grounding in Visuomotor Imitation Policies</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="CR-VLA-Force: Learning Control-aware Compliance VLA Model for Robust Contact-rich Robotic Manipulation">CR-VLA-Force: Learning Control-aware Compliance VLA Model for Robust Contact-rich Robotic Manipulation</span></li><li><span class="dpr-home-dashboard-paper-title" title="GloVLA: Let Geometry Move and Local VLA Interact for Robust Object-Centric Manipulation in Unstructured Environments">GloVLA: Let Geometry Move and Local VLA Interact for Robust Object-Centric Manipulation in Unstructured Environments</span></li><li><span class="dpr-home-dashboard-paper-title" title="VLA-Corrector: Stage-Aware Observable State Understanding for Prompt-Based Closed-Loop Recovery of Vision-Language-Action Policies">VLA-Corrector: Stage-Aware Observable State Understanding for Prompt-Based Closed-Loop Recovery of Vision-Language-Action Policies</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">rob-il <strong>15</strong></span></div>
 </section>
@@ -113,7 +109,7 @@
     <strong class="dpr-home-dashboard-count">11 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="LIBERO-RECOVER: Beyond Task Success Towards Failure Recovery in Robotic Manipulation Models">LIBERO-RECOVER: Beyond Task Success Towards Failure Recovery in Robotic Manipulation Models</span></li><li><span class="dpr-home-dashboard-paper-title" title="TacPAC: Tactile Prediction and Real-Time Action Correction in World-Action Models for Contact-Rich Manipulation">TacPAC: Tactile Prediction and Real-Time Action Correction in World-Action Models for Contact-Rich Manipulation</span></li><li><span class="dpr-home-dashboard-paper-title" title="Towards Neuro-Symbolic Procedural Reasoning for Long-Horizon Vision-Language-Action Manipulation">Towards Neuro-Symbolic Procedural Reasoning for Long-Horizon Vision-Language-Action Manipulation</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Where Success Breaks: Failure-Boundary Learning for Robust Vision-Language-Action Models">Where Success Breaks: Failure-Boundary Learning for Robust Vision-Language-Action Models</span></li><li><span class="dpr-home-dashboard-paper-title" title="RefGuard: Identity-Aware Language-Guided Robot Manipulation via Joint Target-Anchor-Frame Grounding">RefGuard: Identity-Aware Language-Guided Robot Manipulation via Joint Target-Anchor-Frame Grounding</span></li><li><span class="dpr-home-dashboard-paper-title" title="MobileVLA-R1 2.0: RL-Enhanced Reasoning for Mobile Robot Control">MobileVLA-R1 2.0: RL-Enhanced Reasoning for Mobile Robot Control</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">rob-il <strong>11</strong></span></div>
 </section>

@@ -1,0 +1,1367 @@
+IM-ENGINE: Image Editing for Embodied
+Data Generation
+Yian Wang
+University of Massachusetts Amherst
+Junyi Cao
+University of Massachusetts Amherst
+Xiaowen Qiu
+Genesis AI
+Chuang Gan
+University of Massachusetts Amherst
+Dexterous Grasp Synthesis
+Goal State Generation
+Figure 1: IM-ENGINE uses image editing as a semantic interface for simulator-grounded data gen-
+eration. Edited images are grounded back into simulator state for two tasks: functional dexterous
+grasp synthesis and goal-state generation, yielding physically validated grasps, goals, and robot-
+usable trajectories.
+Abstract: Learning-based manipulation requires supervision that is both seman-
+tically meaningful and physically executable, but current data pipelines often pro-
+vide only one of these properties. Human demonstrations capture intent but are
+costly to collect and constrained by the human–robot embodiment gap, while sim-
+ulation can scale data generation but often under-specifies functional behavior. We
+present IM-ENGINE, a simulator-grounded pipeline that uses image editing as an
+intermediate representation for embodied data generation. Given a rendered scene
+with known geometry, depth, segmentation, and camera parameters, IM-ENGINE
+edits the image to inject task-relevant semantics, recovers explicit 3D state us-
+ing simulator priors and an unchanged anchor object, refines the state in physics,
+and converts it into robot-executable supervision. We instantiate the pipeline for
+dexterous grasp synthesis and goal-state generation. For grasping, IM-ENGINE
+generates a human grasp in image space, recovers the hand-object interaction, re-
+targets it to a robot hand, and refines it into physically validated robot grasps.
+For goal generation, it edits a rendered scene into a desired outcome, recovers the
+target-object pose, and refines it into physically valid, semantically meaningful
+goals and trajectories. This combination of generative semantic priors and simu-
+lator grounding enables scalable task-relevant supervision for robot learning.
+Keywords: robot learning, manipulation, data generation
+arXiv:2609.06279v1  [cs.RO]  5 Sep 2026
+
+
+1
+Introduction
+Learning-based robot manipulation depends on supervision that is both semantically informative and
+physically executable. For many tasks, the challenge is not only to satisfy geometric constraints, but
+also to capture how an object should be grasped or placed for downstream use. Human data nat-
+urally capture many of these semantic constraints, but collecting such data through teleoperation
+or physical demonstration remains burdensome [1, 2, 3, 4]. Recent human-data pipelines reduce
+this burden through low-cost teleoperation interfaces, motion-capture systems, and wearable ex-
+oskeletons [5, 6, 7, 8, 9, 10], or leverage large-scale egocentric human videos [11, 12, 13]. These
+approaches broaden coverage, but the supervision is still mediated by human embodiment and typ-
+ically requires cross-embodiment alignment or hand-motion retargeting before it can be transferred
+to a target robot hand [14, 12, 15, 16]. Simulation-first pipelines can scale data generation without
+ongoing human involvement and expose full scene state [17, 18, 19, 20, 21, 22, 23, 24], but a cen-
+tral challenge is to preserve task semantics rather than optimizing only for physical feasibility—for
+example, by placing the index finger on a spray-bottle trigger instead of simply holding the bottle
+from below, or by hanging the mug on a mug tree rather than merely placing it on or near a support.
+This challenge is visible in grasp and goal-generation work. Large-scale synthetic dexterous grasp
+pipelines generate physically valid grasps at impressive scale [17, 18], but force-closure or stability
+objectives do not necessarily yield human-like functional grasps. Image-editing and visual-foresight
+methods provide semantic guidance for manipulation [25, 26, 27], but usually use generated obser-
+vations as policy guidance rather than explicit 3D supervision. Scene-generation work broadens
+object-placement semantics [28, 23, 29, 30, 24, 31, 32], but often focuses on plausible layouts or
+simple support relations rather than intricate object-object goal states, such as slotting a plate’s rim
+between dish-rack rails. As a result, existing pipelines still struggle to combine semantic plausibility,
+geometric grounding, and robot-executable structure within a single data-generation process.
+To address this gap, we use image editing as an interface between semantic intent and physical
+grounding, as shown in Fig. 1. Our key observation is that editing is most useful for robotics when
+applied to scenes that already originate in simulation, inspired by Wang et al. [23]. A simulator-
+rendered scene provides privileged geometry, calibration, visibility, segmentation, and depth typi-
+cally unavailable in unconstrained web imagery [33] or directly generated images. After editing,
+these priors anchor reconstruction: the image supplies semantic intent, while the simulator state
+supports metric 3D recovery, physics verification, and conversion into supervision or trajectories.
+We instantiate this idea in IM-ENGINE, a unified four-stage pipeline. Given a rendered scene of
+3D assets, IM-ENGINE first edits the image to depict either a plausible human functional grasp or a
+desired post-manipulation goal state. It then recovers a structured state from the edit—a hand-object
+interaction for grasp synthesis or a 6-DoF target pose relative to a fixed anchor for goal genera-
+tion. Physics validation refines this state into physically valid robot grasps or stable placements, and
+trajectory generation converts the validated results into robot-usable supervision, such as grasp can-
+didates or executable placement trajectories for relation-heavy tasks like hanging a mug on a mug
+tree or placing a dish into a holder. Across both settings, image editing provides semantic guidance,
+while simulation provides geometric grounding and physical validation.
+Taken together, our contributions are fourfold: (1) a simulator-grounded framework that uses
+image editing as an intermediate representation for embodied data generation, combining gen-
+erative semantic priors with privileged simulation state; (2) perception pipelines tailored to this
+simulator-grounded image-editing setup, recovering explicit 3D structures—hand-object interac-
+tions for grasping and 6-DoF object poses for goal generation—rather than treating edits only as
+visual goals; (3) a closed loop from recovered state to robot-usable supervision through physics
+validation and trajectory generation; and (4) demonstrations that the same pipeline supports both
+functional dexterous grasp synthesis and relation-heavy goal-state generation, including hanging
+and fitting tasks that prior visual-goal or scene-generation pipelines do not directly address.
+2
+Related Work
+Dexterous grasp data generation. Simulation-first methods create large corpora of robot grasps
+using geometry and physics.
+For example, DexGraspNet [17] employs differentiable force-
+2
+
+
+closure optimization, DexGrasp Anything [18] uses a physics-aware generative model, and DRO
+Grasp [34] utilizes a cross-embodiment distance representation. However, these approaches pro-
+duce robot-centric supervision that does not capture the functional intent of grasps. Human HOI
+datasets [35, 36, 37, 38, 39] offer richer semantics but are expensive to collect and do not scale
+to robot-executable data. Recent methods bridge this gap: Web2Grasp [33] retargets human grasps
+from internet to a robot hand; language-guided grasp generation [40, 41, 42, 43] enhances functional
+grasping by providing detailed grasp instructions; and CorDex [44] seeds simulation expansion from
+a single human demonstration. Our work pursues the same semantic goals but grounds the prior in
+a simulator-rendered scene with known geometry, depth, and camera parameters, so image editing
+injects functional intent without sacrificing scene supervision.
+Visual goal generation and spatially grounded placement. Prior work differs in how generated vi-
+sual content enters manipulation pipelines. Visual-foresight methods use images or videos as online
+policy guidance rather than explicit metric goals [25, 45, 26, 27]: Gen2Act [45] conditions policies
+on generated human videos, CoT-VLA [26] predicts future frames before acting, and ForeAct[27]
+steers a VLA with imagined observations. Another line uses generated images or videos to recover
+simulation states, object motions, or trajectories [46, 23, 29, 47, 48, 49, 50, 51, 52]. LuciBot [46]
+generates task-completion videos and reconstructs object-pose trajectories, masks, and depth for
+simulation policy training. SceneThesis [29] recovers physically plausible 3D scene layouts from
+language and visual priors, but lacks a known simulator anchor for depth and scale alignment. In
+contrast, our pipeline treats an edited image as a semantic proposal, estimates a metric 6-DoF target
+pose in the original simulator-grounded scene, refines it in physics, and executes it with a robot.
+3
+Method
+IM-ENGINE converts image edits into robot-executable manipulation data by placing the generative
+model inside a simulator-grounded loop. We use world, camera, anchor-object, and target-object
+frames W, C, A, O, and define Txy ∈SE(3) to map points from frame Y to frame X. Thus Tcw is
+the world-to-camera transform, Twc = T −1
+cw is used for back-projection. Object poses are stored in
+the world frame as Twa for the fixed anchor and Two for the target object; goal generation recovers a
+world-frame target pose T ⋆
+wo whose relation to the fixed anchor is evaluated in simulation. Starting
+from known meshes, poses, segmentation, metric depth, camera intrinsics K, and pose Tcw, the
+simulator renders the first RGB image s0 and depth map D0; image editing produces ˜o; perception
+recovers a structured 3D state z; physics validation refines it; and trajectory generation converts the
+result into robot supervision or executable motion.
+As shown in Fig. 2, we instantiate this abstraction for two manipulation problems. In Grasp Syn-
+thesis, the anchor is the manipulated object: the object remains fixed while the edit adds a human
+hand performing a functional grasp. The recovered state z is a robot hand grasping pose in the sim-
+ulator world frame, which physics validation refines into physically valid dexterous grasps. In Goal
+Generation, the anchor is a fixed container or support object: the edit moves the target object into
+a desired final relation, such as a mug hanging on a mug tree or a plate inserted into a rack. The
+recovered state z is a 6-DoF target pose in the simulator world frame, evaluated by its object-object
+relation to the fixed anchor pose Twa. Both settings share the same four stages: image generation,
+perception, physics validation, and trajectory generation.
+3.1
+Image Generation
+The first stage creates an image-space proposal while preserving a metric reference frame (Fig. 2(a)).
+We use Nano Banana 2 [53] as the image-editing model. We render the initial image s0 using
+known meshes and poses, a calibrated camera, and pixel-level segmentation. The renderer also
+provides a metric depth map D0, so every pixel in s0 can be back-projected into the simulator world
+frame. We keep the edited image at the same resolution as the initial render, allowing masks and
+depth on the unchanged anchor to be compared directly across the original and edited observations.
+For Grasp Synthesis, the scene contains a single target object on a tabletop. A vision-language
+model proposes functional grasp descriptions from the rendered object image, specifying contact
+region, grasp type, and handedness. The image editor inserts a natural human hand for each proposal
+while preserving the viewpoint, background, and object pose, yielding grasp-edited images, denoted
+3
+
+
+Grasp Synthesis Goal Generation
+(a) Image
+Generation
+(b) Perception
+Seg & Depth
+Pose Estimation
+(c) Physics
+Validation
+(d) Trajectory 
+Generation
+𝑠0
+෤𝑜𝑔
+෤𝑜𝑞
+𝑠0
+Align Depth
+HaMeR 
+Regression
+3D 
+Projection
+MANO Pose Optimization
+Retarget
+Align Depth
+DINO Point 
+Matching
+3D 
+Projection
+𝐷(𝑢)
+𝐷(𝑢)
+3D 
+Registration
+Predictive Sampling Search
+Jitter & Validation
+IK Motion Solver
+Escape & Forward MPC
+Figure 2: Our pipeline consists of four stages: (a) image generation edits a simulator-rendered
+scene according to the task, producing a visual proposal for either a functional grasp or a target
+goal arrangement; (b) perception lifts the edited image into a structured 3D state using simulator
+priors and anchor-based metric depth alignment; (c) physics validation filters and refines the state
+for contact, stability, and collision feasibility; and (d) trajectory generation converts validated states
+into robot manipulation data for dexterous grasp synthesis and goal-state reaching.
+generically as ˜og, that show how the object should be grasped. For Goal Generation, the scene
+contains both the target object and a fixed anchor such as a mug tree, hanger, dish rack, or holder.
+Rendering both objects gives the editor cues about relative scale and target shape. The editor moves
+the target into the requested relation while preserving the camera, object identities, and anchor pose,
+producing ˜oq as a visual proposal whose fixed anchor links the edit to the simulator state.
+3.2
+Perception
+Perception converts the edited observation into an explicit 3D state through segmentation, depth
+estimation, and pose estimation (Fig. 2(b)).
+Segmentation. We use SAM 3 [54] to segment the entities introduced or moved by the edit. In the
+grasp pipeline, we prompt for the human hand in ˜og; in the goal pipeline, we prompt for the target
+object in ˜oq. The anchor mask is constructed from simulator supervision rather than relying only on
+recognition in the edited image: we start from the anchor mask rendered in s0 and remove pixels
+covered by the edited foreground—the hand for grasp synthesis, or the moved target object for goal
+generation. The remaining pixels correspond to the visible, unchanged part of the anchor and define
+the alignment region. This is important because the anchor can be hard for SAM 3 to recognize
+when it is heavily occluded by the inserted hand or by the target object in the final goal relation.
+Depth estimation. We estimate depth for the edited image with Depth Anything 3 [55] and align
+the prediction to the simulator metric frame using the anchor, inspired by the depth-alignment
+strategy in Architect [23].
+Let Dest be the predicted depth on ˜o, D0 the renderer depth for
+s0, and Ωa the visible anchor region obtained from segmentation.
+For grasp synthesis, a is
+the target object; for goal generation, a is the fixed support or container.
+We solve (α, β) =
+arg minα,β
+P
+u∈Ωa (αDest(u) + β −D0(u))2 and define the aligned depth D(u) = αDest(u)+β.
+This affine alignment removes scale and offset mismatch between monocular depth and renderer
+depth while preserving relative geometry away from the anchor. To back-project an edited-image
+pixel u, we first compute pc = D(u)K−1¯u in the camera frame and then transform it to the simulator
+world frame as pw = Twcpc, using Twc = T −1
+cw .
+Pose estimation. For grasp synthesis, we recover the edited hand–object interaction by detecting
+the hand, estimating a MANO hand with HaMeR [56], refining the hand pose against the aligned
+hand pointcloud and known object geometry, and retargeting the refined MANO joints to the robot
+hand following [15]. We provide the reconstruction and retargeting details in Section A.2.
+For goal-state generation, following ¨Ornek et al. [57], we recover the target object’s 6-DoF pose
+in ˜oq by matching DINOv3 features [58] between rendered object templates and the edited target
+4
+
+
+object, lifting depth-consistent matches into 3D, and solving a 3D registration problem to estimate
+the world-frame target pose T ⋆
+wo. See Section B.1 for full template-matching and registration details.
+3.3
+Physics Validation
+The perception output is a semantic and geometric proposal, not yet an executable state.
+IM-
+ENGINE therefore uses simulation as a task-specific feasibility filter and local refinement stage
+before producing data (Fig. 2(c)); implementation details are provided in Sections A.2 and B.1.
+For Grasp Synthesis, the retargeted hand initializes a parallel search over dexterous pre-grasp and
+post-grasp hand states. We reject candidates with initial collisions, simulate finger closing and lift-
+ing, and save grasps only if they satisfy both the lift threshold and key-fingertip contact constraints
+derived from the projected MANO contacts. Lifted grasps that fail the contact constraint are dis-
+carded, and the final grasp is selected by maximum total reward rather than lift height alone.
+For Goal Generation, we locally refine object poses by sampling nearby poses and simulating them
+with fixed anchor and environment. We reject initial collisions and accept only poses with small
+translation and rotation drift under gravity and contact, filtering visually plausible but physically
+invalid edits, e.g., floating placements, penetrations, and unstable hanging or insertion relations.
+3.4
+Trajectory Generation
+The final stage converts validated states into robot-executable data (Fig. 2(d)). For Grasp Synthesis,
+validated dexterous hand states provide grasp supervision directly, and full arm-hand rollouts are
+produced by planning an xArm7 approach to the selected pre-grasp, closing the dexterous hand, and
+lifting the object. If the default inverse-kinematics approach would disturb the object before contact,
+we fall back to cuRobo for a collision-aware approach. Details are in Section A.2.
+For Goal Generation, the validated pose defines a constrained terminal relation that is difficult to
+reach with standard pick-and-place. We therefore compute a collision-free kinematic escape path
+from the goal pose using object-pose MPC, reverse it to obtain an insertion reference, and use this
+reference to warm-start a forward MPC search in simulation. Details are in Section B.1.
+4
+Experimental Results
+4.1
+Grasp Synthesis
+Task assets.
+We consider 5 object categories in our main experiments: paper cup, power drill,
+spray bottle, trigger sprayer, and wine glass. For each category, we obtain 3D assets through a three-
+stage pipeline: text-to-image generation with Nano Banana 2 [53], background removal [59], and
+image-to-3D reconstruction [60]. After manually filtering assets with poor geometry, we retain an
+average of 40 objects per category for training, and 20 more for testing. To further test robustness
+beyond these 5 categories, we additionally collect 50 graspable assets from BlenderKit [61]. See
+Fig. 10 for some example results obtained by our pipeline.
+HOI reconstruction evaluation
+Before retargeting to the robot hand, we separately evaluate the
+recovered MANO hand–object geometry in Section A.1. The appendix compares against iHOI [62],
+EasyHOI [63], and OakInk-Shape [38], reports standard HOI reconstruction metrics, and provides
+qualitative analysis of how simulator grounding preserves functional contact intent.
+Metrics.
+We evaluate functional grasp generation with ShadowHand across the 5 object categories.
+For each grasp-generation method, we report both the lifting success rate and the functional success
+rate. Lifting success is evaluated in the Genesis [64] physics simulator, while functional success
+is assessed by 5 annotators who manually inspect each generated grasp according to the criteria
+in Section A.4. We report the average annotation score.
+Baselines.
+We compare against four representative methods and include ablations of DRO ini-
+tialization. DexGraspNet [17] is a purely optimization-based method that requires no network
+inference. DexGrasp-Anything [18] trains a diffusion model on large-scale hand poses and ap-
+plies physics-guided sampling at inference to refine generated configurations. DexGYSGrasp [42]
+is a two-stage approach that combines a language-conditioned diffusion model with a refinement
+stage, synthesizing task-relevant grasps. DRO [34] predicts grasps from a configuration-invariant
+5
+
+
+Method
+Paper Cup Power Drill Spray Bottle Trigger Sprayer Wine Glass
+Overall
+Lift. Func. Lift. Func. Lift. Func.
+Lift.
+Func.
+Lift. Func. Lift.
+Func.
+DexGraspNet
+17% 10% 54%
+2% 71%
+4%
+50%
+4%
+36% 16% 45.6% 7.2%
+DexGrasp-Anything 98% 60% 98%
+0% 97%
+7%
+96%
+6%
+88% 14% 95.4% 17.4%
+DexGYSGrasp
+27% 21% 100% 7% 84% 33%
+92%
+37%
+100% 94% 80.6% 38.4%
+DRO w/o FT + r.w. 48% 10% 97%
+2% 85%
+4%
+94%
+6%
+90% 30% 82.8% 10.4%
+DRO w/o FT + g.w. 73% 63% 98% 11% 88%
+3%
+77%
+6%
+90% 68% 85.2% 30.2%
+DRO w/ FT (Ours) 98% 92% 100% 76% 99% 69% 100%
+81%
+100% 98% 99.4% 83.2%
+Table 1: Quantitative comparison on grasp synthesis.
+robot–object distance representation, enabling zero-shot transfer across hand morphologies without
+retraining. We evaluate two DRO variants without fine-tuning: DRO w/o FT + r.w., initialized
+with random wrist poses, and DRO w/o FT + g.w., initialized around wrist poses sampled from our
+pipeline. DRO w/ FT (Ours) denotes DRO fine-tuned on grasp data generated by IM-ENGINE.
+Results.
+Table 1 shows that DRO w/ FT (Ours) achieves the best overall lifting (99.4%) and
+functional success (83.2%). The results highlight that lifting does not imply functional correct-
+ness: DexGrasp-Anything attains high lifting success (95.4%) but only 17.4% functional success,
+including 0% on the power drill, because stability-driven grasps can miss task-relevant contacts.
+DexGraspNet is weakest without a learned semantic prior (45.6% / 7.2%), while DexGYSGrasp
+improves functional success to 38.4% but still struggles with objects requiring precise fingertip
+placement, such as the power drill and spray bottle. The DRO ablations further show the value of
+IM-ENGINE data. Initializing DRO with wrist poses from our pipeline (DRO w/o FT + g.w.) triples
+functional success over random initialization (30.2% vs. 10.4%), and fine-tuning on our generated
+data adds another 53-point gain to 83.2%. The improvement is largest on spray bottles and trigger
+sprayers, where success requires placing the index finger on the trigger. We also discuss the quali-
+tative results in Section A.5. Moreover, we report in Section A.6 that grasps generated directly by
+IM-ENGINE achieve approximately 86% average functionality across the 5 categories.
+4.2
+Goal Generation
+Mug & Mug Tree
+Dish & Dish Rack 1
+Dish & Dish Rack 2
+Hanger Hook
+Scissor & Key Rack
+Tube & Tube Rack
+Wine & Wine rack 1
+Wine & Wine rack 2
+Figure 3: Qualitative results on goal-state generation. We present physically validated goal states
+produced by IM-ENGINE for each task, with the bottom-right images revealing the original scene.
+Tasks and metrics.
+We evaluate goal-state generation across eight tasks that require placing di-
+verse objects into suitable containers, as shown in Fig. 3. A generated goal state is considered
+successful only if it is physically plausible in simulation—e.g., stable under gravity and free of
+penetration with the container—and the rendered final state satisfies the intended task relation.
+Baselines.
+We compare against three baselines that represent distinct strategies for goal-pose gen-
+eration without image editing: Molmo-2D [65] uses a VLM to click a feasible pixel in the rendered
+scene, lifts it to 3D with rendered depth and camera parameters, and fixes the object rotation; VLM-
+6DoF iteratively prompts a VLM with the rendered scene and current 6-DoF poses to propose an
+6
+
+
+Method
+Mug Dish 1 Dish 2 Hanger Tube Scissor Wine 1 Wine 2 Overall
+Molmo-2D
+1/5
+0/5
+0/5
+0/5
+0/5
+0/5
+0/5
+0/5
+1/40
+VLM-6DoF (5 iters)
+0/5
+1/5
+0/5
+1/5
+0/5
+1/5
+1/5
+0/5
+4/40
+VLM-6DoF (10 iters)
+0/5
+1/5
+1/5
+3/5
+1/5
+1/5
+2/5
+1/5
+10/40
+PhyScensis
+0/5
+3/5
+2/5
+0/5
+0/5
+0/5
+1/5
+5/5
+11/40
+Ours
+5/5
+5/5
+3/5
+4/5
+5/5
+5/5
+3/5
+5/5
+35/40
+Table 2: Comparison on the physical plausibility of the final goal states for goal generation.
+Trigger Sprayer
+Wine Glass
+Spray Bottle
+Power Drill
+Paper Cup
+Figure 4: Real-world functional grasping demonstrations.
+updated target pose, then validates the final pose in physics; PhyScensis [30] applies an occupancy-
+grid heuristic search over candidate placements and rotations, validates them in physics, and selects
+the most task-consistent result with a VLM agent. See Section B.2 for more details of each baseline.
+Results.
+As shown in Table 2, Ours achieves 35/40 successes, substantially outperforming the
+strongest baseline, PhyScensis (11/40). The gains are most pronounced on relation-heavy tasks such
+as mug hanging, tube insertion, scissors placement, and hanger placement, where the final pose
+must satisfy a specific object-object relation rather than merely rest stably on a support. Molmo-2D
+nearly fails entirely (1/40) because a lifted 2D click provides only a coarse translation and no reliable
+rotation. VLM-6DoF improves with more iterations, but direct metric 6-DoF reasoning remains
+unreliable for narrow constrained relations. PhyScensis succeeds on simpler placement tasks (e.g.,
+wine 2 and dish 1), where occupancy-grid search can find stable poses, but fails on constrained
+insertion and hanging tasks (e.g., tube and hanger). This is because it emphasizes physical feasibility
+over semantic correctness, requiring unguided rotation search, roughly 40 VLM calls for filtering,
+and a grid discretization too coarse for contact-rich tasks such as tube insertion. In contrast, our
+edited-image proposal directly specifies the desired relation, allowing pose recovery and physics
+validation to refine a semantically meaningful goal rather than discover it from scratch.
+4.3
+Real-World Experiments
+4.3.1
+Grasp Synthesis
+We first execute our trajectory generation pipeline (Section 3.4) on a physical robot with generated
+grasps by DRO w/ FT (Section 4.1) across all 5 object categories. As shown in Fig. 4, the planned
+arm-hand approach and grasp motions transfer to real scenes without adaptation.
+To test whether IM-ENGINE data supports closed-loop policy learning, we train two mug-grasp
+diffusion policies [66]: one for top-down grasping and one for handle grasping. Each policy uses
+approximately 800 IM-ENGINE simulation episodes and 40 real demonstrations, with wrist-camera,
+front-camera, and proprioceptive observations. Concretely, we generate 5 grasp images for each
+grasp mode and follow Section 3.4 to obtain 160 simulation trajectories per image. We evaluate
+each policy over 10 trials with varied mug positions. As shown in Fig. 5, both policies transfer
+to different mug instances and preserve their intended grasp modes, achieving 80% success for
+top-down grasping and 60% for handle grasping. In contrast, a diffusion policy trained with only
+the 40 real demonstrations achieves 0% success. This gap indicates that IM-ENGINE-generated
+trajectories provide task-relevant contact structure that is difficult to learn from the limited real data
+alone, reducing the real-world demonstration burden for functional grasp policy learning.
+4.3.2
+Goal Generation
+We evaluate two representative cases, hanger hook and mug mugtree, both of which require the
+policy to realize a precise final object-object relationship rather than a simple placement.
+To construct training data, we generate approximately 1,000 trajectories in simulation for each task
+by generating 10 objects from each category, using 3D object meshes generated by Meshy [67],
+7
+
+
+Figure 5: Real-world closed-loop deployment of two diffusion policies for mug grasping, each
+trained on IM-ENGINE simulation data co-trained with a small number of real demonstrations. One
+policy targets a top-down grasp (left) and the other targets a handle grasp (right).
+(a) Hanger A
+(b) Hanger B
+(c) White Mug
+(d) Red Mug
+Figure 6: Real-world goal-generation results. We fine-tune SmolVLA on kinematic replays col-
+lected from simulation trajectories generated by IM-ENGINE, using both wrist camera and third-
+person observations as input for two separate tasks. The figure shows two successful examples for
+hanger hook and two successful examples for mug mugtree, each with different object instances.
+and randomly pairing objects across the two cases. For each pair, we run our pipeline to recover a
+physically valid goal state. We then collect kinematic escape trajectories from the goal to diverse
+target poses, reverse these trajectories, define a relative grasping pose, and solve inverse kinematics
+to obtain robot-arm trajectory demonstrations. Finally, we replay the trajectories with randomized
+backgrounds and object texture, rendering both wrist-camera and third-person observations, and
+use the resulting data to fine-tune a SmolVLA policy [68] for each task. At deployment time, the
+fine-tuned policy is executed directly in the real world.
+We test each policy on the corresponding task 10 times with varying object instances and initial
+poses; the success rates for hanger hook and mug mugtree are 70% and 50%, respectively. We
+also show two successful examples for each case in Fig. 6 (see Fig. 12 for more quantitative results).
+These results indicate that simulation trajectories generated by IM-ENGINE can be converted into
+a policy that transfers to real scenes while preserving the desired semantic relation between the
+manipulated object and the anchor structure.
+5
+Conclusion and Limitations
+We presented IM-ENGINE, a simulator-grounded data-generation framework that uses image edit-
+ing as an interface between semantic intent and robot-executable structure. Rather than treating
+generated images as final visual goals, IM-ENGINE edits simulator-rendered scenes and grounds
+the edits back into explicit 3D state using known geometry, segmentation, depth, and physics. This
+lets generative models specify functional intent while simulation provides metric reconstruction,
+physical validation, and trajectory supervision. We instantiated IM-ENGINE for functional dex-
+terous grasp synthesis, where edited human grasps are recovered and retargeted into robot grasp
+data, and goal-state generation, where edited scene outcomes become stable 6-DoF placements and
+executable trajectories. Experiments show improved functional grasp success with physical feasibil-
+ity, strong performance over direct visual or geometric goal-generation baselines on relation-heavy
+tasks, and simulation trajectories that transfer to real-world policy execution.
+Limitations.
+IM-ENGINE inherits limitations from both image editing and simulation. Edited
+images can specify infeasible interactions, alter anchor objects, or miss functional contacts, while
+collision handling and contact-rich simulation remain challenging for thin structures and constrained
+insertion or hanging tasks. The pipeline also assumes suitable paired 3D assets for goal generation,
+and grasp validation can occasionally favor stable but semantically incorrect contacts. We provide
+more detailed analyses in Sections A.6 and B.3.
+8
+
+
+References
+[1] H. Walke, K. Black, T. Z. Zhao, Q. Vuong, C. Zheng, P. Hansen-Estruch, A. He, V. Myers,
+K. Fang, C. Finn, and S. Levine. Bridgedata v2: A dataset for robot learning at scale. In
+Proceedings of The 7th Conference on Robot Learning, 2023.
+[2] A. Khazatsky, K. Pertsch, S. Nair, A. Balakrishna, S. Dasari, S. Karamcheti, S. Nasiriany,
+M. K. Srirama, L. McKinley, Y. Chen, B. Ellis, S. Terry, S. Levine, and C. Finn. DROID: A
+large-scale in-the-wild robot manipulation dataset. In Proceedings of Robotics: Science and
+Systems, 2024.
+[3] A. Brohan, N. Brown, J. Carbajal, Y. Chebotar, X. Chen, K. Choromanski, T. Ding, D. Driess,
+A. Dubey, C. Finn, P. Florence, K. Hausman, B. Ichter, A. Irpan, N. Joshi, R. Julian, D. Kalash-
+nikov, Y. Kuang, K.-H. Lee, S. Levine, Y. Lu, H. Michalewski, I. Mordatch, K. Pertsch, K. Rao,
+M. Ryoo, G. Salazar, P. Sanketi, P. Sermanet, J. Singh, A. Singh, R. Soricut, H. Tran, V. Van-
+houcke, Q. Vuong, A. Wahid, S. Welker, P. Wohlhart, J. Wu, F. Xia, T. Xiao, P. Xu, S. Xu,
+T. Yu, and B. Zitkovich. RT-1: Robotics transformer for real-world control at scale, 2022.
+[4] B. Zitkovich, T. Yu, S. Xu, P. Xu, T. Xiao, F. Xia, J. Wu, P. Wohlhart, S. Welker, A. Wahid,
+Q. Vuong, V. Vanhoucke, H. Tran, R. Soricut, A. Singh, J. Singh, P. Sermanet, P. Sanketi,
+G. Salazar, M. Ryoo, K. Reymann, K. Rao, K. Pertsch, I. Mordatch, H. Michalewski, Y. Lu,
+S. Levine, K.-H. Lee, T.-W. E. Lee, I. Leal, Y. Kuang, D. Kalashnikov, R. Julian, N. Joshi,
+A. Irpan, B. Ichter, K. Hausman, K. Gopalakrishnan, C. Fu, P. Florence, C. Finn, A. Dubey,
+D. Driess, T. Ding, K. Choromanski, X. Chen, Y. Chebotar, J. Carbajal, N. Brown, and A. Bro-
+han. RT-2: Vision-language-action models transfer web knowledge to robotic control, 2023.
+[5] C. Chi, Z. Xu, C. Pan, E. Cousineau, B. Burchfiel, S. Feng, R. Tedrake, and S. Song. Universal
+manipulation interface: In-the-wild robot teaching without in-the-wild robots. In Proceedings
+of Robotics: Science and Systems, 2024.
+[6] P. Wu, Y. Shentu, Z. Yi, X. Lin, and P. Abbeel. Gello: A general, low-cost, and intuitive
+teleoperation framework for robot manipulators. In 2024 IEEE/RSJ International Conference
+on Intelligent Robots and Systems (IROS). IEEE, 2024.
+[7] C. Wang, H. Shi, W. Wang, R. Zhang, L. Fei-Fei, and C. K. Liu. DexCap: Scalable and
+portable mocap data collection system for dexterous manipulation, 2024.
+[8] K. Shaw, Y. Li, J. Yang, M. K. Srirama, R. Liu, H. Xiong, R. Mendonca, and D. Pathak. Bi-
+manual dexterity for complex tasks. In Proceedings of The 8th Conference on Robot Learning,
+2025.
+[9] M. Xu, H. Zhang, Y. Hou, Z. Xu, L. Fan, M. Veloso, and S. Song. Dexumi: Using human hand
+as the universal manipulation interface for dexterous manipulation. In Proceedings of The 9th
+Conference on Robot Learning, 2025.
+[10] H.-S. Fang, B. Romero, Y. Xie, A. Hu, B.-R. Huang, J. Alvarez, M. Kim, G. Margolis, K. An-
+barasu, M. Tomizuka, E. Adelson, and P. Agrawal. DEXOP: A device for robotic transfer of
+dexterous human manipulation, 2025.
+[11] R. Hoque, P. Huang, D. J. Yoon, M. Sivapurapu, and J. Zhang. Egodex: Learning dexterous
+manipulation from large-scale egocentric video, 2025.
+[12] R. Punamiya, D. Patel, P. Aphiwetsa, P. Kuppili, L. Y. Zhu, S. Kareer, J. Hoffman, and D. Xu.
+Egobridge: Domain adaptation for generalizable imitation from egocentric human data. In
+Advances in Neural Information Processing Systems, 2025.
+[13] R. Yang, Q. Yu, Y. Wu, R. Yan, B. Li, A.-C. Cheng, X. Zou, Y. Fang, X. Cheng, R.-Z. Qiu,
+et al. Egovla: Learning vision-language-action models from egocentric human videos. arXiv
+preprint arXiv:2507.12440, 2025.
+9
+
+
+[14] A. Sivakumar, K. Shaw, and D. Pathak. Robotic telekinesis: Learning a robotic hand imitator
+by watching humans on youtube, 2022.
+[15] W. Li, C. Pan, Z. Yi, G. Chen, G. Xu, X. Chen, J. Liu, Y. Wang, M. Wu, J. Xu, and Z. Liu.
+ManipTrans: Efficient dexterous bimanual manipulation transfer via residual learning. In Pro-
+ceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2025.
+[16] C. Pan, W. Li, Z. Yi, J. Xu, X. Wang, and Z. Liu. SPIDER: Scalable physics-informed dexter-
+ous retargeting, 2025.
+[17] R. Wang, J. Zhang, J. Chen, Y. Xu, P. Li, T. Liu, and H. Wang. Dexgraspnet: A large-scale
+robotic dexterous grasp dataset for general objects based on simulation, 2023.
+[18] Y. Zhong, Q. Jiang, J. Yu, and Y. Ma. Dexgrasp anything: Towards universal robotic dexterous
+grasping with physics awareness, 2025.
+[19] J. Chen, Y. Ke, L. Peng, and H. Wang. Dexonomy: Synthesizing all dexterous grasp types in a
+grasp taxonomy, 2025.
+[20] J. Chen, Y. Ke, and H. Wang. BODex: Scalable and efficient robotic dexterous grasp synthesis
+using bilevel optimization, 2024.
+[21] L. Wang, Y. Ling, Z. Yuan, M. Shridhar, C. Bao, Y. Qin, B. Wang, H. Xu, and X. Wang.
+GenSim: Generating robotic simulation tasks via large language models, 2023.
+[22] Y. Wang, Z. Xian, F. Chen, T.-H. Wang, Y. Wang, K. Fragkiadaki, Z. Erickson, D. Held,
+and C. Gan. RoboGen: Towards unleashing infinite data for automated robot learning via
+generative simulation, 2023.
+[23] Y. Wang, X. Qiu, J. Liu, Z. Chen, J. Cai, Y. Wang, T.-H. Wang, Z. Xian, and C. Gan. Architect:
+Generating vivid and interactive 3d scenes with hierarchical 2d inpainting. Advances in Neural
+Information Processing Systems, 37, 2024.
+[24] F.-Y. Sun, S. Wu, C. Jacobsen, T. Yim, H. Zou, A. Zook, S. Li, Y.-H. Chou, E. Can, X. Wu,
+C. Eppner, V. Blukis, J. Tremblay, J. Wu, S. Birchfield, and N. Haber. 3D-Generalist: Self-
+improving vision-language-action models for crafting 3d worlds, 2025.
+[25] K. Black, M. Nakamoto, P. Atreya, H. Walke, C. Finn, A. Kumar, and S. Levine.
+Zero-
+shot robotic manipulation with pre-trained image-editing diffusion models. In International
+Conference on Learning Representations, 2024.
+[26] Q. Zhao, Y. Lu, M. J. Kim, Z. Fu, Z. Zhang, Y. Wu, Z. Li, Q. Ma, S. Han, C. Finn, et al. Cot-
+vla: Visual chain-of-thought reasoning for vision-language-action models. In Proceedings of
+the Computer Vision and Pattern Recognition Conference, 2025.
+[27] Z. Zhang, S. Yang, Q. Hu, L. J. Huang, J. Hou, Y. Sun, Y. Lu, and S. Han. Foreact: Steering
+your vla with efficient visual foresight planning, 2026.
+[28] Y. Yang, B. Jia, P. Zhi, and S. Huang. Physcene: Physically interactable 3d scene synthesis for
+embodied ai. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, 2024.
+[29] L. Ling, C.-H. Lin, T.-Y. Lin, Y. Ding, Y. Zeng, Y. Sheng, Y. Ge, M.-Y. Liu, A. Bera, and
+Z. Li. Scenethesis: A language and vision agentic framework for 3d scene generation. In
+International Conference on Learning Representations, 2026.
+[30] Y. Wang, H. Yang, M. Guo, X. Qiu, T.-H. Wang, W. Matusik, J. B. Tenenbaum, and C. Gan.
+PhyScensis: Physics-augmented llm agents for complex physical scene arrangement. In Inter-
+national Conference on Learning Representations, 2026.
+10
+
+
+[31] I. Huang, Y. Bao, K. Truong, H. Zhou, C. Schmid, L. Guibas, and A. Fathi. Fireplace: Geo-
+metric refinements of llm common sense reasoning for 3d object placement. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern recognition, 2025.
+[32] N. Pfaff, T. Cohn, S. Zakharov, R. Cory, and R. Tedrake. Scenesmith: Agentic generation of
+simulation-ready indoor scenes, 2026.
+[33] H. Chen, Y. Yao, Y. Ye, Z. Xu, H. Bharadhwaj, J. Wang, S. Tulsiani, Z. Erickson, and J. Ich-
+nowski. Web2grasp: Learning functional grasps from web images of hand-object interactions,
+2025.
+[34] Z. Wei, Z. Xu, J. Guo, Y. Hou, C. Gao, Z. Cai, J. Luo, and L. Shao. D(R,O) grasp: A unified
+representation of robot and object interaction for cross-embodiment dexterous grasping. In
+IEEE International Conference on Robotics and Automation, 2025.
+[35] S. Brahmbhatt, C. Tang, C. D. Twigg, C. C. Kemp, and J. Hays. Contactpose: A dataset of
+grasps with object contact and hand pose. In European Conference on Computer Vision, 2020.
+[36] Y.-W. Chao, W. Yang, Y. Xiang, P. Molchanov, A. Handa, J. Tremblay, Y. S. Narang,
+K. Van Wyk, U. Iqbal, S. Birchfield, et al. Dexycb: A benchmark for capturing hand grasp-
+ing of objects. In Proceedings of the IEEE/CVF conference on computer vision and pattern
+recognition, 2021.
+[37] O. Taheri, N. Ghorbani, M. J. Black, and D. Tzionas. Grab: A dataset of whole-body human
+grasping of objects. In European conference on computer vision. Springer, 2020.
+[38] L. Yang, K. Li, X. Zhan, F. Wu, A. Xu, L. Liu, and C. Lu. Oakink: A large-scale knowl-
+edge repository for understanding hand-object interaction. In Proceedings of the IEEE/CVF
+conference on computer vision and pattern recognition, 2022.
+[39] J. Jian, X. Liu, M. Li, R. Hu, and J. Liu. Affordpose: A large-scale dataset of hand-object
+interactions with affordance-driven hand pose. In Proceedings of the IEEE/CVF International
+Conference on Computer Vision, 2023.
+[40] X. Chang and Y. Sun. Text2grasp: Synthesis of grasps by text prompts for object grasping
+parts. In International Symposium on Neural Networks, 2025.
+[41] J. Cha, J. Kim, J. S. Yoon, and S. Baek. Text2HOI: Text-guided 3d motion generation for
+hand-object interaction. In Proceedings of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition, 2024.
+[42] Y.-L. Wei, J.-J. Jiang, C. Xing, X.-T. Tan, X.-M. Wu, H. Li, M. Cutkosky, and W.-S. Zheng.
+Grasp as you say: Language-guided dexterous grasp generation. In Advances in Neural Infor-
+mation Processing Systems, 2024.
+[43] J. Lee, E. Park, and M. Cho. DextER: Language-driven dexterous grasp generation with em-
+bodied reasoning, 2026.
+[44] X. He, A. Polavaram, Y. Cao, O. Deshmukh, T. Wang, X. Zhou, and K. Fang. Generate,
+transfer, adapt: Learning functional dexterous grasping from a single human demonstration,
+2026.
+[45] H. Bharadhwaj, D. Dwibedi, A. Gupta, S. Tulsiani, C. Doersch, T. Xiao, D. Shah, F. Xia,
+D. Sadigh, and S. Kirmani. Gen2act: Human video generation in novel scenarios enables
+generalizable robot manipulation, 2024.
+[46] X. Qiu, Y. Wang, J. Cai, Z. Chen, C. Lin, T.-H. Wang, and C. Gan. Lucibot: Automated robot
+policy learning from generated videos, 2025.
+11
+
+
+[47] J. Liang, R. Liu, E. Ozguroglu, S. Sudhakar, A. Dave, P. Tokmakov, S. Song, and C. Vondrick.
+Dreamitate: Real-world visuomotor policy learning via video generation, 2024.
+[48] S. Patel, S. Mohan, H. Mai, U. Jain, S. Lazebnik, and Y. Li. RIGVid: Robotic manipulation by
+imitating generated videos without physical demonstrations, 2025.
+[49] J. Jang, S. Ye, Z. Lin, J. Xiang, J. Bjorck, Y. Fang, F. Hu, S. Huang, K. Kundalia, Y.-C. Lin,
+et al. DreamGen: Unlocking generalization in robot learning through neural trajectories, 2025.
+[50] K. Dharmarajan, W. Huang, J. Wu, L. Fei-Fei, and R. Zhang. Dream2Flow: Bridging video
+generation and open-world manipulation with 3D object flow. In IEEE International Confer-
+ence on Robotics and Automation (ICRA), 2026. URL https://dream2flow.github.io/.
+[51] S. He, Z. Chen, H. Ding, D. Shao, J. Shi, C. Li, J. Huo, and Y. Gao. V-Dreamer: Automating
+robotic simulation and trajectory synthesis via video generation priors, 2026.
+[52] Y. Li, X. Wei, X. Chi, Z. Zhao, Y. Li, H. Wang, N. Ma, M. Lu, and S. Han. ManipDreamer3D:
+Synthesizing plausible robotic manipulation video with occupancy-aware 3D trajectory. In
+Proceedings of the AAAI Conference on Artificial Intelligence, 2026.
+[53] Google DeepMind. Nano Banana 2: Combining pro capabilities with lightning-fast speed,
+February 2026.
+URL https://blog.google/innovation-and-ai/technology/ai/
+nano-banana-2/.
+[54] N. Carion, L. Gustafson, Y.-T. Hu, S. Debnath, R. Hu, D. Suris, C. Ryali, K. V. Alwala,
+H. Khedr, A. Huang, J. Lei, T. Ma, B. Guo, A. Kalla, M. Marks, J. Greer, M. Wang, P. Sun,
+R. R¨adle, T. Afouras, E. Mavroudi, K. Xu, T.-H. Wu, Y. Zhou, L. Momeni, R. Hazra, S. Ding,
+S. Vaze, F. Porcher, F. Li, S. Li, A. Kamath, H. K. Cheng, P. Doll´ar, N. Ravi, K. Saenko,
+P. Zhang, and C. Feichtenhofer. SAM 3: Segment anything with concepts, 2025.
+[55] H. Lin, S. Chen, J. Liew, D. Y. Chen, Z. Li, G. Shi, J. Feng, and B. Kang. Depth anything 3:
+Recovering the visual space from any views, 2025.
+[56] G. Pavlakos, D. Shan, I. Radosavovic, A. Kanazawa, D. Fouhey, and J. Malik. Reconstructing
+hands in 3d with transformers. In Proceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition, 2024.
+[57] E. P. ¨Ornek, Y. Labb´e, B. Tekin, L. Ma, C. Keskin, C. Forster, and T. Hodan. Foundpose:
+Unseen object pose estimation with foundation features. In European Conference on Computer
+Vision, pages 163–182. Springer, 2024.
+[58] O. Sim´eoni, H. V. Vo, M. Seitzer, F. Baldassarre, M. Oquab, C. Jose, V. Khalidov, et al. DI-
+NOv3, 2025.
+[59] T. Kim, K. Kim, J. Lee, D. Cha, J. Lee, and D. Kim. Revisiting image pyramid structure for
+high resolution salient object detection. In Proceedings of the Asian Conference on Computer
+Vision, 2022.
+[60] X. Chen, F.-J. Chu, P. Gleize, K. J. Liang, A. Sax, H. Tang, W. Wang, M. Guo, T. Hardin,
+X. Li, et al. SAM 3D: 3Dfy anything in images, 2025.
+[61] BlenderKit. BlenderKit: 3d assets, 2026. URL https://www.blenderkit.com/.
+[62] Y. Ye, A. Gupta, and S. Tulsiani. What’s in your hands? 3D reconstruction of generic ob-
+jects in hands. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, June 2022.
+[63] Y. Liu, X. Long, Z. Yang, Y. Liu, M. Habermann, C. Theobalt, Y. Ma, and W. Wang. EasyHOI:
+Unleashing the power of large models for reconstructing hand-object interactions in the wild.
+In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition,
+June 2025.
+12
+
+
+[64] G. Authors. Genesis: A universal and generative physics engine for robotics and beyond,
+December 2024. URL https://github.com/Genesis-Embodied-AI/Genesis.
+[65] M. Deitke, C. Clark, S. Lee, R. Tripathi, Y. Yang, J. S. Park, M. Salehi, N. Muennighoff, K. Lo,
+L. Soldaini, et al. Molmo and PixMo: Open weights and open data for state-of-the-art vision-
+language models. In Proceedings of the Computer Vision and Pattern Recognition Conference,
+2025.
+[66] C. Chi, S. Feng, Y. Du, Z. Xu, E. Cousineau, B. Burchfiel, and S. Song. Diffusion Policy:
+Visuomotor policy learning via action diffusion. In Robotics: Science and Systems XIX, 2023.
+[67] Meshy LLC. Meshy AI: Ai 3d model generator. https://www.meshy.ai/, 2026.
+[68] M. Shukor, D. Aubakirova, F. Capuano, P. Kooijmans, S. Palma, A. Zouitine, M. Aractingi,
+C. Pascal, M. Russi, A. Marafioti, et al. SmolVLA: A vision-language-action model for af-
+fordable and efficient robotics, 2025.
+13
+
+
+A
+Grasp Synthesis
+A.1
+HOI Reconstruction Evaluation
+Before retargeting the edited human grasp to a robot hand, we evaluate the recovered MANO hand-
+object geometry. This experiment isolates the perception component of IM-ENGINE by comparing
+our simulator-grounded reconstruction against HOI methods that do not use simulator priors such
+as object pose, metric depth, or object masks. We compare against the following baselines and
+reference data:
+• iHOI [62]: a single-image HOI method that predicts a hand pose and hand-centric implicit object
+shape. Following Web2Grasp [33], we align the ground-truth object mesh to this shape with ICP
+before computing metrics, using checkpoints fine-tuned on MOW and HO3D.
+• EasyHOI [63]: a single-image reconstruction pipeline that combines foundation models for hand
+pose, object shape, segmentation, and inpainting, followed by prior-guided optimization. We
+describe our baseline adaptation below.
+• OakInk-Shape [38]: a dataset reference rather than a reconstruction baseline. Its interactions
+come from real demonstrations with object poses tracked by synchronized MoCap and MANO
+hand poses optimized from multi-view 2D keypoints, then transferred to related object shapes; we
+use it as an approximate ground-truth scale for these metrics.
+Method
+PDMmax [cm] ↓
+PV [cm3] ↓
+DD [cm] ↓
+CR [%] ↑
+OakInk-Shape
+0.010
+0.050
+2.820
+6.9
+iHOI (MOW FT)
+0.588
+23.248
+2.457
+23.9
+iHOI (HO3D FT)
+0.474
+11.616
+2.979
+17.3
+EasyHOI
+0.476
+6.566
+2.420
+11.9
+Ours (KIT)
+0.393
+5.225
+3.400
+10.8
+Table 3: HOI reconstruction quality comparison on our generated cases. We report maximum pene-
+tration depth (PDMmax), penetration volume (PV), disjoint distance (DD), and contact region ratio
+(CR). Lower is better except for CR. MOW FT and HO3D FT denote the datasets used to fine-tune
+the iHOI baseline checkpoints.
+EasyHOI
+baseline
+adaptation.
+We
+follow
+EasyHOI’s
+hand-object
+pose-optimization
+pipeline [63] as a baseline, with three changes:
+• Skip mesh generation. EasyHOI normally reconstructs the object mesh from the image; we
+replace this stage with the ground-truth GLB from the kit, so the optimization aligns the hand
+against a known object.
+• Use HaMeR initialization. Instead of HandOccNet, we run HaMeR [56] on the input image to
+obtain the initial MANO pose, shape, and camera, then place the hand in the kit camera frame
+by back-projecting the ground-truth hand-mask centroid at a depth calibrated so the rendered
+silhouette area matches the ground-truth hand mask.
+• Use ground-truth masks. EasyHOI relies on predicted hand/object masks; we substitute the kit’s
+mask hand grasp, mask object grasp, and mask object render, making the silhouette IoU
+loss and mask-derived object-contact points for stage-2 ICP noise-free.
+Analysis.
+We report four standard HOI metrics: maximum penetration depth (PDMmax), penetra-
+tion volume (PV), disjoint distance (DD), and contact region ratio (CR). Lower is better except for
+CR. Our reconstruction substantially reduces penetration compared with the iHOI checkpoints and
+the adapted EasyHOI baseline. Although the EasyHOI baseline obtains similar aggregate scores to
+ours, it does not always preserve the functional intention of the edited grasp. While iHOI and Easy-
+HOI can obtain lower DD or higher CR, these scores can be inflated by hand–object interpenetration
+rather than physically plausible contact. In contrast, our CR is closer to the OakInk-Shape reference
+while maintaining much lower penetration, indicating a more reasonable contact level.
+14
+
+
+Ours
+EasyHOI
+Ours
+EasyHOI
+Figure 7: Qualitative HOI reconstruction comparison between our method and the adapted EasyHOI
+baseline.
+As shown in Fig. 10, although the recovered hand–object geometry can occasionally contain small
+penetrations, it largely preserves the intended functional grasp mode. These residual penetrations
+can be mitigated during the post-retargeting physics-validation step, which refines the robot hand–
+object configuration while preserving task-relevant contacts and still produces reasonable grasps,
+as in the teacup case. Fig. 7 further shows that the adapted EasyHOI baseline can deviate from
+the functional intention implied by the edited images. For example, the EasyHOI reconstruction
+sometimes places the index finger far from the trigger sprayer’s trigger or fails to grip the cup handle
+precisely. In contrast, our reconstruction more closely resembles the edited images’ intended grasp
+mode, preserving task-relevant contacts before retargeting.
+To further evaluate the pipeline before physics validation, we directly test whether the retargeted
+robot pose already forms a firm grasp. We initialize the robot hand in a fully open pose, command
+it to the retargeted configuration, and then evaluate whether the resulting grasp can lift the object.
+Even without the physics-validation stage, this direct-retargeting test succeeds at 57%, 98%, 94%,
+98%, and 81% for paper cup, power drill, spray bottle, trigger sprayer, and wine glass, respectively.
+A.2
+Method Details
+Functional grasp image-editing prompts.
+For functional grasp image editing, we use the follow-
+ing prompt template:
+Please edit this image to show {grasp description}.
+- Keep the same camera viewpoint, lighting, and background.
+- Make the hand natural and physically plausible.
+- Show proper finger placement.
+- Keep the object in the same position.
+- Do not add objects or change the scene.
+The category-specific grasp descriptions are:
+paper cup: a right hand grasping the cup from the side, all four fingers wrapping
+around the cup body, and the thumb on the opposite side
+wine glass: a right hand grasping the stem just below the bowl, with the thumb on
+one side, the index and middle fingers around the opposite side, the ring
+finger lightly supporting the lower stem, the wrist vertical, and the glass
+upright
+15
+
+
+power drill: a right hand holding the handle in a pistol grip, with the index finger
+on the trigger and the other fingers around the grip
+spray bottle: a right hand grasping the bottle with the index finger pressing the
+pump button
+trigger sprayer: a right hand grasping the sprayer with the index finger pulling the
+trigger
+View selection.
+When rendering the first image, the renderer uses a fixed camera direction for
+every object, with yaw 180◦and pitch 45◦, corresponding to a 3/4 elevated front view looking along
+the negative x direction. The camera looks at the center of the object AABB, and automatically
+adjusts its distance so the projected scene occupies a consistent fraction of the image. Specifically,
+the renderer computes horizontal and tilt-aware vertical scene extents, solves the distances needed
+to fit each extent under a fill ratio of 0.425 of the whole image, and uses the larger distance to
+avoid cropping. We render with a 50◦field of view at 1200 × 896 resolution, matching the output
+resolution of Nano Banana 2, and save the resulting camera intrinsics and poses for downstream
+reconstruction. This view selection process work the same in Goal Generation.
+Grasp-pose estimation.
+Given an edited grasp image, we first localize the hand crop and run
+HaMeR [56] to obtain an initial MANO mesh and 21 joints. The HaMeR prediction is then grounded
+in the simulator frame by optimizing a rigid transform T∆∈SE(3) from the initial HaMeR frame
+to the world frame. Let Vvis
+h
+be the visible MANO vertices, Vall
+h all MANO vertices, Ph the aligned
+world-frame hand point cloud from the edited image, So the known object surface in the world
+frame, and ϕo the corresponding world-frame signed-distance field. We minimize
+Lhand(T∆) = λchLch + λsdfLsdf + λconLcon,
+(1)
+where the visible-surface term aligns the transformed hand mesh to the observed hand points,
+Lch =
+1
+|Vvis
+h |
+X
+v∈Vvis
+h
+min
+p∈Ph ∥T∆v −p∥2
+2 +
+1
+|Ph|
+X
+p∈Ph
+min
+v∈Vvis
+h
+∥p −T∆v∥2
+2 ,
+(2)
+the penetration term discourages hand vertices from entering the object,
+Lsdf =
+1
+|Vall
+h |
+X
+v∈Vall
+h
+max (0, −ϕo(T∆v))2 ,
+(3)
+and the contact term attracts near-contact hand vertices to the object surface,
+Lcon =
+1
+|Ch|
+X
+v∈Ch
+min
+s∈So ∥T∆v −s∥2
+2 ,
+(4)
+where Ch denotes the predicted or selected near-contact hand vertices. After refinement, the trans-
+formed MANO joints T∆Jh are retargeted to the robot hand by solving for robot wrist pose and
+joint configuration q that match corresponding MANO joints and fingertips under robot forward
+kinematics,
+(T ⋆
+wr, q⋆) = arg min
+Twr,q
+X
+k
+ρk ∥Twr FKk(q) −T∆Jh,k∥2
+2 ,
+(5)
+where Twr maps the robot wrist frame to the world frame and FKk(q) returns the kth robot keypoint
+in the wrist frame. Joint limits are enforced by the robot model. The resulting wrist pose and hand
+configuration initialize the physics-validation search below.
+Physics validation.
+For grasp synthesis, physics validation uses the Genesis simulator [64] to
+perform a parallel stochastic search over a two-frame dexterous action initialized from the retargeted
+hand. Because Genesis can step many environments in parallel on the GPU, this validation remains
+fast even though each iteration evaluates physics rollouts for many grasp candidates. Each candidate
+is a 50-dimensional vector
+x = [pw, θw, qpre, ∆q] ,
+where pw ∈R3 and θw ∈R3 are the wrist position and Euler angles, qpre ∈R22 is a collision-
+free pre-grasp hand configuration clipped to joint limits, and ∆q ∈R22 is a per-joint closing delta
+16
+
+
+clipped to the ShadowHand closing direction, with fixed joints forced to zero. At each iteration,
+environment 0 evaluates the current mean exactly and the remaining environments sample Gaussian
+perturbations around it. The post-grasp command is qpost = qpre + ∆q.
+The reward combines physics success, perception fidelity, and contact guidance:
+R(x) = 0.30C + 0.20L + λper (0.10r2D + 0.02rori + 0.02rpos + 0.10rdof + 0.10r3D) + wcrc.
+Here C is a binary reward for a collision-free pre-grasp pose and L is a binary reward for a successful
+lift, defined by C = 1 and zlift ≥0.15 m after a 10-waypoint, 0.2 m lifting motion. The perception
+scale is λper = 0.5 by default, so collision and lift terms dominate the search. The perception terms
+encourage agreement with the recovered interaction: r2D matches fingertip reprojections to HaMeR
+keypoints with a linear clamp from 30 px to 200 px followed by a square root, rori = exp(−2α)
+matches wrist orientation, rpos = exp(−20ep) matches wrist position, rdof = exp(−6eq) keeps the
+hand close to the retargeted pose, and r3D matches 3D fingertip positions with a 1–4 cm clamped
+score. Thumb and index terms are weighted more strongly in the 2D and contact objectives.
+Contact guidance scores whether each fingertip touches the object near its MANO-predicted contact
+point. For fingertip f with contact distance df and weight af, we use
+rc =
+P
+f afrf
+P
+f af
+,
+rf =
+
+max(0, 1 −df/0.03),
+if fingertip f contacts,
+−0.1,
+otherwise.
+The default contact weight is wc = 0.20 and the default fingertip weights are [3, 3, 1, 1, 1] for thumb,
+index, middle, ring, and little fingers; for spray-bottle-like tasks we further emphasize the index
+finger.
+Filtering is enforced as hard constraints rather than only through reward. First, candidates colliding
+at the pre-grasp pose are teleported away during rollout, preventing false lift successes. Second, a
+lift mask requires the collision-free hand to raise the object by at least 0.15 m. Third, the contact
+constraint requires all three key fingertips—thumb, index, and middle—to touch within a maximum
+distance. A candidate is saved only if
+S(x) = C ∧(zlift ≥0.15 m) ∧K,
+where K denotes the contact constraint. Grasps that lift but fail K are counted and discarded. The
+next mean is the reward-weighted average of the top elites,
+µt+1 =
+P
+i∈E Rixi
+P
+i∈E Ri
+,
+with annealed sampling noise. Across all banked successes, the final grasp is selected by maximum
+total reward rather than by lift height alone.
+Trajectory generation.
+Validated dexterous hand states can be used directly as supervision for
+grasp learning. To produce full arm-hand rollouts, we mount the dexterous hand on an xArm7 and
+plan a Cartesian approach to the selected pre-grasp. A chain-seeded inverse-kinematics solver tracks
+a piecewise-linear end-effector path with orientation interpolation from a home pose to a stand-off
+pose and then to the pre-grasp. During execution, the arm tracks the planned path, the fingers
+interpolate to the pre-grasp configuration, close to the validated grasp target, hold to settle contacts,
+and lift while maintaining the grasp. If the inverse-kinematics tracker produces an approach that
+contacts or knocks the object before the grasp, we fall back to a cuRobo motion planner to generate
+a collision-aware approach to the same pre-grasp.
+A.3
+Dual-Hand Grasping
+Although our main experiments primarily use right-hand grasps, the pipeline does not impose a
+right-hand-only or single-hand restriction. The image-editing prompt can specify a left hand or two
+hands, and the recovered interaction can be grounded in the same simulator frame before physics
+validation. For dual-hand settings, the validation objective can be applied jointly to two wrist poses
+and two hand configurations while checking contacts and lift stability on the shared object.
+Fig. 8 illustrates this extension on a pot-lifting task. We edited the image to specify two hands grasp-
+ing the two handles, giving the downstream reconstruction and validation stages explicit semantic
+targets for a coordinated lift. This example highlights that our pipeline can generate functional
+bimanual intent beyond the single-hand grasps emphasized in our quantitative experiments.
+17
+
+
+Estimated Mano Hand Pose
+Retarget Robot Hand Pose
+Lifting frame 0
+Lifting frame 50
+Figure 8: Example dual-hand grasp generated by IM-ENGINE for lifting a pot by grasping its two
+handles.
+A.4
+Functionality Criteria
+In Table 1, we report both the lifting success rate and the functional success rate. We detail the
+functionality criteria here. Concretely, a grasp is considered functional only if it succeeds in the
+simulated lifting test and satisfies the category-specific criteria listed below:
+• Paper cup The hand must either wrap around the cup body with the thumb opposing the fingers,
+or approach from above and grip the rim/upper body in a top-down configuration. Both hold styles
+allow stable transfer without crushing the cup. Grasps that contact only the base, pinch too narrow
+a region of the body without sufficient coverage, or make only superficial contact that would not
+support the cup’s weight are non-functional.
+• Power drill The index finger must be placed on or immediately adjacent to the trigger, with the
+remaining fingers wrapping around the handle grip. Grasps that contact the drill body, chuck, or
+battery pack without engaging the handle, or that position the index finger away from the trigger,
+are non-functional.
+• Spray bottle The index finger must be placed on or immediately adjacent to the pump lever while
+the remaining fingers stabilize the bottle body. Grasps where the index finger rests on the body
+rather than the pump region are non-functional.
+• Trigger sprayer The index finger must be placed on the trigger lever, with the remaining fingers
+wrapped around the handle. The trigger region is more geometrically distinct than the spray bottle
+pump, so the criterion is applied strictly: any grasp where the index finger does not contact the
+trigger is non-functional.
+• Wine glass The hand must contact the stem or lower bowl in a stable configuration that allows con-
+trolled holding. Grasps that contact only the base or that risk tipping the glass are non-functional.
+A.5
+Visual Results
+In Table 1, we report the quantitative results on functional grasping. Fig. 9 provides qualitative
+examples across the 5 evaluated categories: paper cup, power drill, spray bottle, trigger sprayer, and
+wine glass. The visual comparison supports the quantitative trend: methods optimized primarily for
+lifting, such as DexGraspNet [17] and DexGrasp-Anything [18], often find contacts that stabilize
+the object but miss task-relevant regions. For example, they may grasp the body of a drill or spray
+bottle without placing the index finger near the trigger, or hold a wine glass in a way that is stable
+but not functionally appropriate.
+Language-conditioned DexGYSGrasp [42] produces more semantically plausible contacts in some
+cases, especially when the desired grasp region is visually salient, but it still struggles with precise
+fingertip placement. The DRO [34] ablations show that initialization matters: guided wrist initial-
+ization yields grasps that are closer to functional regions than random initialization, but the contacts
+remain inconsistent without fine-tuning. In contrast, DRO w/ FT (Ours) more consistently places
+the hand on category-specific functional regions, such as wrapping the paper cup body, grasping the
+drill handle, contacting the spray and trigger mechanisms, and holding the wine glass near the stem
+or lower bowl. These qualitative results illustrate why our method improves functional success more
+than lifting success alone.
+Fig. 10 further visualizes intermediate outputs of our pipeline across diverse object categories,
+including the edited image, estimated MANO hand pose, retargeted robot-hand pose, and final
+18
+
+
+DexGraspNet
+DexGrasp-
+Anything
+DexGYSGrasp
+DRO w/o FT
++ r.w.
+DRO w/o FT
++ g.w.
+DRO w/ FT
+(Ours)
+Paper Cup
+Power Drill
+Spray Bottle Trigger Sprayer Wine Glass
+Figure 9: Qualitative comparison of generated grasps across the 5 object categories. Compared
+with baselines that often produce stable but semantically generic contacts, DRO fine-tuned with IM-
+ENGINE data produces grasps that better align with the intended functional regions, such as drill
+handles, spray triggers, and glass stems.
+physics-refined grasp. These examples show that our pipeline generalizes across varied object ge-
+ometries rather than relying on category-specific shape assumptions.
+A.6
+Failure Cases
+Fig. 11 summarizes the main failure modes in functional grasp generation. Infeasible edited grasps,
+anchor-object changes, and table penetrations occur only rarely, but they can still disrupt recon-
+struction or validation when they appear. Table-penetration failures are partly caused by the pure
+black table used in scene setup, which can make the table boundary ambiguous for image editing;
+using a textured table would reduce these cases substantially. The most common failure mode is
+non-functional grasping: because our search-and-validation stage uses relatively loose contact con-
+straints, it can occasionally find grasps that are physically stable but do not preserve the intended
+functional contact pattern. The functional proportions are 95% for paper cup, 77% for power drill,
+71% for spray bottle, 90% for trigger sprayer, and 98% for wine glass.
+19
+
+
+Spray Bottle 1
+Spray Bottle 2
+Coffee Cup
+Tea Cup
+Paper Cup
+IKEA Plate
+(a)
+(b)
+(c)
+(d)
+Figure 10: Qualitative results of our grasp-generation pipeline on diverse objects. For each example,
+we show (a) the edited image, (b) the estimated MANO pose, (c) the retargeted dexterous hand pose,
+and (d) the physics-validated lifting result.
+(a) unfeasible grasp
+(b) anchor changed
+(c) collision with table
+(d) not functional
+Figure 11: Typical failure modes in functional grasp generation: (a) infeasible grasps, where the
+edited image does not depict a physically feasible hand-object interaction; (b) anchor changes, where
+the edited image moves the anchor object despite prompting, breaking depth alignment; (c) table
+collisions, where the generated hand penetrates the table; and (d) non-functional grasps, where loose
+contact constraints during search and validation yield stable but functionally incorrect grasps.
+B
+Goal Generation
+B.1
+Method Details
+Goal-generation image-editing prompts.
+For goal-state generation, we use the following prompt
+template:
+Please generate an image to {task_description}. Please keep the same camera
+viewpoint and lighting. Make sure to move/reposition the target objects as
+described instead of creating new ones. The object should be removed from its
+original place. Maintain realistic physics and object proportions.
+The task descriptions are case-specific: Mug: hang the mug on the mug tree; Dish 1: place the plate
+on the rack, with the rim wedged between the two rails; Dish 2: place the plate on the rack, with the
+rim wedged between the two rails; Hanger: hang the hanger on the hooks on the wall; Tube: insert
+the tube to the correct position on the rack; Scissor: hang the scissors on the holder bar; Wine 1:
+place the wine bottle on the wine rack; and Wine 2: place the wine bottle in the wine rack.
+Goal-pose estimation.
+Given the edited goal image, target-object mask, aligned depth, camera in-
+trinsics, camera pose, and target mesh, we estimate a world-frame 6-DoF pose for the target object.
+We first sample 48 object rotations on SO(3) with a stratified Hopf-fibration grid and render the tar-
+get mesh under each candidate rotation using the goal-image intrinsics, producing template images
+and template depth point clouds with known template object-to-camera transforms T (m)
+co . DINOv3
+features provide dense correspondences between each rendered template and the edited target object.
+20
+
+
+(a) Hanger A
+(b) Hanger B
+(c) White Mug
+(d) Red Mug
+Figure 12: Additional real-world goal-generation results. We supplement more results obtained by
+the fine-tuned SmolVLA policies described in Section 4.3.2.
+For each accepted match, the template pixel is back-projected through the rendered template depth
+to a template-camera point ac,i and transformed to an object-frame point Ai = (T (m)
+co )−1ac,i; the
+corresponding goal-image pixel is back-projected through the aligned depth map to a goal-camera
+point bc,i and transformed to a world-frame point Bi = Twcbc,i. We keep only depth-consistent
+correspondences and solve the rigid 3D registration
+(R⋆, t⋆) = arg
+min
+R∈SO(3), t∈R3
+X
+i
+∥Bi −(RAi + t)∥2
+(6)
+with the closed-form Kabsch/Procrustes solution. With this convention, the recovered transform
+maps target-object coordinates to the simulator world frame, i.e., T ⋆
+wo = [R⋆| t⋆]. Let ¯A =
+N −1 P
+i Ai and ¯B = N −1 P
+i Bi denote the centroids, and let ˜Ai = Ai −¯A and ˜Bi = Bi −¯B.
+For any fixed rotation R, the optimal translation is
+t(R) = ¯B −R ¯A,
+(7)
+so the remaining problem is to align the centered point sets. We compute the cross-covariance
+H = P
+i ˜Ai ˜B⊤
+i and its SVD H = UΣV ⊤. The rotation is projected onto SO(3) with the reflection
+guard
+R⋆= V diag
+ 1, 1, det(V U ⊤)
+
+U ⊤,
+(8)
+This prevents the raw SVD solution from returning an improper rotation. We then set t⋆= t(R⋆)
+and score each template by correspondence recall and registration residual,
+e =
+s
+1
+N
+X
+i
+∥Bi −(R⋆Ai + t⋆)∥2,
+(9)
+and use the best Procrustes pose as the initial transform for ICP.
+The ICP refinement solves the same rigid alignment objective but replaces fixed DINOv3 correspon-
+dences with nearest-neighbor correspondences to a denser goal point cloud. We construct this cloud
+by back-projecting all pixels in the edited target-object mask through the aligned depth map, trans-
+form the points into the world frame, and remove isolated outliers with DBSCAN. Starting from the
+Procrustes transform Tinit, point-to-point ICP alternates between nearest-neighbor assignment
+c(i) = arg min
+j
+∥Qj −(RPi + t)∥2
+(10)
+21
+
+
+and rigid alignment
+(R, t) = arg
+min
+R∈SO(3), t∈R3
+X
+i
+Qc(i) −(RPi + t)
+2 ,
+(11)
+where Pi are source mesh points in the target-object frame, Qj are depth-derived goal points in the
+world frame, and (R, t) is always an object-to-world transform. We run ICP in two stages: first on
+the sparse matched template points to correct small orientation errors, then on 5000 points uniformly
+sampled from the full target mesh to let the complete object surface drive the final alignment. The
+final object-to-world ICP pose is passed to physics validation when available.
+Physics validation.
+For goal-state generation, the recovered object pose is refined by sampling
+local perturbations around (R, t) and simulating them with the fixed anchor, table, and optional
+wall. We reject candidates that begin in collision with the anchor or environment. The remaining
+candidates are stepped forward under gravity and contact; a pose is accepted only if its translation
+and rotation drift stay below thresholds after simulation. This catches visually plausible but phys-
+ically invalid edits, including floating placements, penetrations, placements that exploit inaccurate
+collision geometry around rack gaps, and unstable hanging relations.
+Trajectory generation.
+The refined target pose is a constrained terminal relation rather than a
+simple placement. A standard pick-and-place routine often fails for our selected tasks because the
+object must enter narrow free space near the anchor, such as threading a mug onto a mug-tree branch
+or inserting a plate into a rack slot. We therefore first compute a kinematic escaping path from the
+validated goal pose with a model predictive control (MPC) procedure in object-pose space. At
+each MPC step, a predictive-sampling kernel proposes a batch of short-horizon action sequences,
+where each action directly applies a small translation and rotation to the target object. We roll out
+these candidates with a kinematic geometry model, reject sequences that collide with the anchor,
+table, or wall, execute the first action of the best collision-free sequence, and then replan from
+the updated pose. Because this stage only applies pose updates and collision checks, rather than
+simulating contact dynamics, it quickly finds a collision-free path that moves the object out of the
+constraint. Reversing the escape path yields a kinematic insertion path from a distant free-space
+pose into the target relation. This reversed path serves as the warm start for a forward MPC search
+in simulation; without this initialization, the forward search rarely discovers the narrow constrained
+insertion trajectory.
+B.2
+Additional Baseline Analysis
+Figure 13: Qualitative results on goal-state generation for Molmo-2D Baseline.
+In Section 4.2, we briefly introduced three baselines we considered in our goal-state generation
+experiment. Here, we supplement the implementation details of these baselines.
+• Molmo-2D This baseline utilizes Molmo [65], an open-source VLM with 2D pointing specialty,
+to identify a feasible pixel based on a task description and a rendered image of the initial state. It
+22
+
+
+Figure 14: Qualitative results on goal-state generation for VLM-6DoF (5 iterations) Baseline.
+Figure 15: Qualitative results on goal-state generation for VLM-6DoF (10 iterations) Baseline.
+Figure 16: Qualitative results on goal-state generation for Physcensis Baseline.
+23
+
+
+subsequently lifts the 2D point into 3D world coordinates using the rendered depth and calibrated
+camera parameters. The object center is given by the lifted 3D coordinate while the rotation is
+fixed. The object pose is then validated through the physics refinement and used as the goal pose.
+• VLM-6DoF This baseline casts goal generation as iterative VLM prompting. In each step, the
+current scene is rendered from a fixed viewpoint and sent to the VLM along with the task descrip-
+tion and 6-DoF poses for both the target and the container, as well as their sizes. The VLM then
+provides a new target pose, which is used in the next iteration. After several iterations (we tested
+both 5 and 10), the final accepted pose is validated through the physics refinement, and this pose
+is finally used as the goal. We used gemini-3.1-pro-preview in our experiment.
+• PhyScensis This baseline [30] uses an occupancy-grid-based heuristic search pipeline to find 3D
+object poses for arrangement-style placement tasks, followed by physics validation. Given a fixed
+rotation, it generates multiple feasible placements; therefore, we sample five feasible cases for
+each of several candidate rotations and use a VLM agent to select the most task-consistent one.
+Figs. 13, 14, 15, and 16 provide qualitative comparisons for the goal-generation baselines. Molmo-
+2D often identifies a plausible image-space location, but lifting a single 2D point provides only a
+coarse translation and does not infer the orientation needed for constrained relations. As a result,
+the target object is frequently placed near the anchor but fails to realize the intended relation, such
+as hanging, insertion, or fitting.
+The VLM-6DoF baseline improves when allowed more iterations, as shown by the difference be-
+tween Figs. 14 and 15. Additional rounds can correct some gross placement errors and move the
+object closer to the desired region. However, the generated poses remain noisy in metric 3D space,
+and small translation or rotation errors are enough to break contact-rich tasks with narrow clearances.
+This explains why the 10-iteration variant improves over the 5-iteration variant but still remains far
+below our method quantitatively.
+PhyScensis can generate physically plausible placements for simpler support-style tasks, but it relies
+on geometric search and post-hoc selection rather than a direct semantic proposal. As a result, it can
+miss constrained object-object relations that require a specific orientation or contact configuration,
+such as insertion, hanging, or fitting.
+In contrast, our image-editing stage proposes a semantically meaningful final configuration before
+metric pose recovery. This makes the downstream search more targeted: pose estimation and physics
+validation only need to refine a visually specified relation rather than discover it from scratch. The
+comparison highlights that physical feasibility alone is insufficient for these tasks; successful goal
+generation also requires preserving the intended semantic relation between the target and anchor
+objects.
+B.3
+Failure Cases
+Figure 17: Failure cases in goal-state generation. Most failures come from image editing, where the
+edited image can produce infeasible goals or alter the anchor object.
+Fig. 17 shows representative failure cases of our goal-generation pipeline. Most failures arise from
+the image-editing stage: the edited image can sometimes specify an infeasible goal state or change
+the anchor object, making it difficult to recover a physically valid pose that still satisfies the intended
+semantic relation.
+Another limitation is pose estimation. When the target object has approximate symmetries, recov-
+ering the exact rotation can be ambiguous. For example, in Fig. 19, the tube case is estimated and
+24
+
+
+Mug raw
+Mug aligned
+Dish 1 raw
+Dish 1 aligned
+Dish 2 raw
+Dish 2 aligned
+Tube raw
+Tube aligned
+Scissor raw
+Scissor aligned
+Wine 1 raw
+Wine 1 aligned
+Wine 2 raw
+Wine 2 aligned
+Hanger raw
+Hanger aligned
+Figure 18: Additional qualitative results on anchor-based point cloud alignment.
+validated upside down. We still count this as a success because the resulting goal is largely correct,
+physically feasible, and semantically reasonable.
+B.4
+Additional Goal-State Generation Visualizations
+Fig. 19 shows additional qualitative examples of our goal-state generation pipeline. The image-
+editing stage largely preserves the anchor object unchanged while generating reasonable and seman-
+tically correct target goals. Although the edited result is not always perfectly accurate, it provides a
+sufficiently informative visual goal for downstream pose recovery. The initially estimated pose may
+also be imperfect, but by applying small pose jitters followed by physics validation, we can recover
+a precise and physically plausible goal pose.
+Fig. 18 visualizes the effect of our depth-alignment procedure. Off-the-shelf depth estimation does
+not directly provide sufficiently accurate absolute depth for these contact-rich tasks, but after our
+alignment step, the resulting point cloud is accurate enough for downstream pose estimation and
+validation. We visualize this by placing the target object’s point cloud in the world frame together
+with the anchor object mesh at its world-frame pose. In the mug and hanger cases, the raw depth pro-
+jection is clearly displaced far from the correct location, while our alignment corrects the projection
+and produces an accurate enough point cloud for subsequent processing.
+25
+
+
+Figure 19: Additional qualitative results for goal-state generation. For each example, the first col-
+umn shows the original image, the second column shows the edited image, the third column shows
+the estimated pose, and the final column shows the physics-validated goal pose.
+26
