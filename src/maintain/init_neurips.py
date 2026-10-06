@@ -8,18 +8,12 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-try:
-    import torch
-except ImportError:
-    torch = None
-
-
 SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
 DEFAULT_EMBED_BATCH_SIZE = 8
-DEFAULT_EMBED_CHUNK_SIZE = 512
+DEFAULT_EMBED_CHUNK_SIZE = 64
 LOCAL_MAINTAIN_EMBED_BATCH_SIZE = 64
 LOCAL_MAINTAIN_EMBED_CHUNK_SIZE = 1024
 
@@ -60,6 +54,8 @@ def main() -> None:
     parser.add_argument("--upsert-retries", type=int, default=5)
     parser.add_argument("--upsert-retry-wait", type=float, default=2.0)
     parser.add_argument("--no-embeddings", action="store_true")
+    parser.add_argument("--stream-upsert", dest="stream_upsert", action="store_true", default=True)
+    parser.add_argument("--no-stream-upsert", dest="stream_upsert", action="store_false")
     args = parser.parse_args()
 
     python = sys.executable
@@ -73,16 +69,21 @@ def main() -> None:
         args.embed_chunk_size = LOCAL_MAINTAIN_EMBED_CHUNK_SIZE
     if args.local_maintain:
         args.embed_local_only = True
+    local_cuda_count = 0
+    if args.local_maintain:
+        import torch
+
+        local_cuda_count = int(torch.cuda.device_count() or 0) if torch.cuda.is_available() else 0
     if not str(args.embed_device or "").strip() and not str(args.embed_devices or "").strip():
         if not args.local_maintain:
             args.embed_device = "cpu"
-        elif torch is not None and torch.cuda.is_available() and int(torch.cuda.device_count() or 0) > 0:
-            args.embed_devices = ",".join(f"cuda:{idx}" for idx in range(int(torch.cuda.device_count() or 0)))
+        elif local_cuda_count > 0:
+            args.embed_devices = ",".join(f"cuda:{idx}" for idx in range(local_cuda_count))
         else:
             args.embed_device = "cpu"
     elif args.local_maintain and not str(args.embed_devices or "").strip() and str(args.embed_device or "").strip().lower() == "auto":
-        if torch is not None and torch.cuda.is_available() and int(torch.cuda.device_count() or 0) > 0:
-            args.embed_devices = ",".join(f"cuda:{idx}" for idx in range(int(torch.cuda.device_count() or 0)))
+        if local_cuda_count > 0:
+            args.embed_devices = ",".join(f"cuda:{idx}" for idx in range(local_cuda_count))
         else:
             args.embed_device = "cpu"
 
@@ -165,6 +166,8 @@ def main() -> None:
         sync_cmd.append("--embed-local-only")
     if args.no_embeddings:
         sync_cmd.append("--no-embeddings")
+    if args.stream_upsert:
+        sync_cmd.append("--stream-upsert")
     run_step("Step 2 - sync NeurIPS OpenReview to Supabase", sync_cmd)
 
 

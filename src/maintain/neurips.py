@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import datetime, timezone
 
 from common import (
     TODAY_STR,
@@ -19,7 +20,7 @@ from common import (
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="维护入口：NeurIPS 抓取 + Supabase 同步。")
-    parser.add_argument("--year-end", type=int, default=2025)
+    parser.add_argument("--year-end", type=int, default=datetime.now(timezone.utc).year)
     parser.add_argument("--year-count", type=int, default=3)
     parser.add_argument("--years", type=str, default="")
     parser.add_argument("--run-date", type=str, default=TODAY_STR)

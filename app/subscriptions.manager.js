@@ -119,9 +119,11 @@ window.SubscriptionsManager = (function () {
     'NDSS',
   ];
   const CONFERENCE_STATS_SNAPSHOT_URL = 'app/conference-stats.json';
-  // 2026 年已入库并验证检索的会议；正式论文集已开放的 IJCAI 同样可选。
-  const CONFERENCE_2026_AVAILABLE = new Set(['ICLR', 'ICML', 'AAAI', 'ACL', 'CVPR', 'ECCV', 'IJCAI', 'OSDI', 'SOSP', 'IEEE S&P', 'NDSS']);
-  const CONFERENCE_DATA_NOTICES = {};
+  // 已入库并验证检索的 2026 年会议。
+  const CONFERENCE_2026_AVAILABLE = new Set(['ICLR', 'ICML', 'NEURIPS', 'NIPS', 'AAAI', 'ACL', 'CVPR', 'ECCV', 'IJCAI', 'OSDI', 'SOSP', 'IEEE S&P', 'NDSS']);
+  const CONFERENCE_DATA_NOTICES = {
+    'NeurIPS:2026': 'NeurIPS 2026 当前支持官方主会论文的标题与摘要检索，PDF 下载可用性尚待确认。',
+  };
   const FEATURED_CONFERENCE_YEAR_PAIRS = new Set([
     'acl:2026',
     'icml:2026',
@@ -131,6 +133,7 @@ window.SubscriptionsManager = (function () {
     'eccv:2026',
     'ijcai:2026',
     'sosp:2026',
+    'neurips:2026',
   ]);
   // ECCV 是双年会议（偶数年）
   const BIENNIAL_EVEN_CONFERENCES = new Set(['ECCV']);
@@ -706,6 +709,7 @@ window.SubscriptionsManager = (function () {
     if (BIENNIAL_EVEN_CONFERENCES.has(conf) && yearNum % 2 !== 0) {
       return `${conf} 为双年会议，仅偶数年举办（如 2024、2026）`;
     }
+    if (yearNum === 2026 && CONFERENCE_2026_AVAILABLE.has(conf)) return '';
     // 2026 年可用性
     const currentYear = new Date().getFullYear();
     if (yearNum >= currentYear && !CONFERENCE_2026_AVAILABLE.has(conf)) {
@@ -713,8 +717,6 @@ window.SubscriptionsManager = (function () {
         ICML:    '2026 年 7 月会后',
         ACL:     '2026 年 7 月会后',
         EMNLP:   '2026 年 10 月中下旬（以官方论文集开放时间为准）',
-        NEURIPS: '2026 年 12 月会后',
-        NIPS:    '2026 年 12 月会后',
         OSDI:    '2026 年会后论文 PDF 公开后',
         'IEEE S&P': '2026 年 CSDL 论文 PDF 公开后',
       };
@@ -729,8 +731,6 @@ window.SubscriptionsManager = (function () {
     ) {
       const PENDING_DATES = {
         ICML:    '预计 2026 年 7 月会后纳入',
-        NEURIPS: '预计 2026 年 12 月会后纳入',
-        NIPS:    '预计 2026 年 12 月会后纳入',
       };
       return PENDING_DATES[conf] || `${yearNum} 年论文尚未公开`;
     }

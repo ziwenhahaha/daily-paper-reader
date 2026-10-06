@@ -50,6 +50,8 @@ CONFERENCE_SPECS: Tuple[Dict[str, str], ...] = (
 # 官方录取数仅在“生产库不是完整 accepted 集合”的会议上强制给定。
 # 其它会议从 Supabase 中 accepted source 计数回退得到，reject 会额外展示。
 OFFICIAL_ACCEPTED_COUNTS: Dict[Tuple[str, int], int] = {
+    # 官方主会录用总数待确认；公开会议数据按 OpenReview ID 去重导入。
+    ("neurips", 2026): 0,
     # https://cvpr.thecvf.com/Conferences/2026/News/Closing
     ("cvpr", 2026): 4089,
     # ECCV 官方 poster 列表去重计数，与 Springer Part LXI 一致（2026-09-09）。

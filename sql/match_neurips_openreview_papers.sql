@@ -21,7 +21,8 @@ returns table (
   source text,
   similarity float8
 )
-language sql stable
+language sql stable security invoker
+set search_path = public, extensions
 as $$
   select
     p.id,
@@ -63,29 +64,31 @@ returns table (
   similarity float8,
   score float8
 )
-language sql stable
+language plpgsql stable security invoker
+set search_path = public, extensions
+set plan_cache_mode = force_custom_plan
+set jit = off
 as $$
-  select
-    p.id,
-    p.title,
-    p.abstract,
-    p.authors,
-    p.primary_category,
-    p.categories,
-    p.published,
-    p.link,
-    p.pdf_url,
-    p.source,
-    0::float8 as similarity,
-    ts_rank_cd(
-      to_tsvector('english', coalesce(p.title, '') || ' ' || coalesce(p.abstract, '')),
-      plainto_tsquery('english', query_text)
-    ) as score
-  from public.neurips_openreview_papers p
-  where to_tsvector('english', coalesce(p.title, '') || ' ' || coalesce(p.abstract, ''))
-        @@ plainto_tsquery('english', query_text)
-    and (filter_published_start is null or p.published >= filter_published_start)
-    and (filter_published_end is null or p.published < filter_published_end)
-  order by score desc
-  limit match_count;
+declare
+  search_query tsquery := plainto_tsquery('english', query_text);
+begin
+  return query
+  with ranked as materialized (
+    select p.id, ts_rank_cd(p.search_tsv, search_query) as rank_score
+    from public.neurips_openreview_papers p
+    where p.search_tsv @@ search_query
+      and (filter_published_start is null or p.published >= filter_published_start)
+      and (filter_published_end is null or p.published < filter_published_end)
+    order by rank_score desc, p.id
+    limit match_count
+  )
+  select p.id, p.title, p.abstract, p.authors, p.primary_category,
+         p.categories, p.published, p.link, p.pdf_url, p.source,
+         0::float8 as similarity, r.rank_score::float8 as score
+  from ranked r
+  join public.neurips_openreview_papers p on p.id = r.id
+  order by r.rank_score desc, r.id;
+end;
 $$;
+
+notify pgrst, 'reload schema';

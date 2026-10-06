@@ -9,8 +9,10 @@ import re
 import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
+from bs4 import BeautifulSoup
 
 SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if SRC_DIR not in sys.path:
@@ -20,6 +22,7 @@ SCRIPT_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
 OPENREVIEW_API2_BASE = "https://api2.openreview.net"
+NEURIPS_PROGRAM_YEARS = {2026}
 
 from maintain.common import format_years_token, resolve_target_years
 
@@ -240,6 +243,134 @@ def normalize_openreview_submission(
         "venue_id": venue,
         "decision": _extract_decision_text(note),
     }
+
+
+def normalize_neurips_program_events(
+    events: List[Dict[str, Any]],
+    abstracts: Dict[str, str],
+    *,
+    year: int,
+) -> List[Dict[str, Any]]:
+    venue_id = build_venue_id("NeurIPS", year)
+    expected_group = f"https://openreview.net/group?id={venue_id}"
+    papers: Dict[str, Dict[str, Any]] = {}
+    for event in events:
+        decision = _norm(event.get("decision"))
+        if event.get("sourceurl") != expected_group or not decision.lower().startswith("accept"):
+            continue
+        if not event.get("visible") or event.get("eventtype") not in {"Poster", "Oral"}:
+            continue
+        official_path = _norm(event.get("virtualsite_url"))
+        if not official_path.startswith(f"/virtual/{int(year)}/"):
+            raise ValueError(f"NeurIPS 官方论文年份不一致：{official_path}")
+        paper_url = _norm(event.get("paper_url"))
+        parsed_url = urlparse(paper_url)
+        note_ids = parse_qs(parsed_url.query).get("id") or []
+        if parsed_url.hostname != "openreview.net" or parsed_url.path != "/forum" or len(note_ids) != 1:
+            raise ValueError(f"NeurIPS 主会论文缺少有效 OpenReview 链接：{event.get('id')}")
+        note_id = _norm(note_ids[0])
+        title = _norm(event.get("name"))
+        if not title or not note_id:
+            raise ValueError(f"NeurIPS 主会论文缺少标题或 ID：{event.get('id')}")
+        pid = build_openreview_paper_id("NeurIPS", year, note_id)
+        abstract = _norm(abstracts.get(str(event.get("id"))))
+        if pid in papers:
+            if len(abstract) > len(papers[pid]["abstract"]):
+                papers[pid]["abstract"] = abstract
+            if not papers[pid]["pdf_url"] and _norm(event.get("paper_pdf_url")):
+                papers[pid]["pdf_url"] = _norm(event.get("paper_pdf_url"))
+            continue
+        keywords = [_norm(value) for value in event.get("keywords") or [] if _norm(value)]
+        papers[pid] = {
+            "id": pid,
+            "source": build_source_label("NeurIPS", year, "Accepted"),
+            "source_paper_id": note_id,
+            "title": title,
+            "abstract": abstract,
+            "authors": [_norm(author.get("fullname")) for author in event.get("authors") or [] if _norm(author.get("fullname"))],
+            "primary_category": keywords[0] if keywords else venue_id,
+            "categories": keywords,
+            "published": f"{int(year)}-01-01T00:00:00Z",
+            "publication_date": str(year),
+            "publication_date_precision": "year",
+            "publication_date_source": urljoin("https://neurips.cc", official_path),
+            "publication_date_kind": "accepted_notice",
+            "link": paper_url,
+            "pdf_url": _norm(event.get("paper_pdf_url")),
+            "official_url": urljoin("https://neurips.cc", official_path),
+            "venue_id": venue_id,
+            "decision": decision,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    return list(papers.values())
+
+
+def normalize_neurips_program_abstracts(payload: List[Dict[str, Any]], *, year: int) -> Dict[str, str]:
+    if not isinstance(payload, list):
+        raise RuntimeError("NeurIPS 官方导出数据格式异常")
+    abstracts = {}
+    for row in payload:
+        path = urlparse(_norm(row.get("virtualsite_url"))).path
+        if not path.startswith(f"/virtual/{int(year)}/"):
+            raise ValueError(f"NeurIPS 官方摘要年份不一致：{path}")
+        if not path.startswith((f"/virtual/{int(year)}/poster/", f"/virtual/{int(year)}/oral/")):
+            continue
+        abstracts[path.rsplit("/", 1)[-1]] = _norm(row.get("abstract"))
+    return abstracts
+
+
+def fetch_neurips_program_abstracts(*, year: int) -> Dict[str, str]:
+    url = f"https://neurips.cc/Downloads/{int(year)}"
+    with requests.Session() as session:
+        session.headers["User-Agent"] = "daily-paper-reader-maintain/1.0"
+        response = session.get(url, timeout=60)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        token = soup.select_one('input[name="csrfmiddlewaretoken"]')
+        if not token or not token.get("value"):
+            raise RuntimeError("NeurIPS 官方导出表单缺少 CSRF token")
+        response = session.post(
+            url,
+            data={
+                "csrfmiddlewaretoken": token["value"],
+                "format": "5",
+                "posters": "on",
+                "resource": "0",
+                "submitaction": "Download Data",
+            },
+            headers={"Referer": url, "Origin": "https://neurips.cc"},
+            timeout=300,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    return normalize_neurips_program_abstracts(payload, year=year)
+
+
+def fetch_neurips_program(*, year: int) -> List[Dict[str, Any]]:
+    base = f"https://neurips.cc/static/virtual/data/neurips-{int(year)}"
+    headers = {"User-Agent": "daily-paper-reader-maintain/1.0"}
+    events_response = requests.get(f"{base}-orals-posters.json", headers=headers, timeout=120)
+    events_response.raise_for_status()
+    events_payload = events_response.json()
+    events = events_payload.get("results") if isinstance(events_payload, dict) else None
+    if not isinstance(events, list) or events_payload.get("next") or events_payload.get("count") != len(events):
+        raise RuntimeError("NeurIPS 官方论文数据格式或数量异常")
+    abstracts_response = requests.get(f"{base}-abstracts.json", headers=headers, timeout=120)
+    abstracts_response.raise_for_status()
+    abstracts = abstracts_response.json()
+    if not isinstance(abstracts, dict):
+        raise RuntimeError("NeurIPS 官方摘要数据格式异常")
+    papers = normalize_neurips_program_events(events, abstracts, year=year)
+    if any(not paper["abstract"] for paper in papers):
+        log(f"[NeurIPS Program] year={year} downloading_complete_abstracts")
+        exported_abstracts = fetch_neurips_program_abstracts(year=year)
+        abstracts.update({key: value for key, value in exported_abstracts.items() if value})
+        papers = normalize_neurips_program_events(events, abstracts, year=year)
+    if not papers:
+        raise RuntimeError(f"NeurIPS {year} 官方数据中没有已确认录用的主会论文")
+    log(f"[NeurIPS Program] year={year} accepted={len(papers)}")
+    log(f"[NeurIPS Program] abstract={sum(bool(paper['abstract']) for paper in papers)}/{len(papers)}")
+    return papers
 
 
 def iter_target_years(year_end: int, year_count: int) -> List[int]:
@@ -488,20 +619,27 @@ def main() -> None:
 
     username = _norm(args.username)
     password = _norm(args.password)
-    if not username or not password:
-        raise RuntimeError("缺少 OpenReview 凭证，请设置 OPENREVIEW_USERNAME / OPENREVIEW_PASSWORD。")
-
     years = resolve_target_years(years=args.years, year_end=args.year_end, year_count=args.year_count)
+    program_years = [year for year in years if _norm(args.conference).lower() in {"neurips", "nips"} and year in NEURIPS_PROGRAM_YEARS]
+    openreview_years = [year for year in years if year not in program_years]
+    if openreview_years and (not username or not password):
+        raise RuntimeError("缺少 OpenReview 凭证，请设置 OPENREVIEW_USERNAME / OPENREVIEW_PASSWORD。")
     output_path = resolve_output_path(args.conference, args.year_end, args.year_count, args.output, years=years)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    papers = fetch_openreview_submissions(
-        conference=args.conference,
-        years=years,
-        username=username,
-        password=password,
-        public_only=not bool(args.include_nonpublic),
-    )
+    papers = []
+    for year in program_years:
+        papers.extend(fetch_neurips_program(year=year))
+    if openreview_years:
+        papers.extend(fetch_openreview_submissions(
+            conference=args.conference,
+            years=openreview_years,
+            username=username,
+            password=password,
+            public_only=not bool(args.include_nonpublic),
+        ))
+    if not papers:
+        raise RuntimeError(f"未获取到 {args.conference} 公开论文")
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(papers, f, ensure_ascii=False, indent=2)
     log(f"[OK] OpenReview 结果已写入：{output_path} count={len(papers)}")

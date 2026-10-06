@@ -163,9 +163,8 @@ function testConferenceCurrentYearDisabledForPendingSources() {
   const currentYear = String(new Date().getFullYear());
   const previousYear = String(new Date().getFullYear() - 1);
 
-  // Pending current year: NeurIPS is disabled for current year.
-  assert.equal(isConferenceYearSelectable('NeurIPS', currentYear), false);
-  assert.equal(isConferenceYearSelectable('NIPS', currentYear), false);
+  assert.equal(isConferenceYearSelectable('NeurIPS', '2026'), true);
+  assert.equal(isConferenceYearSelectable('NIPS', '2026'), true);
   assert.equal(isConferenceYearSelectable('NeurIPS', previousYear), true);
   assert.equal(isConferenceYearSelectable('NIPS', previousYear), true);
   // 2026 available sources are explicitly whitelisted; pending/future sources stay disabled
@@ -297,8 +296,8 @@ function testConferenceYearChoicesShowTwoDigitYearAndStoredTotalOnly() {
   assert.equal(html.includes('拒稿'), false);
   assert.equal(html.includes('379'), false);
   assert.ok(html.includes('aria-pressed="true"'));
-  assert.equal((html.match(/is-featured-conference-year/g) || []).length, 8);
-  assert.equal((html.match(/dpr-choice-feature-star/g) || []).length, 8);
+  assert.equal((html.match(/is-featured-conference-year/g) || []).length, 9);
+  assert.equal((html.match(/dpr-choice-feature-star/g) || []).length, 9);
 }
 
 async function testConferenceStatsLoadReusesBootstrappedJsonPromise() {

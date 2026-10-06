@@ -25,6 +25,15 @@ create table if not exists public.neurips_openreview_papers (
   updated_at timestamptz not null default now()
 );
 
+alter table public.neurips_openreview_papers
+  add column if not exists search_tsv tsvector
+  generated always as (
+    to_tsvector('english', coalesce(title, '') || ' ' || coalesce(abstract, ''))
+  ) stored;
+
+create index if not exists neurips_openreview_papers_search_tsv_idx
+  on public.neurips_openreview_papers using gin (search_tsv);
+
 create index if not exists neurips_openreview_papers_source_published_idx
   on public.neurips_openreview_papers (source, published desc);
 
