@@ -122,7 +122,16 @@ window.SubscriptionsManager = (function () {
   // 2026 年已入库并验证检索的会议；正式论文集已开放的 IJCAI 同样可选。
   const CONFERENCE_2026_AVAILABLE = new Set(['ICLR', 'ICML', 'AAAI', 'ACL', 'CVPR', 'ECCV', 'IJCAI', 'OSDI', 'SOSP', 'IEEE S&P', 'NDSS']);
   const CONFERENCE_DATA_NOTICES = {};
-  const FEATURED_CONFERENCE_YEAR_PAIRS = new Set(['acl:2026', 'icml:2026']);
+  const FEATURED_CONFERENCE_YEAR_PAIRS = new Set([
+    'acl:2026',
+    'icml:2026',
+    'cvpr:2026',
+    'osdi:2026',
+    'ieee_sp:2026',
+    'eccv:2026',
+    'ijcai:2026',
+    'sosp:2026',
+  ]);
   // ECCV 是双年会议（偶数年）
   const BIENNIAL_EVEN_CONFERENCES = new Set(['ECCV']);
   const CONFERENCES_WITH_PENDING_CURRENT_YEAR = new Set([

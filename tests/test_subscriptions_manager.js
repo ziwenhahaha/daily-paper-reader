@@ -297,8 +297,8 @@ function testConferenceYearChoicesShowTwoDigitYearAndStoredTotalOnly() {
   assert.equal(html.includes('拒稿'), false);
   assert.equal(html.includes('379'), false);
   assert.ok(html.includes('aria-pressed="true"'));
-  assert.equal((html.match(/is-featured-conference-year/g) || []).length, 2);
-  assert.equal((html.match(/dpr-choice-feature-star/g) || []).length, 2);
+  assert.equal((html.match(/is-featured-conference-year/g) || []).length, 8);
+  assert.equal((html.match(/dpr-choice-feature-star/g) || []).length, 8);
 }
 
 async function testConferenceStatsLoadReusesBootstrappedJsonPromise() {
