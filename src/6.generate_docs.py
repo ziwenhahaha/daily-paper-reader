@@ -1464,6 +1464,40 @@ def is_usable_paper_text(text: str) -> bool:
     return True
 
 
+PDF_DOWNLOAD_HEADERS = {
+    "User-Agent": "DailyPaperReader/1.0 (+https://github.com/ziwenhahaha/daily-paper-reader)",
+    "Accept": "application/pdf,*/*;q=0.9",
+}
+RETRYABLE_PDF_HTTP_STATUSES = {429, 500, 502, 503, 504, 520, 522, 524}
+
+
+def _download_pdf_response(pdf_url: str, max_retries: int = 3):
+    last_exc = None
+    resp = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(
+                pdf_url,
+                timeout=60,
+                headers=PDF_DOWNLOAD_HEADERS,
+            )
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt >= max_retries:
+                raise
+            time.sleep(2 * attempt)
+            continue
+        status = getattr(resp, "status_code", None)
+        if isinstance(status, int) and status in RETRYABLE_PDF_HTTP_STATUSES and attempt < max_retries:
+            log(f"[PDF][WARN] 下载遇到 HTTP {status}（第 {attempt}/{max_retries} 次），稍后重试：{pdf_url}")
+            time.sleep(2 * attempt)
+            continue
+        return resp
+    if last_exc is not None:
+        raise last_exc
+    return resp
+
+
 def ensure_text_content(pdf_url: str, txt_path: str) -> str:
     if os.path.exists(txt_path):
         with open(txt_path, "r", encoding="utf-8") as f:
@@ -1472,7 +1506,7 @@ def ensure_text_content(pdf_url: str, txt_path: str) -> str:
             return cached
     text_content = fetch_paper_markdown_via_jina(pdf_url)
     if not is_usable_paper_text(text_content) and pdf_url:
-        resp = requests.get(pdf_url, timeout=60)
+        resp = _download_pdf_response(pdf_url)
         if resp.status_code == 404 and 'has been withdrawn and is unavailable' in str(text_content or '').lower():
             raise PaperFulltextUnavailable("该arXiv版本已撤回，官方PDF不可下载")
         resp.raise_for_status()

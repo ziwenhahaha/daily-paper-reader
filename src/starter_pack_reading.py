@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import unquote
 
-from requests import HTTPError
+from requests import HTTPError, RequestException
 from paper_dedupe import _arxiv, _doi
 from starter_pack_publications import verify_publications
 
@@ -262,9 +262,11 @@ def _merge_existing_route_tag(docs, route, tag, generator, reading_metadata=None
         state = json.loads(path.read_text(encoding="utf-8"))
         changed = False
         section_changed = False
+        matched_route = False
         for row in state.get("papers", []):
             if _safe_route(docs, row.get("route")) != route:
                 continue
+            matched_route = True
             tags = row.setdefault("tags", [])
             new_tag_record = {"kind": "query", "label": tag}
             if new_tag_record not in tags:
@@ -294,6 +296,22 @@ def _merge_existing_route_tag(docs, route, tag, generator, reading_metadata=None
                 evidence,
                 date_label=state.get("date_label"),
                 replace_existing=True,
+            )
+        if (
+            matched_route
+            and (changed or reading_metadata)
+            and state.get("date")
+            and hasattr(generator, "write_day_meta_index_json")
+        ):
+            deep, quick, _evidence = entries_from_state(state)
+            generator.write_day_meta_index_json(
+                str(docs),
+                state["date"],
+                state.get("date_label"),
+                [],
+                [],
+                merged_deep_entries=deep,
+                merged_quick_entries=quick,
             )
 
 
@@ -383,12 +401,18 @@ def _attach_navigation_record(
     if found:
         if refreshed != old:
             sidebar.write_text(refreshed, encoding="utf-8")
+        has_reading_update = bool(
+            paper.get("reading_status") in ("complete", "unavailable")
+            or metadata.get("tldr")
+            or metadata.get("evidence")
+            or metadata.get("title_zh")
+        )
         _merge_existing_route_tag(
             docs,
             route,
             tag,
             generator,
-            metadata if paper.get("reading_status") == "complete" else None,
+            metadata if has_reading_update else None,
         )
         return
     conference = _conference(paper)
@@ -538,6 +562,7 @@ def _prepare_reading_batch(
     token, label = f"{start:%Y%m%d}-{end:%Y%m%d}", f"{start} ～ {end}"
     client = None
     generated_count = 0
+    first_transient_error = None
     for paper in selected:
         versions = paper.get("versions") or []
         identities = _identities(paper)
@@ -717,10 +742,19 @@ def _prepare_reading_batch(
         fulltext_ready = bool(
             cached_text and generator.is_usable_paper_text(cached_text)
         )
+        fulltext_state_path = document.with_suffix(".fulltext.json")
+        fulltext_state = (
+            json.loads(fulltext_state_path.read_text(encoding="utf-8"))
+            if fulltext_state_path.exists()
+            else {}
+        )
+        known_unavailable = (
+            not fulltext_ready and fulltext_state.get("status") == "unavailable"
+        )
         wanted_deep = (
             paper.get("bucket") == "core" or metadata.get("reading_section") == "deep"
         )
-        content_complete = (
+        quick_complete = (
             all(
                 metadata.get(key)
                 for key in (
@@ -734,26 +768,36 @@ def _prepare_reading_batch(
             )
             and "## 摘要" in current_text
         )
-        content_complete = content_complete and (
+        content_complete = quick_complete and (
             not wanted_deep
             or bool(
                 generator.extract_section_tail(current_text, "论文详细总结（自动生成）")
             )
         )
+        settled_unavailable = known_unavailable and quick_complete
         paper["content_generated_this_run"] = False
         paper["content_attempted_this_run"] = False
-        if content_complete and fulltext_ready or generated_count >= max_new_content:
-            paper["reading_status"] = (
-                "complete" if content_complete and fulltext_ready else "pending"
-            )
-            paper["fulltext_status"] = "ready" if fulltext_ready else "pending"
-            if not fulltext_ready and document.with_suffix(".fulltext.json").exists():
-                fulltext_state = json.loads(
-                    document.with_suffix(".fulltext.json").read_text(encoding="utf-8")
-                )
-                if fulltext_state.get("status") == "unavailable":
+        if (
+            (content_complete and fulltext_ready)
+            or settled_unavailable
+            or generated_count >= max_new_content
+        ):
+            if content_complete and fulltext_ready:
+                paper["reading_status"] = "complete"
+                paper["fulltext_status"] = "ready"
+            elif settled_unavailable:
+                paper["reading_status"] = "unavailable"
+                paper["fulltext_status"] = "unavailable"
+                paper["reading_reason"] = fulltext_state.get("reason", "")
+            else:
+                paper["reading_status"] = "pending"
+                paper["fulltext_status"] = "ready" if fulltext_ready else "pending"
+                if known_unavailable:
                     paper["fulltext_status"] = "unavailable"
                     paper["reading_reason"] = fulltext_state.get("reason", "")
+                elif fulltext_state.get("status") == "retry_pending":
+                    paper["reading_reason"] = fulltext_state.get("reason", "")
+            paper["zh_title"] = metadata.get("title_zh") or ""
             paper["tldr"] = metadata.get("tldr") or ""
             paper["canonical_evidence"] = metadata.get("evidence") or ""
             pending_text, _ = generator.upsert_front_matter_field(
@@ -761,8 +805,16 @@ def _prepare_reading_batch(
                 "reading_status",
                 generator.yaml_escape_value(paper["reading_status"]),
             )
-            marker = "<!-- research-reading-pending -->\n中文总结与全文内容待生成；当前仅提供原始论文元数据与摘要。\n<!-- /research-reading-pending -->"
-            if paper["reading_status"] == "pending" and marker not in pending_text:
+            marker = (
+                "<!-- research-reading-pending -->\n"
+                + (
+                    "全文暂不可获取，续跑时将自动重试；当前已提供中文摘要与速览。\n"
+                    if quick_complete
+                    else "中文总结与全文内容待生成；当前仅提供原始论文元数据与摘要。\n"
+                )
+                + "<!-- /research-reading-pending -->"
+            )
+            if paper["reading_status"] == "pending" and "<!-- research-reading-pending -->" not in pending_text:
                 pending_text = pending_text.rstrip() + "\n\n" + marker + "\n"
             if pending_text != current_text:
                 document.write_text(pending_text, encoding="utf-8")
@@ -777,6 +829,8 @@ def _prepare_reading_batch(
         generated_count += 1
         paper["content_attempted_this_run"] = True
         unavailable = ""
+        transient_error = None
+        transient_reason = ""
         try:
             if not pdf and not txt.exists():
                 unavailable = "尚无公开 PDF 链接"
@@ -786,46 +840,88 @@ def _prepare_reading_batch(
             unavailable = str(error)
         except HTTPError as error:
             status = getattr(error.response, "status_code", None)
-            if status not in {403, 404}:
-                raise
-            # 不推断撤稿，也不替换版本或绕过服务器访问限制。
-            unavailable = f"论文全文服务器返回 HTTP {status}，当前公开链接不可获取"
+            if status in {403, 404, 410}:
+                # 不推断撤稿，也不替换版本或绕过服务器访问限制。
+                unavailable = f"论文全文服务器返回 HTTP {status}，当前公开链接不可获取"
+            else:
+                prev_attempts = (
+                    int(fulltext_state.get("attempts") or 0)
+                    if fulltext_state.get("status") == "retry_pending"
+                    else 0
+                )
+                attempts = prev_attempts + 1
+                reason = (
+                    f"论文全文服务器返回 HTTP {status}，当前公开链接暂不可获取"
+                    if status
+                    else "论文全文请求失败，当前公开链接暂不可获取"
+                )
+                if attempts >= 2:
+                    unavailable = reason
+                else:
+                    transient_error = error
+                    transient_reason = reason
+                    fulltext_state_path.write_text(
+                        json.dumps(
+                            {
+                                "status": "retry_pending",
+                                "attempts": attempts,
+                                "reason": reason,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        encoding="utf-8",
+                    )
+                    if first_transient_error is None:
+                        first_transient_error = error
+        except (RequestException, ValueError) as error:
+            prev_attempts = (
+                int(fulltext_state.get("attempts") or 0)
+                if fulltext_state.get("status") == "retry_pending"
+                else 0
+            )
+            attempts = prev_attempts + 1
+            reason = str(error) or f"论文全文获取失败（{type(error).__name__}）"
+            if attempts >= 2:
+                unavailable = reason
+            else:
+                transient_error = error
+                transient_reason = reason
+                fulltext_state_path.write_text(
+                    json.dumps(
+                        {
+                            "status": "retry_pending",
+                            "attempts": attempts,
+                            "reason": reason,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                if first_transient_error is None:
+                    first_transient_error = error
         if unavailable:
-            document.with_suffix(".fulltext.json").write_text(
+            fulltext_state_path.write_text(
                 json.dumps(
                     {"status": "unavailable", "reason": unavailable}, ensure_ascii=False
                 ),
                 encoding="utf-8",
             )
-        elif document.with_suffix(".fulltext.json").exists():
-            document.with_suffix(".fulltext.json").write_text(
+        elif not transient_error and fulltext_state_path.exists():
+            fulltext_state_path.write_text(
                 json.dumps({"status": "ready", "pdf_url": pdf}, ensure_ascii=False),
                 encoding="utf-8",
             )
         section = (
             "deep"
             if not unavailable
+            and not transient_error
             and (
                 paper.get("bucket") == "core"
                 or metadata.get("reading_section") == "deep"
             )
             else "quick"
         )
-        complete = (
-            all(
-                metadata.get(key)
-                for key in (
-                    "title_zh",
-                    "tldr",
-                    "motivation",
-                    "method",
-                    "result",
-                    "conclusion",
-                )
-            )
-            and "## 摘要" in current_text
-        )
-        complete = complete and (
+        complete = quick_complete and (
             section != "deep"
             or bool(
                 generator.extract_section_tail(current_text, "论文详细总结（自动生成）")
@@ -840,15 +936,23 @@ def _prepare_reading_batch(
             metadata = generator.ensure_reading_content(
                 paper, section, str(document), str(txt), client, require_complete=True
             )
-        paper["reading_status"] = "unavailable" if unavailable else "complete"
+        if unavailable:
+            paper["reading_status"] = "unavailable"
+            paper["fulltext_status"] = "unavailable"
+            paper["reading_reason"] = unavailable
+        elif transient_error:
+            paper["reading_status"] = "pending"
+            paper["fulltext_status"] = "pending"
+            paper["reading_reason"] = transient_reason
+        else:
+            paper["reading_status"] = "complete"
+            paper["fulltext_status"] = "ready"
         paper["content_generated_this_run"] = bool(
-            not complete or (not fulltext_ready and not unavailable)
+            not complete or (not fulltext_ready and not unavailable and not transient_error)
         )
+        paper["zh_title"] = metadata.get("title_zh") or ""
         paper["tldr"] = metadata.get("tldr") or ""
         paper["canonical_evidence"] = metadata.get("evidence") or ""
-        paper["fulltext_status"] = "unavailable" if unavailable else "ready"
-        if unavailable:
-            paper["reading_reason"] = unavailable
         saved_text = document.read_text(encoding="utf-8")
         saved_text = re.sub(
             r"\n*<!-- research-reading-pending -->.*?<!-- /research-reading-pending -->\n?",
@@ -856,6 +960,13 @@ def _prepare_reading_batch(
             saved_text,
             flags=re.S,
         )
+        if paper["reading_status"] == "pending":
+            saved_text = (
+                saved_text.rstrip()
+                + "\n\n<!-- research-reading-pending -->\n"
+                + "全文暂不可获取，续跑时将自动重试；当前已提供中文摘要与速览。\n"
+                + "<!-- /research-reading-pending -->\n"
+            )
         saved_text, _ = generator.upsert_front_matter_field(
             saved_text,
             "reading_status",
@@ -869,4 +980,6 @@ def _prepare_reading_batch(
             routes = existing.setdefault(identity, [])
             if route not in routes:
                 routes.append(route)
+    if first_transient_error is not None:
+        raise first_transient_error
     return selected

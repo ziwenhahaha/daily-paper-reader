@@ -871,6 +871,146 @@ class ReadingTests(unittest.TestCase):
                     )
                     self.assertFalse((docs / "20250911-20260910").exists())
 
+    def test_single_paper_http_520_does_not_abort_batch_and_settles_on_second_failure(
+        self,
+    ):
+        rows = [
+            paper("2501.00001v1", score=10),
+            paper(
+                "aaai-2025-33456",
+                canonical_id="work:aaai-33456",
+                score=10,
+                source="AAAI-2025-Accepted",
+                conference="AAAI",
+                conference_year=2025,
+                pdf_url="https://ojs.aaai.org/index.php/AAAI/article/download/33456/35611",
+            ),
+            paper("2501.00003v1", score=9),
+        ]
+        response_520 = Response()
+        response_520.status_code = 520
+
+        with tempfile.TemporaryDirectory() as root:
+            docs = Path(root) / "docs"
+            text_calls = []
+            content_sections = {}
+
+            def make_generator():
+                gen = reading._generator(root)
+
+                def fake_text(pdf_url, txt_path):
+                    text_calls.append(pdf_url)
+                    if "ojs.aaai.org" in str(pdf_url):
+                        raise HTTPError("520 Server Error", response=response_520)
+                    Path(txt_path).parent.mkdir(parents=True, exist_ok=True)
+                    Path(txt_path).write_text("Full paper content. " * 150, encoding="utf-8")
+                    return "Full paper content. " * 150
+
+                def fake_content(row, section, md_path, txt_path, client, require_complete=False):
+                    content_sections[row["id"]] = section
+                    text = Path(md_path).read_text(encoding="utf-8")
+                    for key, val in {
+                        "title_zh": f"中文标题-{row['id']}",
+                        "tldr": f"中文速览-{row['id']}",
+                        "motivation": "研究动机",
+                        "method": "研究方法",
+                        "result": "实验结果",
+                        "conclusion": "研究结论",
+                        "evidence": f"中文说明-{row['id']}",
+                        "reading_section": section,
+                    }.items():
+                        text, _ = gen.upsert_front_matter_field(
+                            text, key, gen.yaml_escape_value(val)
+                        )
+                    if "## 摘要" not in text:
+                        text += "\n\n## 摘要\n中文摘要内容\n"
+                    if section == "deep" and "论文详细总结（自动生成）" not in text:
+                        text += "\n\n## 论文详细总结（自动生成）\n精读内容（完）\n"
+                    Path(md_path).write_text(text, encoding="utf-8")
+                    return gen._parse_front_matter(text)
+
+                gen.ensure_text_content = Mock(side_effect=fake_text)
+                gen.ensure_reading_content = Mock(side_effect=fake_content)
+                gen.create_llm_client = Mock(return_value=SimpleNamespace(kwargs={}))
+                return gen
+
+            # 第一轮：第2篇 AAAI 520 不应中断第3篇；第1、3篇完成精读，第2篇生成中文速览并记 retry_pending
+            gen1 = make_generator()
+            with patch.object(reading, "_generator", return_value=gen1):
+                with self.assertRaises(HTTPError):
+                    reading.prepare_reading(
+                        rows, root, "user-sim", "run-1", "2025-11-25", "2026-11-25", max_new_content=3
+                    )
+            self.assertEqual(content_sections["2501.00001v1"], "deep")
+            self.assertEqual(content_sections["aaai-2025-33456"], "quick")
+            self.assertEqual(content_sections["2501.00003v1"], "deep")
+            self.assertTrue((docs / "20251125-20261124/2501.00001v1.txt").exists())
+            self.assertTrue((docs / "20251125-20261124/2501.00003v1.txt").exists())
+
+            # 零预算恢复应准确识别 2 篇 complete、1 篇带中文标题的 pending，且 papers.meta.json 已刷新
+            gen_rec = make_generator()
+            with patch.object(reading, "_generator", return_value=gen_rec):
+                recovered = reading.prepare_reading(
+                    rows, root, "user-sim", "run-1", "2025-11-25", "2026-11-25", max_new_content=0
+                )
+            by_id = {p["id"]: p for p in recovered}
+            self.assertEqual(by_id["2501.00001v1"]["reading_status"], "complete")
+            self.assertEqual(by_id["2501.00003v1"]["reading_status"], "complete")
+            self.assertEqual(by_id["aaai-2025-33456"]["reading_status"], "pending")
+            self.assertEqual(by_id["2501.00001v1"]["zh_title"], "中文标题-2501.00001v1")
+            self.assertEqual(by_id["aaai-2025-33456"]["zh_title"], "中文标题-aaai-2025-33456")
+
+            meta_json = json.loads(
+                (docs / "20251125-20261124/papers.meta.json").read_text(encoding="utf-8")
+            )
+            meta_by_id = {item["paper_id"]: item for item in meta_json["papers"]}
+            self.assertEqual(
+                meta_by_id["20251125-20261124/2501.00001v1"]["section"], "deep"
+            )
+            self.assertEqual(
+                meta_by_id["20251125-20261124/2501.00001v1"]["tldr"],
+                "中文速览-2501.00001v1",
+            )
+            self.assertEqual(
+                meta_by_id["20251125-20261124/2501.00001v1"]["evidence"],
+                "中文说明-2501.00001v1",
+            )
+
+            # 第二轮续跑：第2篇仍 520 时转为 unavailable，不再抛错，也不阻塞后续第4篇
+            rows_with_fourth = rows + [paper("2501.00004v1", score=8)]
+            gen2 = make_generator()
+            with patch.object(reading, "_generator", return_value=gen2):
+                second = reading.prepare_reading(
+                    rows_with_fourth,
+                    root,
+                    "user-sim",
+                    "run-1",
+                    "2025-11-25",
+                    "2026-11-25",
+                    max_new_content=2,
+                )
+            by_id2 = {p["id"]: p for p in second}
+            self.assertEqual(by_id2["aaai-2025-33456"]["reading_status"], "unavailable")
+            self.assertEqual(by_id2["2501.00004v1"]["reading_status"], "complete")
+
+            # 第三轮续跑：已转为 unavailable 且已有中文速览的第2篇不再重复请求 PDF 或占用预算
+            gen3 = make_generator()
+            rows_with_fifth = rows_with_fourth + [paper("2501.00005v1", score=8)]
+            with patch.object(reading, "_generator", return_value=gen3):
+                third = reading.prepare_reading(
+                    rows_with_fifth,
+                    root,
+                    "user-sim",
+                    "run-1",
+                    "2025-11-25",
+                    "2026-11-25",
+                    max_new_content=1,
+                )
+            by_id3 = {p["id"]: p for p in third}
+            self.assertEqual(by_id3["aaai-2025-33456"]["reading_status"], "unavailable")
+            self.assertEqual(by_id3["2501.00005v1"]["reading_status"], "complete")
+            self.assertEqual(gen3.ensure_text_content.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
