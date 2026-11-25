@@ -1999,6 +1999,51 @@ testStatusClickKeepsPaperRowInPlace();
 testAxisControlClicksKeepSidebarScrollInPlace();
 testAxisToggleCollapsesOnlyItsOwnPanel();
 testExpandedAxisSectionSetSerializesCorrectly();
+function testSingleTrackTopicBacktrackGroup() {
+  const tools = loadSidebarForTest().__test;
+  const topicToken = '20251125-20261124-starter-user-sim';
+  assert.equal(tools.isBacktrackDateKey(topicToken), true, '带专题后缀的长周期 token 归专题回溯');
+  const topicMeta = JSON.stringify({
+    mode: 'starter',
+    tag: 'user-sim',
+    report: '#/' + topicToken + '/README',
+    export: 'docs/' + topicToken + '/papers.md',
+    as_of: '2026-11-25',
+    description: 'LLM user simulation',
+  });
+  const p1 = JSON.stringify({
+    title: 'Simulating Users',
+    score: '9.0',
+    evidence: '核心研究大模型用户模拟',
+    tags: [{ kind: 'query', label: 'user-sim' }],
+    publication_date: '2026-11-10',
+  }).replace(/"/g, '&quot;');
+  const sidebarMd = [
+    '* Daily Papers',
+    `  * user-sim · 大礼包 (2025-11-25 ~ 2026-11-24) <!--dpr-date:${topicToken}--> <!--dpr-topic:${topicMeta}-->`,
+    '    * 精读区',
+    `      * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/${topicToken}/2611.10001v1-simulating-users" data-sidebar-item="${p1}">Simulating Users</a>`,
+  ].join('\n');
+  const model = tools.parseSidebar(sidebarMd);
+  assert.equal(model.daily.length, 1);
+  assert.equal(model.daily[0].dateKey, topicToken);
+  assert.equal(model.daily[0].reportHref, '#/' + topicToken + '/README');
+  assert.equal(model.daily[0].topicMeta.mode, 'starter');
+  assert.equal(model.daily[0].topicMeta.export, 'docs/' + topicToken + '/papers.md');
+  const html = tools.renderBodyHtml(model, {
+    expandedGroups: { conference: true, daily: true, backtrack: true },
+    expandedAxisSections: new Set(['backtrack:tag:' + topicToken + ':__all__']),
+    readMap: {},
+  });
+  assert.ok(html.includes('专题回溯'));
+  assert.ok(html.includes('方向导读／导出清单'));
+  assert.ok(html.includes('href="#/' + topicToken + '/README"'));
+  assert.ok(html.includes('href="docs/' + topicToken + '/papers.md"'));
+  assert.ok(html.includes('核心研究大模型用户模拟'));
+  assert.ok(html.includes('data-topic-task-sort'));
+}
+
 testReadStatusNormalization();
+testSingleTrackTopicBacktrackGroup();
 
 console.log('dpr sidebar v2 tests passed');

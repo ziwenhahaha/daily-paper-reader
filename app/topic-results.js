@@ -2,8 +2,11 @@
   'use strict';
   var cache = new Map();
   function exportUrl(path) {
-    if (!/^docs\/starter-pack\/\d{8}-[a-f0-9]{12}\/papers\.(md|json)$/.test(String(path || ''))) throw new Error('导出文件路径无效');
-    var url = new URL(path, root.location.href.split('#')[0]);
+    var raw = String(path || '');
+    var isStandard = /^docs\/\d{8}-\d{8}(?:-[A-Za-z0-9._-]+)?\/papers\.(md|json)$/.test(raw);
+    var isLegacy = /^docs\/starter-pack\/\d{8}-[a-f0-9]{12}\/papers\.(md|json)$/.test(raw);
+    if (!isStandard && !isLegacy) throw new Error('导出文件路径无效');
+    var url = new URL(raw, root.location.href.split('#')[0]);
     if (url.origin !== root.location.origin) throw new Error('导出文件必须来自当前站点');
     return url.href;
   }
@@ -50,7 +53,9 @@
   }
   async function continueContent(runId) {
     if (!/^\d{8}-[a-f0-9]{12}$/.test(String(runId))) throw new Error('任务标识无效');
-    if (!root.DPRTopicResearch || typeof root.DPRTopicResearch.continueContent !== 'function') throw new Error('任务入口尚未加载，请刷新后重试');
+    if (!root.DPRTopicResearch || typeof root.DPRTopicResearch.continueContent !== 'function') {
+      throw new Error('新版专题研究已改为一次全部生成完整内容，请从设置面板「专题研究」重新发起任务');
+    }
     var result = await root.DPRTopicResearch.continueContent(runId);
     if (!result || result.ok === false || result.success === false || result.status === 'failed') throw new Error(result && result.message || '未确认任务已提交，请检查任务面板');
     return result;

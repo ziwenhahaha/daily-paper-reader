@@ -3,14 +3,12 @@ import os
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import Mock, patch
-import numpy as np
+from unittest.mock import patch
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 import model_loader
-import long_range_review
 
 
 class CloudModelTests(unittest.TestCase):
@@ -25,46 +23,6 @@ class CloudModelTests(unittest.TestCase):
                     "model", device="cpu", allow_remote=False
                 )
             local.assert_not_called()
-
-    def test_legacy_nonstandard_window_runs_without_local_models(self):
-        remote = Mock(is_remote=True)
-        remote.encode.return_value = np.ones((1, 384), dtype=np.float32)
-        plan = {
-            "tags": ["test"],
-            "profiles": [{"tag": "test"}],
-            "bm25_queries": [],
-            "embedding_queries": [{"tag": "test", "query_text": "test query"}],
-            "context_queries": [],
-            "context_keywords": [],
-        }
-        with patch.dict(
-            sys.modules,
-            {"torch": None, "sentence_transformers": None, "transformers": None},
-        ), patch.dict(
-            os.environ, {"DEEPSEEK_API_KEY": "test", "DPR_MODELS_REMOTE_ONLY": "1"}
-        ), patch.object(
-            model_loader, "load_sentence_transformer", return_value=remote
-        ), patch.object(
-            long_range_review,
-            "get_source_backend",
-            return_value={
-                "enabled": True,
-                "url": "https://example.invalid",
-                "anon_key": "test",
-            },
-        ), patch.object(
-            long_range_review, "build_pipeline_inputs", return_value=plan
-        ), patch.object(
-            long_range_review,
-            "match_papers_by_embedding",
-            return_value=([], "rpc 查询成功"),
-        ) as rpc, patch.object(
-            long_range_review, "publish_report", return_value={"groups": [{"total": 0}]}
-        ):
-            long_range_review.run_review({}, 180, ROOT, "20260314-20260909")
-            self.assertEqual(len(rpc.call_args.kwargs["query_embedding"]), 384)
-            self.assertIsInstance(remote.encode.call_args.args[0], list)
-            self.assertFalse(remote.allow_local_fallback)
 
     def test_legacy_local_reranker_resolves_to_cloud_in_actions(self):
         spec = importlib.util.spec_from_file_location(
@@ -92,7 +50,7 @@ class CloudModelTests(unittest.TestCase):
                 rank.LocalQwenReranker()
 
     def test_workflows_set_cloud_policy_and_smoke_check(self):
-        for name in ["daily-paper-reader", "conference-paper-retrieval"]:
+        for name in ["daily-paper-reader", "conference-paper-retrieval", "topic-research"]:
             path = ROOT / ".github/workflows" / f"{name}.yml"
             workflow = yaml.safe_load(path.read_text())
             job = next(iter(workflow["jobs"].values()))
@@ -105,6 +63,9 @@ class CloudModelTests(unittest.TestCase):
                     for step in job["steps"]
                 )
             )
+            if name in ("daily-paper-reader", "topic-research"):
+                for key in ("SUMMARY_API_KEY", "SUMMARY_BASE_URL", "SUMMARY_MODEL", "SILICONFLOW_API_KEY"):
+                    self.assertIn(key, job["env"], f"{name}.yml 必须透传 {key}")
 
 
 if __name__ == "__main__":

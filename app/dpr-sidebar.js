@@ -102,6 +102,8 @@
   function normalizeDailyDateKey(value) {
     var s = String(value || '').trim();
     if (!s) return '';
+    var topicRange = s.match(/^(\d{8})-(\d{8})(-[A-Za-z0-9._-]+)$/);
+    if (topicRange) return topicRange[1] + '-' + topicRange[2] + topicRange[3];
     var compactRange = s.match(/^(\d{8})\s*-\s*(\d{8})$/);
     if (compactRange) return compactRange[1] + '-' + compactRange[2];
     var labelRange = s.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s*(?:~|至|到|—|–|-)\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
@@ -115,13 +117,17 @@
     if (label) return label[1] + pad2(label[2]) + pad2(label[3]);
     return '';
   }
+  function extractDailyRangeParts(dateKey) {
+    var match = String(dateKey || '').match(/^(\d{8})-(\d{8})(?:-[A-Za-z0-9._-]+)?$/);
+    return match ? [match[1], match[2]] : null;
+  }
   function isDailyRangeKey(dateKey) {
-    return /^\d{8}-\d{8}$/.test(String(dateKey || ''));
+    return !!extractDailyRangeParts(dateKey);
   }
   // 只拆展示归属，保留旧区间 route、论文 ID 和阅读状态。
   function isBacktrackDateKey(dateKey) {
-    if (!isDailyRangeKey(dateKey)) return false;
-    var parts = String(dateKey).split('-');
+    var parts = extractDailyRangeParts(dateKey);
+    if (!parts) return false;
     function utcDate(value) {
       return Date.UTC(Number(value.slice(0, 4)), Number(value.slice(4, 6)) - 1, Number(value.slice(6, 8)));
     }
@@ -146,14 +152,14 @@
     var vs = viewState || state;
     return buildDailyCalendarTagView(modelForDailyPanel(model, group),
       vs[dailyPanelField(group, 'Date')], vs[dailyPanelField(group, 'Tag')], readMap,
-      vs[dailyPanelField(group, 'Month')], group === 'backtrack');
+      vs[dailyPanelField(group, 'Month')], group === 'backtrack', vs.taskSort);
   }
   function isDailySingleDateKey(dateKey) {
     return /^\d{8}$/.test(String(dateKey || ''));
   }
   function dailyRangeEndDateKey(dateKey) {
-    var s = String(dateKey || '');
-    return isDailyRangeKey(s) ? s.slice(9, 17) : '';
+    var parts = extractDailyRangeParts(dateKey);
+    return parts ? parts[1] : '';
   }
   function dailyCalendarAnchorDateKey(dateKey) {
     var normalized = normalizeDailyDateKey(dateKey) || String(dateKey || '');
@@ -170,8 +176,9 @@
   }
   function formatDateLabel(value) {
     var normalized = normalizeDailyDateKey(value);
-    if (isDailyRangeKey(normalized)) {
-      return formatCompactDateLabel(normalized.slice(0, 8)) + ' ~ ' + formatCompactDateLabel(normalized.slice(9, 17));
+    var rangeParts = extractDailyRangeParts(normalized);
+    if (rangeParts) {
+      return formatCompactDateLabel(rangeParts[0]) + ' ~ ' + formatCompactDateLabel(rangeParts[1]);
     }
     if (isDailySingleDateKey(normalized)) return formatCompactDateLabel(normalized);
     return String(value || '');
@@ -215,7 +222,7 @@
   }
   function dailyDateKeyFromHref(href) {
     var s = String(href || '');
-    var range = s.match(/#?\/(\d{8}-\d{8})(?:\/|$)/);
+    var range = s.match(/#?\/(\d{8}-\d{8}(?:-[A-Za-z0-9._-]+)?)(?:\/|$)/);
     if (range) return range[1];
     var daily = s.match(/#?\/(\d{6})\/(\d{2})(?:\/|$)/);
     if (daily) return daily[1] + daily[2];
@@ -306,7 +313,7 @@
           return { id: route, href: '#/' + route, title: String(record.title || ''),
             selection_rank: index,
             score: Number(record.score) || 0, published: String(record.published || ''),
-            evidence: String(record.summary || (record.reading_status !== 'complete' ? '阅读内容待生成' : record.zh_title) || ''),
+            evidence: String(record.evidence || record.summary || (record.reading_status !== 'complete' ? '阅读内容待生成' : record.zh_title) || ''),
             publication_date: String(record.publication_date || record.published || ''),
             publication_date_precision: String(record.publication_date_precision || 'unknown'),
             publication_date_source: String(record.publication_date_source || ''),
@@ -765,16 +772,41 @@
         while (i < lines.length && !/^\*\s/.test(lines[i])) {
           var dayLine = lines[i];
           var markerMatch = dayLine.match(/<!--dpr-date:([^>]+?)-->/);
+          var topicMatch = dayLine.match(/<!--dpr-topic:([\s\S]*?)-->/);
           if (/^\s{2}\*\s/.test(dayLine) && !/^\s{4}/.test(dayLine)) {
             var dayLink = parseTopLink(dayLine);
             var rawLabel = dayLine.replace(/^\s{2}\*\s+/, '').replace(/<!--.*?-->/g, '').trim();
             var dateKey = normalizeDailyDateKey(markerMatch ? markerMatch[1] : rawLabel) ||
               dailyDateKeyFromHref(dayLink && dayLink.href) ||
               rawLabel;
+            var topicMeta = null;
+            if (topicMatch && topicMatch[1]) {
+              try {
+                var parsedTopic = JSON.parse(topicMatch[1].replace(/--&gt;/g, '-->'));
+                if (parsedTopic && typeof parsedTopic === 'object') {
+                  var safeReport = String(parsedTopic.report || '').trim();
+                  if (!/^#\/[A-Za-z0-9._/-]+$/.test(safeReport) || safeReport.indexOf('..') >= 0) safeReport = '';
+                  var safeExport = String(parsedTopic.export || '').trim();
+                  if (!/^docs\/\d{8}-\d{8}(?:-[A-Za-z0-9._-]+)?\/papers\.md$/.test(safeExport)) safeExport = '';
+                  topicMeta = {
+                    mode: String(parsedTopic.mode || '').trim(),
+                    tag: String(parsedTopic.tag || '').trim(),
+                    report: safeReport,
+                    export: safeExport,
+                    as_of: /^\d{4}-\d{2}-\d{2}$/.test(String(parsedTopic.as_of || '')) ? String(parsedTopic.as_of) : '',
+                    description: typeof parsedTopic.description === 'string' ? parsedTopic.description : '',
+                    refinement: typeof parsedTopic.refinement === 'string' ? parsedTopic.refinement : '',
+                  };
+                }
+              } catch (ignoredTopic) {
+                topicMeta = null;
+              }
+            }
             var day = {
               dateKey: dateKey,
               dateLabel: (dayLink && dayLink.label) || rawLabel || formatDateLabel(dateKey),
-              reportHref: dayReportHrefFromKey(dateKey, dayLink && dayLink.href),
+              reportHref: (topicMeta && topicMeta.report) || dayReportHrefFromKey(dateKey, dayLink && dayLink.href),
+              topicMeta: topicMeta,
               papers: [],
             };
             i += 1;
@@ -894,7 +926,14 @@
     }
 
     model.daily.forEach(function (day) {
-      day.papers = sortPapersByTimeDesc(day.papers || [], day.dateKey);
+      if (day && day.topicMeta) {
+        day.papers = (day.papers || []).map(function (paper, idx) {
+          paper.selection_rank = idx;
+          return paper;
+        });
+      } else {
+        day.papers = sortPapersByTimeDesc(day.papers || [], day.dateKey);
+      }
     });
     applyConferencePublicationDates(model, {});
     // 日报按日期倒序；区间日报按结束日期归位，保证最近的区间报告不会从日历里“消失”。
@@ -1420,7 +1459,31 @@
     return filtered;
   }
 
-  function buildDailyCalendarTagView(model, activeDateKey, activeTagKey, readMap, activeMonthKey, allDates) {
+  function renderTopicDayNavigation(day) {
+    var meta = day && day.topicMeta;
+    if (!meta) return '';
+    var reportHref = meta.report || day.reportHref || '';
+    var primaryLabel = meta.mode === 'starter' ? '方向导读／导出清单' : '结果总览／导出清单';
+    var nav = '';
+    if (reportHref) {
+      nav += '<a class="dpr-sidebar-axis-tab dpr-sidebar-starter-guide" href="' + safeAttr(reportHref) + '">' + primaryLabel + '</a>';
+    }
+    if (meta.export) {
+      nav += ' <a class="dpr-sidebar-axis-tab" href="' + safeAttr(meta.export) + '" download data-no-router>下载 Markdown</a>';
+    }
+    if (meta.description) {
+      nav += '<div class="dpr-sidebar-paper-evidence">研究方向：' + safeText(meta.description) + '</div>';
+    }
+    if (meta.refinement) {
+      nav += '<div class="dpr-sidebar-paper-evidence">本次细化：' + safeText(meta.refinement) + '</div>';
+    }
+    if (meta.as_of) {
+      nav += '<div class="dpr-sidebar-paper-meta">截止日期（不含当天）：' + safeText(meta.as_of) + '</div>';
+    }
+    return nav;
+  }
+
+  function buildDailyCalendarTagView(model, activeDateKey, activeTagKey, readMap, activeMonthKey, allDates, taskSort) {
     var map = readMap || {};
     var allKey = '__all__';
     var dateView = buildDailyDateView(model, activeDateKey, map, activeMonthKey);
@@ -1457,14 +1520,21 @@
         })
         : (day.papers || []);
       if (!filtered.length) return;
+      if (allDates && day && day.topicMeta) {
+        filtered = sortedTaskPapers(filtered, taskSort);
+      }
       var label = day && (day.dateLabel || formatDateLabel(day.dateKey)) || formatDateLabel(activeDate);
       if (activeTag && activeTag !== allKey) label += ' / ' + activeTag;
-      groups.push({
+      var groupItem = {
         key: day.dateKey + ':' + (activeTag || 'all'),
         label: label,
         papers: filtered,
         unreadCount: countUnreadPapers(filtered, map),
-      });
+      };
+      if (allDates && day && day.topicMeta) {
+        groupItem.taskNavigation = renderTopicDayNavigation(day);
+      }
+      groups.push(groupItem);
     });
     var calendarModel = filterDailyModelByTag(model, activeTag);
     return {
@@ -2120,8 +2190,14 @@
       html.push('  </button>');
     }
     html.push('  <div class="dpr-sidebar-panel-content">');
-    if (opts.group === 'backtrack' && opts.starterPacks && opts.starterPacks.length) {
+    var hasTopicGroups = opts.group === 'backtrack' && (
+      (opts.starterPacks && opts.starterPacks.length > 0) ||
+      ((opts.view && opts.view.groups) || []).some(function (g) { return !!(g && g.taskNavigation); })
+    );
+    if (hasTopicGroups) {
       html.push('<div class="dpr-sidebar-axis-row"><label>排序 <select data-topic-task-sort><option value="score"' + (opts.taskSort !== 'date' ? ' selected' : '') + '>相关性降序</option><option value="date"' + (opts.taskSort === 'date' ? ' selected' : '') + '>公布日期降序</option></select></label></div>');
+    }
+    if (opts.group === 'backtrack' && opts.starterPacks && opts.starterPacks.length) {
       html.push(renderStarterPackGuides(opts.starterPacks, opts));
     }
     if (isDailyNormal) {

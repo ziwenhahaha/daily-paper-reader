@@ -5,14 +5,15 @@ on:
     inputs:
       profile_tag:
         description: '已保存的研究词条'
+        required: true
         default: ''
       mode:
         description: '90 / 365 / starter'
-        default: '90'
+        default: 'starter'
         type: choice
         options: ['90', '365', 'starter']
       as_of:
-        description: 'UTC排他截止日期 YYYY-MM-DD'
+        description: 'UTC排他截止日期 YYYY-MM-DD（留空默认今天）'
         default: ''
       profile_snapshot:
         description: '仅本次研究需求的JSON快照，不包含密钥'
@@ -20,17 +21,12 @@ on:
       conferences:
         description: '大礼包会议名称CSV；留空使用全部支持会议'
         default: ''
-      action:
-        description: 'run检索评分 / continue-content仅继续已有名单内容'
-        type: choice
-        options: ['run', 'continue-content']
-        default: 'run'
-      run_id:
-        description: '继续内容时的固定任务ID'
-        default: ''
-      content_batch:
-        description: '本轮新增阅读内容预算0–100，默认10'
-        default: '10'
+      max_papers:
+        description: '精选论文上限（1–100，默认50；≥8分精读，6–8分速读，一次并发生成完）'
+        default: '50'
+      reranker_profile:
+        description: 'Reranker：默认 public-zwwen-rerank；可改 siliconflow-qwen3-0.6b（仅云端）'
+        default: 'public-zwwen-rerank'
 
 permissions:
   contents: write
@@ -50,13 +46,26 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
       DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL }}
+      LLM_PRIMARY_BASE_URL: ${{ secrets.LLM_PRIMARY_BASE_URL }}
+      SUMMARY_API_KEY: ${{ secrets.SUMMARY_API_KEY }}
+      SUMMARY_BASE_URL: ${{ secrets.SUMMARY_BASE_URL }}
+      SUMMARY_MODEL: ${{ secrets.SUMMARY_MODEL }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      DPR_EMBED_API_TIMEOUT: '60'
       DPR_EMBED_API_URL: ${{ secrets.DPR_EMBED_API_URL || 'https://zwwen.online/embed' }}
       DPR_EMBED_API_KEY: ${{ secrets.DPR_EMBED_API_KEY }}
-      RERANK_PROFILE: public-zwwen-rerank
+      RERANK_PROFILE: ${{ github.event.inputs.reranker_profile || secrets.RERANK_PROFILE || 'public-zwwen-rerank' }}
+      RERANK_PROVIDER: ${{ secrets.RERANK_PROVIDER }}
+      RERANK_MODEL: ${{ secrets.RERANK_MODEL }}
+      RERANK_API_KEY: ${{ secrets.RERANK_API_KEY }}
+      RERANK_API_BASE_URL: ${{ secrets.RERANK_API_BASE_URL }}
       PUBLIC_RERANK_API_BASE_URL: ${{ secrets.PUBLIC_RERANK_API_BASE_URL || 'https://zwwen.online/rerank' }}
       PUBLIC_RERANK_API_KEY: ${{ secrets.PUBLIC_RERANK_API_KEY }}
+      SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+      SILICONFLOW_RERANK_URL: ${{ secrets.SILICONFLOW_RERANK_URL }}
+      SILICONFLOW_RERANK_MIN_INTERVAL_SECONDS: ${{ secrets.SILICONFLOW_RERANK_MIN_INTERVAL_SECONDS || '8' }}
+      MKL_THREADING_LAYER: GNU
       PYTHONUNBUFFERED: '1'
     steps:
       - uses: actions/checkout@v5
@@ -65,20 +74,33 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-      - name: Install cloud-only runtime
-        run: python -m pip install -r requirements.txt
-      - uses: actions/cache/restore@v5
+      - name: Cache Python deps
+        uses: actions/cache@v5
         with:
           path: |
-            .local-runs/starter-pack-cache
-            .local-runs/long-range-cache
-            .local-runs/topic-research-rerank-cache
-          key: topic-research-v2-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+            ~/.cache/pip
+            ~/.cache/uv
+          key: ${{ runner.os }}-dpr-embed-deps-v1-${{ hashFiles('requirements.txt') }}
+      - name: Install cloud-only runtime
+        run: |
+          python - <<'PY'
+          import re
+          lines = open("requirements.txt", "r", encoding="utf-8").read().splitlines()
+          lines = [l for l in lines if l.strip() and not re.match(r"^sqlite3\b", l)]
+          open("/tmp/req.txt", "w", encoding="utf-8").write("\n".join(lines))
+          PY
+          python -m pip install --upgrade pip
+          python -m pip install uv
+          uv pip install --system -r /tmp/req.txt
+      - name: Check cloud embedding and reranker
+        run: python scripts/check_cloud_models.py --require-lightweight
+      - uses: actions/cache/restore@v5
+        with:
+          path: .local-runs/topic-research-cache
+          key: topic-research-v3-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            topic-research-v2-${{ github.ref_name }}-
-            starter-pack-v1-${{ github.ref_name }}-
-            long-range-v1-${{ github.ref_name }}-
-      - name: Research or continue fixed content
+            topic-research-v3-${{ github.ref_name }}-
+      - name: Run unified topic research pipeline (Step 2-6)
         timeout-minutes: 95
         env:
           TOPIC_TAG: ${{ inputs.profile_tag }}
@@ -86,18 +108,21 @@ jobs:
           TOPIC_AS_OF: ${{ inputs.as_of }}
           TOPIC_SNAPSHOT: ${{ inputs.profile_snapshot }}
           TOPIC_CONFERENCES: ${{ inputs.conferences }}
-          TOPIC_ACTION: ${{ inputs.action }}
-          TOPIC_RUN_ID: ${{ inputs.run_id }}
-          TOPIC_CONTENT_BATCH: ${{ inputs.content_batch }}
+          TOPIC_MAX_PAPERS: ${{ inputs.max_papers }}
         run: |
           python - <<'PY'
           import os, subprocess, sys
           args = [sys.executable, 'src/topic_research.py']
-          for field, flag in [('TOPIC_TAG','--profile-tag'), ('TOPIC_MODE','--mode'),
-              ('TOPIC_AS_OF','--as-of'), ('TOPIC_SNAPSHOT','--profile-snapshot'),
-              ('TOPIC_CONFERENCES','--conferences'), ('TOPIC_ACTION','--action'),
-              ('TOPIC_RUN_ID','--run-id'), ('TOPIC_CONTENT_BATCH','--content-batch')]:
-              if os.environ.get(field): args.extend([flag, os.environ[field]])
+          for field, flag in [
+              ('TOPIC_TAG', '--profile-tag'),
+              ('TOPIC_MODE', '--mode'),
+              ('TOPIC_AS_OF', '--as-of'),
+              ('TOPIC_SNAPSHOT', '--profile-snapshot'),
+              ('TOPIC_CONFERENCES', '--conferences'),
+              ('TOPIC_MAX_PAPERS', '--max-papers'),
+          ]:
+              if os.environ.get(field):
+                  args.extend([flag, os.environ[field]])
           if os.environ['GITHUB_REPOSITORY'] != 'ziwenhahaha/daily-paper-reader':
               args.append('--publish')
           subprocess.run(args, check=True)
@@ -105,26 +130,14 @@ jobs:
       - uses: actions/cache/save@v5
         if: always()
         with:
-          path: |
-            .local-runs/starter-pack-cache
-            .local-runs/long-range-cache
-            .local-runs/topic-research-rerank-cache
-          key: topic-research-v2-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: topic-research-results
-          include-hidden-files: true
-          path: |
-            .local-runs/starter-pack-cache/runs/
-            docs/starter-pack/
-          if-no-files-found: warn
-          retention-days: 7
+          path: .local-runs/topic-research-cache
+          key: topic-research-v3-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Commit fork results
         if: success() && github.repository != 'ziwenhahaha/daily-paper-reader'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if [ -f config.yaml ]; then cp -f config.yaml docs/config.yaml; fi
           git add docs
           if git diff --cached --quiet; then exit 0; fi
           git commit -m '[update] 更新专题研究结果与论文清单' -m 'Co-Authored-By: xixi <3495302215@qq.com>'

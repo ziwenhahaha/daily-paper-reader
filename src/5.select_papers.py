@@ -501,6 +501,21 @@ def build_scored_papers(papers: List[Dict[str, Any]], llm_ranked: List[Dict[str,
         paper["llm_tldr_en"] = tldr_en
         paper["llm_tldr_cn"] = tldr_cn or tldr_en
         paper["llm_tldr"] = paper["llm_tldr_cn"]
+        title_zh = str(item.get("title_zh") or "").strip()
+        motivation_cn = str(item.get("motivation_cn") or "").strip()
+        method_cn = str(item.get("method_cn") or "").strip()
+        result_cn = str(item.get("result_cn") or "").strip()
+        conclusion_cn = str(item.get("conclusion_cn") or "").strip()
+        if title_zh:
+            paper["llm_title_zh"] = title_zh
+        if motivation_cn:
+            paper["llm_motivation_cn"] = motivation_cn
+        if method_cn:
+            paper["llm_method_cn"] = method_cn
+        if result_cn:
+            paper["llm_result_cn"] = result_cn
+        if conclusion_cn:
+            paper["llm_conclusion_cn"] = conclusion_cn
         tags = normalize_tags(item.get("tags"))
         matched_query_tag = str(item.get("matched_query_tag") or "").strip()
         if matched_query_tag and matched_query_tag not in tags:

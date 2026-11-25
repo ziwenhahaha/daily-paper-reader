@@ -6,6 +6,7 @@ import calendar
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,6 @@ import re
 import threading
 from itertools import product
 
-from long_range_review import collect_window, fingerprint, keyword_aliases, write_json
 from paper_dates import resolve_publication_date, publication_window_status
 from source_config import get_source_backend
 from subscription_plan import build_pipeline_inputs
@@ -21,6 +21,62 @@ from supabase_source import match_papers_by_bm25, match_papers_by_embedding
 
 VERSION = "starter-retrieval-v1"
 MODEL = "BAAI/bge-small-en-v1.5"
+
+
+def fingerprint(value):
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()
+
+
+def write_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+    temp.replace(path)
+
+
+def collect_window(call, start, end, *, exhaustive, limit):
+    """REST 满页可能已被服务端截断；二分到不满页，不把失败伪装成零命中。"""
+    rows, message = call(start, end, limit)
+    success = message.startswith("rpc 查询成功")
+    needs_split = (success and exhaustive and len(rows) >= limit) or "57014" in message
+    if needs_split:
+        if (end - start).total_seconds() <= 1:
+            raise RuntimeError("一秒窗口仍满页或超时，无法保证候选完整；未发布结果")
+        middle = start + (end - start) / 2
+        return collect_window(
+            call, start, middle, exhaustive=exhaustive, limit=limit
+        ) + collect_window(call, middle, end, exhaustive=exhaustive, limit=limit)
+    if not success:
+        raise RuntimeError(
+            f"回溯召回失败：{start.isoformat()}–{end.isoformat()} {message}"
+        )
+    return rows
+
+
+def keyword_aliases(topic):
+    text = (
+        json.dumps(topic, ensure_ascii=False).lower()
+        if not isinstance(topic, str)
+        else topic.lower()
+    )
+    if (
+        text.strip() == "atsp"
+        or "非对称旅行商" in text
+        or re.search(r"\basymmetric\b.{0,60}(\btsp\b|travel(?:l)?ing sales)", text)
+    ):
+        return [
+            "asymmetric TSP",
+            "asymmetric traveling salesman",
+            "asymmetric travelling salesman",
+            "asymmetric traveling salesperson",
+            "asymmetric travelling salesperson",
+            "directed traveling salesman",
+            "directed travelling salesman",
+        ]
+    return []
 
 
 def _boolean(value, default=False):
@@ -43,8 +99,8 @@ def build_tasks(
     from conference_retrieval import CONFERENCE_DEFAULTS
 
     end = date.fromisoformat(str(as_of))
-    if arxiv_days not in (90, 365):
-        raise ValueError("专题窗口仅支持90天或365天")
+    if isinstance(arxiv_days, bool) or not isinstance(arxiv_days, int) or not 31 <= arxiv_days <= 365:
+        raise ValueError("专题窗口仅支持31–365天")
     start = end - timedelta(days=arxiv_days)
     conf_start = end.replace(
         year=end.year - 2,
@@ -324,7 +380,7 @@ def run_retrieval(plan, config, root):
     """失败直接抛错；成功分片仍可续用，不将不完整结果当成功发布。"""
     from conference_retrieval import resolve_unified_conference_backend
 
-    cache = Path(root) / ".local-runs/starter-pack-cache/retrieval"
+    cache = Path(root) / ".local-runs/topic-research-cache/retrieval"
     papers = {}
     statuses = []
     excluded = uncertain = excluded_nonaccepted = 0

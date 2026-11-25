@@ -43,21 +43,25 @@ CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
 HOME_TEMPLATE_DIR = os.path.join(ROOT_DIR, "docs_init")
 TODAY_STR = str(os.getenv("DPR_RUN_DATE") or "").strip() or datetime.now(timezone.utc).strftime("%Y%m%d")
 RANGE_DATE_RE = re.compile(r"^(\d{8})-(\d{8})$")
+TOPIC_RANGE_RE = re.compile(r"^(\d{8})-(\d{8})(?:-[A-Za-z0-9._-]+)?$")
 
 # LLM 配置（使用 llm.py 内的 DeepSeek 客户端）
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or os.getenv("SUMMARY_API_KEY")
-DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL") or os.getenv("SUMMARY_BASE_URL") or "https://api.deepseek.com"
+DEEPSEEK_API_KEY = os.getenv("SUMMARY_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
+DEEPSEEK_BASE_URL = os.getenv("SUMMARY_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
 DEEPSEEK_MODEL = os.getenv("SUMMARY_MODEL") or os.getenv("DEEPSEEK_MODEL") or "deepseek-v4-flash"
 STEP6_STRUCTURED_MAX_TOKENS = 16 * 1024
 
 
 def create_llm_client() -> DeepSeekClient | None:
-    if not DEEPSEEK_API_KEY:
+    api_key = os.getenv("SUMMARY_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or DEEPSEEK_API_KEY
+    if not api_key:
         return None
+    base_url = os.getenv("SUMMARY_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL") or DEEPSEEK_BASE_URL
+    model = os.getenv("SUMMARY_MODEL") or os.getenv("DEEPSEEK_MODEL") or DEEPSEEK_MODEL
     return DeepSeekClient(
-        api_key=DEEPSEEK_API_KEY,
-        model=DEEPSEEK_MODEL,
-        base_url=DEEPSEEK_BASE_URL,
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
     )
 
 
@@ -846,7 +850,7 @@ def replace_meta_line(md_text: str, label: str, value: str, add_slash: bool = Tr
 
 def format_date_str(date_str: str) -> str:
     s = str(date_str or "").strip()
-    m = RANGE_DATE_RE.match(s)
+    m = TOPIC_RANGE_RE.match(s)
     if m:
         a, b = m.group(1), m.group(2)
         return f"{a[:4]}-{a[4:6]}-{a[6:]} ~ {b[:4]}-{b[4:6]}-{b[6:]}"
@@ -855,10 +859,22 @@ def format_date_str(date_str: str) -> str:
     return date_str
 
 
+def _safe_basename(basename: str, *, max_bytes: int = 240) -> str:
+    encoded = basename.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return basename
+    import hashlib
+
+    digest = hashlib.sha1(encoded).hexdigest()[:10]
+    body_limit = max(max_bytes - len(digest) - 1, 16)
+    body = encoded[:body_limit].decode("utf-8", errors="ignore").rstrip("-") or "paper"
+    return f"{body}-{digest}"
+
+
 def prepare_paper_paths(docs_dir: str, date_str: str, title: str, arxiv_id: str) -> Tuple[str, str, str]:
     slug = slugify(title)
-    basename = f"{arxiv_id}-{slug}" if arxiv_id else slug
-    if RANGE_DATE_RE.match(date_str):
+    basename = _safe_basename(f"{arxiv_id}-{slug}" if arxiv_id else slug)
+    if TOPIC_RANGE_RE.match(date_str):
         target_dir = os.path.join(docs_dir, date_str)
         paper_id = f"{date_str}/{basename}"
     else:
@@ -872,7 +888,7 @@ def prepare_paper_paths(docs_dir: str, date_str: str, title: str, arxiv_id: str)
 
 
 def prepare_day_report_paths(docs_dir: str, date_str: str) -> Tuple[str, str]:
-    if RANGE_DATE_RE.match(date_str):
+    if TOPIC_RANGE_RE.match(date_str):
         day_dir = os.path.join(docs_dir, date_str)
     else:
         ym = date_str[:6]
@@ -1556,6 +1572,28 @@ def maybe_generate_paper_figures(
     return figures
 
 
+def _resolve_media_source_key(paper: Dict[str, Any]) -> str:
+    source_key = str(paper.get("source") or "").strip().lower()
+    paper_id = str(paper.get("id") or paper.get("paper_id") or "").strip().lower()
+    if source_key in {"arxiv", "biorxiv"}:
+        return source_key
+    if "arxiv" in source_key:
+        return "arxiv"
+    if "biorxiv" in source_key:
+        return "biorxiv"
+    if (
+        paper_id.startswith("openreview-")
+        or "openreview" in source_key
+        or any(tok in source_key for tok in ("icml", "neurips", "iclr"))
+    ):
+        return "openreview"
+    if source_key:
+        return slugify(source_key) or "conference"
+    if paper.get("conference") or paper.get("conference_key"):
+        return slugify(str(paper.get("conference") or paper.get("conference_key"))) or "conference"
+    return ""
+
+
 def maybe_generate_paper_media(
     paper: Dict[str, Any],
     *,
@@ -1563,13 +1601,17 @@ def maybe_generate_paper_media(
     paper_id: str,
     pdf_url: str,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    source_key = str(paper.get("source") or "").strip().lower()
-    if source_key not in {"arxiv", "biorxiv"}:
+    source_key = _resolve_media_source_key(paper)
+    if not source_key:
         return [], []
     if not str(pdf_url or "").strip():
         return [], []
 
-    asset_key = str(paper.get("id") or paper_id.replace("/", "-")).strip()
+    raw_asset_key = str(paper.get("id") or paper_id.replace("/", "-")).strip()
+    if source_key in {"arxiv", "biorxiv"}:
+        asset_key = _safe_basename(raw_asset_key, max_bytes=240)
+    else:
+        asset_key = _safe_basename(slugify(raw_asset_key) or "paper", max_bytes=240)
     try:
         return ensure_paper_media(
             pdf_url=pdf_url,
@@ -1688,6 +1730,21 @@ def build_markdown_content(
         lines.append(f"source: {yaml_escape_value(paper_source)}")
     if selection_source:
         lines.append(f"selection_source: {yaml_escape_value(selection_source)}")
+    for extra_key in (
+        "id",
+        "doi",
+        "canonical_id",
+        "publication_date",
+        "publication_date_precision",
+        "publication_date_source",
+        "publication_date_kind",
+        "official_pdf_url",
+        "official_link",
+        "conference_acceptance_status",
+    ):
+        extra_val = str(paper.get(extra_key) or "").strip()
+        if extra_val:
+            lines.append(f"{extra_key}: {yaml_escape_value(extra_val)}")
     if figure_assets:
         lines.append(f"figures_json: {yaml_escape_value(json.dumps(figure_assets, ensure_ascii=False))}")
     if table_assets:
@@ -1742,6 +1799,39 @@ def build_tags_list(section: str, llm_tags: List[str]) -> List[str]:
     return tags
 
 
+def _build_glance_from_llm_fields(paper: Dict[str, Any]) -> str:
+    """复用 Step 4 已生成的中文 TLDR 与四栏速览，避免重复调用 LLM。"""
+    tldr = str(paper.get("llm_tldr_cn") or paper.get("tldr_cn") or "").strip()
+    motivation = str(paper.get("llm_motivation_cn") or paper.get("motivation_cn") or "").strip()
+    method = str(paper.get("llm_method_cn") or paper.get("method_cn") or "").strip()
+    result = str(paper.get("llm_result_cn") or paper.get("result_cn") or "").strip()
+    conclusion = str(paper.get("llm_conclusion_cn") or paper.get("conclusion_cn") or "").strip()
+    fields = (tldr, motivation, method, result, conclusion)
+    if not all(fields):
+        return ""
+    if any(value in {"不相关", "not relevant"} for value in fields):
+        return ""
+    return (
+        f"**TLDR**：{tldr} \\\n"
+        f"**Motivation**：{motivation} \\\n"
+        f"**Method**：{method} \\\n"
+        f"**Result**：{result} \\\n"
+        f"**Conclusion**：{conclusion}"
+    )
+
+
+def _is_safe_custom_route(route: str) -> bool:
+    if not isinstance(route, str) or not route or ".." in route or "\\" in route:
+        return False
+    return bool(
+        re.fullmatch(
+            r"(?:\d{8}-\d{8}(?:-[A-Za-z0-9._-]+)?|\d{6}/\d{2}|conference/[a-z0-9-]+)"
+            r"/[A-Za-z0-9][A-Za-z0-9._-]{0,240}",
+            route,
+        )
+    )
+
+
 def ensure_reading_content(paper, section, md_path, txt_path, client, *, require_complete=False, force_glance=False):
     """日常与回溯共用的现代元数据页补齐：保留正文，逐阶段保存，只生成缺失内容。"""
     with open(md_path, encoding='utf-8') as handle:
@@ -1761,20 +1851,26 @@ def ensure_reading_content(paper, section, md_path, txt_path, client, *, require
         text, _ = upsert_front_matter_field(text, key, yaml_escape_value(str(value)))
 
     if not meta.get('title_zh') or '## 摘要' not in text:
-        title_zh, abstract_zh = translate_title_and_abstract_to_zh(
-            paper.get('title', ''), paper.get('abstract', ''), client=client)
-        if title_zh and not meta.get('title_zh'):
-            field('title_zh', title_zh)
-        if abstract_zh and '## 摘要' not in text:
-            position = text.find('## Abstract')
-            block = f'## 摘要\n{abstract_zh}\n\n'
-            text = text[:position] + block + text[position:] if position >= 0 else text.rstrip() + '\n\n' + block
-        persist()
+        pre_title_zh = str(paper.get('llm_title_zh') or paper.get('title_zh') or '').strip()
+        if pre_title_zh and not meta.get('title_zh'):
+            field('title_zh', pre_title_zh)
+            persist()
+        if not meta.get('title_zh') or '## 摘要' not in text:
+            title_zh, abstract_zh = translate_title_and_abstract_to_zh(
+                paper.get('title', ''), paper.get('abstract', ''), client=client)
+            if title_zh and not meta.get('title_zh'):
+                field('title_zh', title_zh)
+            if abstract_zh and '## 摘要' not in text:
+                position = text.find('## Abstract')
+                block = f'## 摘要\n{abstract_zh}\n\n'
+                text = text[:position] + block + text[position:] if position >= 0 else text.rstrip() + '\n\n' + block
+            persist()
 
     keys = ('tldr', 'motivation', 'method', 'result', 'conclusion')
     needs_evidence = paper.get('selection_source') == 'long-range' and not meta.get('reading_content_version')
     if force_glance or needs_evidence or any(not meta.get(key) for key in keys):
-        overview = generate_glance_overview(
+        prefilled_glance = "" if (force_glance or needs_evidence) else _build_glance_from_llm_fields(paper)
+        overview = prefilled_glance or generate_glance_overview(
             paper.get('title', ''), paper.get('abstract', ''), client=client,
             sidebar_context=paper.get('llm_tags', []) if needs_evidence else None)
         parsed = {}
@@ -1797,17 +1893,33 @@ def ensure_reading_content(paper, section, md_path, txt_path, client, *, require
     if missing and require_complete:
         raise RuntimeError('论文内容未生成完整：' + ', '.join(missing))
 
-    if section == 'deep' and not extract_section_tail(text, '论文详细总结（自动生成）'):
-        ensure_text_content(paper.get('pdf_url') or paper.get('link') or '', txt_path)
-        summary = generate_deep_summary(md_path, txt_path, client=client)
-        if not summary or '（完）' not in summary:
+    pdf_url = str(paper.get('pdf_url') or paper.get('link') or meta.get('pdf') or '').strip()
+    effective_section = section
+    if effective_section == 'deep' and not extract_section_tail(text, '论文详细总结（自动生成）'):
+        fulltext_ok = False
+        try:
+            ensure_text_content(pdf_url, txt_path)
+            fulltext_ok = True
+        except (PaperFulltextUnavailable, requests.RequestException, ValueError) as exc:
             if require_complete:
-                raise RuntimeError('论文精读总结未完整生成')
-        if summary:
-            upsert_auto_block(md_path, '论文详细总结（自动生成）', summary)
-            with open(md_path, encoding='utf-8') as handle:
-                text = handle.read()
-    field('reading_section', section)
+                raise
+            log(f"[WARN] 全文获取失败，降级速读（保留中文摘要与速览）：{os.path.basename(md_path)}: {exc}")
+            effective_section = 'quick'
+        if fulltext_ok:
+            summary = generate_deep_summary(md_path, txt_path, client=client)
+            if not summary or '（完）' not in summary:
+                if require_complete:
+                    raise RuntimeError('论文精读总结未完整生成')
+            if summary:
+                upsert_auto_block(md_path, '论文详细总结（自动生成）', summary)
+                with open(md_path, encoding='utf-8') as handle:
+                    text = handle.read()
+    elif pdf_url and not os.path.exists(txt_path):
+        try:
+            ensure_text_content(pdf_url, txt_path)
+        except Exception as exc:
+            log(f"[WARN] 速读全文补齐跳过：{os.path.basename(md_path)}: {exc}")
+    field('reading_section', effective_section)
     persist()
     paper['canonical_evidence'] = meta.get('evidence') or paper.get('canonical_evidence', '')
     return meta
@@ -1827,7 +1939,7 @@ def process_paper(
     arxiv_id = str(paper.get("id") or paper.get("paper_id") or "").strip()
     md_path, txt_path, paper_id = prepare_paper_paths(docs_dir, date_str, title, arxiv_id)
     if route is not None:
-        if not re.fullmatch(r'\d{8}-\d{8}/[A-Za-z0-9][A-Za-z0-9._-]{0,120}', route):
+        if not _is_safe_custom_route(route):
             raise ValueError('无效论文阅读路由')
         paper_id = route
         md_path = os.path.join(docs_dir, route + '.md')
@@ -2059,7 +2171,15 @@ def process_paper(
 
     # 新文件：生成完整内容
     pdf_url = str(paper.get("pdf_url") or paper.get("link") or "").strip()
-    ensure_text_content(pdf_url, txt_path)
+    fulltext_ok = False
+    if pdf_url:
+        try:
+            ensure_text_content(pdf_url, txt_path)
+            fulltext_ok = True
+        except (PaperFulltextUnavailable, requests.RequestException, ValueError) as exc:
+            if require_complete:
+                raise
+            log(f"[WARN] 全文获取失败，仍生成中文摘要与速览：{paper_id}: {exc}")
     figures, tables = maybe_generate_paper_media(
         paper,
         docs_dir=docs_dir,
@@ -2072,18 +2192,22 @@ def process_paper(
         paper["_table_assets"] = tables
 
     zh_title, zh_abstract = translate_title_and_abstract_to_zh(title, abstract_en, client=paper_llm_client)
+    if not zh_title:
+        zh_title = str(paper.get("llm_title_zh") or paper.get("title_zh") or "").strip()
     tags_list = build_tags_list(section, paper.get("llm_tags") or [])
-    glance = generate_glance_overview(title, abstract_en, client=paper_llm_client) or build_glance_fallback(paper)
+    prefilled_glance = "" if force_glance else _build_glance_from_llm_fields(paper)
+    glance = prefilled_glance or generate_glance_overview(title, abstract_en, client=paper_llm_client) or build_glance_fallback(paper)
     if glance:
         paper["_glance_overview"] = glance
-    content = build_markdown_content(paper, section, zh_title, zh_abstract, tags_list)
+    effective_section = section if (section != "deep" or fulltext_ok) else "quick"
+    content = build_markdown_content(paper, effective_section, zh_title, zh_abstract, tags_list)
 
     os.makedirs(os.path.dirname(md_path), exist_ok=True)
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(content)
 
     # 精读区：生成详细总结
-    if section == "deep":
+    if effective_section == "deep":
         summary = generate_deep_summary(md_path, txt_path, client=paper_llm_client)
         if summary:
             upsert_auto_block(md_path, "论文详细总结（自动生成）", summary)
@@ -2128,6 +2252,8 @@ def update_sidebar(
     paper_evidence_by_id: Dict[str, str],
     date_label: str | None = None,
     replace_existing: bool = False,
+    topic_meta: Dict[str, Any] | None = None,
+    paper_meta_by_id: Dict[str, Dict[str, Any]] | None = None,
 ) -> None:
     def build_sidebar_item_payload(
         paper_id: str,
@@ -2151,14 +2277,29 @@ def update_sidebar(
                 continue
             clean_tags.append({"kind": safe_kind, "label": safe_label})
 
+        extra_meta = (paper_meta_by_id or {}).get(str(paper_id).strip()) or {}
         arxiv_id = str(paper_id or "").strip().split("/")[-1]
-        paper_link = f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else route_href
-        payload = {
+        paper_link = (
+            str(extra_meta.get("link") or "").strip()
+            or (f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else route_href)
+        )
+        payload: Dict[str, Any] = {
             "title": (title or "").strip() or paper_id,
             "link": paper_link,
             "score": score_text,
             "tags": clean_tags,
         }
+        for meta_key in (
+            "published",
+            "publication_date",
+            "publication_date_precision",
+            "publication_date_source",
+            "publication_date_kind",
+            "conference_year",
+        ):
+            val = str(extra_meta.get(meta_key) or "").strip()
+            if val:
+                payload[meta_key] = val
         safe_evidence = str(evidence or "").strip()
         if safe_evidence:
             payload["evidence"] = safe_evidence
@@ -2167,7 +2308,11 @@ def update_sidebar(
     effective_label = (date_label or "").strip() or format_date_str(date_str)
     # 用隐藏 marker 做稳定定位，避免“展示标题”变更导致无法覆盖更新
     marker = f"<!--dpr-date:{date_str}-->"
-    day_heading = f"  * {effective_label} {marker}\n"
+    topic_comment = ""
+    if isinstance(topic_meta, dict) and topic_meta:
+        safe_topic_json = json.dumps(topic_meta, ensure_ascii=False, separators=(",", ":")).replace("-->", "--&gt;")
+        topic_comment = f" <!--dpr-topic:{safe_topic_json}-->"
+    day_heading = f"  * {effective_label} {marker}{topic_comment}\n"
     legacy_day_heading = f"  * {format_date_str(date_str)}\n"
 
     lines: List[str] = []
@@ -2381,9 +2526,9 @@ def list_day_report_links(docs_dir: str) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     if not os.path.isdir(docs_dir):
         return out
-    # 1) 区间目录：YYYYMMDD-YYYYMMDD
+    # 1) 区间目录：YYYYMMDD-YYYYMMDD 或带专题后缀的区间目录
     range_dirs = sorted(
-        [d for d in os.listdir(docs_dir) if RANGE_DATE_RE.fullmatch(d)],
+        [d for d in os.listdir(docs_dir) if TOPIC_RANGE_RE.fullmatch(d)],
         reverse=True,
     )
     for rd in range_dirs:
@@ -2850,7 +2995,7 @@ def write_day_meta_index_json(
     """
     在对应的 docs 日期目录下生成索引 JSON 文件，供前端一键下载。
     """
-    if RANGE_DATE_RE.match(date_str):
+    if TOPIC_RANGE_RE.match(date_str):
         target_dir = os.path.join(docs_dir, date_str)
     else:
         ym = date_str[:6]

@@ -3,13 +3,7 @@
 
 window.DPRWorkflowRunner = (function () {
   const WORKFLOWS = [
-    { key: 'topic-research', id: 'topic-research.yml', name: '专题研究', desc: '固定评审预算与最终结果名额，可继续生成内容。' },
-    {
-      key: 'starter-pack',
-      id: 'starter-pack.yml',
-      name: '生成/续跑研究方向入门包',
-      desc: '近365天 arXiv + 近24个月会议，按预算生成并复用进度。',
-    },
+    { key: 'topic-research', id: 'topic-research.yml', name: '专题研究', desc: '90天/365天 arXiv 及大礼包（复用标准召回→重排→精排→并发文档生成流水线）。' },
     {
       key: 'daily-now',
       id: 'daily-paper-reader.yml',
@@ -1021,8 +1015,8 @@ window.DPRWorkflowRunner = (function () {
       return false;
     }
     open();
-    if ((workflowKey === 'starter-pack' || workflowKey === 'topic-research') && isLocalDebugPage()) {
-      setStatus('入门包仅通过 GitHub Actions 执行，请在你的 GitHub Pages 站点操作；不会在本地执行。', '#c00');
+    if (workflowKey === 'topic-research' && isLocalDebugPage()) {
+      setStatus('专题研究仅通过 GitHub Actions 执行，请在你的 GitHub Pages 站点操作；不会在本地执行。', '#c00');
       return false;
     }
     return dispatchAndMonitor(wf, extraInputs);
@@ -1065,46 +1059,37 @@ window.DPRWorkflowRunner = (function () {
     };
   };
   const buildTopicResearchRequest = (options = {}) => {
-    if (options.action === 'continue-content') {
-      if (!/^\d{8}-[a-f0-9]{12}$/.test(String(options.run_id || ''))) throw new Error('无效的专题任务标识。');
-      return { key: 'topic-research', inputs: { action: 'continue-content', run_id: options.run_id, content_batch: '10' } };
-    }
     if (!['90', '365', 'starter'].includes(String(options.mode))) throw new Error('请选择支持的专题模式。');
     const profile = sanitizeResearchProfile(options.profile);
-    const validated = buildStarterPackRequest({ profile_tag: profile.tag, as_of: options.as_of, conferences: options.conferences });
-    if (!profile.keywords.some(item => item.enabled && (item.keyword || item.query)) && !profile.intent_queries.some(item => item.enabled && item.query)) throw new Error('所选词条尚无检索词，请先保存有效词条。');
-    return { key: 'topic-research', inputs: {
-      profile_tag: profile.tag, mode: String(options.mode), as_of: validated.inputs.as_of,
-      conferences: validated.inputs.conferences, profile_snapshot: JSON.stringify(profile),
-      action: 'run', run_id: '', content_batch: '10',
-    } };
-  };
-  const continueTopicResearch = async runId => {
-    const request = buildTopicResearchRequest({ action: 'continue-content', run_id: runId });
-    return runWorkflowByKey(request.key, request.inputs);
-  };
-  const buildStarterPackRequest = (options = {}) => {
-    const tag = String(options.profile_tag || '').trim();
-    if (!tag || tag.includes(',')) throw new Error('入门包需要恰好选择一个词条。');
+    const tag = String(profile.tag || '').trim();
+    if (!tag || tag.includes(',')) throw new Error('专题研究需要恰好选择一个词条。');
     const asOf = String(options.as_of || '').trim();
     const stamp = Date.parse(asOf + 'T00:00:00Z');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf) || !Number.isFinite(stamp) || new Date(stamp).toISOString().slice(0, 10) !== asOf) {
       throw new Error('请输入有效的 UTC 截止日期（不含当天）。');
     }
-    const integer = (value, fallback, min, max, label) => {
-      const num = value === undefined ? fallback : Number(value);
-      if (value === null || typeof value === 'boolean' || (typeof value === 'string' && !value.trim()) || !Number.isInteger(num) || num < min || num > max) throw new Error(`${label}必须是 ${min}–${max} 的整数。`);
-      return String(num);
-    };
-    const raw = Array.isArray(options.conferences) ? options.conferences : String(options.conferences || '').split(',');
-    let conferences = [...new Set(raw.map(value => String(value).trim().toLowerCase()).filter(Boolean))];
+    const rawConfs = Array.isArray(options.conferences) ? options.conferences : String(options.conferences || '').split(',');
+    let conferences = [...new Set(rawConfs.map(value => String(value).trim().toLowerCase()).filter(Boolean))];
     if (!conferences.length) conferences = STARTER_PACK_CONFERENCES.slice();
     if (conferences.some(value => !STARTER_PACK_CONFERENCES.includes(value))) throw new Error('会议范围包含不支持的会议。');
-    return { key: 'starter-pack', inputs: {
-      profile_tag: tag, as_of: asOf, conferences: conferences.join(','),
-      max_new_reviews: integer(options.max_new_reviews, 1000, 0, 5000, '新增评审上限'),
-      content_limit: integer(options.content_limit, 12, 1, 20, '内容生成上限'),
-    } };
+    if (!profile.keywords.some(item => item.enabled && (item.keyword || item.query)) && !profile.intent_queries.some(item => item.enabled && item.query)) {
+      throw new Error('所选词条尚无检索词，请先保存有效词条。');
+    }
+    const rawMax = options.max_papers === undefined ? 50 : Number(options.max_papers);
+    if (options.max_papers === null || typeof options.max_papers === 'boolean' || !Number.isInteger(rawMax) || rawMax < 1 || rawMax > 100) {
+      throw new Error('精选上限必须是 1–100 的整数。');
+    }
+    return {
+      key: 'topic-research',
+      inputs: {
+        profile_tag: tag,
+        mode: String(options.mode),
+        as_of: asOf,
+        conferences: conferences.join(','),
+        profile_snapshot: JSON.stringify(profile),
+        max_papers: String(rawMax),
+      },
+    };
   };
 
   const buildQuickFetchRequest = (days, extra) => {
@@ -1224,11 +1209,9 @@ window.DPRWorkflowRunner = (function () {
     runConferenceRetrieval(conference, years);
 
   return {
-    __test: { buildQuickFetchRequest, buildStarterPackRequest, buildTopicResearchRequest, sanitizeResearchProfile },
+    __test: { buildQuickFetchRequest, buildTopicResearchRequest, sanitizeResearchProfile },
     buildTopicResearchRequest,
     sanitizeResearchProfile,
-    continueTopicResearch,
-    buildStarterPackRequest,
     isStarterPackSupported: () => !isLocalDebugPage(),
     open,
     runWorkflowByKey,

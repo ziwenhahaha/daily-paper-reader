@@ -103,24 +103,3 @@ def test_missing_llm_content_fails_instead_of_publishing_placeholder(
         )
     assert "用户笔记" in path.read_text()
     assert "reading_section" not in path.read_text()
-
-
-def test_reading_stage_cache_reuses_same_inputs_and_invalidates_changed_content(
-    tmp_path,
-):
-    from types import SimpleNamespace
-    from long_range_native import cache_reading_generators
-
-    translate = Mock(return_value=("中文标题", "中文摘要"))
-    generator = SimpleNamespace(
-        translate_title_and_abstract_to_zh=translate,
-        generate_glance_overview=Mock(),
-        generate_deep_summary=Mock(),
-    )
-    cache_reading_generators(generator, tmp_path)
-    client = SimpleNamespace(model="test-model", base_url="https://example.invalid")
-    for _ in range(2):
-        generator.translate_title_and_abstract_to_zh("title", "abstract", client=client)
-    assert translate.call_count == 1
-    generator.translate_title_and_abstract_to_zh("title", "new abstract", client=client)
-    assert translate.call_count == 2

@@ -263,45 +263,19 @@ Zotero       ←── 浏览器 Connector 抓取 citation meta
 - 会议公布时间以 `publication_date` 及其 `publication_date_precision/source/kind` 为真源；只有官方明确日期才标day/month。`published`可能是OpenReview投稿日期或年份占位，`updated/created_at`可能是抓取时间，不能直接冒充会议公布日。已核实的整届论文集日期登记在 `app/conference-release-dates.json`，未核实者按year/unknown精度标注。
 - 多年份混合结果必须保留单篇所属年份；无依据不能猜首年或最新年。滚动时间窗遇到不确定边界应标记uncertain，而不是悄悄当作精确命中。arXiv按首次提交日期，不随版本更新置顶。
 
-### 研究方向入门包规则
+### 研究方向入门包与专题研究规则（统一标准流水线）
 
-- 独立入口 `starter-pack.yml` / `src/starter_pack.py`，固定UTC排他截止日；同一方向、会议集合和截止日续跑保持运行标识稳定。窗口为365天arXiv及日历24个月会议，不等于机械取两个年份。不得改用户日常订阅配置来完成手动礼包测试。
-- 来源/年份/查询/通道/时间片独立缓存；云端模型，成功检查点可恢复，失败不冒充done。90天/365天和大礼包的新链路融合最多1000、最终评审最多300、按评分降序最多保留100篇，不凑数；取消固定12/20篇限制。模型批次使用短编号并严格回映原ID，避免版本号被模型改写；结构校验连续失败可二分缩小批次，但单篇两次失败必须停止且取消未启动任务，不跳过论文、不放宽校验、不无限重试。
-- DOI/arXiv强证据去重，规范化长标题加作者交集弱匹配；冲突与证据不足只提示可能重复。保留版本、日期和原路由，不删除用户历史阅读数据。OpenReview Public仅表示公开投稿，需官方论文集核实录用，不能直接当顶会录用；官方同版本PDF可替代受限OpenReview入口，不绕权限、不偷换预印本版本。
-- 精选资格必须落实到具体版本：不能凭arXiv版本在窗口内，就为不确定会议版生成“合格”阅读页。回退版本时ID、来源、摘要、日期、分类和PDF一起切换，保留作品canonical_id与所有原版本；复用旧页必须同版，会议还须同会届。路由索引保留同作品全部已有版本，避免v1挡住已有v2；不符合条件的旧页原样保留，不覆盖其PDF。IEEE S&P CSDL仅在精确来源标签与同年份官方两段论文路径同时匹配时认可正式来源。
-- 导读只引用真实候选，概述/子方向/阅读顺序都校验论文ID；缺少摘要、日期边界不确定或录用未确认者不进入精选。输出仍是docsify Markdown和原生论文页，复用全文、速览、精读与阅读状态。导读入口置于专题回溯内，不计入论文未读数。缓存键基于真正送入模型的内容，而非易变化的导航元数据，完整重跑不得重复付费生成。
-- 完整候选下载使用无损Gzip JSON，保留版本与检索证据，避免宽领域结果突破GitHub单文件限制。Actions默认token推送后必须显式请求Pages构建并核验本次提交；不以绿色推送步骤冒充线上已更新。只支持已配置的分支型默认分支根目录站点，不擅自改变Pages配置；隐藏检查点artifact需显式允许隐藏文件且路径保持最小范围。
-- 同一入门包重跑未完成或失败时，不得用空进度覆盖已有完整导读与下载。保留旧快照，单独写本轮进度并明确状态/旧数量；提示必须幂等，最终完整发布后清除旧提示。缓存淘汰不等于用户已发布成果失效。
-
-### 新版专题研究入口、预算与导出
-
-- 专题研究三种模式卡片在桌面和移动端必须同宽同高；大礼包可保留礼物图标与克制高亮，但不得为它单独加高。三个管理页签共用的「新增研究方向」按钮放在词条卡片外，使用低调的描边样式，不得恢复为高饱和实心主按钮。
-- 设置面板保留日常管理/会议论文并新增专题研究；90天/365天和大礼包仅在专题入口，日常底部提供独立引导，不与删除按钮混放。日常、10天、30天的数量与工作方式不变。专题词条独立单选，首次只继承日常恰好一个选择，不改变日常/会议选中状态或订阅配置。
-- 预览复用原始英文FTS条件，约束组内OR/组间AND；1500为可配置软提醒，不是精准度。使用HEAD精确计数与不重叠时间片早停，不用被API1000行截断的数组长度充当总量；超时未知不当0。大礼包仅arxiv计数完成而会议未计时必须partial，不谎称全量。范围过宽最多追问一次，细化生成真实英文约束并保存任务快照；禁止只改UI说明而仍执行原查询。
-- 关键词项的keyword字段用于BM25与原词预览，query字段是向量语义改写，不能互换优先级；快照须同时保留两者。细化规划应带上已有语义意图和限定，只收窄不丢条件；不改变日常管道原语义。独立intent_queries仍按原检索计划执行，不能把原词预览数当完整混合召回数。
-- 统一编排 `src/topic_research.py` / `topic-research.yml`，模式90/365/starter；后端固定最终100上限和评审预算，不能通过旧90/365或starter入口绕过。最终名单资格过滤、版本去重、score降序；内容预算默认每轮10，0只复用缓存并提供基础页/导出，不额外调用导读模型。
-- 固定名单、需求与范围持久化到任务 `task-state.json`；继续内容仅恢复名单，不重新召回/重排/评分，缓存淘汰也不能扩大付费工作。已发布guide以一致cache key校验恢复，不因补TLDR或缓存淘汰重复付费。需要改变研究范围时创建并确认新的需求/日期任务，不自动无限增加评审。
-- 每个任务在Sidebar专题回溯下提供总览/导读/导出与原生论文列表；新建topic页的research_run_id标记用于避免在legacy区间重复展示，旧无标记用户页不迁移隐藏。计数按route去重、任务内独立统计，日期保留精度，阅读状态与笔记不改。
-- 复制和Markdown下载使用已保存完整最终名单（最多100）原标题与外部原文链接，不依赖当前DOM筛选、分页或已读状态，不重新查库/调模型。优先同版已核验官方链接/ arxiv摘要页/ DOI，最后公开PDF；不得用本站阅读route，作者公开GitHub Pages链接不应一概屏蔽，无法确认则明确缺失。
-- 大礼包说明研究问题、方法子方向、数据评测、进展局限、阅读路线及已确认资源；基于全部最终名单组织导读，代表阅读路线不是结果数量限制，资料不足不编造共识/资源或承诺创新性。
-
-### arXiv 长周期专题回溯
-
-- 专题回溯不显示日历或日历上下换位按钮；标签筛选覆盖所有回溯区间，各区间保留原有可折叠论文分组，避免移除日历后旧区间无法访问。日报日历不变。
-
-- 根据用户2026-09-11的新选择，Sidebar将超过30天的区间结果归入独立“专题回溯”栏目；普通日报及10/30天结果保留在“日报”。新栏目必须复用既有日历/标签、论文行样式、未读与1/2/3/4标记，以及同一docsify论文阅读页，不另建HTML阅读器或新窗口跳转。分栏仅改变前端归类，原route、全文、总结、阅读状态保持不变，历史数据无需重跑workflow。历史JSON仍通过 `src/long_range_native.py` 投影为原有Markdown、累计状态与Sidebar；补齐内容可以按用户要求调用日常生成器，但不能为分栏重跑召回/评分。
-- “页面可见”不是阅读链路完成：每篇可读论文还必须生成同route的 `.txt` 全文（现有约定：优先Jina将PDF转为Markdown内容，保存为`.txt`；失败则PyMuPDF抽取）。未生成精读长文不等于允许跳过全文。验收必须检查真实全文包含正文/证明/参考文献，并检查聊天请求实际携带全文；缺全文时前端必须说明仅页面内容，不得称为完整论文。旧结果用 `python src/long_range_native.py --backfill-fulltext` 补齐，不重新召回或评分。撤稿/404/代理错误页面不得存为全文，官方不可下载版本需明确记录原因，不能偷偷换版本。
-- 回溯只允许改变检索与评审阶段，不能绕过日常的阅读内容生成：复用Step 6 `process_paper`，所有可见论文生成中文标题/摘要、TLDR与四项速览；核心论文走精读全文总结，补充和待复核走速读。Sidebar短说明沿用日常简短中文关联说明的契约，不直接使用评分过程reason；reason保留在正文。原生YAML页补齐必须按元数据字段识别完成状态，保留route/阅读状态与用户笔记，缺失内容按阶段缓存，失败不得报告完成。旧结果用 `--backfill-content` 补内容，不重跑检索和评分；索引重建仍必须保持离线。
-- GitHub Pages 的检索入口由 GitHub Actions 执行，embedding/reranker 必须走云端；不要在新链路直接导入或下载本地SentenceTransformer/Qwen。Actions设置 `DPR_MODELS_REMOTE_ONLY=1`，云端失败必须报错而不是静默回退。发布前必须在不含torch/transformers/sentence-transformers的Python 3.11环境验证，并实际跑GitHub工作流；本机预装依赖的成功不能代表CI成功。
-- 公告和News中的回溯入口统一使用数字文案“90天/365天”，不要替换成“九十天/一年”；数字应放在公告标题开头，便于识别。
-- `src/main.py --fetch-days` 限制为1–365；90/365由 `long_range_review` 转入新版专题预算引擎，最终100篇，不再全候选无界付费评审。其他旧自定义窗口保持原逻辑；十天/三十天保持原流程。
-- 90/365仅检索arXiv；新版关键词每查询Top100、向量每30天每查询Top50，超时可分片恢复但必须如实说明有界候选，不宣称全量。大礼包额外查会议每查询每届每路Top50。其他旧自定义窗口保留已有分片规则；不能硬编码某个专题的实验余弦阈值。
-- 核心区≥8分且限定条件匹配、引文可在标题摘要中核验；6–7分为补充，高分但证据或限定条件不通过进入待复核。模型评分不是人工金标准。
-- ATSP写法需补查Asymmetric TSP、salesman/salesperson及英美拼写；对明确标为ATSP的专题，普通TSP即使被模型误打高分也应进入待复核。不得把RL/NCO大专题里的一个ATSP子查询扩大成整个专题的硬过滤条件。
-- DeepSeek批量回溯显式关闭thinking，JSON模式的提示必须包含完整输出字段。缓存键包含模型/端点、专题、论文ID/标题/摘要、提示及schema版本；失败重跑不能把缺失评分当完成。
-- 进度保存在 `.local-runs/long-range-cache`，GitHub Actions失败后仍尽量保存缓存；缓存可能被淘汰，不承诺永久保留或跨日期不重新召回。
-- 评审数据输出到运行态 `docs/long-range/<区间与查询指纹>/`，每页50条JSON；可见结果同时投影到 `docs/<起止日期>/` 原有论文Markdown与 `_daily_state.json`、`papers.meta.json`。核心/补充/待复核作为论文标签保留，未生成精读正文的结果不得冒充精读；排除项不进入Sidebar。禁止把测试报告或个性化结果提交上游。
-- 前端必须验证90天/365天选项、费用确认、参数传递、分页/重试/移动端；不向访客或客户端暴露服务角色密钥。
+- 统一入口为 `.github/workflows/topic-research.yml` / `src/topic_research.py`（模式 `90` / `365` / `starter`），`src/main.py --fetch-days 31..365` 亦复用同一编排；不得再维护独立的 `starter-pack.yml` 或平行的单一大字符串重排/四桶评审引擎。
+- **复用标准 Step 2→3→4→5→6 流水线**：
+  - Step 2：宽窗多源召回（`src/starter_pack_retrieval.py`，31–365 天 arXiv + 大礼包额外滚动日历 24 个月顶会，支持 `constraint_groups` 与 `.local-runs/topic-research-cache` 检查点）→ 官方论文集录用核验（`src/starter_pack_publications.py`，OpenReview Public 不可直接当顶会录用，IEEE S&P CSDL 须同年份官方两段路径）→ 跨版本去重（`src/paper_dedupe.py`，DOI/arXiv 强证据 + 长标题加作者交集弱匹配）→ 精选版本资格投影 → 桥接为标准 Step 2.3 RRF JSON（保留逐条 `keyword` / `intent_query` 通道）。
+  - Step 3：直接调用标准 `src/3.rank_papers.py` 做逐条 query 云端 Qwen3 重排（默认候选池上限 300，兼容 `RERANK_PROFILE` / `PUBLIC_RERANK_*` / `SILICONFLOW_*`）。
+  - Step 4：用隔离的临时 `scoped_config.yaml`（绝不修改用户 `config.yaml`）直接调用标准 `src/4.llm_refine_papers.py` 做 DeepSeek 0–10 打分，一次性产出 `score`、`matched_query_tag`、`evidence_cn/en`、`title_zh`、`tldr_cn/en` 与四栏中文速览。
+  - Step 5：复用标准 `src/5.select_papers.py:build_scored_papers` 与标准分数阈值——`score >= 8.0` 进精读区、`6.0 <= score < 8.0` 进速读区、`< 6.0` 不入选；按分数/重排分/公布日期降序最多精选 50 篇（可配 1–100），不凑数，不排除日常已见论文、不改写 `carryover.json`。
+  - Step 6：使用 `ThreadPoolExecutor(4)` 并发调用标准 `src/6.generate_docs.py:process_paper()`（遵循 `SUMMARY_API_KEY` / `SUMMARY_BASE_URL` / `SUMMARY_MODEL`），为全部入选论文**一次生成完整内容**（中文标题/摘要、复用 Step 4 四栏速览、PDF `.txt` 全文、`maybe_generate_paper_media()` 图表与表格提取、精读区长总结），单篇 PDF 不可达（403/404/520 等）隔离降级为速读并保留中文摘要与速览，不得中断整批或发布英文空壳页。同版本已有页面自动复用原 route，保留用户笔记与阅读状态。
+- **单轨存储与侧边栏**：专题结果输出至标准区间目录 `docs/<YYYYMMDD-YYYYMMDD>-<mode>-<tag_slug>[-hash]/`（含 `README.md` 方向导读/总览、`papers.md` / `papers.json` 安全外部链接导出、`_daily_state.json`、`papers.meta.json`），通过标准 `<!--dpr-date:<token>--> <!--dpr-topic:{...}-->` 写入 `docs/_sidebar.md` 并由 `app/dpr-sidebar.js` 自动归入「专题回溯」；不再写入 `docs/starter-pack/index.json`、`task-state.json` 或 `reading.json`。前端仍保留对旧 Fork 历史 `docs/starter-pack/index.json` 的只读兼容。
+- **前端入口与范围预览**：专题研究三种模式卡片在桌面和移动端同宽同高；三个管理页签共用的「新增研究方向」按钮放在词条卡片外，使用低调描边样式。设置面板专题词条独立单选，首次仅继承日常恰好一个选择，不改日常/会议订阅配置。预览复用原始英文 FTS 条件（`HEAD` 精确计数，阈值 1500 可配置，范围过宽最多追问一次，细化生成真实 `constraint_groups`）。
+- **云端约束与 Pages 验证**：`topic-research.yml` 与 `daily-paper-reader.yml` 一致，启用 `DPR_MODELS_REMOTE_ONLY=1`、`DPR_EMBED_ALLOW_LOCAL_FALLBACK=0`、`uv` 依赖缓存、`scripts/check_cloud_models.py --require-lightweight`，透传全部 `SUMMARY_*` / `SILICONFLOW_*` 环境变量；Fork 推送后通过 `scripts/request_pages_build.py` 核验 Pages 构建，主仓库不写个性化运行产物。
+- **专题回溯侧栏约定**：专题回溯不显示日历或日历上下换位按钮；标签筛选覆盖所有回溯区间，各区间保留可折叠论文分组及导读/下载入口，复用既有论文行样式、简短中文 `evidence`、未读红点与 `1/2/3/4` 标记。
 
 ### 前端反馈入口规则
 

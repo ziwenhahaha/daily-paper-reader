@@ -69,11 +69,11 @@ window.DPRTopicResearch = (function () {
       <div class="dpr-topic-notes">
         <p class="dpr-task-hint">大礼包包括调研问题、方法与子方向、数据与评测、近期进展、局限与待研究问题、阅读路线及资源。资料不足会明确标注，不编造结论。</p>
         <p class="dpr-task-hint">会议范围沿用“会议论文”中勾选的会议名称；未选择则全部支持会议，年份勾选不限制近24个月窗口。</p>
-        <p class="dpr-task-hint">每任务最多评审300篇，最终结果最多100篇；内容每批生成10篇。继续生成仅补已有结果内容，不重新检索或扩大评审预算。仅在 GitHub Pages 通过 Actions 执行。</p>
+        <p class="dpr-task-hint">复用标准召回→重排→精排→并发文档与图表生成流水线：≥8分精读、6–8分速读，默认精选最多50篇一次全部生成完成，无需分批续跑。仅在 GitHub Pages 通过 Actions 执行。</p>
       </div>
       <button id="dpr-topic-start" class="chat-quick-run-run-btn dpr-task-start-btn" type="button">预览并开始专题研究</button>
       <div id="dpr-topic-status" class="chat-quick-run-msg" role="status" aria-live="polite"></div>
-      <div id="dpr-topic-results-entry" hidden><a id="dpr-topic-results-link" class="arxiv-tool-btn" href="#/starter-pack/README">查看研究结果</a><p class="dpr-task-hint">这里是研究结果总览，任务完成后刷新查看；已派发不代表已完成。</p></div>
+      <div id="dpr-topic-results-entry" hidden><p class="dpr-task-hint">任务完成后刷新页面，即可在左侧 Sidebar「专题回溯」查看方向导读、完整清单与全部论文；已派发不代表已完成。</p></div>
       <div id="dpr-topic-refine" class="dpr-topic-refinement" hidden>
         <div class="chat-quick-run-title">候选范围较大，要缩小本次研究范围吗？</div>
         <p class="dpr-task-hint">本任务只询问这一次。也可以继续整个方向，评审预算仍为300篇。</p>
@@ -107,11 +107,11 @@ window.DPRTopicResearch = (function () {
     const dispatch = async () => {
       const runner = window.DPRWorkflowRunner;
       const request = runner.buildTopicResearchRequest({ profile: draft.profile, mode: draft.mode, as_of: draft.asOf, conferences: draft.conferences });
-      if (!window.confirm(`本次 ${draft.mode === 'starter' ? '研究方向大礼包' : draft.mode + '天 arXiv'}：最多评审300篇、保留100篇、先生成10篇内容。模型调用按实际用量计费；不是全量相关性证明。确认触发 GitHub Actions？`)) { status('已取消，未触发任务。'); return false; }
+      if (!window.confirm(`本次 ${draft.mode === 'starter' ? '研究方向大礼包' : draft.mode + '天 arXiv'}：复用标准流水线，默认精选最多50篇（≥8分精读、6–8分速读）并一次生成全部中文翻译、速览、图表与精读总结。模型调用按实际用量计费。确认触发 GitHub Actions？`)) { status('已取消，未触发任务。'); return false; }
       const success = await runner.runWorkflowByKey(request.key, request.inputs);
       if (!dispatchAcknowledged(success)) throw new Error('未确认工作流已提交，请检查权限或配置。');
       el('dpr-topic-results-entry').hidden = false;
-      status('已发起专题研究。完成后从 Sidebar「专题回溯」进入；内容未完成可按10篇继续生成。');
+      status('已发起专题研究。完成后刷新页面，从左侧 Sidebar「专题回溯」进入查看。');
       return true;
     };
     el('dpr-topic-start').addEventListener('click', async () => {
@@ -183,10 +183,12 @@ window.DPRTopicResearch = (function () {
     el('dpr-topic-refine-apply').addEventListener('click', () => finishRefinement(true));
     el('dpr-topic-refine-skip').addEventListener('click', () => finishRefinement(false));
     el('dpr-topic-refine-cancel').addEventListener('click', () => { if (busy) return; draft = null; el('dpr-topic-refine').hidden = true; status('已取消本次任务。'); });
-    el('dpr-topic-results-link').addEventListener('click', () => {
-      const close = document.getElementById('arxiv-search-close-btn');
-      if (close) close.click();
-    });
+    if (el('dpr-topic-results-link')) {
+      el('dpr-topic-results-link').addEventListener('click', () => {
+        const close = document.getElementById('arxiv-search-close-btn');
+        if (close) close.click();
+      });
+    }
   };
-  return { render, mount, continueContent: runId => window.DPRWorkflowRunner.continueTopicResearch(runId), __test: { previewLabel, previewThreshold, dispatchAcknowledged, refineProfile, englishTerms, keywordSuggestions, focusKeyword } };
+  return { render, mount, __test: { previewLabel, previewThreshold, dispatchAcknowledged, refineProfile, englishTerms, keywordSuggestions, focusKeyword } };
 })();

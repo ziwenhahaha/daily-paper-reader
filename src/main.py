@@ -586,11 +586,36 @@ def main() -> None:
     if args.fetch_days is not None and args.fetch_days > 30:
         if args.skip_fetch is False:
             parser.error('31–365天专题回溯只读取Supabase，不支持 --no-skip-fetch')
-        from long_range_review import run_review
-        print('[INFO] 启用 arXiv 专题研究：90/365天使用固定候选和评审预算，最终最多100篇；内容独立续跑。', flush=True)
-        if args.run_enrich and args.fetch_days not in (90, 365):
-            run_step('Step 0 - enrich config', [python, os.path.join(SRC_DIR, '0.enrich_config_queries.py')])
-        run_review(_load_full_config(), args.fetch_days, ROOT_DIR, run_date_token)
+        from subscription_plan import build_pipeline_inputs
+        from topic_research import run_research
+
+        full_config = _load_full_config()
+        plan_inputs = build_pipeline_inputs(full_config)
+        active_profiles = plan_inputs.get("profiles") or []
+        if not active_profiles:
+            raise RuntimeError("31–365天专题回溯需要至少一个已启用的词条")
+        end_exclusive = (
+            datetime.strptime(run_date_token[-8:], "%Y%m%d").date() + timedelta(days=1)
+        ).isoformat()
+        mode = str(args.fetch_days) if args.fetch_days in (90, 365) else "365"
+        publish = os.getenv("GITHUB_REPOSITORY", "").strip().lower() not in (
+            "",
+            "ziwenhahaha/daily-paper-reader",
+        )
+        print(
+            f"[INFO] 启用统一标准专题回溯流水线（Step 2→3→4→5→6）：days={args.fetch_days}, profiles={len(active_profiles)}",
+            flush=True,
+        )
+        for prof in active_profiles:
+            run_research(
+                full_config,
+                prof["tag"],
+                mode,
+                end_exclusive,
+                ROOT_DIR,
+                arxiv_days=args.fetch_days,
+                publish=publish,
+            )
         return
     fetch_mode = (args.fetch_mode or "auto").strip().lower()
     if fetch_mode == "skims":

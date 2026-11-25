@@ -64,10 +64,9 @@ class PagesBuildTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             pages.request_build(self.api([]), "owner/repo", "main", "a" * 40, timeout=0)
 
-    def test_workflow_explicit_pages_and_narrow_hidden_artifact(self):
-        text = (ROOT / ".github/workflows/starter-pack.yml").read_text()
+    def test_workflow_explicit_pages_verification(self):
+        text = (ROOT / ".github/workflows/topic-research.yml").read_text()
         self.assertIn("pages: write", text)
-        self.assertIn("include-hidden-files: true", text)
         self.assertIn("scripts/request_pages_build.py", text)
         self.assertLess(
             text.index("git push origin"), text.index("scripts/request_pages_build.py")

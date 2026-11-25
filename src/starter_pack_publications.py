@@ -103,7 +103,7 @@ def _load_index(conference, year, root):
         return []
     cache = (
         Path(root)
-        / ".local-runs/starter-pack-cache/publications"
+        / ".local-runs/topic-research-cache/publications"
         / f"{conference}-{year}.json"
     )
     if cache.exists():
@@ -168,7 +168,7 @@ def _pdf(url, root=None):
     if root is not None:
         cache = (
             Path(root)
-            / ".local-runs/starter-pack-cache/publications"
+            / ".local-runs/topic-research-cache/publications"
             / ("pdf-" + hashlib.sha256(url.encode()).hexdigest() + ".json")
         )
         try:
