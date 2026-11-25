@@ -1322,7 +1322,7 @@ def extract_sidebar_tags(paper: Dict[str, Any], max_tags: int = 6) -> List[Tuple
         label = (label or "").strip()
         if not label:
             continue
-        dedup_key = f"{kind}:{label}"
+        dedup_key = f"{kind}:{label}".lower()
         if dedup_key in seen_labels:
             continue
         seen_labels.add(dedup_key)

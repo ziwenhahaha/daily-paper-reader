@@ -83,15 +83,27 @@
     }
     return '<span class="dpr-sidebar-paper-stars" data-score="' + safeAttr(s.toFixed(1)) + '">' + stars + '</span>';
   }
+  function dedupePaperTags(tags) {
+    if (!Array.isArray(tags) || !tags.length) return [];
+    var out = [];
+    var seenLower = {};
+    tags.forEach(function (t) {
+      if (!t || typeof t !== 'object') return;
+      var label = String(t.label || '').trim();
+      if (!label) return;
+      var lower = label.toLowerCase();
+      if (seenLower[lower]) return;
+      seenLower[lower] = true;
+      out.push({ kind: String(t.kind || 'query'), label: label });
+    });
+    return out;
+  }
   function tagsHtml(tags) {
-    if (!Array.isArray(tags) || !tags.length) return '';
-    return tags
+    var clean = dedupePaperTags(tags);
+    if (!clean.length) return '';
+    return clean
       .map(function (t) {
-        if (!t || typeof t !== 'object') return '';
-        var kind = String(t.kind || 'query');
-        var label = String(t.label || '');
-        if (!label) return '';
-        return '<span class="dpr-sidebar-paper-tag dpr-sidebar-paper-tag-' + safeAttr(kind) + '">' + safeText(label) + '</span>';
+        return '<span class="dpr-sidebar-paper-tag dpr-sidebar-paper-tag-' + safeAttr(t.kind) + '">' + safeText(t.label) + '</span>';
       })
       .join('');
   }
@@ -739,7 +751,7 @@
         publication_date_source: payload && payload.publication_date_source || '',
         publication_date_kind: payload && payload.publication_date_kind || '',
         conference_year: payload && payload.conference_year || '',
-        tags: (payload && Array.isArray(payload.tags) ? payload.tags : []),
+        tags: dedupePaperTags(payload && Array.isArray(payload.tags) ? payload.tags : []),
         selectionSource: payload && payload.selection_source,
         research_run_id: payload && payload.research_run_id || '',
         research_mode: payload && payload.research_mode || '',
@@ -957,17 +969,47 @@
 
   function paperTagLabels(paper) {
     var out = [];
+    var seenLower = {};
     (paper && paper.tags || []).forEach(function (tag) {
       var label = tag && String(tag.label || '').trim();
-      if (label && out.indexOf(label) === -1) out.push(label);
+      var lower = label.toLowerCase();
+      if (label && !seenLower[lower]) {
+        seenLower[lower] = true;
+        out.push(label);
+      }
     });
     return out.length ? out : ['未标注'];
+  }
+
+  function paperHasTagLabel(paper, targetTag) {
+    var targetLower = String(targetTag || '').trim().toLowerCase();
+    if (!targetLower) return false;
+    return paperTagLabels(paper).some(function (label) {
+      return label.toLowerCase() === targetLower;
+    });
   }
 
   function addTab(tabs, seen, key, label) {
     if (!key || seen[key]) return;
     seen[key] = { key: key, label: label || key, count: 0, unreadCount: 0 };
     tabs.push(seen[key]);
+  }
+
+  function addTagTab(tabs, seen, seenLower, label) {
+    var clean = String(label || '').trim();
+    if (!clean) return null;
+    var lower = clean.toLowerCase();
+    if (seenLower[lower]) return seenLower[lower];
+    addTab(tabs, seen, clean, clean);
+    seenLower[lower] = seen[clean];
+    return seen[clean];
+  }
+
+  function resolveTagTabKey(activeKey, seen, seenLower) {
+    if (!activeKey) return '';
+    if (seen[activeKey]) return activeKey;
+    var matched = seenLower[String(activeKey).trim().toLowerCase()];
+    return matched ? matched.key : '';
   }
 
   function flattenDailyPapers(model) {
@@ -1408,18 +1450,20 @@
     var records = flattenDailyPapers(model);
     var tabs = [];
     var seen = {};
+    var seenLower = {};
     records.forEach(function (record) {
       paperTagLabels(record.paper).forEach(function (tag) {
-        addTab(tabs, seen, tag, tag);
-        seen[tag].count += 1;
-        if (!paperReadStatus(record.paper, map)) seen[tag].unreadCount += 1;
+        var tab = addTagTab(tabs, seen, seenLower, tag);
+        if (!tab) return;
+        tab.count += 1;
+        if (!paperReadStatus(record.paper, map)) tab.unreadCount += 1;
       });
     });
-    var active = activeKey && seen[activeKey] ? activeKey : (tabs[0] && tabs[0].key) || '';
+    var active = resolveTagTabKey(activeKey, seen, seenLower) || (tabs[0] && tabs[0].key) || '';
     var byDate = {};
     var order = [];
     records.forEach(function (record) {
-      if (paperTagLabels(record.paper).indexOf(active) === -1) return;
+      if (!paperHasTagLabel(record.paper, active)) return;
       if (!byDate[record.dateKey]) {
         byDate[record.dateKey] = {
           key: record.dateKey,
@@ -1446,7 +1490,7 @@
     };
     (source.daily || []).forEach(function (day) {
       var papers = (day.papers || []).filter(function (paper) {
-        return paperTagLabels(paper).indexOf(tagKey) !== -1;
+        return paperHasTagLabel(paper, tagKey);
       });
       if (!papers.length) return;
       var nextDay = {};
@@ -1500,23 +1544,25 @@
     });
     var tabs = [];
     var seen = {};
+    var seenLower = {};
     addTab(tabs, seen, allKey, '全部');
     seen[allKey].count = papers.length;
     seen[allKey].unreadCount = countUnreadPapers(papers, map);
     papers.forEach(function (paper) {
       paperTagLabels(paper).forEach(function (tag) {
-        addTab(tabs, seen, tag, tag);
-        seen[tag].count += 1;
-        if (!paperReadStatus(paper, map)) seen[tag].unreadCount += 1;
+        var tab = addTagTab(tabs, seen, seenLower, tag);
+        if (!tab) return;
+        tab.count += 1;
+        if (!paperReadStatus(paper, map)) tab.unreadCount += 1;
       });
     });
-    var activeTag = activeTagKey && seen[activeTagKey] ? activeTagKey : allKey;
+    var activeTag = resolveTagTabKey(activeTagKey, seen, seenLower) || allKey;
     var groups = [];
     activeRecords.forEach(function (day) {
       var filtered = activeTag
         ? (day.papers || []).filter(function (paper) {
           if (activeTag === allKey) return true;
-          return paperTagLabels(paper).indexOf(activeTag) !== -1;
+          return paperHasTagLabel(paper, activeTag);
         })
         : (day.papers || []);
       if (!filtered.length) return;
@@ -1583,18 +1629,20 @@
     var records = flattenConferencePapers(model);
     var tabs = [];
     var seen = {};
+    var seenLower = {};
     records.forEach(function (record) {
       paperTagLabels(record.paper).forEach(function (tag) {
-        addTab(tabs, seen, tag, tag);
-        seen[tag].count += 1;
-        if (!paperReadStatus(record.paper, map)) seen[tag].unreadCount += 1;
+        var tab = addTagTab(tabs, seen, seenLower, tag);
+        if (!tab) return;
+        tab.count += 1;
+        if (!paperReadStatus(record.paper, map)) tab.unreadCount += 1;
       });
     });
-    var active = activeKey && seen[activeKey] ? activeKey : (tabs[0] && tabs[0].key) || '';
+    var active = resolveTagTabKey(activeKey, seen, seenLower) || (tabs[0] && tabs[0].key) || '';
     var groups = [];
     var byGroup = {};
     records.forEach(function (record) {
-      if (paperTagLabels(record.paper).indexOf(active) === -1) return;
+      if (!paperHasTagLabel(record.paper, active)) return;
       var key = record.confKey + ':' + record.topicLabel;
       if (!byGroup[key]) {
         byGroup[key] = {

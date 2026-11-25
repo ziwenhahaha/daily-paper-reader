@@ -297,6 +297,10 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
     def test_build_tags_list_deduplicates_case_insensitively(self):
         tags = self.mod.build_tags_list("deep", ["query:atsp", "query:ATSP", "keyword:Atsp", "query:TSP"])
         self.assertEqual(tags, ["query:atsp", "query:TSP"])
+        sidebar_tags = self.mod.extract_sidebar_tags(
+            {"llm_score": 9.0, "llm_tags": ["query:atsp", "query:ATSP", "keyword:Atsp"]}
+        )
+        self.assertEqual(sidebar_tags, [("score", "9.0"), ("query", "atsp")])
 
     def test_generate_deep_summary_keeps_continuation_even_without_end_marker(self):
         with tempfile.TemporaryDirectory() as d:

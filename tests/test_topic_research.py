@@ -500,3 +500,37 @@ def test_refuses_writing_to_upstream_main_repo():
     with patch.dict(os.environ, {"GITHUB_REPOSITORY": "ziwenhahaha/daily-paper-reader"}):
         with pytest.raises(ValueError, match="主仓库"):
             tr.publish_topic_results(ROOT, plan, [], [], {})
+
+
+def test_select_topic_papers_deduplicates_case_variant_tags():
+    llm_data = {
+        "papers": [
+            {
+                "id": "2603.14334v1",
+                "canonical_id": "arxiv:2603.14334",
+                "title": "Better approximation guarantee for Asymmetric TSP",
+                "abstract": "Abstract",
+                "tags": ["query:ATSP", "keyword:atsp"],
+            }
+        ],
+        "queries": [],
+        "llm_ranked": [
+            {
+                "paper_id": "2603.14334v1",
+                "score": 9.5,
+                "matched_query_tag": "query:atsp",
+                "evidence_cn": "证据",
+                "tldr_cn": "速览",
+                "title_zh": "中文标题",
+            }
+        ],
+    }
+    deep, quick = tr.select_topic_papers(
+        llm_data,
+        {"2603.14334v1": llm_data["papers"][0]},
+        profile_tag="ATSP",
+        max_papers=50,
+    )
+    assert len(deep) == 1 and len(quick) == 0
+    assert [t.lower() for t in deep[0]["llm_tags"]] == ["query:atsp"]
+    assert len(deep[0]["llm_tags"]) == 1

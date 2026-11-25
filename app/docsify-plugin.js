@@ -3067,14 +3067,23 @@ window.$docsify = {
       const renderPaperFromMeta = (meta) => {
         if (!meta) return '';
 
-        // 解析标签，生成带颜色的 HTML
+        // 解析标签，生成带颜色的 HTML（大小写不敏感去重，兼容历史重复标签）
         const renderTags = (tags) => {
           if (!tags || !tags.length) return '';
-          return tags.map(tag => {
-            const [kind, label] = tag.includes(':') ? tag.split(':', 2) : ['other', tag];
+          const seen = new Set();
+          return tags.reduce((acc, tag) => {
+            const raw = String(tag || '').trim();
+            if (!raw) return acc;
+            const [kind, label] = raw.includes(':') ? raw.split(':', 2) : ['other', raw];
+            const cleanLabel = String(label || '').trim();
+            if (!cleanLabel) return acc;
+            const dedupKey = cleanLabel.toLowerCase();
+            if (seen.has(dedupKey)) return acc;
+            seen.add(dedupKey);
             const css = { keyword: 'tag-green', query: 'tag-blue', paper: 'tag-pink' }[kind] || 'tag-pink';
-            return `<span class="tag-label ${css}">${escapeHtml(label)}</span>`;
-          }).join(' ');
+            acc.push(`<span class="tag-label ${css}">${escapeHtml(cleanLabel)}</span>`);
+            return acc;
+          }, []).join(' ');
         };
         const renderSourceChips = (source) => {
           const text = String(source || '').trim();

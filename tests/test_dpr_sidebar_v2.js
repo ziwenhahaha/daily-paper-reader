@@ -2043,7 +2043,40 @@ function testSingleTrackTopicBacktrackGroup() {
   assert.ok(html.includes('data-topic-task-sort'));
 }
 
+function testCaseInsensitiveTagDeduplicationInSidebar() {
+  const tools = loadSidebarForTest().__test;
+  const topicToken = '20251125-20261124-starter-atsp';
+  const p1 = JSON.stringify({
+    title: 'Paper One',
+    score: '9.0',
+    tags: [{ kind: 'query', label: 'atsp' }, { kind: 'query', label: 'ATSP' }],
+  }).replace(/"/g, '&quot;');
+  const p2 = JSON.stringify({
+    title: 'Paper Two',
+    score: '8.5',
+    tags: [{ kind: 'query', label: 'ATSP' }],
+  }).replace(/"/g, '&quot;');
+  const sidebarMd = [
+    '* Daily Papers',
+    `  * ATSP · 大礼包 (2025-11-25 ~ 2026-11-24) <!--dpr-date:${topicToken}-->`,
+    '    * 精读区',
+    `      * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/${topicToken}/2603.14334v1" data-sidebar-item="${p1}">Paper One</a>`,
+    `      * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/${topicToken}/2603.26564v1" data-sidebar-item="${p2}">Paper Two</a>`,
+  ].join('\n');
+  const model = tools.parseSidebar(sidebarMd);
+  assert.equal(model.daily[0].papers[0].tags.length, 1, '同一篇论文的 atsp/ATSP 标签应去重为 1 个');
+  const view = tools.buildDailyCalendarTagView(model, '', 'ATSP', {}, '', true);
+  assert.deepEqual(
+    view.tabs.map((t) => ({ key: t.key, count: t.count })),
+    [{ key: '__all__', count: 2 }, { key: 'atsp', count: 2 }],
+    '侧边栏标签页不应同时出现 atsp 和 ATSP 两个重复按钮',
+  );
+  assert.equal(view.activeKey, 'atsp');
+  assert.equal(view.groups[0].papers.length, 2);
+}
+
 testReadStatusNormalization();
 testSingleTrackTopicBacktrackGroup();
+testCaseInsensitiveTagDeduplicationInSidebar();
 
 console.log('dpr sidebar v2 tests passed');

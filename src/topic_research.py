@@ -516,13 +516,22 @@ def select_topic_papers(
         merged["score"] = score
         merged["rerank_score"] = rerank_scores.get(pid, 0.0)
         merged["selection_source"] = "topic_research"
-        tags = list(merged.get("llm_tags") or [])
-        base_tag = f"query:{profile_tag}"
-        if profile_tag and base_tag not in tags:
-            tags.append(base_tag)
-        for recall_tag in merged.get("tags") or []:
-            if recall_tag and recall_tag not in tags:
-                tags.append(recall_tag)
+        tags: List[str] = []
+        seen_tags_lower = set()
+        for candidate_tag in (
+            list(merged.get("llm_tags") or [])
+            + ([f"query:{profile_tag}"] if profile_tag else [])
+            + list(merged.get("tags") or [])
+        ):
+            raw_tag = str(candidate_tag or "").strip()
+            if not raw_tag:
+                continue
+            tag_label = raw_tag.split(":", 1)[1].strip() if ":" in raw_tag else raw_tag
+            key_lower = tag_label.lower()
+            if not key_lower or key_lower in seen_tags_lower:
+                continue
+            seen_tags_lower.add(key_lower)
+            tags.append(raw_tag)
         merged["llm_tags"] = tags
         eligible.append(merged)
 
