@@ -592,17 +592,20 @@ def generate_deep_summary(
     messages.append({"role": "user", "content": f"### 论文 Markdown 元数据 ###\n{paper_md_content}"})
     messages.append({"role": "user", "content": user_prompt})
 
+    def _has_end_marker(text: str) -> bool:
+        return "（完）" in text or "(完)" in text
+
     last = ""
     for attempt in range(1, max_retries + 1):
         try:
-            summary = call_llm_text(active_client, messages, temperature=0.3, max_tokens=4096)
+            summary = call_llm_text(active_client, messages, temperature=0.3, max_tokens=6144)
             summary = (summary or "").strip()
             if not summary:
                 continue
             last = summary
             if os.getenv("DPR_DEBUG_STEP6") == "1":
                 log(f"[DEBUG][STEP6] deep_summary attempt={attempt} len={len(summary)} tail={summary[-20:]!r}")
-            if "（完）" in summary:
+            if _has_end_marker(summary):
                 return summary
             # 续写一次：避免输出被截断
             cont_messages = [
@@ -610,12 +613,13 @@ def generate_deep_summary(
                 {"role": "user", "content": "你上一次的总结可能被截断了，请从中断处继续补全，不要重复已输出内容。"},
                 {"role": "user", "content": f"上一次输出如下：\n\n{summary}\n\n请继续补全，最后以一行“（完）”结束。"},
             ]
-            cont = call_llm_text(active_client, cont_messages, temperature=0.3, max_tokens=2048)
+            cont = call_llm_text(active_client, cont_messages, temperature=0.3, max_tokens=3072)
             cont = (cont or "").strip()
-            merged = f"{summary}\n\n{cont}".strip()
+            merged = f"{summary}\n\n{cont}".strip() if cont else summary
+            last = merged
             if os.getenv("DPR_DEBUG_STEP6") == "1":
                 log(f"[DEBUG][STEP6] deep_summary_cont attempt={attempt} len={len(cont)} merged_tail={merged[-20:]!r}")
-            if "（完）" in merged:
+            if _has_end_marker(merged):
                 return merged
         except Exception as e:
             log(f"[WARN] 精读总结失败（第 {attempt} 次）：{e}")
@@ -1791,11 +1795,12 @@ def build_tags_list(section: str, llm_tags: List[str]) -> List[str]:
         label = (label or "").strip()
         if not label:
             continue
-        dedup_key = f"{kind}:{label}"
+        display_tag = f"{kind}:{label}"
+        dedup_key = display_tag.lower()
         if dedup_key in seen:
             continue
         seen.add(dedup_key)
-        tags.append(dedup_key)
+        tags.append(display_tag)
     return tags
 
 

@@ -294,6 +294,36 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
         self.assertIs(captured["client"], explicit_client)
         self.assertEqual(captured["kwargs"]["max_tokens"], 16 * 1024)
 
+    def test_build_tags_list_deduplicates_case_insensitively(self):
+        tags = self.mod.build_tags_list("deep", ["query:atsp", "query:ATSP", "keyword:Atsp", "query:TSP"])
+        self.assertEqual(tags, ["query:atsp", "query:TSP"])
+
+    def test_generate_deep_summary_keeps_continuation_even_without_end_marker(self):
+        with tempfile.TemporaryDirectory() as d:
+            md_path = Path(d) / "paper.md"
+            txt_path = Path(d) / "paper.txt"
+            md_path.write_text("# Demo\n\nAbstract", encoding="utf-8")
+            txt_path.write_text("Full text", encoding="utf-8")
+
+            responses = iter([
+                "## 1. 核心问题\n前半段内容",
+                "## 8. 局限性\n补全后半段内容",
+            ])
+            original_call = self.mod.call_llm_text
+            self.mod.call_llm_text = lambda *a, **k: next(responses)
+            try:
+                out = self.mod.generate_deep_summary(
+                    str(md_path),
+                    str(txt_path),
+                    max_retries=1,
+                    client=object(),
+                )
+            finally:
+                self.mod.call_llm_text = original_call
+
+            self.assertIn("前半段内容", out)
+            self.assertIn("补全后半段内容", out)
+
 
 if __name__ == "__main__":
     unittest.main()

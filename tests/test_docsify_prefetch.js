@@ -305,4 +305,54 @@ function testPdfPreviewDoesNotHijackPaperChatLayout() {
 
 testPdfPreviewDoesNotHijackPaperChatLayout();
 
+function testTopicResearchAndStarterPackRoutesRecognizedAsPaperPages() {
+  const sandbox = {};
+  const source = [
+    extractConstFunction('decodeLegacyIdHash'),
+    extractConstFunction('normalizeHref'),
+    extractConstFunction('isPaperRouteFile'),
+    extractConstFunction('isReportRouteFile'),
+    extractConstFunction('isPaperHref'),
+    extractConstFunction('isReportHref'),
+    extractConstFunction('isPaperHrefFallback'),
+    'this.api = { isPaperRouteFile, isReportRouteFile, isPaperHref, isReportHref, isPaperHrefFallback };',
+  ].join('\n');
+  vm.runInNewContext(source, sandbox);
+  const { isPaperRouteFile, isReportRouteFile, isPaperHref, isReportHref, isPaperHrefFallback } = sandbox.api;
+
+  // Starter pack & 90d/365d topic research paper routes must match
+  assert.strictEqual(
+    isPaperRouteFile('20251125-20261124-starter-atsp/2603.26564v1-a-canceling-heuristic-for-the-directed-traveling-salesman-problem.md'),
+    true,
+  );
+  assert.strictEqual(
+    isPaperRouteFile('/docs/20251125-20261124-starter-atsp/2603.26564v1-a-canceling-heuristic-for-the-directed-traveling-salesman-problem.md'),
+    true,
+  );
+  assert.strictEqual(isPaperRouteFile('20260827-20261124-90-user-sim/2610.00001v1-sample.md'), true);
+  assert.strictEqual(isPaperRouteFile('20251125-20261124-365-llm_agents/2601.12345v1-paper.md'), true);
+  assert.strictEqual(isPaperRouteFile('20261116-20261125/2611.21453v1-paper.md'), true);
+  assert.strictEqual(isPaperRouteFile('202611/25/2611.21453v1-paper.md'), true);
+  assert.strictEqual(isPaperRouteFile('conference/neurips-2025/openreview-neurips-2025-abc-paper.md'), true);
+
+  // Guide/manifest pages inside topic folders must NOT be treated as paper pages
+  assert.strictEqual(isPaperRouteFile('20251125-20261124-starter-atsp/README.md'), false);
+  assert.strictEqual(isPaperRouteFile('20251125-20261124-starter-atsp/papers.md'), false);
+  assert.strictEqual(isReportRouteFile('20251125-20261124-starter-atsp/README.md'), true);
+  assert.strictEqual(isReportRouteFile('20251125-20261124-starter-atsp/papers.md'), true);
+
+  // Hash href helpers must match the same topic research routes
+  assert.strictEqual(
+    isPaperHref('#/20251125-20261124-starter-atsp/2603.26564v1-a-canceling-heuristic-for-the-directed-traveling-salesman-problem'),
+    true,
+  );
+  assert.strictEqual(isPaperHref('#/20251125-20261124-starter-atsp/README'), false);
+  assert.strictEqual(isPaperHref('#/20251125-20261124-starter-atsp/papers'), false);
+  assert.strictEqual(isReportHref('#/20251125-20261124-starter-atsp/README'), true);
+  assert.strictEqual(isReportHref('#/20251125-20261124-starter-atsp/papers'), true);
+  assert.strictEqual(isPaperHrefFallback('#/20251125-20261124-starter-atsp/papers'), false);
+}
+
+testTopicResearchAndStarterPackRoutesRecognizedAsPaperPages();
+
 console.log('docsify prefetch tests passed');

@@ -1545,16 +1545,16 @@ window.$docsify = {
 
       // 侧边栏/正文的论文页标题条：英文右侧，中文左侧，中间竖线
       const isPaperRouteFile = (file) => {
-        const f = String(file || '');
+        const f = String(file || '').replace(/^\/+/, '').replace(/^docs\//i, '');
         return (
-          /^(?:\d{6}\/\d{2}|\d{8}-\d{8})\/(?!README\.md$).+\.md$/i.test(f) ||
+          /^(?:\d{6}\/\d{2}|\d{8}-\d{8}(?:-[A-Za-z0-9._-]+)?)\/(?!(?:README|papers|catalog)\.md$).+\.md$/i.test(f) ||
           /^conference\/[^/]+\/(?!README\.md$).+\.md$/i.test(f)
         );
       };
 
       const isReportRouteFile = (file) => {
-        const f = String(file || '');
-        return /^(?:\d{6}\/\d{2}|\d{8}-\d{8})\/README\.md$/i.test(f);
+        const f = String(file || '').replace(/^\/+/, '').replace(/^docs\//i, '');
+        return /^(?:\d{6}\/\d{2}|\d{8}-\d{8}(?:-[A-Za-z0-9._-]+)?)\/(?:README|papers)\.md$/i.test(f);
       };
 
       const fitTextToBox = (el, minPx, maxPx) => {
@@ -1779,25 +1779,25 @@ window.$docsify = {
         const h = normalizeHref(href);
         // 匹配论文页：
         // - 传统路径：#/YYYYMM/DD/slug
-        // - 区间路径：#/YYYYMMDD-YYYYMMDD/slug
+        // - 区间/专题研究路径：#/YYYYMMDD-YYYYMMDD/slug 或 #/YYYYMMDD-YYYYMMDD-<mode>-<tag>/slug
         // - 会议路径：#/conference/<conference-year>/slug
         return (
-          /^#\/(?:\d{6}\/\d{2}|\d{8}-\d{8})\/(?!README$).+/i.test(h) ||
+          /^#\/(?:\d{6}\/\d{2}|\d{8}-\d{8}(?:-[A-Za-z0-9._-]+)?)\/(?!(?:README|papers|catalog)$).+/i.test(h) ||
           /^#\/conference\/[^/]+\/(?!README$).+/i.test(h)
         );
       };
 
       const isReportHref = (href) => {
         const h = normalizeHref(href);
-        // 匹配日报页：
+        // 匹配日报页 / 专题研究导读与清单页：
         // - 传统路径：#/YYYYMM/DD/README
-        // - 区间路径：#/YYYYMMDD-YYYYMMDD/README
-        return /^#\/(?:\d{6}\/\d{2}|\d{8}-\d{8})\/README$/i.test(h);
+        // - 区间/专题研究路径：#/YYYYMMDD-YYYYMMDD/README 或 #/YYYYMMDD-YYYYMMDD-<mode>-<tag>/(README|papers)
+        return /^#\/(?:\d{6}\/\d{2}|\d{8}-\d{8}(?:-[A-Za-z0-9._-]+)?)\/(?:README|papers)$/i.test(h);
       };
 
       const isPaperHrefFallback = (href) => {
         const h = normalizeHref(href);
-        return h.startsWith('#/') && h.includes('/') && !/\/README$/i.test(h);
+        return h.startsWith('#/') && h.includes('/') && !/\/(?:README|papers|catalog)$/i.test(h);
       };
 
       const collectPaperHrefsFromSidebar = () => {

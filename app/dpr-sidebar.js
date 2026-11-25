@@ -250,7 +250,7 @@
     if (/^\d{8}$/.test(key)) {
       return '#/' + key.slice(0, 6) + '/' + key.slice(6, 8) + '/README';
     }
-    if (/^\d{8}-\d{8}$/.test(key)) {
+    if (/^\d{8}-\d{8}(?:-[A-Za-z0-9._-]+)?$/.test(key)) {
       return '#/' + key + '/README';
     }
     return '';
