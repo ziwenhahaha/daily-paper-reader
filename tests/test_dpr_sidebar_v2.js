@@ -915,12 +915,12 @@ function testQuickLinksCenterTextAndDetachIcon() {
   assert.ok(/transform:\s*translateY\(-50%\)/i.test(iconRule));
 
   const feedbackRule = cssRule(css, '.dpr-sidebar-feedback-btn');
-  assert.ok(/background:\s*#f0fdf4/i.test(feedbackRule));
-  assert.ok(/border-color:\s*#86efac/i.test(feedbackRule));
-  assert.ok(/color:\s*#166534/i.test(feedbackRule));
-  assert.ok(/box-shadow:\s*inset 0 0 0 1px rgba\(34,\s*197,\s*94,\s*0\.1\)/i.test(feedbackRule));
+  assert.ok(/background:\s*#eff5fc/i.test(feedbackRule));
+  assert.ok(/border-color:\s*#c9ddf5/i.test(feedbackRule));
+  assert.ok(/color:\s*#2c588c/i.test(feedbackRule));
+  assert.ok(/box-shadow:\s*inset 0 0 0 1px rgba\(76,\s*125,\s*181,\s*0\.08\)/i.test(feedbackRule));
   assert.ok(/@media \(max-width:\s*420px\)[\s\S]*\.dpr-sidebar-header\s*{[^}]*gap:\s*6px/i.test(css));
-  assert.ok(/body\.dpr-dark \.dpr-sidebar-feedback-btn\s*{[^}]*background:\s*#123522/i.test(css));
+  assert.ok(/body\.dpr-dark \.dpr-sidebar-feedback-btn\s*{[^}]*background:\s*#15263d/i.test(css));
 }
 
 function testFeedbackEntryClickContractAndFallbacks() {
@@ -1368,34 +1368,29 @@ function testSidebarStickyHierarchyCssContract() {
   assert.ok(!/margin-top:\s*-/i.test(axisTabsRule));
 
   const calendarRule = cssRule(css, '.dpr-sidebar-calendar');
-  assert.ok(/background:\s*var\(--dpr-sidebar-surface\)/i.test(calendarRule));
-  assert.ok(/border-radius:\s*8px/i.test(calendarRule));
-  assert.ok(/--dpr-sidebar-calendar-notch:\s*10px/i.test(calendarRule));
-  assert.ok(/clip-path:\s*polygon\(/i.test(calendarRule));
+  assert.ok(/background:\s*#f7f9fc/i.test(calendarRule));
+  assert.ok(/border-radius:\s*12px/i.test(calendarRule));
+  assert.ok(!/clip-path:\s*polygon\(/i.test(calendarRule));
   const calendarHeaderRule = cssRule(css, '.dpr-sidebar-calendar-header');
-  assert.ok(/padding:\s*0 8px/i.test(calendarHeaderRule));
+  assert.ok(/padding:\s*0 4px/i.test(calendarHeaderRule));
   const calendarGridRule = cssRule(css, '.dpr-sidebar-calendar-grid');
   assert.ok(/display:\s*grid/i.test(calendarGridRule));
   assert.ok(/grid-template-columns:\s*repeat\(7,\s*minmax\(0,\s*1fr\)\)/i.test(calendarGridRule));
   const calendarDayRule = cssRule(css, '.dpr-sidebar-calendar-day');
-  assert.ok(/min-height:\s*42px/i.test(calendarDayRule));
+  assert.ok(/min-height:\s*34px/i.test(calendarDayRule));
   assert.ok(/position:\s*relative/i.test(calendarDayRule));
   assert.ok(/\.dpr-sidebar-calendar-day\s*{[\s\S]*flex-direction:\s*column/i.test(css));
+  assert.ok(/\.dpr-sidebar-calendar-day\.is-empty \.dpr-sidebar-calendar-day-counts\s*{[^}]*display:\s*none/i.test(css));
   const calendarDayCountsRule = cssRule(css, '.dpr-sidebar-calendar-day-counts');
-  assert.ok(/position:\s*absolute/i.test(calendarDayCountsRule));
-  assert.ok(/left:\s*4px/i.test(calendarDayCountsRule));
-  assert.ok(/right:\s*4px/i.test(calendarDayCountsRule));
-  assert.ok(/bottom:\s*5px/i.test(calendarDayCountsRule));
-  assert.ok(/display:\s*grid/i.test(calendarDayCountsRule));
-  assert.ok(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(0,\s*1fr\)/i.test(calendarDayCountsRule));
-  assert.ok(/column-gap:\s*4px/i.test(calendarDayCountsRule));
+  assert.ok(/display:\s*inline-flex/i.test(calendarDayCountsRule));
+  assert.ok(/flex-direction:\s*row-reverse/i.test(calendarDayCountsRule));
+  assert.ok(/justify-content:\s*center/i.test(calendarDayCountsRule));
   const calendarDayTotalRule = cssRule(css, '.dpr-sidebar-calendar-day-total');
   assert.ok(/min-width:\s*0/i.test(calendarDayTotalRule));
-  assert.ok(/text-align:\s*right/i.test(calendarDayTotalRule));
-  assert.ok(/color:\s*#94a3b8/i.test(calendarDayTotalRule));
   const calendarDayUnreadRule = cssRule(css, '.dpr-sidebar-calendar-day-unread');
   assert.ok(/min-width:\s*0/i.test(calendarDayUnreadRule));
-  assert.ok(/text-align:\s*left/i.test(calendarDayUnreadRule));
+  assert.ok(/body\.dpr-dark \.dpr-sidebar-calendar\s*{[^}]*background:\s*#141f33/i.test(css));
+  assert.ok(/body\.dpr-dark \.dpr-sidebar-paper\s*{[^}]*background:\s*#162235/i.test(css));
 
   const sectionHeaderRule = cssRule(css, '.dpr-sidebar-panel.is-expanded .dpr-sidebar-axis-section-header');
   assert.ok(/position:\s*sticky/i.test(sectionHeaderRule));

@@ -175,10 +175,13 @@ research.mount(root, { getProfiles: () => profiles, getConfig: () => ({}), hasUn
   const displayCard = manager.split('<div class="dpr-display-card">', 2)[1].split('</div>', 1)[0];
   assert.ok(!displayCard.includes('dpr-sq-open-chat-btn'), '三个页签共用的新增按钮不在词条卡片内');
   const css = fs.readFileSync('app/app.css', 'utf8');
-  assert.ok(css.includes('#arxiv-search-panel.is-topic-tab #arxiv-search-panel-main {\n  order: 3;'), '专题页共享词条面板位于任务区下方');
+  assert.ok(!css.includes('#arxiv-search-panel.is-topic-tab #arxiv-search-panel-main {\n  order: 3;'), '专题页与日常/会议页保持一致的上下顺序，词条面板位于上方');
   assert.ok(css.includes('.dpr-topic-starter-card:has(input:checked)'), '大礼包有独立选中高亮');
   assert.ok(!css.includes('.dpr-topic-starter-card {\n  min-height:'), '大礼包与其他模式卡片保持同高');
-  assert.ok(css.includes('.dpr-admin-add-row .arxiv-tool-btn {\n  border-color: #d4e0d7;\n  background: #fff;'), '新增入口使用低调描边样式');
+  const addBtnCss = css.match(/\.dpr-admin-add-row \.arxiv-tool-btn \{[\s\S]*?\}/);
+  assert.ok(addBtnCss, '新增入口样式规则存在');
+  assert.ok(addBtnCss[0].includes('width: 100%;') && addBtnCss[0].includes('border: 1.5px dashed'), '新增入口使用通栏虚线描边样式');
+  assert.ok(!addBtnCss[0].includes('#2e7d32'), '新增入口不得恢复为高饱和实心绿主按钮');
   assert.ok(!manager.includes('name="dpr-quick-run-mode" value="90"'));
   assert.ok(!manager.includes('id="arxiv-admin-starter-pack-btn"'));
   const index = fs.readFileSync('index.html', 'utf8');

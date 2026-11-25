@@ -1518,7 +1518,14 @@ window.SubscriptionsManager = (function () {
                 <div id="dpr-sq-display" class="dpr-sq-display"></div>
               </div>
               <div class="dpr-admin-add-row">
-                <button id="dpr-sq-open-chat-btn" class="arxiv-tool-btn" type="button">新增研究方向</button>
+                <button id="dpr-sq-open-chat-btn" class="arxiv-tool-btn dpr-admin-add-btn" type="button">
+                  <span class="dpr-admin-add-icon" aria-hidden="true">
+                    <svg viewBox="0 0 12 12" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                      <path d="M6 2v8M2 6h8" />
+                    </svg>
+                  </span>
+                  <span>新增研究方向</span>
+                </button>
               </div>
             </div>
 
@@ -1534,15 +1541,17 @@ window.SubscriptionsManager = (function () {
             aria-labelledby="dpr-admin-tab-daily"
           >
             <div class="dpr-bulk-bar-head">
-              <div>
+              <div class="dpr-title-inline">
                 <div class="chat-quick-run-title">快速抓取</div>
                 <div id="arxiv-admin-quick-run-hint" class="dpr-task-hint">默认全选词条，快速抓取不区分日常状态。</div>
               </div>
-              <button id="arxiv-admin-open-workflow-panel-btn" class="arxiv-tool-btn dpr-task-workflow-btn" type="button">打开工作流</button>
-            </div>
-            <div class="dpr-task-picker-tools">
-              <button id="arxiv-admin-daily-select-all-btn" class="arxiv-tool-btn" type="button">全选</button>
-              <button id="arxiv-admin-daily-clear-all-btn" class="arxiv-tool-btn" type="button">取消全选</button>
+              <div class="dpr-bulk-bar-actions">
+                <div class="dpr-task-picker-tools">
+                  <button id="arxiv-admin-daily-select-all-btn" class="arxiv-tool-btn" type="button">全选</button>
+                  <button id="arxiv-admin-daily-clear-all-btn" class="arxiv-tool-btn" type="button">取消全选</button>
+                </div>
+                <button id="arxiv-admin-open-workflow-panel-btn" class="arxiv-tool-btn dpr-task-workflow-btn" type="button">打开工作流</button>
+              </div>
             </div>
             <div id="arxiv-admin-daily-profile-picker" class="dpr-profile-picker-row"></div>
             <div class="dpr-task-content-row">
@@ -1593,18 +1602,18 @@ window.SubscriptionsManager = (function () {
           >
             <div class="dpr-conference-pane">
               <div class="dpr-bulk-bar-head">
-                <div>
-                  <div class="dpr-title-inline">
-                    <div class="chat-quick-run-title">会议论文检索</div>
-                    <div id="arxiv-admin-conference-hint" class="dpr-conference-note">默认全选词条。</div>
+                <div class="dpr-title-inline">
+                  <div class="chat-quick-run-title">会议论文检索</div>
+                  <div id="arxiv-admin-conference-hint" class="dpr-conference-note">默认全选词条。</div>
+                </div>
+                <div class="dpr-bulk-bar-actions">
+                  <div class="dpr-task-picker-tools">
+                    <button id="arxiv-admin-conference-select-all-btn" class="arxiv-tool-btn" type="button">全选</button>
+                    <button id="arxiv-admin-conference-clear-all-btn" class="arxiv-tool-btn" type="button">取消全选</button>
                   </div>
                 </div>
               </div>
 
-              <div class="dpr-task-picker-tools">
-                <button id="arxiv-admin-conference-select-all-btn" class="arxiv-tool-btn" type="button">全选</button>
-                <button id="arxiv-admin-conference-clear-all-btn" class="arxiv-tool-btn" type="button">取消全选</button>
-              </div>
               <div id="arxiv-admin-conference-profile-picker" class="dpr-profile-picker-row"></div>
 
               <div class="dpr-choice-field">

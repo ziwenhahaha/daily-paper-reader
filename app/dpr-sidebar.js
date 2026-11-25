@@ -1785,7 +1785,7 @@
       renderSidebarHeader(homeHref, tutorialHref, homeLabel, tutorialLabel) +
       '<div class="dpr-sidebar-toolbar">' +
       '  <div class="dpr-sidebar-search-wrap">' +
-      '    <span class="dpr-sidebar-search-icon" aria-hidden="true">🔍</span>' +
+      '    <span class="dpr-sidebar-search-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="display:block"><circle cx="7" cy="7" r="4.8"></circle><path d="M10.8 10.8L14 14"></path></svg></span>' +
       '    <input type="search" class="dpr-sidebar-search" placeholder="搜索标题 / 摘要 / 标签" autocomplete="off" spellcheck="false" />' +
       '  </div>' +
       '  <div class="dpr-sidebar-filter" role="tablist">' +

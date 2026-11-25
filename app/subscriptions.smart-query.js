@@ -1938,7 +1938,7 @@ window.SubscriptionsSmartQuery = (function () {
   const renderMain = () => {
     if (!displayListEl) return;
     if (!currentProfiles.length) {
-      displayListEl.innerHTML = '<div class="dpr-entry-empty">暂无词条，先点「新增」打开对话生成。</div>';
+      displayListEl.innerHTML = '<div class="dpr-entry-empty">暂无研究方向词条，可点击下方「新增研究方向」通过对话生成。</div>';
       notifySelectionChange();
       return;
     }

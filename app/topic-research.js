@@ -54,17 +54,23 @@ window.DPRTopicResearch = (function () {
   };
   const render = () => `
     <div class="dpr-topic-research">
-      <div class="chat-quick-run-title">专题研究</div>
-      <p class="dpr-task-hint">选择一个已保存词条。先预览范围，再按固定预算评审；不保证找全。日常订阅不会被本次细化修改。</p>
+      <div class="dpr-bulk-bar-head">
+        <div class="dpr-title-inline">
+          <div class="chat-quick-run-title">专题研究</div>
+          <span class="dpr-task-hint">选择一个已保存词条。先预览范围，再按固定预算评审；不保证找全。日常订阅不会被本次细化修改。</span>
+        </div>
+      </div>
       <div id="arxiv-admin-topic-profile-picker" class="dpr-profile-picker-row"></div>
       <div class="dpr-task-action-grid dpr-task-action-grid--radio" role="radiogroup" aria-label="专题研究模式">
         <label class="chat-quick-run-item dpr-task-radio-card"><input type="radio" name="dpr-topic-mode" value="90" checked><span class="dpr-task-action-title">90天 arXiv</span><span class="dpr-task-action-cost">聚焦近期研究</span></label>
         <label class="chat-quick-run-item dpr-task-radio-card"><input type="radio" name="dpr-topic-mode" value="365"><span class="dpr-task-action-title">365天 arXiv</span><span class="dpr-task-action-cost">梳理一年进展</span></label>
         <label class="chat-quick-run-item dpr-task-radio-card dpr-topic-starter-card" title="365天 arXiv + 近24个月会议"><input type="radio" name="dpr-topic-mode" value="starter"><span class="dpr-topic-starter-content"><span class="dpr-topic-starter-icon" aria-hidden="true">🎁</span><span class="dpr-task-action-title">研究方向大礼包</span><span class="dpr-task-action-cost">arXiv + 顶会</span></span></label>
       </div>
-      <p class="dpr-task-hint">大礼包包括调研问题、方法与子方向、数据与评测、近期进展、局限与待研究问题、阅读路线及资源。资料不足会明确标注，不编造结论。</p>
-      <p class="dpr-task-hint">会议范围沿用“会议论文”中勾选的会议名称；未选择则全部支持会议，年份勾选不限制近24个月窗口。</p>
-      <p class="dpr-task-hint">每任务最多评审300篇，最终结果最多100篇；内容每批生成10篇。继续生成仅补已有结果内容，不重新检索或扩大评审预算。仅在 GitHub Pages 通过 Actions 执行。</p>
+      <div class="dpr-topic-notes">
+        <p class="dpr-task-hint">大礼包包括调研问题、方法与子方向、数据与评测、近期进展、局限与待研究问题、阅读路线及资源。资料不足会明确标注，不编造结论。</p>
+        <p class="dpr-task-hint">会议范围沿用“会议论文”中勾选的会议名称；未选择则全部支持会议，年份勾选不限制近24个月窗口。</p>
+        <p class="dpr-task-hint">每任务最多评审300篇，最终结果最多100篇；内容每批生成10篇。继续生成仅补已有结果内容，不重新检索或扩大评审预算。仅在 GitHub Pages 通过 Actions 执行。</p>
+      </div>
       <button id="dpr-topic-start" class="chat-quick-run-run-btn dpr-task-start-btn" type="button">预览并开始专题研究</button>
       <div id="dpr-topic-status" class="chat-quick-run-msg" role="status" aria-live="polite"></div>
       <div id="dpr-topic-results-entry" hidden><a id="dpr-topic-results-link" class="arxiv-tool-btn" href="#/starter-pack/README">查看研究结果</a><p class="dpr-task-hint">这里是研究结果总览，任务完成后刷新查看；已派发不代表已完成。</p></div>

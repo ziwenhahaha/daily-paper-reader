@@ -7,6 +7,7 @@ const {
   TARGET_OWNER,
   TARGET_REPO,
   FEEDBACK_ANIMATION_MS,
+  AUTO_PROMPT_STORAGE_KEY,
   getFeedbackMotionStyles,
   normalizeSelectedTypes,
   buildIssueTitle,
@@ -16,6 +17,13 @@ const {
   resolveGithubToken,
   classifyIssueError,
   submitIssueWithFallback,
+  formatLocalDayKey,
+  computeLocalDayDiff,
+  isUpstreamDemoHost,
+  evaluateAutoPrompt,
+  isPageBusyForAutoPrompt,
+  markAutoPromptHandled,
+  checkAutoFeedbackPrompt,
 } = feedback.__test;
 
 function testFeedbackMotionStylesCoverEnterAndExit() {
@@ -239,6 +247,166 @@ async function testSubmitIssueFallsBackGracefullyOnAuthFailure() {
   assert.equal(openedUrl, result.draftUrl);
 }
 
+function makeMemoryStorage({ throwOnSet = false } = {}) {
+  const map = new Map();
+  return {
+    getItem(key) {
+      return map.has(key) ? map.get(key) : null;
+    },
+    setItem(key, value) {
+      if (throwOnSet) throw new Error('QuotaExceededError');
+      map.set(key, String(value));
+    },
+    removeItem(key) {
+      map.delete(key);
+    },
+  };
+}
+
+function testAutoPromptSkipsGuestLockedAndUpstreamHost() {
+  const now = new Date(2026, 10, 24, 14, 0, 0).getTime();
+  assert.equal(isUpstreamDemoHost('ziwenhahaha.github.io'), true);
+  assert.equal(isUpstreamDemoHost('alice.github.io'), false);
+
+  assert.equal(
+    evaluateAutoPrompt({ accessMode: 'guest', hostname: 'alice.github.io', nowMs: now }).reason,
+    'not_full_mode',
+  );
+  assert.equal(
+    evaluateAutoPrompt({ accessMode: 'locked', hostname: 'alice.github.io', nowMs: now }).reason,
+    'not_full_mode',
+  );
+  assert.equal(
+    evaluateAutoPrompt({ accessMode: 'full', hostname: 'ziwenhahaha.github.io', nowMs: now }).reason,
+    'upstream_demo_host',
+  );
+}
+
+function testAutoPromptTriggersOnceOnSecondDayAndRespectsMidnightBuffer() {
+  const storage = makeMemoryStorage();
+  const openedCalls = [];
+  const openFn = (opts) => {
+    openedCalls.push(opts);
+    return { id: 'dpr-feedback-overlay' };
+  };
+  const quietDoc = {
+    visibilityState: 'visible',
+    getElementById: () => null,
+    querySelectorAll: () => [],
+    activeElement: null,
+  };
+  const baseRoot = {
+    document: quietDoc,
+    localStorage: storage,
+    DPR_ACCESS_MODE: 'full',
+    location: { hostname: 'alice.github.io' },
+  };
+
+  // Day 1 23:30: record first use, do NOT prompt
+  const day1Late = new Date(2026, 10, 24, 23, 30, 0).getTime();
+  const r1 = checkAutoFeedbackPrompt({ root: baseRoot, nowMs: day1Late, openFn });
+  assert.equal(r1.action, 'record_first_use');
+  assert.equal(r1.opened, false);
+  assert.equal(openedCalls.length, 0);
+  const saved = JSON.parse(storage.getItem(AUTO_PROMPT_STORAGE_KEY));
+  assert.equal(saved.firstUsedDay, formatLocalDayKey(day1Late));
+
+  // Day 1 23:55: same day, still wait
+  const day1Later = new Date(2026, 10, 24, 23, 55, 0).getTime();
+  const rSame = checkAutoFeedbackPrompt({ root: baseRoot, nowMs: day1Later, openFn });
+  assert.equal(rSame.action, 'wait');
+  assert.equal(rSame.reason, 'same_day');
+  assert.equal(openedCalls.length, 0);
+
+  // Day 2 00:15 (only 45 min after first use across midnight): wait so setup isn't interrupted
+  const day2Midnight = new Date(2026, 10, 25, 0, 15, 0).getTime();
+  const rMidnight = checkAutoFeedbackPrompt({ root: baseRoot, nowMs: day2Midnight, openFn });
+  assert.equal(rMidnight.action, 'wait');
+  assert.equal(rMidnight.reason, 'too_soon_after_first_use');
+  assert.equal(openedCalls.length, 0);
+
+  // Day 2 09:00: next morning (>4h elapsed) -> prompt ONCE
+  const day2Morning = new Date(2026, 10, 25, 9, 0, 0).getTime();
+  const r2 = checkAutoFeedbackPrompt({ root: baseRoot, nowMs: day2Morning, openFn });
+  assert.equal(r2.action, 'prompt');
+  assert.equal(r2.opened, true);
+  assert.deepEqual(openedCalls, [{ source: 'auto' }]);
+
+  // Day 2 afternoon & Day 3+: already prompted, NEVER prompt again
+  const day3 = new Date(2026, 10, 26, 10, 0, 0).getTime();
+  const r3 = checkAutoFeedbackPrompt({ root: baseRoot, nowMs: day3, openFn });
+  assert.equal(r3.action, 'skip');
+  assert.equal(r3.reason, 'already_handled');
+  assert.equal(r3.opened, false);
+  assert.equal(openedCalls.length, 1);
+  assert.equal(computeLocalDayDiff('2026-11-24', '2026-11-26'), 2);
+}
+
+function testAutoPromptSuppressedAfterManualOpenAndDefersWhenBusy() {
+  const storage = makeMemoryStorage();
+  const day1 = new Date(2026, 10, 24, 10, 0, 0).getTime();
+  const day2 = new Date(2026, 10, 25, 10, 0, 0).getTime();
+  const fakeRoot = {
+    document: {
+      visibilityState: 'visible',
+      getElementById: () => null,
+      querySelectorAll: () => [],
+      activeElement: null,
+    },
+    localStorage: storage,
+    DPR_ACCESS_MODE: 'full',
+    location: { hostname: 'bob.github.io' },
+  };
+
+  // Manual open on Day 1 suppresses Day 2 auto prompt
+  markAutoPromptHandled('manualOpenedAt', fakeRoot, day1);
+  const afterManual = checkAutoFeedbackPrompt({
+    root: fakeRoot,
+    nowMs: day2,
+    openFn: () => { throw new Error('must not auto-open after manual open'); },
+  });
+  assert.equal(afterManual.action, 'skip');
+  assert.equal(afterManual.reason, 'already_handled');
+
+  // Busy page defers without consuming the one-time prompt
+  const storage2 = makeMemoryStorage();
+  const busyRoot = {
+    document: {
+      visibilityState: 'visible',
+      getElementById: (id) => (id === 'arxiv-search-overlay'
+        ? { hidden: false, style: { display: 'flex' } }
+        : null),
+      querySelectorAll: () => [],
+      activeElement: null,
+    },
+    localStorage: storage2,
+    DPR_ACCESS_MODE: 'full',
+    location: { hostname: 'bob.github.io' },
+  };
+  assert.equal(isPageBusyForAutoPrompt(busyRoot), true);
+  checkAutoFeedbackPrompt({ root: busyRoot, nowMs: day1, openFn: () => ({}) });
+  const deferred = checkAutoFeedbackPrompt({ root: busyRoot, nowMs: day2, openFn: () => ({}) });
+  assert.equal(deferred.action, 'defer');
+  assert.equal(deferred.reason, 'page_busy');
+  assert.equal(JSON.parse(storage2.getItem(AUTO_PROMPT_STORAGE_KEY)).promptedAt, null);
+
+  // Storage failure fails closed (never nags repeatedly)
+  const readonlyStorage = makeMemoryStorage({ throwOnSet: true });
+  const readonlyResult = checkAutoFeedbackPrompt({
+    root: {
+      ...fakeRoot,
+      localStorage: {
+        getItem: () => JSON.stringify({ firstUsedDay: '2026-11-24', firstUsedAt: day1 }),
+        setItem: readonlyStorage.setItem,
+      },
+    },
+    nowMs: day2,
+    openFn: () => { throw new Error('must not open if persistence fails'); },
+  });
+  assert.equal(readonlyResult.action, 'skip');
+  assert.equal(readonlyResult.reason, 'storage_unavailable');
+}
+
 async function run() {
   testFeedbackMotionStylesCoverEnterAndExit();
   testNormalizeSelectedTypesKeepsCanonicalOrder();
@@ -248,6 +416,9 @@ async function run() {
   testBuildIssueDraftUrlTargetsFixedRepo();
   testResolveGithubTokenPrefersDecodedSecretPrivate();
   testClassifyIssueError();
+  testAutoPromptSkipsGuestLockedAndUpstreamHost();
+  testAutoPromptTriggersOnceOnSecondDayAndRespectsMidnightBuffer();
+  testAutoPromptSuppressedAfterManualOpenAndDefersWhenBusy();
   await testSubmitIssueUsesApiWhenTokenAvailable();
   await testSubmitIssueFallsBackToDraftWhenNoToken();
   await testBlockedDraftDoesNotNavigateCurrentPage();

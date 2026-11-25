@@ -17,6 +17,10 @@
   const TARGET_OWNER = 'ziwenhahaha';
   const TARGET_REPO = 'daily-paper-reader';
   const FEEDBACK_ANIMATION_MS = 180;
+  const AUTO_PROMPT_STORAGE_KEY = 'dpr_feedback_day2_prompt_v1';
+  const AUTO_PROMPT_MIN_ELAPSED_MS = 4 * 60 * 60 * 1000;
+  const AUTO_PROMPT_DELAY_MS = 2500;
+  const UPSTREAM_HOST_TOKEN = 'ziwenhahaha';
 
   const getFeedbackMotionStyles = (isVisible) => ({
     overlay: {
@@ -44,6 +48,219 @@
     openFrame: null,
     closingTimer: null,
     isClosing: false,
+    autoPromptTimer: null,
+    autoPromptBound: false,
+  };
+
+  const formatLocalDayKey = (timestampMs) => {
+    const date = new Date(Number(timestampMs));
+    if (Number.isNaN(date.getTime())) return '';
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const parseDayKeyToUtcMs = (dayKey) => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dayKey || '').trim());
+    if (!match) return NaN;
+    return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  };
+
+  const computeLocalDayDiff = (fromDayKey, toDayKey) => {
+    const fromMs = parseDayKeyToUtcMs(fromDayKey);
+    const toMs = parseDayKeyToUtcMs(toDayKey);
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return NaN;
+    return Math.round((toMs - fromMs) / 86400000);
+  };
+
+  const isUpstreamDemoHost = (hostname) => String(hostname || '').toLowerCase().includes(UPSTREAM_HOST_TOKEN);
+
+  const toPositiveTimestamp = (value) => {
+    if (value == null || value === '') return null;
+    const num = Number(value);
+    return Number.isFinite(num) && num > 0 ? num : null;
+  };
+
+  const normalizeAutoPromptRecord = (raw) => {
+    if (!raw || typeof raw !== 'object') return null;
+    const firstUsedDay = typeof raw.firstUsedDay === 'string' && parseDayKeyToUtcMs(raw.firstUsedDay) ? raw.firstUsedDay : '';
+    const firstUsedAt = toPositiveTimestamp(raw.firstUsedAt);
+    const promptedAt = toPositiveTimestamp(raw.promptedAt);
+    const manualOpenedAt = toPositiveTimestamp(raw.manualOpenedAt);
+    const submittedAt = toPositiveTimestamp(raw.submittedAt);
+    if (!firstUsedDay && !firstUsedAt && !promptedAt && !manualOpenedAt && !submittedAt) return null;
+    return {
+      firstUsedDay,
+      firstUsedAt,
+      promptedAt,
+      manualOpenedAt,
+      submittedAt,
+    };
+  };
+
+  const readAutoPromptRecord = (storage) => {
+    if (!storage || typeof storage.getItem !== 'function') return null;
+    try {
+      const raw = storage.getItem(AUTO_PROMPT_STORAGE_KEY);
+      if (!raw) return null;
+      return normalizeAutoPromptRecord(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  };
+
+  const writeAutoPromptRecord = (storage, record) => {
+    if (!storage || typeof storage.setItem !== 'function') return false;
+    try {
+      storage.setItem(AUTO_PROMPT_STORAGE_KEY, JSON.stringify(record));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const evaluateAutoPrompt = ({
+    accessMode = '',
+    hostname = '',
+    nowMs = Date.now(),
+    record = null,
+    minElapsedMs = AUTO_PROMPT_MIN_ELAPSED_MS,
+  } = {}) => {
+    if (String(accessMode || '').toLowerCase() !== 'full') {
+      return { action: 'skip', reason: 'not_full_mode' };
+    }
+    if (isUpstreamDemoHost(hostname)) {
+      return { action: 'skip', reason: 'upstream_demo_host' };
+    }
+
+    const normalized = normalizeAutoPromptRecord(record);
+    if (normalized && (normalized.promptedAt || normalized.manualOpenedAt || normalized.submittedAt)) {
+      return { action: 'skip', reason: 'already_handled' };
+    }
+
+    const todayKey = formatLocalDayKey(nowMs);
+    if (!todayKey) {
+      return { action: 'skip', reason: 'invalid_time' };
+    }
+
+    if (!normalized || !normalized.firstUsedDay || !Number.isFinite(normalized.firstUsedAt)) {
+      return {
+        action: 'record_first_use',
+        reason: 'first_day_recorded',
+        nextRecord: {
+          firstUsedDay: todayKey,
+          firstUsedAt: nowMs,
+          promptedAt: null,
+          manualOpenedAt: null,
+          submittedAt: null,
+        },
+      };
+    }
+
+    const dayDiff = computeLocalDayDiff(normalized.firstUsedDay, todayKey);
+    const elapsedMs = nowMs - normalized.firstUsedAt;
+    if (!Number.isFinite(dayDiff) || dayDiff < 1) {
+      return { action: 'wait', reason: 'same_day', dayDiff, elapsedMs };
+    }
+    if (dayDiff === 1 && elapsedMs < minElapsedMs) {
+      return { action: 'wait', reason: 'too_soon_after_first_use', dayDiff, elapsedMs };
+    }
+
+    return {
+      action: 'prompt',
+      reason: 'second_day_reached',
+      dayDiff,
+      elapsedMs,
+      nextRecord: {
+        ...normalized,
+        promptedAt: nowMs,
+      },
+    };
+  };
+
+  const isElementVisible = (el, scopeRoot) => {
+    if (!el || el.hidden) return false;
+    try {
+      const style = scopeRoot && typeof scopeRoot.getComputedStyle === 'function'
+        ? scopeRoot.getComputedStyle(el)
+        : el.style;
+      if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) {
+        return false;
+      }
+      if (typeof el.getBoundingClientRect === 'function') {
+        const rect = el.getBoundingClientRect();
+        if (rect && rect.width === 0 && rect.height === 0) return false;
+      }
+    } catch {
+      // fall through
+    }
+    return true;
+  };
+
+  const isPageBusyForAutoPrompt = (scopeRoot) => {
+    const safeRoot = scopeRoot || root || {};
+    const doc = safeRoot.document;
+    if (!doc) return true;
+    if (doc.visibilityState && doc.visibilityState !== 'visible') return true;
+    if (state.overlay) return true;
+
+    const secretOverlay = typeof doc.getElementById === 'function'
+      ? doc.getElementById('secret-gate-overlay')
+      : null;
+    if (secretOverlay) {
+      const hiddenByClass = secretOverlay.classList
+        && typeof secretOverlay.classList.contains === 'function'
+        && secretOverlay.classList.contains('secret-gate-hidden');
+      const shownByClass = secretOverlay.classList
+        && typeof secretOverlay.classList.contains === 'function'
+        && secretOverlay.classList.contains('show');
+      if (shownByClass || (!hiddenByClass && isElementVisible(secretOverlay, safeRoot))) {
+        return true;
+      }
+    }
+
+    const adminOverlay = typeof doc.getElementById === 'function'
+      ? doc.getElementById('arxiv-search-overlay')
+      : null;
+    if (adminOverlay && isElementVisible(adminOverlay, safeRoot)) {
+      return true;
+    }
+
+    if (typeof doc.querySelectorAll === 'function') {
+      const modals = doc.querySelectorAll('[aria-modal="true"]');
+      for (let i = 0; i < modals.length; i += 1) {
+        if (isElementVisible(modals[i], safeRoot)) return true;
+      }
+    }
+
+    const active = doc.activeElement;
+    if (active) {
+      const tag = String(active.tagName || '').toUpperCase();
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || active.isContentEditable) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  const markAutoPromptHandled = (fieldName, scopeRoot, nowMs = Date.now()) => {
+    const safeRoot = scopeRoot || root || {};
+    const storage = safeRoot.localStorage;
+    if (!storage) return false;
+    const existing = readAutoPromptRecord(storage) || {
+      firstUsedDay: formatLocalDayKey(nowMs),
+      firstUsedAt: nowMs,
+      promptedAt: null,
+      manualOpenedAt: null,
+      submittedAt: null,
+    };
+    const next = {
+      ...existing,
+      [fieldName]: existing[fieldName] || nowMs,
+    };
+    return writeAutoPromptRecord(storage, next);
   };
 
   const normalizeText = (value) => String(value == null ? '' : value).replace(/\r\n/g, '\n').trim();
@@ -493,6 +710,7 @@
         state.pendingDraftUrl = '';
         state.submitted = true;
         state.submittedLabel = '已打开 GitHub';
+        markAutoPromptHandled('submittedAt', root);
         setStatus('已打开预填好的公开 Issue 页面，请在 GitHub 完成提交。', 'success');
       } else {
         setStatus('浏览器阻止了新窗口，请允许本站打开弹窗后重试。', 'error');
@@ -513,11 +731,13 @@
       if (result.mode === 'api') {
         state.submitted = true;
         state.submittedLabel = '提交成功';
+        markAutoPromptHandled('submittedAt', root);
         setStatus(result.message, 'success');
       } else {
         if (result.opened) {
           state.submitted = true;
           state.submittedLabel = '已打开 GitHub';
+          markAutoPromptHandled('submittedAt', root);
         } else if (result.draftUrl) {
           state.pendingDraftUrl = result.draftUrl;
         }
@@ -535,14 +755,14 @@
     applyStyles(label, {
       display: 'inline-flex',
       alignItems: 'center',
-      gap: '8px',
-      padding: '8px 10px',
+      gap: '6px',
+      padding: '6px 10px',
       border: '1px solid #d0d5dd',
       borderRadius: '8px',
       background: '#f8fafc',
       color: '#101828',
-      fontSize: '14px',
-      lineHeight: '20px',
+      fontSize: '13px',
+      lineHeight: '18px',
       cursor: 'pointer',
       userSelect: 'none',
     });
@@ -565,9 +785,10 @@
     return { label, input };
   };
 
-  const buildModal = () => {
+  const buildModal = (options = {}) => {
     if (!hasDom()) return null;
     const documentRef = root.document;
+    const isAutoPrompt = Boolean(options && options.isAutoPrompt);
 
     const overlay = documentRef.createElement('div');
     overlay.id = 'dpr-feedback-overlay';
@@ -580,7 +801,7 @@
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      padding: '24px',
+      padding: '16px',
       background: 'rgba(15, 23, 42, 0.52)',
       boxSizing: 'border-box',
       opacity: '0',
@@ -601,11 +822,14 @@
     panel.setAttribute('aria-labelledby', 'dpr-feedback-heading');
     applyStyles(panel, {
       position: 'relative',
-      width: 'min(680px, 100%)',
-      maxHeight: 'min(760px, calc(100vh - 48px))',
-      overflow: 'auto',
-      padding: '28px 28px 24px',
-      borderRadius: '8px',
+      display: 'flex',
+      flexDirection: 'column',
+      width: 'min(640px, 100%)',
+      maxHeight: 'calc(100vh - 32px)',
+      overflowY: 'auto',
+      overflowX: 'hidden',
+      padding: '22px 24px 20px',
+      borderRadius: '12px',
       background: '#ffffff',
       boxShadow: '0 24px 72px rgba(15, 23, 42, 0.22)',
       boxSizing: 'border-box',
@@ -627,14 +851,14 @@
       position: 'absolute',
       top: '12px',
       right: '12px',
-      width: '36px',
-      height: '36px',
+      width: '34px',
+      height: '34px',
       border: '0',
       borderRadius: '999px',
       background: 'transparent',
       color: '#344054',
-      fontSize: '24px',
-      lineHeight: '36px',
+      fontSize: '22px',
+      lineHeight: '34px',
       cursor: 'pointer',
     });
     closeButton.addEventListener('click', close);
@@ -643,28 +867,45 @@
     title.id = 'dpr-feedback-heading';
     title.textContent = '公开反馈';
     applyStyles(title, {
-      margin: '0 40px 8px 0',
-      fontSize: '24px',
-      lineHeight: '32px',
+      margin: '0 36px 4px 0',
+      fontSize: '20px',
+      lineHeight: '28px',
       fontWeight: '700',
     });
 
     const intro = documentRef.createElement('p');
     intro.textContent = '提交后会公开发布到 GitHub Issues，请不要填写隐私或敏感信息。';
     applyStyles(intro, {
-      margin: '0 0 20px',
+      margin: '0 0 12px',
       color: '#475467',
-      fontSize: '14px',
-      lineHeight: '22px',
+      fontSize: '13px',
+      lineHeight: '20px',
     });
+
+    let autoBanner = null;
+    if (isAutoPrompt) {
+      autoBanner = documentRef.createElement('div');
+      autoBanner.id = 'dpr-feedback-auto-banner';
+      autoBanner.textContent = '使用已经第二天啦 👋 如果有任何体验建议、Bug 或想补充的会议/功能，欢迎随手告诉我们。本提示仅自动弹出这一次，不想填写直接关闭即可。';
+      applyStyles(autoBanner, {
+        margin: '0 0 12px',
+        padding: '8px 12px',
+        borderRadius: '8px',
+        border: '1px solid #bbf7d0',
+        background: '#f0fdf4',
+        color: '#166534',
+        fontSize: '12.5px',
+        lineHeight: '19px',
+      });
+    }
 
     const typeTitle = documentRef.createElement('div');
     typeTitle.id = 'dpr-feedback-types-label';
     typeTitle.textContent = '反馈类型';
     applyStyles(typeTitle, {
-      margin: '0 0 10px',
-      fontSize: '14px',
-      lineHeight: '20px',
+      margin: '0 0 6px',
+      fontSize: '13px',
+      lineHeight: '18px',
       fontWeight: '600',
     });
 
@@ -674,8 +915,8 @@
     applyStyles(typeWrap, {
       display: 'flex',
       flexWrap: 'wrap',
-      gap: '10px',
-      marginBottom: '18px',
+      gap: '8px',
+      marginBottom: '12px',
     });
 
     const typeInputs = ISSUE_TYPES.map((item) => createTypeCheckbox(documentRef, item));
@@ -686,9 +927,9 @@
     titleLabel.textContent = '标题';
     applyStyles(titleLabel, {
       display: 'block',
-      margin: '0 0 8px',
-      fontSize: '14px',
-      lineHeight: '20px',
+      margin: '0 0 6px',
+      fontSize: '13px',
+      lineHeight: '18px',
       fontWeight: '600',
     });
 
@@ -698,11 +939,11 @@
     titleInput.placeholder = '例如：会议标签切换后计数不刷新';
     applyStyles(titleInput, {
       width: '100%',
-      padding: '11px 12px',
-      margin: '0 0 18px',
+      padding: '9px 12px',
+      margin: '0 0 6px',
       border: '1px solid #d0d5dd',
       borderRadius: '8px',
-      fontSize: '14px',
+      fontSize: '13.5px',
       lineHeight: '20px',
       boxSizing: 'border-box',
     });
@@ -714,10 +955,10 @@
     const titlePreview = documentRef.createElement('div');
     titlePreview.id = 'dpr-feedback-title-preview';
     applyStyles(titlePreview, {
-      margin: '-10px 0 18px',
+      margin: '0 0 12px',
       color: '#667085',
       fontSize: '12px',
-      lineHeight: '18px',
+      lineHeight: '16px',
       overflowWrap: 'anywhere',
     });
 
@@ -726,9 +967,9 @@
     contentLabel.textContent = '内容';
     applyStyles(contentLabel, {
       display: 'block',
-      margin: '0 0 8px',
-      fontSize: '14px',
-      lineHeight: '20px',
+      margin: '0 0 6px',
+      fontSize: '13px',
+      lineHeight: '18px',
       fontWeight: '600',
     });
 
@@ -737,13 +978,15 @@
     contentInput.placeholder = '请直接写问题、现象、建议或缺失的数据。';
     applyStyles(contentInput, {
       width: '100%',
-      minHeight: '180px',
-      padding: '12px',
+      height: '120px',
+      minHeight: '96px',
+      flex: '0 1 auto',
+      padding: '10px 12px',
       border: '1px solid #d0d5dd',
       borderRadius: '8px',
-      resize: 'vertical',
-      fontSize: '14px',
-      lineHeight: '22px',
+      resize: 'none',
+      fontSize: '13.5px',
+      lineHeight: '20px',
       boxSizing: 'border-box',
     });
     contentInput.addEventListener('input', () => {
@@ -755,11 +998,11 @@
     applyStyles(confirmRow, {
       display: 'flex',
       alignItems: 'flex-start',
-      gap: '10px',
-      marginTop: '18px',
+      gap: '8px',
+      marginTop: '12px',
       color: '#101828',
-      fontSize: '14px',
-      lineHeight: '22px',
+      fontSize: '13px',
+      lineHeight: '20px',
       cursor: 'pointer',
     });
 
@@ -783,10 +1026,10 @@
     status.setAttribute('role', 'status');
     status.setAttribute('aria-live', 'polite');
     applyStyles(status, {
-      minHeight: '22px',
-      marginTop: '16px',
-      fontSize: '14px',
-      lineHeight: '22px',
+      minHeight: '18px',
+      marginTop: '10px',
+      fontSize: '13px',
+      lineHeight: '18px',
       color: '#344054',
     });
 
@@ -795,23 +1038,61 @@
     submitButton.type = 'button';
     submitButton.textContent = '公开提交反馈';
     applyStyles(submitButton, {
-      width: '100%',
-      marginTop: '18px',
-      padding: '12px 16px',
+      width: isAutoPrompt ? 'auto' : '100%',
+      flex: isAutoPrompt ? '1 1 auto' : '',
+      marginTop: isAutoPrompt ? '0' : '12px',
+      padding: '10px 16px',
       border: '0',
       borderRadius: '8px',
       background: '#1d4ed8',
       color: '#ffffff',
-      fontSize: '15px',
-      lineHeight: '22px',
+      fontSize: '14px',
+      lineHeight: '20px',
       fontWeight: '600',
       cursor: 'pointer',
     });
     submitButton.addEventListener('click', handleSubmit);
 
+    let actionFooter = submitButton;
+    if (isAutoPrompt) {
+      const actionRow = documentRef.createElement('div');
+      actionRow.id = 'dpr-feedback-actions';
+      applyStyles(actionRow, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '10px',
+        marginTop: '12px',
+      });
+
+      const dismissButton = documentRef.createElement('button');
+      dismissButton.id = 'dpr-feedback-dismiss';
+      dismissButton.type = 'button';
+      dismissButton.textContent = '暂不反馈';
+      applyStyles(dismissButton, {
+        flex: '0 0 auto',
+        padding: '10px 18px',
+        border: '1px solid #d0d5dd',
+        borderRadius: '8px',
+        background: '#ffffff',
+        color: '#344054',
+        fontSize: '14px',
+        lineHeight: '20px',
+        fontWeight: '600',
+        cursor: 'pointer',
+      });
+      dismissButton.addEventListener('click', () => close());
+
+      actionRow.appendChild(dismissButton);
+      actionRow.appendChild(submitButton);
+      actionFooter = actionRow;
+    }
+
     panel.appendChild(closeButton);
     panel.appendChild(title);
     panel.appendChild(intro);
+    if (autoBanner) {
+      panel.appendChild(autoBanner);
+    }
     panel.appendChild(typeTitle);
     panel.appendChild(typeWrap);
     panel.appendChild(titleLabel);
@@ -821,7 +1102,7 @@
     panel.appendChild(contentInput);
     panel.appendChild(confirmRow);
     panel.appendChild(status);
-    panel.appendChild(submitButton);
+    panel.appendChild(actionFooter);
     overlay.appendChild(panel);
 
     return {
@@ -842,9 +1123,14 @@
 
   const open = (prefill = {}) => {
     if (!hasDom()) return null;
+    clearAutoPromptTimer();
+    const isAutoPrompt = Boolean(prefill && prefill.source === 'auto');
+    if (!isAutoPrompt) {
+      markAutoPromptHandled('manualOpenedAt', root);
+    }
     close({ immediate: true, restoreFocus: false });
 
-    const built = buildModal();
+    const built = buildModal({ isAutoPrompt });
     if (!built) return null;
 
     state.overlay = built.overlay;
@@ -891,21 +1177,126 @@
     state.refs.confirmInput.checked = Boolean(prefill.confirmPublic);
 
     renderValidationState();
-    const focusTarget = state.refs.titleInput;
+    const focusTarget = isAutoPrompt ? state.refs.closeButton : state.refs.titleInput;
     if (focusTarget && typeof focusTarget.focus === 'function') {
       focusTarget.focus();
     }
     return state.overlay;
   };
 
+  const clearAutoPromptTimer = () => {
+    if (state.autoPromptTimer == null) return;
+    if (root && typeof root.clearTimeout === 'function') {
+      root.clearTimeout(state.autoPromptTimer);
+    }
+    state.autoPromptTimer = null;
+  };
+
+  const checkAutoFeedbackPrompt = (options = {}) => {
+    const safeRoot = options.root || root || {};
+    const storage = options.storage || safeRoot.localStorage;
+    const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
+    const accessMode = Object.prototype.hasOwnProperty.call(options, 'accessMode')
+      ? options.accessMode
+      : safeRoot.DPR_ACCESS_MODE;
+    const hostname = Object.prototype.hasOwnProperty.call(options, 'hostname')
+      ? options.hostname
+      : (safeRoot.location && safeRoot.location.hostname) || '';
+    const record = readAutoPromptRecord(storage);
+    const decision = evaluateAutoPrompt({
+      accessMode,
+      hostname,
+      nowMs,
+      record,
+      minElapsedMs: options.minElapsedMs,
+    });
+
+    if (decision.action === 'record_first_use') {
+      const saved = writeAutoPromptRecord(storage, decision.nextRecord);
+      return { ...decision, saved, opened: false };
+    }
+
+    if (decision.action !== 'prompt') {
+      return { ...decision, opened: false };
+    }
+
+    if (options.bypassBusyCheck !== true && isPageBusyForAutoPrompt(safeRoot)) {
+      return { action: 'defer', reason: 'page_busy', opened: false };
+    }
+
+    // 必须先成功落盘“已弹出”标记，避免在隐私模式/禁用存储环境下重复打扰用户。
+    if (!writeAutoPromptRecord(storage, decision.nextRecord)) {
+      return { action: 'skip', reason: 'storage_unavailable', opened: false };
+    }
+
+    const openFn = typeof options.openFn === 'function' ? options.openFn : open;
+    const overlay = openFn({ source: 'auto' });
+    return { ...decision, opened: Boolean(overlay) };
+  };
+
+  const scheduleAutoFeedbackPrompt = (delayMs = AUTO_PROMPT_DELAY_MS) => {
+    if (!hasDom()) return;
+    const safeRoot = root || {};
+    const accessMode = safeRoot.DPR_ACCESS_MODE;
+    const hostname = (safeRoot.location && safeRoot.location.hostname) || '';
+    const storage = safeRoot.localStorage;
+    const decision = evaluateAutoPrompt({
+      accessMode,
+      hostname,
+      nowMs: Date.now(),
+      record: readAutoPromptRecord(storage),
+    });
+
+    if (decision.action === 'record_first_use') {
+      writeAutoPromptRecord(storage, decision.nextRecord);
+      return;
+    }
+    if (decision.action !== 'prompt') {
+      clearAutoPromptTimer();
+      return;
+    }
+    if (safeRoot.document && safeRoot.document.visibilityState && safeRoot.document.visibilityState !== 'visible') {
+      return;
+    }
+
+    clearAutoPromptTimer();
+    const waitMs = Math.max(0, Number(delayMs) || 0);
+    state.autoPromptTimer = safeRoot.setTimeout(() => {
+      state.autoPromptTimer = null;
+      checkAutoFeedbackPrompt({ root: safeRoot });
+    }, waitMs);
+  };
+
+  const initAutoPromptListeners = () => {
+    if (!hasDom() || state.autoPromptBound) return;
+    state.autoPromptBound = true;
+    const doc = root.document;
+    if (typeof doc.addEventListener === 'function') {
+      doc.addEventListener('dpr-access-mode-changed', () => {
+        scheduleAutoFeedbackPrompt(AUTO_PROMPT_DELAY_MS);
+      });
+      doc.addEventListener('visibilitychange', () => {
+        if (!doc.visibilityState || doc.visibilityState === 'visible') {
+          scheduleAutoFeedbackPrompt(AUTO_PROMPT_DELAY_MS);
+        }
+      });
+    }
+    scheduleAutoFeedbackPrompt(AUTO_PROMPT_DELAY_MS);
+  };
+
   return {
     open,
     close,
+    checkAutoFeedbackPrompt,
+    scheduleAutoFeedbackPrompt,
     __test: {
       ISSUE_TYPES,
       TARGET_OWNER,
       TARGET_REPO,
       FEEDBACK_ANIMATION_MS,
+      AUTO_PROMPT_STORAGE_KEY,
+      AUTO_PROMPT_MIN_ELAPSED_MS,
+      AUTO_PROMPT_DELAY_MS,
       getFeedbackMotionStyles,
       normalizeText,
       normalizeInlineText,
@@ -919,6 +1310,14 @@
       resolveGithubToken,
       classifyIssueError,
       submitIssueWithFallback,
+      formatLocalDayKey,
+      computeLocalDayDiff,
+      isUpstreamDemoHost,
+      evaluateAutoPrompt,
+      isPageBusyForAutoPrompt,
+      markAutoPromptHandled,
+      checkAutoFeedbackPrompt,
+      initAutoPromptListeners,
     },
   };
 });
@@ -929,4 +1328,7 @@ if (typeof document !== 'undefined' && document.addEventListener) {
       window.DPRFeedback.open();
     }
   });
+  if (window.DPRFeedback && window.DPRFeedback.__test && typeof window.DPRFeedback.__test.initAutoPromptListeners === 'function') {
+    window.DPRFeedback.__test.initAutoPromptListeners();
+  }
 }
