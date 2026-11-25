@@ -703,6 +703,29 @@ window.DPRWorkflowRunner = (function () {
     return merged;
   };
 
+  const buildWorkflowDisplayLabel = (wf, inputs) => {
+    const key = String((wf && wf.key) || '');
+    const inp = inputs && typeof inputs === 'object' ? inputs : {};
+    if (key === 'topic-research') {
+      const tag = String(inp.profile_tag || '').trim();
+      const mode = String(inp.mode || 'starter').trim();
+      const modeLabel = mode === 'starter' ? '大礼包' : `${mode}天`;
+      return tag ? `专题研究 · ${tag}（${modeLabel}）` : `专题研究（${modeLabel}）`;
+    }
+    if (key === 'conference-retrieval') {
+      const target = String(inp.conference_pairs || '').trim()
+        || [inp.conference, inp.years].filter(Boolean).join(' ').trim();
+      const tag = String(inp.profile_tag || '').trim();
+      return `会议论文${target ? ` · ${target}` : ''}${tag ? ` · ${tag}` : ''}`;
+    }
+    if (key === 'daily-now') {
+      const days = String(inp.fetch_days || '').trim();
+      const tag = String(inp.profile_tag || '').trim();
+      return `每日论文${days && days !== '10' ? `（${days}天）` : ''}${tag ? ` · ${tag}` : ''}`;
+    }
+    return String((wf && wf.name) || key || '后台任务');
+  };
+
   const dispatchAndMonitor = async (workflow, extraInputs) => {
     const wf = workflow || {};
     const workflowFile = String(wf.id || '');
@@ -813,6 +836,19 @@ window.DPRWorkflowRunner = (function () {
         throw new Error(`触发失败：HTTP ${res.status} ${res.statusText} - ${txt}`);
       }
 
+      const displayLabel = buildWorkflowDisplayLabel(wf, dispatchInputs);
+      let pendingStatusKey = '';
+      if (window.DPRWorkflowStatusSync && typeof window.DPRWorkflowStatusSync.recordDispatched === 'function') {
+        pendingStatusKey = await window.DPRWorkflowStatusSync.recordDispatched({
+          owner,
+          repo,
+          workflowKey: wf.key,
+          workflowFile,
+          displayLabel,
+          dispatchedAt: createdAt.getTime(),
+        }).catch(() => '');
+      }
+
       setStatus('已触发，正在等待运行记录创建...', '#666', { waiting: true });
 
       // 派发确认与进度轮询分离，关闭页面不会把已提交的任务误报为提交失败。
@@ -858,6 +894,20 @@ window.DPRWorkflowRunner = (function () {
 
         activeRun = { owner, repo, runId: run.id, token };
         selectedRun = activeRun;
+        if (window.DPRWorkflowStatusSync && typeof window.DPRWorkflowStatusSync.recordRunStarted === 'function') {
+          window.DPRWorkflowStatusSync.recordRunStarted({
+            owner,
+            repo,
+            workflowKey: wf.key,
+            workflowFile,
+            displayLabel,
+            runId: run.id,
+            runNumber: run.run_number,
+            status: run.status,
+            conclusion: run.conclusion,
+            pendingKey: pendingStatusKey,
+          }).catch(() => {});
+        }
         setStatus(`运行已创建：run_id=${run.id}，开始拉取进度...`, '#080', { waiting: true });
         await refreshRun(owner, repo, run.id);
 
@@ -995,6 +1045,18 @@ window.DPRWorkflowRunner = (function () {
           `运行已结束：${run.conclusion || 'completed'}`,
           run.conclusion === 'success' ? '#080' : '#c00',
         );
+        if (window.DPRWorkflowStatusSync && typeof window.DPRWorkflowStatusSync.recordRunUpdate === 'function') {
+          window.DPRWorkflowStatusSync.recordRunUpdate({
+            owner,
+            repo,
+            runId: run.id,
+            runNumber: run.run_number,
+            status: 'completed',
+            conclusion: run.conclusion || '',
+            stepCode: 'done',
+            stepLabel: run.conclusion === 'success' ? '任务已完成' : '任务结束',
+          }).catch(() => {});
+        }
         // run 状态结束后，刷新“最近运行”列表，确保 completed/success 等状态能及时反映
         if (prevStateKey !== stateKey) {
           loadRecentRuns();
@@ -1208,12 +1270,42 @@ window.DPRWorkflowRunner = (function () {
   const runConferenceMaintain = async (conference, years) =>
     runConferenceRetrieval(conference, years);
 
+  const openRun = async (runId, repoFullName) => {
+    const token = loadGithubToken();
+    if (!token || !runId) return false;
+    let owner = '';
+    let repo = '';
+    const rawRepo = String(repoFullName || '').trim();
+    if (rawRepo.includes('/')) {
+      const parts = rawRepo.split('/');
+      owner = parts[0] || '';
+      repo = parts[1] || '';
+    }
+    if (!owner || !repo) {
+      const ctx = await resolveRepoContext(token);
+      owner = ctx.owner;
+      repo = ctx.repo;
+    }
+    if (!owner || !repo) return false;
+    open();
+    stopPolling();
+    selectedRun = { owner, repo, runId: Number(runId), token };
+    setStatus(`正在加载运行详情：run_id=${runId}`, '#666', { waiting: true });
+    await refreshRun(owner, repo, Number(runId));
+    refreshTimer = setInterval(() => {
+      if (!selectedRun) return;
+      refreshRun(selectedRun.owner, selectedRun.repo, selectedRun.runId);
+    }, 5000);
+    return true;
+  };
+
   return {
-    __test: { buildQuickFetchRequest, buildTopicResearchRequest, sanitizeResearchProfile },
+    __test: { buildQuickFetchRequest, buildTopicResearchRequest, sanitizeResearchProfile, buildWorkflowDisplayLabel },
     buildTopicResearchRequest,
     sanitizeResearchProfile,
     isStarterPackSupported: () => !isLocalDebugPage(),
     open,
+    openRun,
     runWorkflowByKey,
     runQuickFetchByDays,
     runConferenceRetrieval,

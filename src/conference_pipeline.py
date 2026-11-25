@@ -175,6 +175,18 @@ def main() -> None:
     rrf_path = output_dir / f"conference-{conf_token}-{year_token}.supabase.rrf.json"
     manifest_path = output_dir / f"conference-{conf_token}-{year_token}.supabase.manifest.json"
 
+    from workflow_status import WorkflowStatusReporter
+
+    conf_display = f"会议论文 · {conf_token.upper()} {year_token}"
+    tag_env = str(os.getenv("DPR_FILTER_PROFILE_TAG") or "").strip()
+    if tag_env:
+        conf_display += f" · {tag_env}"
+    status_reporter = WorkflowStatusReporter(
+        workflow_key="conference-retrieval",
+        workflow_file="conference-paper-retrieval.yml",
+        display_label=conf_display,
+    )
+
     retrieval_cmd = [
         sys.executable,
         str(SCRIPT_DIR / "conference_retrieval.py"),
@@ -199,6 +211,7 @@ def main() -> None:
     ]
     if filter_pairs:
         retrieval_cmd.extend(["--conference-pairs", ",".join(filter_pairs)])
+    status_reporter.report(step_code="step2", step_label="会议双路召回", force=True)
     run_step("Conference Supabase retrieval", retrieval_cmd)
 
     rrf_cmd = [
@@ -213,6 +226,7 @@ def main() -> None:
         "--top-n",
         str(max(int(args.rrf_top_n or 1), 1)),
     ]
+    status_reporter.report(step_code="step2.3", step_label="RRF 候选融合", force=True)
     run_step("Conference RRF", rrf_cmd)
 
     rerank_path = None
@@ -237,6 +251,7 @@ def main() -> None:
         ]
         rerank_env = os.environ.copy()
         rerank_env.setdefault("MKL_THREADING_LAYER", "GNU")
+        status_reporter.report(step_code="step3", step_label="云端 Qwen3 重排", force=True)
         run_step("Conference rerank", rerank_cmd, env=rerank_env)
 
     llm_path = None
@@ -261,6 +276,7 @@ def main() -> None:
         ]
         if args.config and str(args.config).strip() != "-":
             llm_cmd.extend(["--config", args.config])
+        status_reporter.report(step_code="step4", step_label="DeepSeek 相关性精排", force=True)
         run_step("Conference DeepSeek refine", llm_cmd)
         prune_llm_result(llm_path, float(args.display_min_score))
 

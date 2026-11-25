@@ -42,6 +42,7 @@ from starter_pack_guide import (
 from starter_pack_publications import verify_publications
 from starter_pack_retrieval import build_tasks, fingerprint, run_retrieval, write_json
 from topic_research_export import export_records, render_export
+from workflow_status import WorkflowStatusReporter
 
 
 SRC_DIR = Path(__file__).resolve().parent
@@ -698,6 +699,7 @@ def publish_topic_results(
     *,
     docs_concurrency: int = DEFAULT_DOCS_CONCURRENCY,
     guide_client_factory: Callable[[], Any] | None = None,
+    status_reporter: WorkflowStatusReporter | None = None,
 ) -> Dict[str, Any]:
     """使用标准 Step 6 process_paper + 单轨 _sidebar.md/_daily_state.json/papers.meta.json 发布成果。"""
     root = Path(root).resolve()
@@ -768,6 +770,17 @@ def publish_topic_results(
     failed_papers: List[str] = []
     workers = max(1, int(docs_concurrency or DEFAULT_DOCS_CONCURRENCY))
     if tasks:
+        total_docs = len(tasks)
+        done_docs = 0
+        if status_reporter is not None:
+            status_reporter.report(
+                step_code="step6",
+                step_label="Step 6 生成论文与图表",
+                progress_current=0,
+                progress_total=total_docs,
+                detail=f"共 {total_docs} 篇（精读 {len(deep_dive)} / 速读 {len(quick_skim)}）",
+                force=True,
+            )
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(
@@ -793,6 +806,15 @@ def publish_topic_results(
                     pid = str(paper.get("id") or route)
                     log(f"[WARN] Step 6 生成论文失败（已隔离继续）：{pid}: {exc}")
                     failed_papers.append(pid)
+                finally:
+                    done_docs += 1
+                    if status_reporter is not None:
+                        status_reporter.report(
+                            step_code="step6",
+                            step_label="Step 6 生成论文与图表",
+                            progress_current=done_docs,
+                            progress_total=total_docs,
+                        )
 
     ordered_done = [generated_results[i] for i in sorted(generated_results)]
     deep_done = [p for p, sec, _ in ordered_done if sec == "deep"]
@@ -943,6 +965,13 @@ def publish_topic_results(
 
     guide_status = "not_required"
     if mode == "starter":
+        if status_reporter is not None:
+            status_reporter.report(
+                step_code="guide",
+                step_label="生成方向导读与清单",
+                detail=f"基于 {len(final_papers)} 篇入选论文生成导读",
+                force=True,
+            )
         try:
             guide = _generate_or_load_guide(
                 root, plan, final_papers, guide_client_factory=guide_client_factory
@@ -1045,8 +1074,21 @@ def run_research(
     for d in (filtered_dir, rank_dir, recommend_dir):
         d.mkdir(parents=True, exist_ok=True)
 
+    mode_label = _mode_display_label(mode, int(plan.get("arxiv_days") or 365))
+    reporter = WorkflowStatusReporter(
+        workflow_key="topic-research",
+        workflow_file="topic-research.yml",
+        display_label=f"专题研究 · {profile_tag}（{mode_label}）",
+    )
+
     # Step 2a: 多源宽窗召回（含独立检查点）
     log(f"[INFO] 专题研究启动：mode={mode} tag={profile_tag} token={topic_token}")
+    reporter.report(
+        step_code="step2",
+        step_label="Step 2 多源召回与去重",
+        detail=f"{profile_tag} · {mode_label}",
+        force=True,
+    )
     retrieval = run_retrieval(plan, scoped, root)
     checked = verify_publications(retrieval["papers"], root, resolve_pdfs=False)
     merged = deduplicate_papers(
@@ -1088,6 +1130,12 @@ def run_research(
         step_env.setdefault("MKL_THREADING_LAYER", "GNU")
 
         # Step 3: 标准 3.rank_papers.py（逐 query Qwen3 重排）
+        reporter.report(
+            step_code="step3",
+            step_label="Step 3 云端重排",
+            detail=f"合格候选 {len(rrf_payload['papers'])} 篇",
+            force=True,
+        )
         rerank_path = rank_dir / f"topic_papers_{topic_token}.json"
         runner(
             "Topic Step 3 - Standard Rerank",
@@ -1107,6 +1155,11 @@ def run_research(
         )
 
         # Step 4: 标准 4.llm_refine_papers.py（统一 DeepSeek 评分 + 中英摘要/速览）
+        reporter.report(
+            step_code="step4",
+            step_label="Step 4 DeepSeek 精排",
+            force=True,
+        )
         scoped_cfg_path = archive_dir / "scoped_config.yaml"
         _write_scoped_llm_config(scoped_cfg_path, config, plan["snapshot"])
         llm_path = rank_dir / f"topic_papers_{topic_token}.llm.json"
@@ -1133,6 +1186,11 @@ def run_research(
 
         llm_payload = json.loads(llm_path.read_text(encoding="utf-8"))
         # Step 5: 标准阈值选篇（≥8精读，6–8速读，最多 max_papers 篇）
+        reporter.report(
+            step_code="step5",
+            step_label="Step 5 筛选精读与速读",
+            force=True,
+        )
         deep_dive, quick_skim = select_topic_papers(
             llm_payload,
             works_by_id,
@@ -1167,6 +1225,7 @@ def run_research(
             coverage,
             docs_concurrency=docs_concurrency,
             guide_client_factory=guide_client_factory,
+            status_reporter=reporter,
         )
         manifest.update(status=pub_result["status"], result=pub_result)
     return manifest

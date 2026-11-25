@@ -1864,14 +1864,82 @@
       '  </div>' +
       '</div>' +
       '<nav class="dpr-sidebar-body" aria-label="论文导航"></nav>' +
+      '<div class="dpr-sidebar-wf-status" data-dpr-wf-status hidden></div>' +
       renderSidebarFooterControls(state.sidebarCollapsed) +
       '<div class="dpr-sidebar-resizer" role="separator" aria-orientation="vertical" title="拖动调整侧栏宽度"></div>';
     state.bodyEl = $('.dpr-sidebar-body', root);
+    state.wfStatusEl = $('[data-dpr-wf-status]', root);
     state.searchInput = $('.dpr-sidebar-search', root);
     state.unreadCountEl = $('.dpr-sidebar-unread-count', root);
     if (state.searchInput) state.searchInput.value = state.search || '';
     // 渲染后立刻剥离 docsify 注入的 .app-nav / .no-badge（防下拉菜单定位）
     stripAppNav(state.bodyEl);
+    renderWorkflowStatusBar();
+  }
+
+  function renderWorkflowStatusHtml(snapshot) {
+    var snap = snapshot || (window.DPRWorkflowStatusSync && window.DPRWorkflowStatusSync.getSnapshot ? window.DPRWorkflowStatusSync.getSnapshot() : null);
+    if (!snap) return { html: '', hasActive: false };
+    var active = Array.isArray(snap.activeRuns) ? snap.activeRuns : [];
+    var done = snap.recentCompleted || null;
+    if (active.length > 0) {
+      var run = active[0];
+      var extraCount = active.length - 1;
+      var statusWord = run.status === 'queued' ? '排队中' : '运行中';
+      var stepText = run.step_label || statusWord;
+      var hasProgress = run.progress_total > 0;
+      var pct = hasProgress ? Math.min(100, Math.round((run.progress_current / run.progress_total) * 100)) : 0;
+      var progressSuffix = hasProgress ? ' · ' + run.progress_current + '/' + run.progress_total : '';
+      var metaText = stepText + progressSuffix;
+      var extraBadge = extraCount > 0 ? '<span class="dpr-wf-pill-extra">+' + extraCount + '</span>' : '';
+      var barHtml = hasProgress
+        ? '<div class="dpr-wf-pill-bar" aria-hidden="true"><span class="dpr-wf-pill-bar-fill" style="width:' + pct + '%"></span></div>'
+        : '<div class="dpr-wf-pill-bar is-indeterminate" aria-hidden="true"><span class="dpr-wf-pill-bar-fill"></span></div>';
+      var html =
+        '<button type="button" class="dpr-wf-pill is-running" data-wf-open-run="' + safeAttr(run.run_id || '') + '" data-wf-run-url="' + safeAttr(run.run_url || '') + '" data-wf-repo="' + safeAttr(run.repo_full_name || '') + '" title="点击查看后台任务实时进度">' +
+        '  <div class="dpr-wf-pill-head">' +
+        '    <span class="dpr-wf-pill-dot" aria-hidden="true"></span>' +
+        '    <span class="dpr-wf-pill-title">' + safeText(run.display_label || '后台任务') + '</span>' +
+        extraBadge +
+        '  </div>' +
+        '  <div class="dpr-wf-pill-sub">' + safeText(metaText) + '</div>' +
+        barHtml +
+        '</button>';
+      return { html: html, hasActive: true };
+    }
+    if (done) {
+      var ok = done.conclusion === 'success';
+      var stateCls = ok ? 'is-success' : 'is-failed';
+      var icon = ok ? '✓' : '✕';
+      var text = ok ? '任务已完成' : (done.conclusion === 'cancelled' ? '任务已取消' : '任务执行失败');
+      var actionHtml = ok
+        ? '<button type="button" class="dpr-wf-pill-action" data-wf-refresh-done="' + safeAttr(done.run_key) + '">刷新列表</button>'
+        : (done.run_url ? '<a class="dpr-wf-pill-action" href="' + safeAttr(done.run_url) + '" target="_blank" rel="noopener">查看日志</a>' : '');
+      var doneHtml =
+        '<div class="dpr-wf-pill ' + stateCls + '">' +
+        '  <div class="dpr-wf-pill-head">' +
+        '    <span class="dpr-wf-pill-icon" aria-hidden="true">' + icon + '</span>' +
+        '    <span class="dpr-wf-pill-title">' + safeText(done.display_label || '后台任务') + '</span>' +
+        '    <button type="button" class="dpr-wf-pill-dismiss" data-wf-dismiss="' + safeAttr(done.run_key) + '" aria-label="关闭提示" title="关闭">×</button>' +
+        '  </div>' +
+        '  <div class="dpr-wf-pill-foot">' +
+        '    <span class="dpr-wf-pill-state">' + safeText(text) + '</span>' +
+        actionHtml +
+        '  </div>' +
+        '</div>';
+      return { html: doneHtml, hasActive: false };
+    }
+    return { html: '', hasActive: false };
+  }
+
+  function renderWorkflowStatusBar(snapshot) {
+    if (!state.wfStatusEl) return;
+    var rendered = renderWorkflowStatusHtml(snapshot);
+    state.wfStatusEl.innerHTML = rendered.html;
+    state.wfStatusEl.hidden = !rendered.html;
+    if (state.rootEl && state.rootEl.classList) {
+      state.rootEl.classList.toggle('has-active-workflow', !!rendered.hasActive);
+    }
   }
 
   function resolveViewState(viewState) {
@@ -2653,6 +2721,45 @@
         }
         return;
       }
+      var wfOpenBtn = e.target.closest('[data-wf-open-run]');
+      if (wfOpenBtn) {
+        e.preventDefault();
+        var runId = wfOpenBtn.getAttribute('data-wf-open-run') || '';
+        var runUrl = wfOpenBtn.getAttribute('data-wf-run-url') || '';
+        var wfRepo = wfOpenBtn.getAttribute('data-wf-repo') || '';
+        var isFullMode = window.DPR_ACCESS_MODE === 'full';
+        if (isFullMode && runId && window.DPRWorkflowRunner && typeof window.DPRWorkflowRunner.openRun === 'function') {
+          window.DPRWorkflowRunner.openRun(runId, wfRepo).then(function (opened) {
+            if (!opened && runUrl) window.open(runUrl, '_blank', 'noopener');
+          }).catch(function () {
+            if (runUrl) window.open(runUrl, '_blank', 'noopener');
+          });
+        } else if (isFullMode && window.DPRWorkflowRunner && typeof window.DPRWorkflowRunner.open === 'function') {
+          window.DPRWorkflowRunner.open();
+        } else if (runUrl) {
+          window.open(runUrl, '_blank', 'noopener');
+        }
+        return;
+      }
+      var wfRefreshBtn = e.target.closest('[data-wf-refresh-done]');
+      if (wfRefreshBtn) {
+        e.preventDefault();
+        var doneKey = wfRefreshBtn.getAttribute('data-wf-refresh-done') || '';
+        if (doneKey && window.DPRWorkflowStatusSync && typeof window.DPRWorkflowStatusSync.dismissRun === 'function') {
+          window.DPRWorkflowStatusSync.dismissRun(doneKey);
+        }
+        loadAndRender();
+        return;
+      }
+      var wfDismissBtn = e.target.closest('[data-wf-dismiss]');
+      if (wfDismissBtn) {
+        e.preventDefault();
+        var dismissKey = wfDismissBtn.getAttribute('data-wf-dismiss') || '';
+        if (dismissKey && window.DPRWorkflowStatusSync && typeof window.DPRWorkflowStatusSync.dismissRun === 'function') {
+          window.DPRWorkflowStatusSync.dismissRun(dismissKey);
+        }
+        return;
+      }
       var axisToggle = e.target.closest('.dpr-sidebar-axis-toggle');
       if (axisToggle) {
         var axisGroup = axisToggle.getAttribute('data-axis-toggle');
@@ -2824,6 +2931,9 @@
     document.addEventListener('dpr-paper-read-state-changed', function () {
       rerenderSidebarBody(rerenderOptionsForReadStateEvent());
     });
+    document.addEventListener('dpr-workflow-status-changed', function (e) {
+      renderWorkflowStatusBar(e && e.detail ? e.detail : null);
+    });
 
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState !== 'visible') return;
@@ -2912,6 +3022,9 @@
     applySidebarWidth(loadPersistedSidebarWidth());
     state.rootEl.innerHTML = '<div class="dpr-sidebar-loading">加载中…</div>';
     loadAndRender();
+    if (window.DPRWorkflowStatusSync && typeof window.DPRWorkflowStatusSync.start === 'function') {
+      window.DPRWorkflowStatusSync.start();
+    }
   }
 
   var DPRSidebarApi = {
@@ -2984,6 +3097,7 @@
         renderFeedbackQuickButton: renderFeedbackQuickButton,
         renderSidebarHeader: renderSidebarHeader,
         renderSidebarFooterControls: renderSidebarFooterControls,
+        renderWorkflowStatusHtml: renderWorkflowStatusHtml,
         applySidebarCollapsed: applySidebarCollapsed,
         toggleSidebarCollapsed: toggleSidebarCollapsed,
         syncResponsiveSidebarMode: syncResponsiveSidebarMode,

@@ -3251,12 +3251,25 @@ def main() -> None:
     deep_entries: List[Tuple[str, str, List[Tuple[str, str]]]] = []
     quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]] = []
     docs_concurrency = max(1, int(args.docs_concurrency))
+    total_papers_to_generate = len(deep_list) + len(quick_list)
+    completed_papers_count = 0
+    try:
+        from workflow_status import WorkflowStatusReporter
+
+        docs_status_reporter = WorkflowStatusReporter(
+            workflow_key=os.getenv("DPR_WORKFLOW_KEY") or "daily-now",
+            workflow_file=os.getenv("DPR_WORKFLOW_FILE") or "daily-paper-reader.yml",
+            display_label=os.getenv("DPR_WORKFLOW_LABEL") or "每日论文",
+        )
+    except Exception:
+        docs_status_reporter = None
 
     def _process_section(
         section: str,
         papers: List[Dict[str, Any]],
         paper_evidence_by_id: Dict[str, str],
     ) -> List[Tuple[str, str, List[Tuple[str, str]]]]:
+        nonlocal completed_papers_count
         if not papers:
             return []
         max_workers = max(1, docs_concurrency)
@@ -3281,10 +3294,26 @@ def main() -> None:
                     pid, title = future.result()
                 except Exception as e:
                     log(f"[WARN] 生成{section}论文失败：{e}")
+                    completed_papers_count += 1
+                    if docs_status_reporter is not None and total_papers_to_generate > 0:
+                        docs_status_reporter.report(
+                            step_code="step6",
+                            step_label="Step 6 生成文档与图表",
+                            progress_current=completed_papers_count,
+                            progress_total=total_papers_to_generate,
+                        )
                     continue
                 paper_evidence_by_id[str((pid or "").strip())] = get_paper_sidebar_evidence(paper)
                 section_tags = extract_sidebar_tags(paper)
                 results.append((index, (pid, title, section_tags)))
+                completed_papers_count += 1
+                if docs_status_reporter is not None and total_papers_to_generate > 0:
+                    docs_status_reporter.report(
+                        step_code="step6",
+                        step_label="Step 6 生成文档与图表",
+                        progress_current=completed_papers_count,
+                        progress_total=total_papers_to_generate,
+                    )
 
         results.sort(key=lambda item: item[0])
         return [v for _, v in results]

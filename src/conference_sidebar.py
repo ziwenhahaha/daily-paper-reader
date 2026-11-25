@@ -588,7 +588,26 @@ def write_conference_docs(
 ) -> Dict[str, str]:
     _ = deep_min_score  # 兼容旧参数；会议链路当前对所有展示论文生成精读与图表。
     route_by_id: Dict[str, str] = {}
-    for item in ranked:
+    try:
+        from workflow_status import WorkflowStatusReporter
+
+        reporter = WorkflowStatusReporter(
+            workflow_key="conference-retrieval",
+            workflow_file="conference-paper-retrieval.yml",
+            display_label=f"会议论文 · {build_conference_label(conference, years)}",
+        )
+    except Exception:
+        reporter = None
+    total = len(ranked)
+    if reporter is not None and total > 0:
+        reporter.report(
+            step_code="step6",
+            step_label="生成会议文档与图表",
+            progress_current=0,
+            progress_total=total,
+            force=True,
+        )
+    for idx, item in enumerate(ranked, start=1):
         paper_id = norm_text(item.get("paper_id"))
         paper = papers.get(paper_id)
         if not paper:
@@ -606,6 +625,13 @@ def write_conference_docs(
         )
         md_path.write_text(build_conference_markdown(paper, item, conference, years), encoding="utf-8")
         route_by_id[paper_id] = route
+        if reporter is not None:
+            reporter.report(
+                step_code="step6",
+                step_label="生成会议文档与图表",
+                progress_current=idx,
+                progress_total=total,
+            )
     return route_by_id
 
 

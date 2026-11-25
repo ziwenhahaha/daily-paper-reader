@@ -51,19 +51,18 @@ def test_home_notice_contains_latest_update():
         assert 'class="dpr-home-notice-entry"' in content, path
         assert content.count('class="dpr-home-notice-entry"') <= 3, path
         assert '<time class="dpr-home-notice-date" datetime="2026-11-25">11.25</time>' in content, path
+        assert "侧边栏新增后台任务实时进度显示" in content, path
+        assert "公共 Supabase 实时显示当前步骤与逐篇生成进度" in content, path
         assert "90天/365天专题回溯与大礼包重构为标准流水线" in content, path
         assert "默认精选最多 50 篇" in content, path
         assert "阅读页、侧边栏与后台管理界面视觉升级" in content, path
         assert "极简炭黑×浅雾蓝护眼配色" in content, path
-        assert '<time class="dpr-home-notice-date" datetime="2026-10-05">10.05</time>' in content, path
-        assert "medRxiv 自动更新已恢复" in content, path
-        assert "维护任务现会限制单条 embedding 文本长度并分片写入" in content, path
-        assert "公开读取、关键词检索与语义检索均已验证" in content, path
+        assert "medRxiv 自动更新已恢复" not in content, path
         assert "日报跨日重复推荐已修复" not in content, path
         assert "90天/365天 arXiv 专题回溯" not in content, path
         assert "区间日报可正常点开" not in content, path
         titles = re.findall(r'<strong class="dpr-home-notice-entry-title">([^<]+)</strong>', content)
-        assert titles[0] == "90天/365天专题回溯与大礼包重构为标准流水线", path
+        assert titles[0] == "侧边栏新增后台任务实时进度显示", path
         dates = re.findall(r'<time class="dpr-home-notice-date" datetime="([^"]+)">', content)
         assert dates == sorted(dates, reverse=True), path
         assert re.search(
