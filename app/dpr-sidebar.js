@@ -83,6 +83,129 @@
     }
     return '<span class="dpr-sidebar-paper-stars" data-score="' + safeAttr(s.toFixed(1)) + '">' + stars + '</span>';
   }
+  var CONFERENCE_TAG_NAMES = {
+    neurips: 'NeurIPS',
+    nips: 'NeurIPS',
+    iclr: 'ICLR',
+    icml: 'ICML',
+    aaai: 'AAAI',
+    cvpr: 'CVPR',
+    eccv: 'ECCV',
+    ijcai: 'IJCAI',
+    acl: 'ACL',
+    emnlp: 'EMNLP',
+    osdi: 'OSDI',
+    sosp: 'SOSP',
+    ndss: 'NDSS',
+    ieee_sp: 'S&P',
+    ieeesp: 'S&P',
+    ieee_s_p: 'S&P',
+    sp: 'S&P',
+    s_p: 'S&P',
+    iccv: 'ICCV',
+    naacl: 'NAACL',
+    coling: 'COLING',
+    kdd: 'KDD',
+    www: 'WWW',
+    sigir: 'SIGIR',
+    ccs: 'CCS',
+    usenix: 'USENIX',
+  };
+  function canonicalConferenceBadgeName(raw) {
+    var text = String(raw || '').trim();
+    if (!text) return '';
+    var key = text.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    if (CONFERENCE_TAG_NAMES[key]) return CONFERENCE_TAG_NAMES[key];
+    return text.toUpperCase();
+  }
+  function extractYearMonthCode(value) {
+    var s = String(value || '').trim();
+    if (!s) return '';
+    var m = s.match(/^(?:19|20)(\d{2})[-/.]?(0[1-9]|1[0-2])(?:\b|[-/.T\s]|$)/);
+    return m ? (m[1] + m[2]) : '';
+  }
+  function extractArxivYearMonthCode(paper) {
+    var p = paper || {};
+    var sources = [p.id, p.href, p.link];
+    for (var i = 0; i < sources.length; i += 1) {
+      var text = String(sources[i] || '');
+      if (!text) continue;
+      // 新版 arXiv ID：YYMM.NNNNN(vN)，天然编码首次提交的年份后两位+月份
+      var newId = text.match(/(?:^|[\/_-])(\d{2})(0[1-9]|1[0-2])\.\d{4,5}(?:v\d+)?(?=$|[^0-9])/);
+      if (newId) return newId[1] + newId[2];
+      // 旧版 arXiv ID：arxiv.org/pdf/hep-th/9901001
+      var oldId = text.match(/arxiv\.org\/(?:pdf|abs)\/[a-z-]+(?:\.[a-z-]+)?\/(\d{2})(0[1-9]|1[0-2])\d{3}/i);
+      if (oldId) return oldId[1] + oldId[2];
+    }
+    return extractYearMonthCode(p.publication_date) || extractYearMonthCode(p.published);
+  }
+  function paperVenueTimeBadge(paper) {
+    var p = paper || {};
+    var href = String(p.href || '');
+    var id = String(p.id || '');
+    var link = String(p.link || '');
+
+    // 1. 会议论文：优先识别 conference/<conf>-<year>、paper.conference_name 或 openreview-<conf>-<year>
+    var confSlug = '';
+    var routeYears = [];
+    var routeMatch = href.match(/\/conference\/([^/]+)\//i);
+    if (routeMatch && routeMatch[1]) {
+      var seg = routeMatch[1];
+      routeYears = seg.match(/\b(?:19|20)\d{2}\b/g) || [];
+      confSlug = seg.replace(/[-_]*(?:19|20)\d{2}(?:[-_]+(?:19|20)\d{2})*$/g, '').replace(/[-_]+$/, '');
+    }
+    if (!confSlug && p.conference_name) {
+      confSlug = String(p.conference_name).trim();
+    }
+    var idConfMatch = id.match(/^(?:openreview-)?([a-z][a-z0-9_-]*?)-(19\d{2}|20\d{2})-/i);
+    if (!confSlug && idConfMatch) {
+      var candidateKey = idConfMatch[1].toLowerCase().replace(/[^a-z0-9]+/g, '_');
+      if (CONFERENCE_TAG_NAMES[candidateKey]) {
+        confSlug = idConfMatch[1];
+      }
+    }
+    if (confSlug) {
+      var confName = canonicalConferenceBadgeName(confSlug);
+      var singleYear = '';
+      if (/^(?:19|20)\d{2}$/.test(String(p.conference_year || '').trim())) {
+        singleYear = String(p.conference_year).trim();
+      } else if (/^(?:19|20)\d{2}/.test(String(p.publication_date || '').trim())) {
+        singleYear = String(p.publication_date).trim().slice(0, 4);
+      } else if (idConfMatch && idConfMatch[2]) {
+        singleYear = idConfMatch[2];
+      } else if (routeYears.length === 1) {
+        singleYear = routeYears[0];
+      }
+      return {
+        kind: 'venue-conf',
+        label: confName + (singleYear ? singleYear.slice(2) : ''),
+      };
+    }
+
+    // 2. bioRxiv / medRxiv / ChemRxiv 预印本
+    var lowerAll = (href + ' ' + id + ' ' + link).toLowerCase();
+    var preprintMatch = lowerAll.match(/\b(biorxiv|medrxiv|chemrxiv)\b/);
+    if (preprintMatch) {
+      var preNames = { biorxiv: 'bioRxiv', medrxiv: 'medRxiv', chemrxiv: 'ChemRxiv' };
+      var preYm = extractYearMonthCode(p.publication_date) || extractYearMonthCode(p.published);
+      return {
+        kind: 'venue-preprint',
+        label: preNames[preprintMatch[1]] + preYm,
+      };
+    }
+
+    // 3. arXiv 论文：ArxivYYMM（如 Arxiv2601 代表 26 年 1 月）
+    var hasArxivId = /(?:^|[\/_-])\d{2}(?:0[1-9]|1[0-2])\.\d{4,5}(?:v\d+)?(?=$|[^0-9])/.test(id + ' ' + href + ' ' + link);
+    var isArxiv = hasArxivId || /arxiv\.org/i.test(link) || p.publication_date_kind === 'arxiv_first_submission';
+    if (isArxiv) {
+      var ym = extractArxivYearMonthCode(p);
+      return {
+        kind: 'venue-arxiv',
+        label: 'Arxiv' + ym,
+      };
+    }
+    return null;
+  }
   function dedupePaperTags(tags) {
     if (!Array.isArray(tags) || !tags.length) return [];
     var out = [];
@@ -98,12 +221,14 @@
     });
     return out;
   }
-  function tagsHtml(tags) {
-    var clean = dedupePaperTags(tags);
+  function tagsHtml(tags, venueBadge) {
+    var combined = venueBadge && venueBadge.label ? [venueBadge].concat(tags || []) : (tags || []);
+    var clean = dedupePaperTags(combined);
     if (!clean.length) return '';
     return clean
       .map(function (t) {
-        return '<span class="dpr-sidebar-paper-tag dpr-sidebar-paper-tag-' + safeAttr(t.kind) + '">' + safeText(t.label) + '</span>';
+        var extraVenueClass = t.kind && t.kind.indexOf('venue-') === 0 ? ' dpr-sidebar-paper-tag-venue' : '';
+        return '<span class="dpr-sidebar-paper-tag' + extraVenueClass + ' dpr-sidebar-paper-tag-' + safeAttr(t.kind) + '">' + safeText(t.label) + '</span>';
       })
       .join('');
   }
@@ -905,6 +1030,7 @@
                 var p = parsePaperLine(tLine);
                 if (p) {
                   p.section = 'conference';
+                  p.conference_name = confBlock.name || '';
                   topic.papers.push(p);
                 }
                 i += 1;
@@ -919,6 +1045,7 @@
                 var pp = parsePaperLine(tLine);
                 if (pp) {
                   pp.section = 'conference';
+                  pp.conference_name = confBlock.name || '';
                   topic.papers.push(pp);
                 }
                 i += 1;
@@ -1045,9 +1172,11 @@
   }
 
   function paperSearchText(paper) {
+    var venue = paperVenueTimeBadge(paper);
     return [
       paper && paper.title || '',
       paper && paper.evidence || '',
+      venue && venue.label || '',
       (paper && paper.tags || []).map(function (t) { return (t && t.label) || ''; }).join(' '),
     ].join(' ').toLowerCase();
   }
@@ -2447,7 +2576,8 @@
       'data-read-status="' + safeAttr(status) + '"',
     ].join(' ');
     var stars = starHtmlFromScore(p.score);
-    var tagBits = tagsHtml(p.tags);
+    var venueBadge = paperVenueTimeBadge(p);
+    var tagBits = tagsHtml(p.tags, venueBadge);
     var publication = p.section === 'conference' || p.section === 'backtrack'
       ? '<span class="dpr-sidebar-paper-publication" title="' + safeAttr(p.publication_date_source || '无可靠的具体公布日期') + '">' + safeText(publicationDateLabel(p)) + '</span>' : '';
     var evidence = p.evidence
@@ -3107,6 +3237,7 @@
         sortedTaskPapers: sortedTaskPapers,
         applyConferencePublicationDates: applyConferencePublicationDates,
         publicationDateLabel: publicationDateLabel,
+        paperVenueTimeBadge: paperVenueTimeBadge,
         isBacktrackDateKey: isBacktrackDateKey,
         collectPaperHrefsFromModel: collectPaperHrefsFromModel,
         collectReportHrefsFromModel: collectReportHrefsFromModel,

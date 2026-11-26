@@ -2075,8 +2075,121 @@ function testCaseInsensitiveTagDeduplicationInSidebar() {
   assert.equal(view.groups[0].papers.length, 2);
 }
 
+function testPaperVenueTimeBadgesInSidebar() {
+  const tools = loadSidebarForTest().__test;
+
+  assert.deepEqual(
+    tools.paperVenueTimeBadge({
+      id: '2601.13465v4-graph-neural-networks',
+      href: '#/20251125-20261124-starter-atsp/2601.13465v4-graph-neural-networks',
+      link: 'https://arxiv.org/pdf/2601.13465v4',
+    }),
+    { kind: 'venue-arxiv', label: 'Arxiv2601' },
+  );
+  assert.deepEqual(
+    tools.paperVenueTimeBadge({
+      id: '1706.03762v1-attention-is-all-you-need',
+      href: '#/201706/12/1706.03762v1-attention-is-all-you-need',
+    }),
+    { kind: 'venue-arxiv', label: 'Arxiv1706' },
+  );
+  assert.deepEqual(
+    tools.paperVenueTimeBadge({
+      id: 'custom-paper',
+      link: 'https://arxiv.org/pdf/hep-th/9901001',
+    }),
+    { kind: 'venue-arxiv', label: 'Arxiv9901' },
+  );
+  assert.deepEqual(
+    tools.paperVenueTimeBadge({
+      id: 'openreview-neurips-2026-xyz',
+      href: '#/conference/neurips-2026/openreview-neurips-2026-xyz',
+    }),
+    { kind: 'venue-conf', label: 'NeurIPS26' },
+  );
+  assert.deepEqual(
+    tools.paperVenueTimeBadge({
+      id: 'openreview-iclr-2025-abc',
+      href: '#/conference/iclr-2025/openreview-iclr-2025-abc',
+    }),
+    { kind: 'venue-conf', label: 'ICLR25' },
+  );
+  assert.deepEqual(
+    tools.paperVenueTimeBadge({
+      id: 'ieee-sp-2026-foo',
+      href: '#/conference/ieee_sp-2026/ieee-sp-2026-foo',
+    }),
+    { kind: 'venue-conf', label: 'S&P26' },
+  );
+  // 多年份合并组无单篇年份证据时不猜测年份
+  assert.deepEqual(
+    tools.paperVenueTimeBadge({
+      id: 'merged-paper',
+      href: '#/conference/iclr-2024-2025/merged-paper',
+    }),
+    { kind: 'venue-conf', label: 'ICLR' },
+  );
+  assert.deepEqual(
+    tools.paperVenueTimeBadge({
+      id: 'merged-paper',
+      href: '#/conference/iclr-2024-2025/merged-paper',
+      conference_year: '2024',
+    }),
+    { kind: 'venue-conf', label: 'ICLR24' },
+  );
+  assert.deepEqual(
+    tools.paperVenueTimeBadge({
+      id: 'biorxiv-123',
+      link: 'https://www.biorxiv.org/content/10.1101/2026.02.14.123456',
+      publication_date: '2026-02-14',
+    }),
+    { kind: 'venue-preprint', label: 'bioRxiv2602' },
+  );
+
+  // 渲染进论文条目标签栏、不污染顶部筛选栏，且支持搜索框检索
+  const topicToken = '20251125-20261124-starter-atsp';
+  const pArxiv = JSON.stringify({
+    title: 'Arxiv Paper',
+    score: '9.0',
+    tags: [{ kind: 'query', label: 'ATSP' }],
+    link: 'https://arxiv.org/pdf/2601.13465v4',
+  }).replace(/"/g, '&quot;');
+  const pConf = JSON.stringify({
+    title: 'NeurIPS Paper',
+    score: '8.5',
+    tags: [{ kind: 'query', label: 'ATSP' }],
+    conference_year: '2026',
+  }).replace(/"/g, '&quot;');
+  const model = tools.parseSidebar([
+    '* Daily Papers',
+    `  * ATSP · 大礼包 (2025-11-25 ~ 2026-11-24) <!--dpr-date:${topicToken}-->`,
+    '    * 精读区',
+    `      * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/${topicToken}/2601.13465v4-arxiv-paper" data-sidebar-item="${pArxiv}">Arxiv Paper</a>`,
+    `      * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/conference/neurips-2026/openreview-neurips-2026-demo" data-sidebar-item="${pConf}">NeurIPS Paper</a>`,
+  ].join('\n'));
+  const view = tools.buildDailyCalendarTagView(model, '', '__all__', {}, '', true);
+  assert.deepEqual(
+    view.tabs.map((t) => t.label),
+    ['全部', 'ATSP'],
+    '时间来源标签不得撑乱顶部词条筛选栏',
+  );
+  const html = tools.renderBodyHtml(model, {
+    expandedGroups: { backtrack: true },
+    expandedAxisSections: new Set(['backtrack:tag:' + topicToken + ':__all__']),
+    readMap: {},
+  });
+  assert.ok(html.includes('dpr-sidebar-paper-tag-venue-arxiv">Arxiv2601</span>'));
+  assert.ok(html.includes('dpr-sidebar-paper-tag-venue-conf">NeurIPS26</span>'));
+
+  const searchConf = tools.buildAxisViewForMode(model, 'backtrack', 'results', { search: 'NeurIPS26' }, {});
+  assert.deepEqual(searchConf.groups.flatMap((g) => g.papers.map((p) => p.title)), ['NeurIPS Paper']);
+  const searchArxiv = tools.buildAxisViewForMode(model, 'backtrack', 'results', { search: 'Arxiv2601' }, {});
+  assert.deepEqual(searchArxiv.groups.flatMap((g) => g.papers.map((p) => p.title)), ['Arxiv Paper']);
+}
+
 testReadStatusNormalization();
 testSingleTrackTopicBacktrackGroup();
 testCaseInsensitiveTagDeduplicationInSidebar();
+testPaperVenueTimeBadgesInSidebar();
 
 console.log('dpr sidebar v2 tests passed');
