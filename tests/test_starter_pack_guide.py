@@ -62,12 +62,26 @@ def test_small_pool_only_uses_available_paper(papers, guide):
     assert generate_guide("ATSP", papers, client) == guide
     payload = json.loads(client.chat_structured.call_args.args[0][1]["content"])
     assert [p["canonical_id"] for p in payload["papers"]] == ["arxiv:1"]
-    text = render_guide(guide, papers, {"topic": "ATSP", "window": "近365天"})
+    text = render_guide(
+        guide,
+        papers,
+        {"topic": "ATSP", "window": "近365天", "description": "非对称旅行商问题 (ATSP) 求解"},
+    )
     assert "[Asymmetric TSP](/20250911/paper.md)" in text
-    assert "2025-09-11（日精度）" in text
+    assert "2025-09-11" in text
+    assert "（日精度）" not in text
+    assert "第一阶段 · 入门必读" in text
+    assert "(ATSP)" in text and "&#40;" not in text
     assert "[PDF](https://arxiv.org/pdf/1)" in text
     assert "[DOI](https://doi.org/10.1234/paper)" in text
-    assert "不是完整领域史" in text
+    assert "不代表完整领域史" in text
+
+
+def test_duplicate_external_urls_are_deduplicated_in_reading_order(papers, guide):
+    papers[0]["versions"][0]["link"] = "https://arxiv.org/pdf/1"
+    papers[0]["versions"][0]["url"] = "https://arxiv.org/pdf/1"
+    text = render_guide(guide, papers, {"topic": "ATSP"})
+    assert text.count("https://arxiv.org/pdf/1") == 1
 
 
 def test_empty_pool_never_calls_model():

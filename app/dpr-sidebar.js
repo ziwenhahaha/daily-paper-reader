@@ -467,10 +467,61 @@
   function taskPapers(model) {
     return (model && model.starterPacks || []).reduce(function (papers, pack) { return papers.concat(pack.papers || []); }, []);
   }
+  function taskScoreValue(paper) {
+    var n = parseScore(paper && paper.score);
+    return n == null ? 0 : n;
+  }
+  function taskStarRank(paper) {
+    var s = parseScore(paper && paper.score);
+    if (s == null) return 0;
+    return Math.max(0, Math.min(5, Math.round(s / 2)));
+  }
+  function isTaskConferencePaper(paper) {
+    if (!paper) return false;
+    var badge = paperVenueTimeBadge(paper);
+    if (badge && badge.kind === 'venue-conf') return true;
+    if (paper.section === 'conference' || paper.publication_date_kind === 'proceedings') return true;
+    return /^#?\/?conference\//i.test(String(paper.href || paper.id || ''));
+  }
+  function taskArxivIdSortKey(paper) {
+    if (!paper) return '';
+    var joined = [paper.id, paper.href, paper.link].map(function (v) { return String(v || ''); }).join(' ');
+    var m = joined.match(/(?:^|[/:_-])(\d{2})(0[1-9]|1[0-2])\.(\d{4,5})(?:v\d+)?(?=$|[^0-9])/);
+    if (!m) return '';
+    var num = m[3].length < 5 ? ('00000' + m[3]).slice(-5) : m[3];
+    return '20' + m[1] + '-' + m[2] + '-' + num;
+  }
+  function taskRecencySortKey(paper) {
+    var pub = taskPublicationSortKey(paper);
+    if (pub) return pub;
+    var arxivKey = taskArxivIdSortKey(paper);
+    if (arxivKey) return arxivKey.slice(0, 7);
+    var year = String((paper && paper.conference_year) || '').trim();
+    return /^\d{4}$/.test(year) ? year : '';
+  }
   function sortedTaskPapers(papers, order) {
     return (papers || []).slice().sort(function (a, b) {
-      var delta = order === 'date' ? taskPublicationSortKey(b).localeCompare(taskPublicationSortKey(a)) : b.score - a.score;
-      return delta || b.score - a.score || (a.selection_rank || 0) - (b.selection_rank || 0);
+      if (order === 'date') {
+        var dateDelta = taskRecencySortKey(b).localeCompare(taskRecencySortKey(a));
+        if (dateDelta) return dateDelta;
+        var arxivDateDelta = taskArxivIdSortKey(b).localeCompare(taskArxivIdSortKey(a));
+        if (arxivDateDelta) return arxivDateDelta;
+        var scoreFallback = taskScoreValue(b) - taskScoreValue(a);
+        if (scoreFallback) return scoreFallback;
+        return (a.selection_rank || 0) - (b.selection_rank || 0);
+      }
+      // 相关性降序（按侧边栏展示的星级归组）：同一星级内先全部展示会议（先新后旧），再降序展示 arXiv（先新后旧）
+      var starDelta = taskStarRank(b) - taskStarRank(a);
+      if (starDelta) return starDelta;
+      var confDelta = (isTaskConferencePaper(a) ? 0 : 1) - (isTaskConferencePaper(b) ? 0 : 1);
+      if (confDelta) return confDelta;
+      var recencyDelta = taskRecencySortKey(b).localeCompare(taskRecencySortKey(a));
+      if (recencyDelta) return recencyDelta;
+      var arxivDelta = taskArxivIdSortKey(b).localeCompare(taskArxivIdSortKey(a));
+      if (arxivDelta) return arxivDelta;
+      var exactScoreDelta = taskScoreValue(b) - taskScoreValue(a);
+      if (exactScoreDelta) return exactScoreDelta;
+      return (a.selection_rank || 0) - (b.selection_rank || 0);
     });
   }
   function taskPublicationSortKey(paper) {
@@ -502,8 +553,9 @@
       var primaryLabel = pack.export_path
         ? (pack.mode === 'starter-pack' ? '方向导读／导出清单' : '结果总览／导出清单')
         : '原有导读';
-      var navigation = '<a class="dpr-sidebar-axis-tab dpr-sidebar-starter-guide" href="' + safeAttr(pack.href) + '">' + primaryLabel + '</a>';
-      if (pack.export_path) navigation += ' <a class="dpr-sidebar-axis-tab" href="#/starter-pack/' + pack.run_id + '/catalog">论文列表</a> <a class="dpr-sidebar-axis-tab" href="' + safeAttr(pack.export_path) + '" download data-no-router>下载 Markdown</a>';
+      var navigation = '<div class="dpr-sidebar-topic-actions"><a class="dpr-sidebar-topic-action dpr-sidebar-starter-guide" href="' + safeAttr(pack.href) + '">' + primaryLabel + '</a>';
+      if (pack.export_path) navigation += ' <a class="dpr-sidebar-topic-action" href="#/starter-pack/' + pack.run_id + '/catalog">论文列表</a> <a class="dpr-sidebar-topic-action dpr-sidebar-topic-export" href="' + safeAttr(pack.export_path) + '" download data-no-router>下载 Markdown</a>';
+      navigation += '</div>';
       if (scope.description) navigation += '<div class="dpr-sidebar-paper-evidence">研究方向：' + safeText(scope.description) + '</div>';
       if (refinement) navigation += '<div class="dpr-sidebar-paper-evidence">本次细化：' + safeText(refinement) + '</div>';
       if (scope.as_of) navigation += '<div class="dpr-sidebar-paper-meta">截止日期（不含当天）：' + safeText(scope.as_of) + '</div>';
@@ -931,6 +983,7 @@
                     report: safeReport,
                     export: safeExport,
                     as_of: /^\d{4}-\d{2}-\d{2}$/.test(String(parsedTopic.as_of || '')) ? String(parsedTopic.as_of) : '',
+                    window: typeof parsedTopic.window === 'string' ? parsedTopic.window.trim() : '',
                     description: typeof parsedTopic.description === 'string' ? parsedTopic.description : '',
                     refinement: typeof parsedTopic.refinement === 'string' ? parsedTopic.refinement : '',
                   };
@@ -1632,28 +1685,98 @@
     return filtered;
   }
 
+  function parseTopicDateSpan(day) {
+    var key = String((day && day.dateKey) || '').trim();
+    var m = key.match(/^(\d{4})(\d{2})(\d{2})-(\d{4})(\d{2})(\d{2})(?:-|$)/);
+    if (m) {
+      return {
+        start: m[1] + '-' + m[2] + '-' + m[3],
+        end: m[4] + '-' + m[5] + '-' + m[6],
+      };
+    }
+    var asOf = day && day.topicMeta && day.topicMeta.as_of || '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(asOf)) {
+      var dt = new Date(asOf + 'T00:00:00Z');
+      if (!isNaN(dt.getTime())) {
+        dt.setUTCDate(dt.getUTCDate() - 1);
+        return { start: '', end: dt.toISOString().slice(0, 10) };
+      }
+    }
+    return { start: '', end: '' };
+  }
+
+  function formatTopicCoverageWindow(day) {
+    var meta = day && day.topicMeta;
+    if (!meta) return '';
+    if (meta.window) return meta.window;
+    var span = parseTopicDateSpan(day);
+    if (meta.mode === 'starter') {
+      if (span.start && span.end) {
+        return 'arXiv ' + span.start + ' ~ ' + span.end + '；顶会近 24 个月（截至 ' + span.end + '）';
+      }
+      if (span.end) return 'arXiv 近 1 年 + 顶会近 24 个月（截至 ' + span.end + '）';
+      return 'arXiv 近 1 年 + 顶会近 24 个月';
+    }
+    if (span.start && span.end) return 'arXiv ' + span.start + ' ~ ' + span.end;
+    return '';
+  }
+
+  function formatTopicGroupHeader(day, activeTag, allKey, activeDate) {
+    var meta = day && day.topicMeta;
+    var fallbackLabel = day && (day.dateLabel || formatDateLabel(day.dateKey)) || formatDateLabel(activeDate);
+    if (!meta) {
+      var plain = fallbackLabel;
+      if (activeTag && activeTag !== allKey) plain += ' / ' + activeTag;
+      return { label: plain, labelDesc: '', labelTitle: '' };
+    }
+    var span = parseTopicDateSpan(day);
+    var modeLabel = meta.mode === 'starter'
+      ? '大礼包'
+      : (meta.mode === '90' ? '90天' : (meta.mode === '365' ? '365天' : '专题'));
+    var baseLabel = fallbackLabel;
+    if (meta.tag) {
+      if (meta.mode === 'starter') {
+        baseLabel = meta.tag + ' · ' + modeLabel + (span.end ? '（截至 ' + span.end + '）' : '');
+      } else if (span.start && span.end) {
+        baseLabel = meta.tag + ' · ' + modeLabel + '（' + span.start + ' ~ ' + span.end + '）';
+      } else {
+        baseLabel = meta.tag + ' · ' + modeLabel;
+      }
+    } else if (meta.mode === 'starter') {
+      baseLabel = fallbackLabel.replace(/\s*\(\d{4}-\d{2}-\d{2}\s*[~～]\s*\d{4}-\d{2}-\d{2}\)\s*$/, span.end ? '（截至 ' + span.end + '）' : '');
+    }
+    if (activeTag && activeTag !== allKey && (!meta.tag || activeTag.toLowerCase() !== meta.tag.toLowerCase())) {
+      baseLabel += ' / ' + activeTag;
+    }
+    var descParts = [];
+    if (meta.description) descParts.push(meta.description.trim());
+    if (meta.refinement) descParts.push('细化：' + meta.refinement.trim());
+    var labelDesc = descParts.join(' · ');
+    var titleParts = [baseLabel];
+    if (labelDesc) titleParts.push('研究方向：' + labelDesc);
+    var coverage = formatTopicCoverageWindow(day);
+    if (coverage) titleParts.push('覆盖范围：' + coverage);
+    return {
+      label: baseLabel,
+      labelDesc: labelDesc,
+      labelTitle: titleParts.join('\n'),
+    };
+  }
+
   function renderTopicDayNavigation(day) {
     var meta = day && day.topicMeta;
     if (!meta) return '';
     var reportHref = meta.report || day.reportHref || '';
-    var primaryLabel = meta.mode === 'starter' ? '方向导读／导出清单' : '结果总览／导出清单';
-    var nav = '';
+    var primaryLabel = meta.mode === 'starter' ? '📖 方向导读' : '📋 结果总览';
+    var parts = [];
     if (reportHref) {
-      nav += '<a class="dpr-sidebar-axis-tab dpr-sidebar-starter-guide" href="' + safeAttr(reportHref) + '">' + primaryLabel + '</a>';
+      parts.push('<a class="dpr-sidebar-topic-action dpr-sidebar-starter-guide" href="' + safeAttr(reportHref) + '">' + primaryLabel + '</a>');
     }
     if (meta.export) {
-      nav += ' <a class="dpr-sidebar-axis-tab" href="' + safeAttr(meta.export) + '" download data-no-router>下载 Markdown</a>';
+      parts.push('<a class="dpr-sidebar-topic-action dpr-sidebar-topic-export" href="' + safeAttr(meta.export) + '" download data-no-router>⬇ 导出清单</a>');
     }
-    if (meta.description) {
-      nav += '<div class="dpr-sidebar-paper-evidence">研究方向：' + safeText(meta.description) + '</div>';
-    }
-    if (meta.refinement) {
-      nav += '<div class="dpr-sidebar-paper-evidence">本次细化：' + safeText(meta.refinement) + '</div>';
-    }
-    if (meta.as_of) {
-      nav += '<div class="dpr-sidebar-paper-meta">截止日期（不含当天）：' + safeText(meta.as_of) + '</div>';
-    }
-    return nav;
+    if (!parts.length) return '';
+    return '<div class="dpr-sidebar-topic-actions">' + parts.join('') + '</div>';
   }
 
   function buildDailyCalendarTagView(model, activeDateKey, activeTagKey, readMap, activeMonthKey, allDates, taskSort) {
@@ -1698,11 +1821,12 @@
       if (allDates && day && day.topicMeta) {
         filtered = sortedTaskPapers(filtered, taskSort);
       }
-      var label = day && (day.dateLabel || formatDateLabel(day.dateKey)) || formatDateLabel(activeDate);
-      if (activeTag && activeTag !== allKey) label += ' / ' + activeTag;
+      var headerInfo = formatTopicGroupHeader(day, activeTag, allKey, activeDate);
       var groupItem = {
         key: day.dateKey + ':' + (activeTag || 'all'),
-        label: label,
+        label: headerInfo.label,
+        labelDesc: headerInfo.labelDesc,
+        labelTitle: headerInfo.labelTitle,
         papers: filtered,
         unreadCount: countUnreadPapers(filtered, map),
       };
@@ -2545,10 +2669,16 @@
       })) ? ' has-active-paper' : '';
       var unread = typeof item.unreadCount === 'number' ? item.unreadCount : (item.papers || []).length;
       var unreadFlag = unread > 0 ? '1' : '0';
+      var headerClass = 'dpr-sidebar-axis-section-header' + (item.labelDesc ? ' has-topic-desc' : '');
+      var titleAttr = item.labelTitle ? ' title="' + safeAttr(item.labelTitle) + '"' : '';
       html.push('<section class="dpr-sidebar-axis-section' + sectionClass + expandedClass + activeSectionClass + '" data-axis-section="' + safeAttr(item.key) + '" data-axis-section-key="' + safeAttr(stateKey) + '">');
-      html.push('  <button type="button" class="dpr-sidebar-axis-section-header" data-axis-section-toggle="' + safeAttr(stateKey) + '" aria-expanded="' + (isExpanded ? 'true' : 'false') + '" data-unread="' + unreadFlag + '">');
+      html.push('  <button type="button" class="' + headerClass + '" data-axis-section-toggle="' + safeAttr(stateKey) + '" aria-expanded="' + (isExpanded ? 'true' : 'false') + '" data-unread="' + unreadFlag + '"' + (item.labelDesc ? titleAttr : '') + '>');
       html.push('    <span class="dpr-sidebar-day-arrow" aria-hidden="true">▸</span>');
-      html.push('    <span class="dpr-sidebar-axis-section-label"' + (item.labelTitle ? ' title="' + safeAttr(item.labelTitle) + '"' : '') + '>' + safeText(item.label) + ' <span class="dpr-sidebar-day-counts"><span class="dpr-sidebar-day-unread">' + safeText(unread) + '</span>/<span class="dpr-sidebar-day-total">' + safeText((item.papers || []).length) + '</span></span></span>');
+      if (item.labelDesc) {
+        html.push('    <span class="dpr-sidebar-axis-section-label"><span class="dpr-sidebar-axis-section-title">' + safeText(item.label) + '</span> <span class="dpr-sidebar-day-counts"><span class="dpr-sidebar-day-unread">' + safeText(unread) + '</span>/<span class="dpr-sidebar-day-total">' + safeText((item.papers || []).length) + '</span></span><span class="dpr-sidebar-topic-dir-desc">' + safeText(item.labelDesc) + '</span></span>');
+      } else {
+        html.push('    <span class="dpr-sidebar-axis-section-label"' + titleAttr + '>' + safeText(item.label) + ' <span class="dpr-sidebar-day-counts"><span class="dpr-sidebar-day-unread">' + safeText(unread) + '</span>/<span class="dpr-sidebar-day-total">' + safeText((item.papers || []).length) + '</span></span></span>');
+      }
       html.push('  </button>');
       html.push('  <ul class="dpr-sidebar-axis-papers">');
       if (item.taskNavigation) html.push('<li class="dpr-topic-task-navigation">' + item.taskNavigation + '</li>');
@@ -3045,10 +3175,16 @@
         persistCollapse();
         return;
       }
-      // 论文点击：移动端自动关闭抽屉
+      // 论文或专题导读点击：移动端自动关闭抽屉
       var paperLink = e.target.closest('.dpr-sidebar-paper-link');
       if (paperLink) {
         rememberPendingPaperHref(paperLink.getAttribute('href') || '');
+        if (window.matchMedia && window.matchMedia('(max-width: 768px)').matches) {
+          root.classList.remove('is-open');
+        }
+      }
+      var guideLink = e.target.closest('.dpr-sidebar-starter-guide');
+      if (guideLink) {
         if (window.matchMedia && window.matchMedia('(max-width: 768px)').matches) {
           root.classList.remove('is-open');
         }

@@ -1611,6 +1611,264 @@ window.$docsify = {
         body.classList.toggle('dpr-paper-page', !!isPaperPage);
       };
 
+      const enhanceDailyReportLayout = ({ isHomePage = false, isReportPage = false } = {}) => {
+        if (!isHomePage && !isReportPage) return;
+        const section = document.querySelector('.markdown-section');
+        if (!section) return;
+        if (section.querySelector('.dpr-day-report-hero')) return;
+
+        const parseMetaList = (ul) => {
+          const info = {};
+          if (!ul || ul.tagName !== 'UL') return info;
+          Array.from(ul.children).forEach((li) => {
+            const text = (li.textContent || '').trim();
+            const m = text.match(/^([^：:]+)[：:]\s*(.+)$/);
+            if (m) info[m[1].trim()] = m[2].trim();
+          });
+          return info;
+        };
+
+        const createHeroCard = ({ title, dateBadge, updatedAt, statusText, kpis }) => {
+          const hero = document.createElement('section');
+          hero.className = 'dpr-day-report-hero';
+
+          const top = document.createElement('div');
+          top.className = 'dpr-day-report-hero-top';
+
+          const titleWrap = document.createElement('div');
+          titleWrap.className = 'dpr-day-report-hero-title-wrap';
+          const h = document.createElement('h1');
+          h.className = 'dpr-day-report-hero-title';
+          h.textContent = title;
+          titleWrap.appendChild(h);
+          if (dateBadge) {
+            const badge = document.createElement('span');
+            badge.className = 'dpr-day-report-date-badge';
+            badge.textContent = dateBadge;
+            titleWrap.appendChild(badge);
+          }
+          top.appendChild(titleWrap);
+
+          if (updatedAt || statusText) {
+            const meta = document.createElement('div');
+            meta.className = 'dpr-day-report-hero-meta';
+            if (updatedAt) {
+              const t = document.createElement('span');
+              t.textContent = '更新于 ' + updatedAt;
+              meta.appendChild(t);
+            }
+            if (statusText) {
+              const pill = document.createElement('span');
+              pill.className = 'dpr-day-report-status-pill';
+              pill.textContent = statusText;
+              meta.appendChild(pill);
+            }
+            top.appendChild(meta);
+          }
+          hero.appendChild(top);
+
+          if (kpis && kpis.length) {
+            const grid = document.createElement('div');
+            grid.className = 'dpr-day-report-kpis';
+            kpis.forEach((item) => {
+              const box = document.createElement('div');
+              box.className = 'dpr-day-report-kpi' + (item.tone ? ' ' + item.tone : '');
+              const lbl = document.createElement('span');
+              lbl.className = 'dpr-day-report-kpi-label';
+              lbl.textContent = item.label;
+              const val = document.createElement('strong');
+              val.className = 'dpr-day-report-kpi-value';
+              val.textContent = item.value;
+              box.appendChild(lbl);
+              box.appendChild(val);
+              grid.appendChild(box);
+            });
+            hero.appendChild(grid);
+          }
+          return hero;
+        };
+
+        const upgradeBriefHeading = (heading) => {
+          if (!heading) return;
+          const card = document.createElement('section');
+          card.className = 'dpr-day-report-brief';
+          const head = document.createElement('div');
+          head.className = 'dpr-day-report-brief-head';
+          const badge = document.createElement('span');
+          badge.className = 'dpr-day-report-brief-badge';
+          badge.textContent = 'AI 今日简报';
+          head.appendChild(badge);
+          card.appendChild(head);
+
+          const body = document.createElement('div');
+          body.className = 'dpr-day-report-brief-body';
+          const toRemove = [];
+          let cur = heading.nextElementSibling;
+          while (cur && !/^H[1-6]$/.test(cur.tagName) && cur.tagName !== 'HR' && !cur.classList.contains('dpr-home-promo-card')) {
+            if (cur.tagName === 'BLOCKQUOTE' || cur.tagName === 'P') {
+              const ps = cur.tagName === 'BLOCKQUOTE' ? Array.from(cur.querySelectorAll('p')) : [cur];
+              const sources = ps.length ? ps : [cur];
+              sources.forEach((pEl) => {
+                // 保留 Markdown 软换行（<br>）形成的逐条简报分段
+                const segments = (pEl.innerHTML || '').split(/<br\s*\/?>/i);
+                segments.forEach((seg) => {
+                  const tmp = document.createElement('div');
+                  tmp.innerHTML = seg;
+                  const text = (tmp.textContent || '').trim();
+                  if (!text) return;
+                  const p = document.createElement('p');
+                  p.textContent = text;
+                  body.appendChild(p);
+                });
+              });
+              toRemove.push(cur);
+            } else if (cur.tagName === 'UL' && cur.children.length === 1 && /详情[：:]/.test(cur.textContent || '')) {
+              const a = cur.querySelector('a[href]');
+              if (a) {
+                const link = document.createElement('a');
+                link.className = 'dpr-day-report-brief-link';
+                link.href = a.getAttribute('href') || '';
+                link.textContent = '查看完整日报 ›';
+                head.appendChild(link);
+              }
+              toRemove.push(cur);
+            } else {
+              break;
+            }
+            cur = cur.nextElementSibling;
+          }
+          if (body.children.length) {
+            card.appendChild(body);
+            heading.parentNode.insertBefore(card, heading);
+            heading.remove();
+            toRemove.forEach((node) => node.remove());
+          }
+        };
+
+        const upgradePaperListUnderHeading = (heading) => {
+          if (!heading) return;
+          const next = heading.nextElementSibling;
+          if (!next) return;
+          if (next.tagName === 'UL' && next.children.length === 1 && !next.querySelector('a')) {
+            const empty = document.createElement('div');
+            empty.className = 'dpr-day-report-empty';
+            empty.textContent = (next.textContent || '').trim();
+            next.replaceWith(empty);
+            return;
+          }
+          if (next.tagName !== 'OL') return;
+          const list = document.createElement('ol');
+          list.className = 'dpr-day-report-list';
+          Array.from(next.children).forEach((li, idx) => {
+            const a = li.querySelector('a[href]');
+            if (!a) return;
+            const fullText = (li.textContent || '').trim();
+            const scoreMatch = fullText.match(/[（(]\s*(\d+(?:\.\d+)?\s*\/\s*10)\s*[）)]/);
+            const row = document.createElement('li');
+            row.className = 'dpr-day-report-item';
+
+            const num = document.createElement('span');
+            num.className = 'dpr-day-report-item-index';
+            num.textContent = String(idx + 1).padStart(2, '0');
+            row.appendChild(num);
+
+            const link = document.createElement('a');
+            link.className = 'dpr-day-report-item-link';
+            link.href = a.getAttribute('href') || '';
+            link.textContent = (a.textContent || '').trim();
+            row.appendChild(link);
+
+            if (scoreMatch) {
+              const score = document.createElement('span');
+              score.className = 'dpr-day-report-item-score';
+              score.textContent = scoreMatch[1].replace(/\s+/g, ' ');
+              row.appendChild(score);
+            }
+
+            const chev = document.createElement('span');
+            chev.className = 'dpr-day-report-item-chevron';
+            chev.setAttribute('aria-hidden', 'true');
+            chev.textContent = '›';
+            row.appendChild(chev);
+            list.appendChild(row);
+          });
+          if (list.children.length) next.replaceWith(list);
+        };
+
+        // 1. 每日日报详情页（# 日报 · YYYY-MM-DD）
+        if (isReportPage) {
+          const h1 = section.querySelector('h1');
+          const h1Text = h1 ? (h1.textContent || '').trim() : '';
+          const m = h1Text.match(/^日报\s*[·・]\s*(.+)$/);
+          if (!m) return;
+          const dateLabel = m[1].trim();
+          const metaUl = h1.nextElementSibling && h1.nextElementSibling.tagName === 'UL' ? h1.nextElementSibling : null;
+          const info = parseMetaList(metaUl);
+          const kpis = [];
+          const totalVal = info['今日累计推荐总数'] || info['论文数量'];
+          if (totalVal != null) kpis.push({ label: '推荐总数', value: totalVal + ' 篇', tone: 'is-total' });
+          if (info['精读区'] != null) kpis.push({ label: '精读区', value: info['精读区'] + ' 篇', tone: 'is-deep' });
+          if (info['速读区'] != null) kpis.push({ label: '速读区', value: info['速读区'] + ' 篇', tone: 'is-quick' });
+          if (info['今日累计更新']) kpis.push({ label: '今日更新', value: info['今日累计更新'], tone: 'is-runs' });
+
+          const hero = createHeroCard({
+            title: '每日论文日报',
+            dateBadge: dateLabel,
+            updatedAt: info['最近生成时间'] || '',
+            statusText: '',
+            kpis,
+          });
+          h1.parentNode.insertBefore(hero, h1);
+          h1.remove();
+          if (metaUl) metaUl.remove();
+
+          Array.from(section.querySelectorAll('h2')).forEach((h2) => {
+            const t = (h2.textContent || '').trim();
+            if (/^今日简报/.test(t)) upgradeBriefHeading(h2);
+            else if (/^(?:精读区|速读区|论文列表)/.test(t)) upgradePaperListUnderHeading(h2);
+          });
+
+          const lastP = Array.from(section.querySelectorAll('p')).pop();
+          if (lastP && /使用键盘方向键/.test(lastP.textContent || '')) {
+            const prevHr = lastP.previousElementSibling;
+            if (prevHr && prevHr.tagName === 'HR') prevHr.remove();
+            lastP.classList.add('dpr-day-report-footer-hint');
+          }
+          return;
+        }
+
+        // 2. 兼容旧版首页（含 ## 每次日报 且尚未升级 2×2 仪表盘）
+        if (isHomePage && !section.querySelector('.dpr-home-dashboard-grid')) {
+          const reportH2 = Array.from(section.querySelectorAll('h2')).find(
+            (el) => (el.textContent || '').trim() === '每次日报',
+          );
+          if (!reportH2) return;
+          const metaUl = reportH2.nextElementSibling && reportH2.nextElementSibling.tagName === 'UL' ? reportH2.nextElementSibling : null;
+          const info = parseMetaList(metaUl);
+          const kpis = [];
+          if (info['本次总论文数'] != null) kpis.push({ label: '本次推荐', value: info['本次总论文数'] + ' 篇', tone: 'is-total' });
+          if (info['精读区'] != null) kpis.push({ label: '精读区', value: info['精读区'] + ' 篇', tone: 'is-deep' });
+          if (info['速读区'] != null) kpis.push({ label: '速读区', value: info['速读区'] + ' 篇', tone: 'is-quick' });
+
+          const hero = createHeroCard({
+            title: '每次日报',
+            dateBadge: info['最新运行日期'] || '',
+            updatedAt: info['运行时间'] || '',
+            statusText: info['运行状态'] || '',
+            kpis,
+          });
+          reportH2.parentNode.insertBefore(hero, reportH2);
+          reportH2.remove();
+          if (metaUl) metaUl.remove();
+
+          Array.from(section.querySelectorAll('h3')).forEach((h3) => {
+            const t = (h3.textContent || '').trim();
+            if (/^今日简报/.test(t)) upgradeBriefHeading(h3);
+            else if (/论文标签$/.test(t)) upgradePaperListUnderHeading(h3);
+          });
+        }
+      };
+
       const applyPaperTitleBar = () => {
         const file = vm && vm.route ? vm.route.file : '';
         if (!isPaperRouteFile(file)) {
@@ -3357,6 +3615,7 @@ window.$docsify = {
 
         // 论文页标题条排版（只对 docs/YYYYMM/DD/*.md 生效）
         applyPaperTitleBar();
+        enhanceDailyReportLayout({ isHomePage, isReportPage });
         bindPdfPreviewToggle();
 
         // 论文页左右切换：更新导航列表并绑定事件（只绑定一次）

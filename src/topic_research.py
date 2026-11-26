@@ -535,15 +535,67 @@ def select_topic_papers(
         merged["llm_tags"] = tags
         eligible.append(merged)
 
+    def _arxiv_sort_key(paper: Dict[str, Any]) -> str:
+        joined = " ".join(
+            str(paper.get(k) or "") for k in ("id", "canonical_id", "route", "link", "pdf_url")
+        )
+        m = re.search(
+            r"(?:^|[/:_-])(\d{2})(0[1-9]|1[0-2])\.(\d{4,5})(?:v\d+)?(?=$|[^0-9])",
+            joined,
+        )
+        if not m:
+            return ""
+        return f"20{m.group(1)}-{m.group(2)}-{m.group(3).zfill(5)}"
+
+    def _recency_sort_key(paper: Dict[str, Any]) -> str:
+        pub = str(paper.get("publication_date") or paper.get("published") or "").strip()
+        if re.match(r"^\d{4}(?:-\d{2}(?:-\d{2})?)?", pub):
+            return pub[:10]
+        arxiv_key = _arxiv_sort_key(paper)
+        if arxiv_key:
+            return arxiv_key[:7]
+        year = str(paper.get("conference_year") or paper.get("year") or "").strip()
+        return year if re.fullmatch(r"\d{4}", year) else ""
+
+    def _star_rank(paper: Dict[str, Any]) -> int:
+        # 与前端 starHtmlFromScore 的 Math.round(score / 2) 保持一致（四舍五入 half-up）
+        s = float(paper.get("llm_score") or 0.0)
+        return max(0, min(5, int((s / 2.0) + 0.5)))
+
     eligible.sort(key=lambda p: str(p.get("canonical_id") or p.get("id") or ""))
-    eligible.sort(key=lambda p: str(p.get("publication_date") or p.get("published") or ""), reverse=True)
+    # 先按精确相关分截断 Top-N，避免低分挤掉高分；入选后再按“星级降序 → 会议优先 → 时间降序”排展示顺序
     eligible.sort(
-        key=lambda p: (float(p.get("llm_score") or 0.0), float(p.get("rerank_score") or 0.0)),
+        key=lambda p: (
+            float(p.get("llm_score") or 0.0),
+            1 if _conference_key(p) else 0,
+            _recency_sort_key(p),
+            _arxiv_sort_key(p),
+            float(p.get("rerank_score") or 0.0),
+        ),
         reverse=True,
     )
     selected = eligible[:max_papers]
-    deep_dive = [p for p in selected if float(p.get("llm_score") or 0.0) >= float(deep_min_score)]
-    quick_skim = [p for p in selected if float(p.get("llm_score") or 0.0) < float(deep_min_score)]
+
+    def _display_sort_key(paper: Dict[str, Any]):
+        return (
+            _star_rank(paper),
+            1 if _conference_key(paper) else 0,
+            _recency_sort_key(paper),
+            _arxiv_sort_key(paper),
+            float(paper.get("llm_score") or 0.0),
+            float(paper.get("rerank_score") or 0.0),
+        )
+
+    deep_dive = sorted(
+        [p for p in selected if float(p.get("llm_score") or 0.0) >= float(deep_min_score)],
+        key=_display_sort_key,
+        reverse=True,
+    )
+    quick_skim = sorted(
+        [p for p in selected if float(p.get("llm_score") or 0.0) < float(deep_min_score)],
+        key=_display_sort_key,
+        reverse=True,
+    )
     return deep_dive, quick_skim
 
 
@@ -666,6 +718,14 @@ def _action_bar_markdown(export_path: str) -> str:
     )
 
 
+def _inject_action_bar_after_h1(markdown_text: str, actions_md: str) -> str:
+    lines = markdown_text.splitlines(keepends=True)
+    if lines and lines[0].startswith("# "):
+        rest = "".join(lines[1:]).lstrip("\n")
+        return lines[0] + "\n" + actions_md + rest
+    return actions_md + markdown_text
+
+
 def _generate_or_load_guide(
     root: Path,
     plan: Dict[str, Any],
@@ -742,8 +802,22 @@ def publish_topic_results(
     start_date = date.fromisoformat(arxiv_start[:10])
     end_date = date.fromisoformat(as_of[:10]) - timedelta(days=1)
     window_label = f"{start_date} ~ {end_date}"
+    conf_window = (plan.get("windows") or {}).get("conference") or {}
+    if mode == "starter":
+        conf_start_raw = str(conf_window.get("start") or "")[:10]
+        coverage_window_label = (
+            f"arXiv {start_date} ~ {end_date}；顶会近 24 个月（{conf_start_raw} ~ {end_date}）"
+            if conf_start_raw
+            else f"arXiv {start_date} ~ {end_date}；顶会近 24 个月"
+        )
+    else:
+        coverage_window_label = f"arXiv {window_label}"
     mode_label = _mode_display_label(mode, int(plan.get("arxiv_days") or 365))
-    sidebar_label = f"{tag} · {mode_label} ({window_label})"
+    sidebar_label = (
+        f"{tag} · {mode_label}（截至 {end_date}）"
+        if mode == "starter"
+        else f"{tag} · {mode_label}（{window_label}）"
+    )
 
     all_selected = [(p, "deep") for p in deep_dive] + [(p, "quick") for p in quick_skim]
     existing_index = _build_existing_route_index(docs, generator)
@@ -888,13 +962,15 @@ def publish_topic_results(
     topic_dir = docs / topic_token
     topic_dir.mkdir(parents=True, exist_ok=True)
     export_rel_path = f"docs/{topic_token}/papers.md"
+    for p, sec, _ in ordered_done:
+        p["_export_section"] = sec
     exports = export_records(final_papers)
     description = str((plan.get("profile") or {}).get("description") or "").strip()
     refinement = str((plan.get("snapshot") or {}).get("refinement") or "").strip()
     export_meta = {
         "description": description,
         "refinement": refinement,
-        "window": window_label,
+        "window": coverage_window_label,
     }
     (topic_dir / "papers.md").write_text(
         render_export(exports, f"{tag} · {mode_label}", export_meta),
@@ -925,6 +1001,7 @@ def publish_topic_results(
         "report": f"#/{topic_token}/README",
         "export": export_rel_path,
         "as_of": as_of,
+        "window": coverage_window_label,
     }
     if description:
         topic_meta["description"] = description[:240]
@@ -954,24 +1031,59 @@ def publish_topic_results(
 
     # 3. 写入 docs/<topic_token>/README.md（大礼包为方向导读，90/365 为标准总览报告）
     actions_md = _action_bar_markdown(export_rel_path)
-    coverage_lines = [
-        f"- 检索窗口：{window_label}（截止 {as_of}，不含当天）",
-        f"- 最终入选：{len(final_papers)} 篇（精读区 {len(deep_done)} 篇 · 速读区 {len(quick_done)} 篇）",
-    ]
-    if description:
-        coverage_lines.append(f"- 研究需求：{_escape(description)}")
-    if refinement:
-        coverage_lines.append(f"- 本次细化：{_escape(refinement)}")
-    missing = coverage.get("missing_inventory") or []
-    if missing:
-        coverage_lines.append(
-            "- 缺失会议库存："
-            + "、".join(
-                _escape(f"{m.get('conference', '')} {m.get('year', '')}") for m in missing
-            )
-        )
-    coverage_md = "\n".join(coverage_lines) + "\n\n"
 
+    def _build_topic_catalog_markdown() -> str:
+        from starter_pack_guide import _link as guide_link, _url as guide_url, format_venue_time_badge
+
+        blocks: List[str] = ["## 完整论文目录", ""]
+        missing = coverage.get("missing_inventory") or []
+        if missing:
+            blocks.append(
+                "> 缺失会议库存："
+                + "、".join(
+                    _escape(f"{m.get('conference', '')} {m.get('year', '')}") for m in missing
+                )
+            )
+            blocks.append("")
+
+        def _append_group(heading: str, items: List[Dict[str, Any]]) -> None:
+            if not items:
+                return
+            blocks.append(f"### {heading}（{len(items)} 篇）")
+            blocks.append("")
+            for i, p in enumerate(items, 1):
+                route = str(p.get("route") or "").strip()
+                link = guide_link(str(p.get("title") or route), guide_url(route, local=True))
+                zh = str(p.get("zh_title") or p.get("title_zh") or "").strip()
+                venue = format_venue_time_badge(p)
+                score_val = p.get("llm_score", p.get("score"))
+                ev = str(p.get("canonical_evidence") or p.get("llm_evidence_cn") or "").strip()
+                meta_parts = []
+                if venue:
+                    meta_parts.append(f"`{_escape(venue)}`")
+                if score_val is not None:
+                    try:
+                        meta_parts.append(f"{float(score_val):.1f}分")
+                    except (TypeError, ValueError):
+                        pass
+                head = f"{i}. {link}"
+                if meta_parts:
+                    head += f"（{' · '.join(meta_parts)}）"
+                blocks.append(head)
+                if zh:
+                    blocks.append(f"   - {_escape(zh)}")
+                if ev:
+                    blocks.append(f"   - {_escape(ev)}")
+            blocks.append("")
+
+        _append_group("精读区", deep_done)
+        _append_group("速读区", quick_done)
+        if not deep_done and not quick_done:
+            blocks.append("当前检索窗口暂无满足入选条件的论文。")
+            blocks.append("")
+        return "\n".join(blocks).rstrip() + "\n"
+
+    catalog_md = _build_topic_catalog_markdown()
     guide_status = "not_required"
     if mode == "starter":
         if status_reporter is not None:
@@ -986,46 +1098,49 @@ def publish_topic_results(
                 root, plan, final_papers, guide_client_factory=guide_client_factory
             )
             guide_md = render_guide(
-                guide, final_papers, {"topic": tag, "window": window_label}
+                guide,
+                final_papers,
+                {
+                    "topic": tag,
+                    "window": coverage_window_label,
+                    "description": description,
+                    "refinement": refinement,
+                    "deep_count": len(deep_done),
+                    "quick_count": len(quick_done),
+                },
             )
-            report_tail = generator.build_day_report_markdown(
-                date_str=topic_token,
-                date_label=sidebar_label,
-                deep_entries=deep_entries,
-                quick_entries=quick_entries,
-                recommend_exists=True,
-                run_count=merged_state.get("run_count", 1),
-                generated_at=generated_at,
-                summary="",
+            readme_text = _inject_action_bar_after_h1(
+                guide_md + "\n---\n\n" + catalog_md, actions_md
             )
-            readme_text = actions_md + guide_md + "\n## 检索覆盖与论文目录\n\n" + coverage_md + report_tail
             guide_status = "complete"
         except Exception as exc:
-            log(f"[WARN] 方向导读生成失败，已降级为标准总览报告：{exc}")
+            log(f"[WARN] 方向导读生成失败，已降级为完整目录总览：{exc}")
             guide_status = "failed"
-            report_md = generator.build_day_report_markdown(
-                date_str=topic_token,
-                date_label=sidebar_label,
-                deep_entries=deep_entries,
-                quick_entries=quick_entries,
-                recommend_exists=True,
-                run_count=merged_state.get("run_count", 1),
-                generated_at=generated_at,
-                summary="",
+            fallback_head = [
+                f"# {_escape(tag)} · {_escape(mode_label)}",
+                "",
+                f"- **覆盖范围**：{_escape(coverage_window_label)}",
+                f"- **精选论文**：共 {len(final_papers)} 篇（精读 {len(deep_done)} 篇 · 速读 {len(quick_done)} 篇）",
+            ]
+            if description:
+                fallback_head.insert(2, f"- **研究方向**：{_escape(description)}")
+            readme_text = _inject_action_bar_after_h1(
+                "\n".join(fallback_head) + "\n\n" + catalog_md, actions_md
             )
-            readme_text = actions_md + coverage_md + report_md
     else:
-        report_md = generator.build_day_report_markdown(
-            date_str=topic_token,
-            date_label=sidebar_label,
-            deep_entries=deep_entries,
-            quick_entries=quick_entries,
-            recommend_exists=True,
-            run_count=merged_state.get("run_count", 1),
-            generated_at=generated_at,
-            summary="",
+        overview_head = [
+            f"# {_escape(tag)} · {_escape(mode_label)}",
+            "",
+            f"- **覆盖范围**：{_escape(coverage_window_label)}",
+            f"- **精选论文**：共 {len(final_papers)} 篇（精读 {len(deep_done)} 篇 · 速读 {len(quick_done)} 篇）",
+        ]
+        if description:
+            overview_head.insert(2, f"- **研究方向**：{_escape(description)}")
+        if refinement:
+            overview_head.append(f"- **本次细化**：{_escape(refinement)}")
+        readme_text = _inject_action_bar_after_h1(
+            "\n".join(overview_head) + "\n\n" + catalog_md, actions_md
         )
-        readme_text = actions_md + coverage_md + report_md
 
     (topic_dir / "README.md").write_text(readme_text, encoding="utf-8")
     return {

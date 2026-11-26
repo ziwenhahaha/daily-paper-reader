@@ -398,6 +398,7 @@ def test_end_to_end_standard_pipeline_publishes_single_track_sidebar_and_media(t
     sidebar = (tmp_path / "docs/_sidebar.md").read_text(encoding="utf-8")
     assert f"<!--dpr-date:{token}-->" in sidebar
     assert "<!--dpr-topic:" in sidebar
+    assert "顶会近 24 个月" in sidebar
     assert "核心研究大模型用户模拟" in sidebar
     assert "提出对话用户模拟评测基准" in sidebar
     assert (tmp_path / f"docs/{token}/_daily_state.json").exists()
@@ -407,7 +408,10 @@ def test_end_to_end_standard_pipeline_publishes_single_track_sidebar_and_media(t
     readme = (tmp_path / f"docs/{token}/README.md").read_text(encoding="utf-8")
     assert "data-topic-copy=\"docs/20251125-20261124-starter-user-sim/papers.md\"" in readme
     assert "方向概览" in readme
-    assert "建议阅读顺序" in readme
+    assert "建议阅读路线" in readme
+    assert "## 完整论文目录" in readme
+    assert "# 日报" not in readme
+    assert readme.startswith("# user-sim · 入门导读\n")
 
 
 def test_pdf_failure_isolated_and_still_generates_chinese_quick_page(tmp_path):
@@ -534,3 +538,61 @@ def test_select_topic_papers_deduplicates_case_variant_tags():
     assert len(deep) == 1 and len(quick) == 0
     assert [t.lower() for t in deep[0]["llm_tags"]] == ["query:atsp"]
     assert len(deep[0]["llm_tags"]) == 1
+
+
+def test_select_topic_papers_orders_conference_before_newest_arxiv_within_same_score():
+    papers = [
+        {
+            "id": "2603.26564v1",
+            "canonical_id": "arxiv:2603.26564",
+            "title": "Arxiv Old 9",
+            "source": "arxiv",
+            "publication_date": "2026-03-27",
+        },
+        {
+            "id": "2611.26180v1",
+            "canonical_id": "arxiv:2611.26180",
+            "title": "Arxiv New 9",
+            "source": "arxiv",
+            "publication_date": "2026-11-19",
+        },
+        {
+            "id": "neurips-2025-1",
+            "canonical_id": "neurips:2025:1",
+            "title": "NeurIPS 2025 9",
+            "source": "NeurIPS-2025-Accepted",
+            "conference": "neurips",
+            "conference_year": 2025,
+            "publication_date": "2025",
+        },
+        {
+            "id": "2603.14334v1",
+            "canonical_id": "arxiv:2603.14334",
+            "title": "Arxiv 10",
+            "source": "arxiv",
+            "publication_date": "2026-03-15",
+        },
+    ]
+    llm_data = {
+        "papers": papers,
+        "queries": [],
+        "llm_ranked": [
+            {"paper_id": "2603.26564v1", "score": 9.0, "matched_query_tag": "query:ATSP"},
+            {"paper_id": "2611.26180v1", "score": 9.0, "matched_query_tag": "query:ATSP"},
+            {"paper_id": "neurips-2025-1", "score": 9.0, "matched_query_tag": "query:ATSP"},
+            {"paper_id": "2603.14334v1", "score": 10.0, "matched_query_tag": "query:ATSP"},
+        ],
+    }
+    deep, quick = tr.select_topic_papers(
+        llm_data,
+        {p["id"]: p for p in papers},
+        profile_tag="ATSP",
+        max_papers=50,
+    )
+    assert quick == []
+    assert [p["title"] for p in deep] == [
+        "NeurIPS 2025 9",
+        "Arxiv New 9",
+        "Arxiv Old 9",
+        "Arxiv 10",
+    ]

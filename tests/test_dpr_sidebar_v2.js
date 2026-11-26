@@ -2036,11 +2036,118 @@ function testSingleTrackTopicBacktrackGroup() {
     readMap: {},
   });
   assert.ok(html.includes('专题回溯'));
-  assert.ok(html.includes('方向导读／导出清单'));
+  assert.ok(html.includes('user-sim · 大礼包（截至 2026-11-24）'), '大礼包目录应显示清晰截止日期而非误导性的 1 年 arXiv 区间');
+  assert.ok(!html.includes('(2025-11-25 ~ 2026-11-24)'), '大礼包目录不应再显示与 24 个月会议冲突的 1 年区间');
+  assert.ok(html.includes('dpr-sidebar-topic-dir-desc">LLM user simulation</span>'), '研究方向摘要应显示在上一级目录按钮上');
+  assert.ok(html.includes('📖 方向导读'));
+  assert.ok(html.includes('⬇ 导出清单'));
+  const navMatch = html.match(/<li class="dpr-topic-task-navigation">([\s\S]*?)<\/li>/);
+  assert.ok(navMatch, '应渲染专题导航行');
+  assert.ok(!navMatch[1].includes('研究方向：'), '展开列表顶部不应重复堆砌研究方向长文本');
+  assert.ok(!navMatch[1].includes('截止日期（不含当天）'), '展开列表顶部不应显示容易混淆的排他截止日期文案');
+  assert.ok(html.includes('覆盖范围：arXiv 2025-11-25 ~ 2026-11-24；顶会近 24 个月（截至 2026-11-24）'), '上一级目录悬停提示应准确说明 arXiv 与 24 个月顶会覆盖范围');
+  assert.ok(!/class="[^"]*dpr-sidebar-axis-tab[^"]*"[^>]*href="#\/20251125-20261124-starter-user-sim\/README"/.test(html), '方向导读链接不得使用 dpr-sidebar-axis-tab，避免被轴标签点击事件劫持重绘');
   assert.ok(html.includes('href="#/' + topicToken + '/README"'));
   assert.ok(html.includes('href="docs/' + topicToken + '/papers.md"'));
   assert.ok(html.includes('核心研究大模型用户模拟'));
   assert.ok(html.includes('data-topic-task-sort'));
+}
+
+function testTopicRelevanceSortOrdersConferenceBeforeNewestArxiv() {
+  const tools = loadSidebarForTest().__test;
+  const papers = [
+    {
+      id: '2603.26564v1',
+      href: '#/20251125-20261124-starter-atsp/2603.26564v1',
+      title: 'Arxiv Old 9.0',
+      score: '9.0',
+      publication_date: '2026-03-27',
+      selection_rank: 0,
+    },
+    {
+      id: '2611.18490v1',
+      href: '#/20251125-20261124-starter-atsp/2611.18490v1',
+      title: 'Arxiv Mid 9.0',
+      score: '9.0',
+      publication_date: '2026-11-13',
+      selection_rank: 1,
+    },
+    {
+      id: '2611.26180v1',
+      href: '#/20251125-20261124-starter-atsp/2611.26180v1',
+      title: 'Arxiv New 9.0',
+      score: '9.0',
+      publication_date: '2026-11-19',
+      selection_rank: 2,
+    },
+    {
+      id: 'openreview-neurips-2025-1',
+      href: '#/conference/neurips-2025/openreview-neurips-2025-1',
+      title: 'NeurIPS 2025 9.0',
+      score: '9.0',
+      publication_date: '2025',
+      conference_year: '2025',
+      selection_rank: 3,
+    },
+    {
+      id: 'openreview-iclr-2026-1',
+      href: '#/conference/iclr-2026/openreview-iclr-2026-1',
+      title: 'ICLR 2026 9.0',
+      score: '9.0',
+      publication_date: '2026',
+      conference_year: '2026',
+      selection_rank: 4,
+    },
+    {
+      id: '2603.14334v1',
+      href: '#/20251125-20261124-starter-atsp/2603.14334v1',
+      title: 'Arxiv 10.0 (5★ Oldest)',
+      score: '10.0',
+      publication_date: '2026-03-15',
+      selection_rank: 5,
+    },
+    {
+      id: '2611.17380v1',
+      href: '#/20251125-20261124-starter-atsp/2611.17380v1',
+      title: 'Arxiv 8.0 (4★ New)',
+      score: '8.0',
+      publication_date: '2026-11-11',
+      selection_rank: 6,
+    },
+    {
+      id: '2512.18610v1',
+      href: '#/20251125-20261124-starter-atsp/2512.18610v1',
+      title: 'Arxiv 7.0 (4★ Old)',
+      score: '7.0',
+      publication_date: '2025-12-21',
+      selection_rank: 7,
+    },
+    {
+      id: 'openreview-iclr-2025-1',
+      href: '#/conference/iclr-2025/openreview-iclr-2025-1',
+      title: 'ICLR 2025 7.0 (4★)',
+      score: '7.0',
+      publication_date: '2025',
+      conference_year: '2025',
+      selection_rank: 8,
+    },
+  ];
+  const sorted = tools.sortedTaskPapers(papers, 'score');
+  assert.deepEqual(
+    sorted.map((p) => p.title),
+    [
+      'ICLR 2026 9.0',
+      'NeurIPS 2025 9.0',
+      'Arxiv New 9.0',
+      'Arxiv Mid 9.0',
+      'Arxiv Old 9.0',
+      'Arxiv 10.0 (5★ Oldest)',
+      'ICLR 2025 7.0 (4★)',
+      'Arxiv 8.0 (4★ New)',
+      'Arxiv 7.0 (4★ Old)',
+    ],
+    '相关性降序按星级归组：同一星级内所有会议论文必须全部排在 arXiv 之前，随后 arXiv 从新到旧降序',
+  );
 }
 
 function testCaseInsensitiveTagDeduplicationInSidebar() {
@@ -2189,6 +2296,7 @@ function testPaperVenueTimeBadgesInSidebar() {
 
 testReadStatusNormalization();
 testSingleTrackTopicBacktrackGroup();
+testTopicRelevanceSortOrdersConferenceBeforeNewestArxiv();
 testCaseInsensitiveTagDeduplicationInSidebar();
 testPaperVenueTimeBadgesInSidebar();
 

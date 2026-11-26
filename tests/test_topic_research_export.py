@@ -102,3 +102,36 @@ def test_optional_export_scope_is_safe_and_preserves_paper_order():
     assert "研究需求" in text and "本次细化" in text and "2025-09-11" in text
     assert "<script>" not in text and "[x](" not in text
     assert text.index("Original A") < text.index("Original B")
+
+
+def test_export_renders_grouped_sections_with_venue_and_chinese_title():
+    papers = [
+        {
+            "id": "2603.14334v1",
+            "title": "Better Approximation for ATSP",
+            "zh_title": "更优的非对称旅行商近似算法",
+            "canonical_evidence": "将 ATSP 近似比改进至新界",
+            "link": "https://arxiv.org/abs/2603.14334v1",
+            "score": 9.5,
+            "_export_section": "deep",
+        },
+        {
+            "id": "iclr-2025-1",
+            "title": "Neural Solver for ATSP",
+            "zh_title": "基于神经网络的 ATSP 求解器",
+            "conference": "iclr",
+            "conference_year": 2025,
+            "official_link": "https://openreview.net/forum?id=1",
+            "score": 7.2,
+            "_export_section": "quick",
+        },
+    ]
+    records = export_records(papers)
+    assert records[0]["venue"] == "Arxiv2603"
+    assert records[1]["venue"] == "ICLR25"
+    text = render_export(records, "ATSP · 大礼包")
+    assert "## 精读区（1 篇）" in text
+    assert "## 速读区（1 篇）" in text
+    assert "`Arxiv2603`" in text and "`ICLR25`" in text
+    assert "更优的非对称旅行商近似算法" in text
+    assert "将 ATSP 近似比改进至新界" in text
