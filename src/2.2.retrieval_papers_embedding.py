@@ -25,6 +25,7 @@ try:
 except Exception:  # pragma: no cover - 兼容 package 导入路径
   from src.source_backend_router import group_queries_by_source, merge_pipeline_results
   from src.source_config import ARXIV_SOURCE_KEY, get_source_backend, load_config_with_source_migration, normalize_source_list
+from recall_health import RecallHealth
 from subscription_plan import build_pipeline_inputs
 from supabase_source import (
   count_papers_by_date_range,
@@ -716,11 +717,11 @@ def query_supabase_vector_with_shards(
   shard_days: int = SUPABASE_VECTOR_SHARD_DAYS,
   rpc_mode: str = "exact",
   filter_sources: List[str] | None = None,
-) -> tuple[list[Dict[str, Any]], str]:
+) -> tuple[list[Dict[str, Any]], str, bool]:
   safe_start = _normalize_utc_datetime(start_dt)
   safe_end = _normalize_utc_datetime(end_dt)
   if safe_start is None or safe_end is None or safe_end <= safe_start:
-    return match_papers_by_embedding(
+    rows, msg = match_papers_by_embedding(
       url=url,
       api_key=api_key,
       rpc_name=rpc_name,
@@ -732,6 +733,7 @@ def query_supabase_vector_with_shards(
       time_fields=time_fields,
       filter_sources=filter_sources,
     )
+    return rows, msg, msg.startswith("rpc 查询成功")
 
   shards = split_supabase_time_window(
     safe_start,
@@ -739,7 +741,7 @@ def query_supabase_vector_with_shards(
     shard_days=shard_days,
   )
   if not shards:
-    return ([], "rpc 分片查询失败：未生成有效时间分片")
+    return ([], "rpc 分片查询失败：未生成有效时间分片", False)
 
   rows_per_shard: list[list[Dict[str, Any]]] = []
   success_count = 0
@@ -770,7 +772,7 @@ def query_supabase_vector_with_shards(
   )
   if success_count <= 0:
     detail = " | ".join(failure_messages[:2]) if failure_messages else "所有分片均失败"
-    return ([], f"rpc 分片查询失败：success=0/{len(shards)} | {detail}")
+    return ([], f"rpc 分片查询失败：success=0/{len(shards)} | {detail}", False)
 
   summary = (
     f"rpc 分片查询成功：{len(merged_rows)} 条"
@@ -778,7 +780,7 @@ def query_supabase_vector_with_shards(
   )
   if failure_messages:
     summary += f" | partial_failures={len(failure_messages)}"
-  return (merged_rows, summary)
+  return (merged_rows, summary, True)
 
 
 def parse_embedding_value(value: Any) -> Optional[np.ndarray]:
@@ -966,7 +968,7 @@ def rank_papers_for_queries_via_supabase(
   rpc_name = str(rpc_name_override or supabase_conf.get("vector_rpc") or "match_arxiv_papers").strip()
   schema = str(supabase_conf.get("schema") or "public").strip()
   if not url or not api_key:
-    return {"queries": [], "papers": {}, "total_hits": 0}
+    return {"queries": [], "papers": {}, "total_hits": 0, "recall_failed": True}
 
   q_embs: List[np.ndarray] = []
   missing_indices: List[int] = []
@@ -993,6 +995,7 @@ def rank_papers_for_queries_via_supabase(
   id_to_paper: Dict[str, Paper] = {}
   results_per_query: List[dict] = []
   total_hits = 0
+  recall_succeeded = recall_failed = False
   non_empty_queries = 0
 
   for idx, q in enumerate(queries):
@@ -1019,7 +1022,7 @@ def rank_papers_for_queries_via_supabase(
     q_vec = q_embs[idx]
     query_embedding = q_vec.tolist()
     if rpc_mode == "exact":
-      rows, msg = query_supabase_vector_with_shards(
+      rows, msg, succeeded = query_supabase_vector_with_shards(
         url=url,
         api_key=api_key,
         rpc_name=rpc_name,
@@ -1045,7 +1048,11 @@ def rank_papers_for_queries_via_supabase(
         time_fields=time_fields,
         filter_sources=normalize_source_list(q.get("paper_sources")) if query_filter_sources else None,
       )
+      succeeded = msg.startswith("rpc 查询成功")
     log(f"[Supabase Vector:{rpc_mode}] {msg} | tag={q.get('tag') or ''}")
+
+    recall_succeeded |= succeeded
+    recall_failed |= not succeeded
 
     # 语句超时（57014）是服务端配置限制，后续批次也会超时，直接跳过
     if not rows and "57014" in msg:
@@ -1093,6 +1100,8 @@ def rank_papers_for_queries_via_supabase(
     "queries": results_per_query,
     "papers": id_to_paper,
     "total_hits": total_hits,
+    "recall_succeeded": recall_succeeded,
+    "recall_failed": recall_failed,
     "non_empty_queries": non_empty_queries,
   }
 
@@ -1218,8 +1227,10 @@ def main() -> None:
       f"embedding_only_new={comparison.get('embedding_only_new_count', 0)} "
       f"embedding_only_legacy={comparison.get('embedding_only_legacy_count', 0)}"
     )
+  recall = RecallHealth()
   if not queries:
     log("[ERROR] 未能从订阅配置中解析到 Embedding 查询，退出。")
+    recall.finish("向量召回", log)
     return
 
   multi_source_backend = resolve_multi_source_vector_backend(config, queries) if multi_source_rpc_enabled() else None
@@ -1262,6 +1273,7 @@ def main() -> None:
       continue
     if not get_source_backend(config, source_key):
       log(f"[ERROR] 词条引用了论文源「{source_key}」，但未配置 source_backends.{source_key}。")
+      recall.finish("向量召回", log)
       return
 
   def run_supabase_vector_recall_for_source(
@@ -1331,11 +1343,15 @@ def main() -> None:
         rpc_name_override=rpc_name,
         rpc_mode=mode,
       )
+      recall.record_remote(result_sb)
       total_hits = int(result_sb.get("total_hits") or 0)
       non_empty_queries = int(result_sb.get("non_empty_queries") or 0)
       query_total = len(queries)
       avg_hits_per_query = (float(total_hits) / float(query_total)) if query_total > 0 else 0.0
 
+      if result_sb.get("recall_failed") and not result_sb.get("recall_succeeded"):
+        log(f"[WARN] Supabase 向量查询失败（mode={mode} rpc={rpc_name}）。")
+        return None
       if total_hits <= 0:
         log(f"[WARN] Supabase 向量召回无命中（mode={mode} rpc={rpc_name}）。")
         return None
@@ -1349,6 +1365,7 @@ def main() -> None:
       return result_sb
     except Exception as e:
       if source_key == ARXIV_SOURCE_KEY:
+        recall.failed = True
         log(f"[WARN] Supabase 向量召回异常：{e}")
         return None
       raise
@@ -1384,6 +1401,7 @@ def main() -> None:
         rpc_mode="exact",
         query_filter_sources=True,
       )
+      recall.record_remote(result_sb)
       total_hits = int(result_sb.get("total_hits") or 0)
       if total_hits > 0:
         log(f"[INFO] Multi-source 向量召回命中 {total_hits} 条。")
@@ -1469,6 +1487,7 @@ def main() -> None:
         )
         group_end()
         merged_results.append(result_local)
+        recall.succeeded |= bool(result_local.get("queries"))
 
     merged = merge_pipeline_results(merged_results)
     if not merged.get("queries"):
@@ -1526,6 +1545,7 @@ def main() -> None:
         save_tagged_results(merge_pipeline_results(merged_results), output_path)
       else:
         log("[WARN] 无本地原始文件，且没有任何 source backend 返回向量结果。")
+      recall.finish("向量召回", log)
       return
 
     log(f"[INFO] 批量模式：将在 {RAW_DIR} 下处理 {len(raw_files)} 个 JSON 文件。")
@@ -1537,6 +1557,8 @@ def main() -> None:
         base = base[:-5]
       output_path = os.path.join(FILTERED_DIR, f"{base}.embedding.json")
       process_single_file(input_path, output_path)
+
+  recall.finish("向量召回", log)
 
 
 if __name__ == "__main__":
