@@ -753,6 +753,7 @@
     return {
       syncActive: false,
       scrollPanel: panelKey || '',
+      animatePanel: panelKey || '',
       dispatchUpdated: false,
     };
   }
@@ -2543,7 +2544,7 @@
     var unreadCount = typeof opts.unreadCount === 'number' ? opts.unreadCount : 0;
     html.push('<section class="dpr-sidebar-group dpr-sidebar-panel ' + groupClass + expandedClass + resultClass + '" data-panel="' + safeAttr(opts.group) + '">');
     if (hasHeaderAxisToggle) {
-      html.push('  <div class="dpr-sidebar-panel-header dpr-sidebar-panel-header-has-axis dpr-sidebar-panel-header-' + safeAttr(opts.group) + '">');
+      html.push('  <div class="dpr-sidebar-panel-header dpr-sidebar-panel-header-has-axis dpr-sidebar-panel-header-' + safeAttr(opts.group) + '" data-panel-toggle="' + safeAttr(opts.group) + '">');
       html.push('    <button type="button" class="dpr-sidebar-panel-toggle" data-panel-toggle="' + safeAttr(opts.group) + '" aria-expanded="' + (opts.expanded ? 'true' : 'false') + '">');
       html.push('      <span class="dpr-sidebar-day-arrow" aria-hidden="true">▸</span>');
       html.push('      <span class="dpr-sidebar-panel-title">' + safeText(opts.icon + ' ' + opts.title) + '</span>');
@@ -2564,7 +2565,7 @@
       ((opts.view && opts.view.groups) || []).some(function (g) { return !!(g && g.taskNavigation); })
     );
     if (hasTopicGroups) {
-      html.push('<div class="dpr-sidebar-axis-row"><label>排序 <select data-topic-task-sort><option value="score"' + (opts.taskSort !== 'date' ? ' selected' : '') + '>相关性降序</option><option value="date"' + (opts.taskSort === 'date' ? ' selected' : '') + '>公布日期降序</option></select></label></div>');
+      html.push('<div class="dpr-sidebar-axis-row dpr-sidebar-daily-tabs-row dpr-sidebar-sort-row"><label>排序 <select data-topic-task-sort><option value="score"' + (opts.taskSort !== 'date' ? ' selected' : '') + '>相关性降序</option><option value="date"' + (opts.taskSort === 'date' ? ' selected' : '') + '>公布日期降序</option></select></label></div>');
     }
     if (opts.group === 'backtrack' && opts.starterPacks && opts.starterPacks.length) {
       html.push(renderStarterPackGuides(opts.starterPacks, opts));
@@ -2861,18 +2862,190 @@
     state.bodyEl.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
   }
 
-  function scrollPanelIntoView(panelKey) {
-    if (!state.bodyEl || !panelKey) return;
+  function getPanelNaturalTopInBody(panel) {
+    if (!state.bodyEl || !panel) return null;
+    var bodyRect = state.bodyEl.getBoundingClientRect();
+    var rect = panel.getBoundingClientRect();
+    if (rect.height > 0 || rect.width > 0) {
+      return state.bodyEl.scrollTop + (rect.top - bodyRect.top);
+    }
+    // display: contents 的面板本身不生成布局盒，通过前一个兄弟面板底边或自身内容盒定位真实位置
+    var prev = panel.previousElementSibling;
+    if (prev && prev.getBoundingClientRect) {
+      var prevRect = prev.getBoundingClientRect();
+      if (prevRect.height > 0 || prevRect.width > 0) {
+        return state.bodyEl.scrollTop + (prevRect.bottom - bodyRect.top);
+      }
+    }
+    var header = $('.dpr-sidebar-panel-header', panel);
+    if (header && header.getBoundingClientRect) {
+      return state.bodyEl.scrollTop + (header.getBoundingClientRect().top - bodyRect.top);
+    }
+    return null;
+  }
+
+  function isPanelDockedOffscreenBelow(panelKey) {
+    if (!state.bodyEl || !panelKey) return false;
     var panel = state.bodyEl.querySelector(
       '.dpr-sidebar-panel[data-panel="' + cssEscape(panelKey) + '"]'
     );
-    if (!panel || !panel.getBoundingClientRect) return;
-    var bodyRect = state.bodyEl.getBoundingClientRect();
-    var panelRect = panel.getBoundingClientRect();
-    if (panelRect.top < bodyRect.top || panelRect.top > bodyRect.bottom - 40) {
-      var target = state.bodyEl.scrollTop + (panelRect.top - bodyRect.top) - 6;
-      state.bodyEl.scrollTop = Math.max(0, target);
+    if (!panel) return false;
+    var header = $('.dpr-sidebar-panel-header', panel);
+    var headerHeight = header && header.getBoundingClientRect ? (header.getBoundingClientRect().height || 36) : 36;
+    var naturalTop = getPanelNaturalTopInBody(panel);
+    if (naturalTop == null) return false;
+    var visibleBottom = (state.bodyEl.scrollTop || 0) + (state.bodyEl.clientHeight || 0);
+    return naturalTop > visibleBottom - headerHeight - 8;
+  }
+
+  function scrollPanelIntoView(panelKey, options) {
+    if (!state.bodyEl || !panelKey) return;
+    var opts = options || {};
+    var panel = state.bodyEl.querySelector(
+      '.dpr-sidebar-panel[data-panel="' + cssEscape(panelKey) + '"]'
+    );
+    if (!panel) return;
+    var naturalTop = getPanelNaturalTopInBody(panel);
+    if (naturalTop == null) return;
+    var scrollTop = state.bodyEl.scrollTop || 0;
+    var viewHeight = state.bodyEl.clientHeight || 0;
+    if (opts.forceTop || naturalTop < scrollTop || naturalTop > scrollTop + viewHeight - 40) {
+      var target = Math.max(0, naturalTop - 6);
+      if (opts.smooth && typeof state.bodyEl.scrollTo === 'function') {
+        state.bodyEl.scrollTo({ top: target, behavior: 'smooth' });
+      } else {
+        state.bodyEl.scrollTop = target;
+      }
     }
+  }
+
+  function animateCollapsible(container, contentEl, open, onDone) {
+    if (!container) {
+      if (typeof onDone === 'function') onDone();
+      return;
+    }
+    var reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    if (!contentEl || !contentEl.style || reduced || typeof window.requestAnimationFrame !== 'function') {
+      container.classList.toggle('is-expanded', !!open);
+      if (typeof onDone === 'function') onDone();
+      return;
+    }
+    if (typeof contentEl._dprAnimCancel === 'function') {
+      contentEl._dprAnimCancel();
+    }
+    var viewCap = (state.bodyEl && state.bodyEl.clientHeight ? state.bodyEl.clientHeight : 640) + 48;
+    var durationMs = open ? 240 : 210;
+    var finished = false;
+    var timer = null;
+
+    function cleanup() {
+      if (finished) return;
+      finished = true;
+      if (timer) clearTimeout(timer);
+      contentEl.removeEventListener('transitionend', onTransitionEnd);
+      contentEl._dprAnimCancel = null;
+      container.classList.remove('is-animating');
+      contentEl.style.height = '';
+      contentEl.style.overflow = '';
+      contentEl.style.opacity = '';
+      contentEl.style.transition = '';
+      if (!open) {
+        container.classList.remove('is-expanded');
+      }
+      if (typeof onDone === 'function') onDone();
+    }
+
+    function onTransitionEnd(ev) {
+      if (ev && ev.target !== contentEl) return;
+      if (ev && ev.propertyName && ev.propertyName !== 'height') return;
+      cleanup();
+    }
+
+    contentEl._dprAnimCancel = function () {
+      if (timer) clearTimeout(timer);
+      contentEl.removeEventListener('transitionend', onTransitionEnd);
+      contentEl._dprAnimCancel = null;
+      container.classList.remove('is-animating');
+      contentEl.style.height = '';
+      contentEl.style.overflow = '';
+      contentEl.style.opacity = '';
+      contentEl.style.transition = '';
+      finished = true;
+    };
+
+    if (open) {
+      container.classList.add('is-expanded', 'is-animating');
+      contentEl.style.transition = 'none';
+      contentEl.style.overflow = 'hidden';
+      contentEl.style.height = 'auto';
+      var fullHeight = contentEl.scrollHeight || 0;
+      if (fullHeight <= 0) {
+        cleanup();
+        return;
+      }
+      var targetHeight = Math.min(fullHeight, viewCap);
+      contentEl.style.height = '0px';
+      contentEl.style.opacity = '0';
+      // 强制 reflow 以触发过渡
+      void contentEl.offsetHeight;
+      contentEl.addEventListener('transitionend', onTransitionEnd);
+      contentEl.style.transition = 'height ' + durationMs + 'ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease';
+      window.requestAnimationFrame(function () {
+        if (finished) return;
+        contentEl.style.height = targetHeight + 'px';
+        contentEl.style.opacity = '1';
+      });
+      timer = setTimeout(cleanup, durationMs + 90);
+    } else {
+      var currentFull = contentEl.scrollHeight || 0;
+      if (currentFull <= 0) {
+        container.classList.remove('is-expanded');
+        if (typeof onDone === 'function') onDone();
+        return;
+      }
+      var startHeight = Math.min(currentFull, viewCap);
+      container.classList.add('is-animating');
+      container.classList.remove('is-expanded');
+      contentEl.style.transition = 'none';
+      contentEl.style.overflow = 'hidden';
+      contentEl.style.height = startHeight + 'px';
+      contentEl.style.opacity = '1';
+      void contentEl.offsetHeight;
+      contentEl.addEventListener('transitionend', onTransitionEnd);
+      contentEl.style.transition = 'height ' + durationMs + 'ms cubic-bezier(0.4, 0, 0.2, 1), opacity 160ms ease';
+      window.requestAnimationFrame(function () {
+        if (finished) return;
+        contentEl.style.height = '0px';
+        contentEl.style.opacity = '0';
+      });
+      timer = setTimeout(cleanup, durationMs + 90);
+    }
+  }
+
+  function togglePanelInPlaceAnimated(panelKey, shouldScroll) {
+    if (!state.bodyEl || !panelKey) return false;
+    var panelEl = state.bodyEl.querySelector(
+      '.dpr-sidebar-panel[data-panel="' + cssEscape(panelKey) + '"]'
+    );
+    var contentEl = panelEl && $('.dpr-sidebar-panel-content', panelEl);
+    if (!panelEl || !contentEl) return false;
+    var isOpen = state.expandedGroups[panelKey] !== false;
+    $$('[data-panel-toggle="' + cssEscape(panelKey) + '"]', panelEl).forEach(function (el) {
+      if (el.tagName === 'BUTTON' || el.hasAttribute('aria-expanded')) {
+        el.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      }
+    });
+    var wasDocked = isOpen && isPanelDockedOffscreenBelow(panelKey);
+    animateCollapsible(panelEl, contentEl, isOpen, function () {
+      if (isOpen && shouldScroll) {
+        scrollPanelIntoView(panelKey, { smooth: true, forceTop: wasDocked });
+      }
+      schedulePaperTitleOverflowMarks(panelEl);
+    });
+    if (wasDocked) {
+      scrollPanelIntoView(panelKey, { smooth: true, forceTop: true });
+    }
+    return true;
   }
 
   function dispatchSidebarUpdated() {
@@ -2897,6 +3070,12 @@
   function rerenderSidebarBody(options) {
     if (!state.bodyEl) return;
     var opts = options || {};
+    if (opts.animatePanel && togglePanelInPlaceAnimated(opts.animatePanel, !!opts.scrollPanel)) {
+      if (opts.dispatchUpdated !== false) {
+        dispatchSidebarUpdated();
+      }
+      return;
+    }
     var previousScrollTop = state.bodyEl.scrollTop || 0;
     renderBody();
     updateReadStateMarks();
@@ -3086,6 +3265,10 @@
       if (panelHeader) {
         var panel = panelHeader.getAttribute('data-panel-toggle');
         if (!state.expandedGroups) state.expandedGroups = defaultExpandedGroups();
+        if (isPanelDockedOffscreenBelow(panel) && state.expandedGroups[panel] !== false) {
+          scrollPanelIntoView(panel, { smooth: true, forceTop: true });
+          return;
+        }
         state.expandedGroups[panel] = !state.expandedGroups[panel];
         persistCollapse();
         rerenderSidebarBody(rerenderOptionsForPanelToggle(panel));
@@ -3170,7 +3353,11 @@
           state.expandedAxisSections.add(sectionKey);
           openSection = true;
         }
-        if (section) section.classList.toggle('is-expanded', openSection);
+        if (section) {
+          animateCollapsible(section, $('.dpr-sidebar-axis-papers', section), openSection, function () {
+            if (openSection) schedulePaperTitleOverflowMarks(section);
+          });
+        }
         sectionToggle.setAttribute('aria-expanded', openSection ? 'true' : 'false');
         persistCollapse();
         return;

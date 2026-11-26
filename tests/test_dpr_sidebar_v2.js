@@ -2053,6 +2053,36 @@ function testSingleTrackTopicBacktrackGroup() {
   assert.ok(html.includes('data-topic-task-sort'));
 }
 
+function testPanelHeaderFullRowToggleAndBottomDockedDailyContract() {
+  const tools = loadSidebarForTest().__test;
+  const model = tools.parseSidebar(sampleSidebar);
+  const html = tools.renderBodyHtml(model, {
+    expandedGroups: { conference: true, daily: true },
+    conferenceViewMode: 'conf',
+    dailyViewMode: 'date',
+    activeConference: 'neurips-2024',
+    activeDailyDate: '20260624',
+  });
+  // 整行 header 容器本身也带有 data-panel-toggle，确保点击中间空白和右侧计数都能展开/收起
+  assert.ok(
+    /<div class="dpr-sidebar-panel-header [^"]*dpr-sidebar-panel-header-daily" data-panel-toggle="daily">/.test(html),
+    '日报标题整行都应可点击展开/收起',
+  );
+  assert.ok(
+    /<div class="dpr-sidebar-panel-header [^"]*dpr-sidebar-panel-header-conference" data-panel-toggle="conference">/.test(html),
+    '会议论文标题整行都应可点击展开/收起',
+  );
+  const css = fs.readFileSync('app/app.css', 'utf8');
+  const dailyPanelRule = cssRule(css, '.dpr-sidebar-panel[data-panel="daily"]');
+  assert.ok(/display:\s*contents/i.test(dailyPanelRule), '日报面板需用 display: contents 使标题行相对滚动区吸底');
+  const dailyHeaderRule = cssRule(css, '.dpr-sidebar-panel[data-panel="daily"] > .dpr-sidebar-panel-header');
+  assert.ok(/position:\s*sticky/i.test(dailyHeaderRule));
+  assert.ok(/bottom:\s*0/i.test(dailyHeaderRule), '上方展开大礼包时日报行必须吸底停靠在最下面一行');
+  const js = fs.readFileSync('app/dpr-sidebar.js', 'utf8');
+  assert.ok(js.includes('function animateCollapsible('), '展开/收起应具备平滑高度过渡动效');
+  assert.ok(js.includes('isPanelDockedOffscreenBelow(panel)'), '吸底停靠时点击日报应先平滑滚入视野');
+}
+
 function testTopicRelevanceSortOrdersConferenceBeforeNewestArxiv() {
   const tools = loadSidebarForTest().__test;
   const papers = [
@@ -2296,6 +2326,7 @@ function testPaperVenueTimeBadgesInSidebar() {
 
 testReadStatusNormalization();
 testSingleTrackTopicBacktrackGroup();
+testPanelHeaderFullRowToggleAndBottomDockedDailyContract();
 testTopicRelevanceSortOrdersConferenceBeforeNewestArxiv();
 testCaseInsensitiveTagDeduplicationInSidebar();
 testPaperVenueTimeBadgesInSidebar();
