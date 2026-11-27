@@ -2324,11 +2324,93 @@ function testPaperVenueTimeBadgesInSidebar() {
   assert.deepEqual(searchArxiv.groups.flatMap((g) => g.papers.map((p) => p.title)), ['Arxiv Paper']);
 }
 
+function testFilterToggleAndExternalReadStateSync() {
+  const sidebar = loadSidebarForTest('#/');
+  const tools = sidebar.__test;
+
+  assert.deepEqual(tools.rerenderOptionsForFilterClick(), {
+    syncActive: false,
+    centerActive: false,
+    autoMark: false,
+    preserveScroll: true,
+    dispatchUpdated: false,
+  });
+  assert.deepEqual(tools.rerenderOptionsForExternalReadStateSync(), {
+    syncActive: true,
+    centerActive: false,
+    autoMark: false,
+    preserveScroll: true,
+    dispatchUpdated: false,
+  });
+  assert.equal(typeof sidebar.api.syncExternalReadState, 'function');
+
+  // 1. 启动早期基于空已读态创建的未读快照，在远端阅读状态水合后必须重建
+  const model = tools.parseSidebar(sampleSidebar);
+  const preHydrationSnapshot = tools.ensureUnreadSessionPaperIds(model, {});
+  assert.ok(preHydrationSnapshot.has('202606/24/paper-a'));
+  assert.ok(preHydrationSnapshot.has('202606/23/paper-d'));
+  tools.syncExternalReadState();
+  const postHydrationSnapshot = tools.ensureUnreadSessionPaperIds(model, {
+    '202606/24/paper-a': 'read',
+    '202606/23/paper-d': 'read',
+  });
+  assert.ok(!postHydrationSnapshot.has('202606/24/paper-a'), '远端同步后应清除旧快照中的已读论文');
+  assert.ok(!postHydrationSnapshot.has('202606/23/paper-d'), '远端同步后应清除旧快照中的已读论文');
+  assert.ok(postHydrationSnapshot.has('202606/24/paper-b'));
+
+  // 2. 全部论文已读的 starterPacks 在未读模式下不得残留空壳目录
+  const run = '20260912-abcdef123456';
+  const packs = tools.parseStarterPackIndex({
+    version: 1,
+    packs: [{
+      run_id: run,
+      tag: 'ATSP',
+      mode: '365',
+      selected_records: [{ route: `starter-pack/${run}/papers/only`, title: 'Only Paper', score: 9 }],
+      content_done: 1,
+      content_pending: 0,
+    }],
+  });
+  const allReadPackHtml = tools.renderBodyHtml(
+    { daily: [], conferences: [], starterPacks: packs },
+    { filter: 'unread', readMap: { [`starter-pack/${run}/papers/only`]: 'read' } },
+  );
+  assert.ok(!allReadPackHtml.includes('ATSP · 365天'), '未读模式下全部已读的大礼包不应继续渲染空分组');
+  assert.ok(allReadPackHtml.includes('没有匹配的论文'));
+
+  // 3. 源码契约：点击筛选按钮保持滚动、不触发 dpr-sidebar-updated，并统一同步按钮态
+  const sidebarJs = fs.readFileSync(require.resolve('../app/dpr-sidebar.js'), 'utf8');
+  const filterStart = sidebarJs.indexOf("var fbtn = e.target.closest('.dpr-sidebar-filter-btn');");
+  const filterEnd = sidebarJs.indexOf("var mobile = e.target.closest('.dpr-sidebar-mobile-toggle');", filterStart);
+  assert.ok(filterStart > 0 && filterEnd > filterStart);
+  const filterBlock = sidebarJs.slice(filterStart, filterEnd);
+  assert.ok(filterBlock.includes('e.preventDefault();'));
+  assert.ok(filterBlock.includes('state.unreadResultPaperIds = null;'));
+  assert.ok(filterBlock.includes('rerenderSidebarBody(rerenderOptionsForFilterClick());'));
+  assert.ok(sidebarJs.includes("btn.setAttribute('aria-selected', active ? 'true' : 'false');"));
+  assert.ok(sidebarJs.includes("document.addEventListener('dpr-read-state-synced'"));
+
+  // 4. docsify-plugin.js：支持提前解锁自动触发 initReadStateSync，并在完成后通知侧边栏重建未读快照
+  const pluginJs = fs.readFileSync(require.resolve('../app/docsify-plugin.js'), 'utf8');
+  const syncStart = pluginJs.indexOf('const initReadStateSync = async () =>');
+  const syncEnd = pluginJs.indexOf('// --- Docsify 生命周期钩子 ---', syncStart);
+  assert.ok(syncStart > 0 && syncEnd > syncStart);
+  const syncBlock = pluginJs.slice(syncStart, syncEnd);
+  assert.ok(syncBlock.includes("if (window.DPR_ACCESS_MODE === 'full') {\n        initReadStateSync();"));
+  assert.ok(syncBlock.includes('window.DPRSidebar.syncExternalReadState()'));
+
+  // 5. 样式契约：暗色模式激活态可见对比度 + 工具栏独立层级
+  const css = fs.readFileSync(require.resolve('../app/app.css'), 'utf8');
+  assert.ok(/\.dpr-sidebar-toolbar\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*22;/s.test(css));
+  assert.ok(/body\.dpr-dark\s+\.dpr-sidebar-filter-btn\.is-active\s*\{[^}]*background:\s*#243552;/s.test(css));
+}
+
 testReadStatusNormalization();
 testSingleTrackTopicBacktrackGroup();
 testPanelHeaderFullRowToggleAndBottomDockedDailyContract();
 testTopicRelevanceSortOrdersConferenceBeforeNewestArxiv();
 testCaseInsensitiveTagDeduplicationInSidebar();
 testPaperVenueTimeBadgesInSidebar();
+testFilterToggleAndExternalReadStateSync();
 
 console.log('dpr sidebar v2 tests passed');

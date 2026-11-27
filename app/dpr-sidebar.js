@@ -549,6 +549,7 @@
       var fullLabel = label + (refinement ? ' · ' + refinement : scope.as_of ? ' · 截止 ' + scope.as_of + '（不含当天）' : '');
       label += refinement ? ' · ' + (refinement.length > 28 ? refinement.slice(0, 28) + '…' : refinement) : scope.as_of ? ' · 截止 ' + scope.as_of : '';
       var papers = sortedTaskPapers(pack.papers, opts.taskSort).filter(function (paper) { return paperMatchesResult(paper, opts.resultOptions); });
+      if (opts.resultOptions && opts.resultOptions.unreadOnly && pack.papers && pack.papers.length > 0 && !papers.length) return '';
       if (opts.resultOptions && opts.resultOptions.keyword && !papers.length && label.toLowerCase().indexOf(opts.resultOptions.keyword.toLowerCase()) === -1) return '';
       var primaryLabel = pack.export_path
         ? (pack.mode === 'starter-pack' ? '方向导读／导出清单' : '结果总览／导出清单')
@@ -770,6 +771,24 @@
     return {
       updateInPlace: true,
       syncActive: false,
+      centerActive: false,
+      autoMark: false,
+      preserveScroll: true,
+      dispatchUpdated: false,
+    };
+  }
+  function rerenderOptionsForFilterClick() {
+    return {
+      syncActive: false,
+      centerActive: false,
+      autoMark: false,
+      preserveScroll: true,
+      dispatchUpdated: false,
+    };
+  }
+  function rerenderOptionsForExternalReadStateSync() {
+    return {
+      syncActive: true,
       centerActive: false,
       autoMark: false,
       preserveScroll: true,
@@ -2161,8 +2180,8 @@
       '    <input type="search" class="dpr-sidebar-search" placeholder="搜索标题 / 摘要 / 标签" autocomplete="off" spellcheck="false" />' +
       '  </div>' +
       '  <div class="dpr-sidebar-filter" role="tablist">' +
-      '    <button type="button" class="dpr-sidebar-filter-btn ' + filterAllActive + '" data-filter="all">全部</button>' +
-      '    <button type="button" class="dpr-sidebar-filter-btn ' + filterUnreadActive + '" data-filter="unread">未读 <span class="dpr-sidebar-unread-count" data-count="0">0</span></button>' +
+      '    <button type="button" class="dpr-sidebar-filter-btn ' + filterAllActive + '" data-filter="all" role="tab" aria-selected="' + (state.filter === 'all' ? 'true' : 'false') + '">全部</button>' +
+      '    <button type="button" class="dpr-sidebar-filter-btn ' + filterUnreadActive + '" data-filter="unread" role="tab" aria-selected="' + (state.filter === 'unread' ? 'true' : 'false') + '">未读 <span class="dpr-sidebar-unread-count" data-count="0">0</span></button>' +
       '  </div>' +
       '</div>' +
       '<nav class="dpr-sidebar-body" aria-label="论文导航"></nav>' +
@@ -2341,6 +2360,14 @@
     ['backtrack', 'daily'].forEach(function (panel) {
       var panelModel = modelForDailyPanel(viewModel, panel);
       var guides = panel === 'backtrack' ? (model.starterPacks || []) : [];
+      if (panel === 'backtrack' && normalUnreadFilterMode && guides.length) {
+        guides = guides.filter(function (pack) {
+          if (!pack.papers || !pack.papers.length) return true;
+          return pack.papers.some(function (paper) {
+            return paperMatchesResult(paper, resultOptions);
+          });
+        });
+      }
       if (!panelModel.daily.length && !guides.length) return;
       var placement = vs.dailyCalendarPlacement;
       var dailyView = resultMode
@@ -2802,6 +2829,19 @@
   function applyFilterAndSearch() {
     if (!state.rootEl) return;
     state.rootEl.classList.toggle('is-filter-unread', state.filter === 'unread');
+    $$('.dpr-sidebar-filter-btn', state.rootEl).forEach(function (btn) {
+      var active = btn.getAttribute('data-filter') === state.filter;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+  }
+
+  function syncExternalReadState() {
+    // 远端阅读状态（如 Supabase）异步水合后，页面启动早期基于空/旧状态冻结的未读快照已失真，需按真实已读状态重建。
+    state.unreadResultPaperIds = null;
+    if (state.bodyEl) {
+      rerenderSidebarBody(rerenderOptionsForExternalReadStateSync());
+    }
   }
 
   function syncActive(options) {
@@ -3166,15 +3206,17 @@
     });
     // 工具栏：筛选
     root.addEventListener('click', function (e) {
+      if (!e || !e.target || typeof e.target.closest !== 'function') return;
       var fbtn = e.target.closest('.dpr-sidebar-filter-btn');
       if (fbtn) {
+        e.preventDefault();
         var f = fbtn.getAttribute('data-filter') || 'all';
         state.filter = f === 'unread' ? 'unread' : 'all';
-        $$('.dpr-sidebar-filter-btn', root).forEach(function (b) {
-          b.classList.toggle('is-active', b.getAttribute('data-filter') === state.filter);
-        });
+        // 显式点击“全部 / 未读”时清空旧快照：切回或再次点击“未读”按最新真实未读状态重建，
+        // 停留在“未读”内连续阅读、打标或切换标签/日期/会议时继续保持当前快照不消失。
+        state.unreadResultPaperIds = null;
         persistFilter();
-        rerenderSidebarBody({ syncActive: false });
+        rerenderSidebarBody(rerenderOptionsForFilterClick());
         return;
       }
       // 移动端切换
@@ -3432,6 +3474,9 @@
     document.addEventListener('dpr-paper-read-state-changed', function () {
       rerenderSidebarBody(rerenderOptionsForReadStateEvent());
     });
+    document.addEventListener('dpr-read-state-synced', function () {
+      syncExternalReadState();
+    });
     document.addEventListener('dpr-workflow-status-changed', function (e) {
       renderWorkflowStatusBar(e && e.detail ? e.detail : null);
     });
@@ -3480,6 +3525,7 @@
       .then(function (values) {
         state.model = applyConferencePublicationDates(parseSidebar(values[0]), values[1]);
         state.model.starterPacks = parseStarterPackIndex(values[2]);
+        state.unreadResultPaperIds = null;
         state.lastFetchAt = Date.now();
         determineInitialExpansion();
         if (!state.rootEl) {
@@ -3532,6 +3578,7 @@
     refresh: function () { return loadAndRender(); },
     syncActive: syncActive,
     notifyReadStateChanged: function () { rerenderSidebarBody(rerenderOptionsForReadStateEvent()); },
+    syncExternalReadState: syncExternalReadState,
     getReadState: function () { return ReadState.getAll(); },
     getPaperHrefs: function () { return collectPaperHrefsFromModel(state.model); },
     getReportHrefs: function () { return collectReportHrefsFromModel(state.model); },
@@ -3591,6 +3638,9 @@
         rerenderOptionsForPanelToggle: rerenderOptionsForPanelToggle,
         rerenderOptionsForAxisControlClick: rerenderOptionsForAxisControlClick,
         rerenderOptionsForStatusClick: rerenderOptionsForStatusClick,
+        rerenderOptionsForFilterClick: rerenderOptionsForFilterClick,
+        rerenderOptionsForExternalReadStateSync: rerenderOptionsForExternalReadStateSync,
+        syncExternalReadState: syncExternalReadState,
         syncActiveOptionsForInitialLoad: syncActiveOptionsForInitialLoad,
         rememberPendingPaperHref: rememberPendingPaperHref,
         resolveCurrentPaperHrefForRender: resolveCurrentPaperHrefForRender,
