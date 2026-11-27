@@ -9,8 +9,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 try:
+    from recall_health import RECALL_NOT_RUN, RECALL_UNAVAILABLE, REPORT_RECALL_STATUS
     from source_config import get_source_backend, load_config_with_source_migration
 except Exception:  # pragma: no cover - 兼容 package 导入路径
+    from src.recall_health import RECALL_NOT_RUN, RECALL_UNAVAILABLE, REPORT_RECALL_STATUS
     from src.source_config import get_source_backend, load_config_with_source_migration
 
 try:
@@ -30,6 +32,27 @@ SKIMS_FETCH_DAYS_THRESHOLD = 11
 def run_step(label: str, args: list[str], env: dict[str, str] | None = None) -> None:
     print(f"[INFO] {label}: {' '.join(args)}", flush=True)
     subprocess.run(args, check=True, env=env)
+
+
+def run_recall_step(label: str, args: list[str]) -> int:
+    """Run a recall lane, allowing the other lane to recover an outage."""
+    try:
+        run_step(label, args, env={**os.environ, REPORT_RECALL_STATUS: "1"})
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode in (RECALL_UNAVAILABLE, RECALL_NOT_RUN):
+            return exc.returncode
+        raise
+    return 0
+
+
+def check_recall_outcomes(*outcomes: int) -> None:
+    if RECALL_UNAVAILABLE not in outcomes:
+        return
+    if 0 not in outcomes:
+        raise SystemExit(
+            "[ERROR] Supabase 召回失败，且没有可用的本地回退；已停止生成日报。"
+        )
+    print("[WARN] 部分召回不可用，使用已完成的召回继续生成日报。", flush=True)
 
 
 def _load_full_config() -> dict:
@@ -707,14 +730,14 @@ def main() -> None:
     if trace_ids:
         print_trace_retrieval("RAW", raw_path, trace_ids)
     status_reporter.report(step_code="step2.1", step_label="Step 2.1 BM25 关键词召回", force=True)
-    run_step(
+    bm25_outcome = run_recall_step(
         "Step 2.1 - BM25",
         [python, os.path.join(SRC_DIR, "2.1.retrieval_papers_bm25.py")],
     )
     if trace_ids:
         print_trace_retrieval("BM25", bm25_path, trace_ids)
     status_reporter.report(step_code="step2.2", step_label="Step 2.2 向量语义召回", force=True)
-    run_step(
+    embedding_outcome = run_recall_step(
         "Step 2.2 - Embedding",
         [
             python,
@@ -727,6 +750,7 @@ def main() -> None:
     )
     if trace_ids:
         print_trace_retrieval("EMBEDDING", embedding_path, trace_ids)
+    check_recall_outcomes(bm25_outcome, embedding_outcome)
     status_reporter.report(step_code="step2.3", step_label="Step 2.3 RRF 融合", force=True)
     run_step(
         "Step 2.3 - RRF",
